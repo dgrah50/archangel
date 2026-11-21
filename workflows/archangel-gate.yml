@@ -47,6 +47,8 @@ jobs:
 
       - name: Build pinned archangel-gate binary
         if: steps.classify.outputs.is_factory == 'true'
+        env:
+          ARCHANGEL_READ_TOKEN: ${{ secrets.ARCHANGEL_READ_TOKEN }}
         run: |
           if [[ ! "$ARCHANGEL_GATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ERROR: ARCHANGEL_GATE_SHA must be a pinned 40-character commit SHA (got: $ARCHANGEL_GATE_SHA)" >&2
@@ -54,7 +56,11 @@ jobs:
           fi
           rm -rf "$RUNNER_TEMP/archangel-src"
           git init -q "$RUNNER_TEMP/archangel-src"
-          git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://github.com/${ARCHANGEL_REPO}.git"
+          if [ -n "$ARCHANGEL_READ_TOKEN" ]; then
+            git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://x-access-token:${ARCHANGEL_READ_TOKEN}@github.com/${ARCHANGEL_REPO}.git"
+          else
+            git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://github.com/${ARCHANGEL_REPO}.git"
+          fi
           git -C "$RUNNER_TEMP/archangel-src" fetch --depth=1 origin "$ARCHANGEL_GATE_SHA"
           git -C "$RUNNER_TEMP/archangel-src" checkout -q FETCH_HEAD
           (cd "$RUNNER_TEMP/archangel-src/gate" && go build -o "$RUNNER_TEMP/archangel-gate" ./cmd/archangel-gate)
@@ -69,6 +75,7 @@ jobs:
           git cat-file -e "${BASE_SHA}^{commit}"
           EXTRA_ARGS=()
           if [[ "$HEAD_REF" =~ ^factory/revert-[0-9]+$ ]]; then
+            git cat-file -e "${HEAD_SHA}^{commit}"
             REVERT_OF=$(git log -1 --format=%B "$HEAD_SHA" | sed -nE 's/^This reverts commit ([0-9a-f]{40})\..*/\1/p' | head -n 1)
             if [ -z "$REVERT_OF" ]; then
               echo "ERROR: factory/revert-* branch missing 'This reverts commit <40-char-sha>.' trailer" >&2

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
@@ -121,11 +123,15 @@ export function createArchangelMastra(opts: MastraReviewerOptions): {
     model: google(opts.geminiModel),
   });
 
+  if (opts.mastraDbPath !== ":memory:") {
+    fs.mkdirSync(path.dirname(path.resolve(opts.mastraDbPath)), { recursive: true });
+  }
+
   const mastra = new Mastra({
     agents: { openaiAgent, geminiAgent },
     storage: new LibSQLStore({
       id: "archangel-mastra-storage",
-      url: `file:${opts.mastraDbPath}`,
+      url: opts.mastraDbPath === ":memory:" ? ":memory:" : `file:${opts.mastraDbPath}`,
     }),
   });
 

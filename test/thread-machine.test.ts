@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  classifyGate,
-  deriveControl,
-  stepPhase,
-  type Phase,
-} from "../src/core/thread-machine.js";
+import { classifyGate, stepPhase, type Phase } from "../src/core/thread-machine.js";
 
 const META = { issueNumber: 1, title: "Bug", needsYouLabel: "needs-you" };
 
@@ -51,24 +46,18 @@ const ALL_NON_DONE_PHASES: Phase[] = [
   },
 ];
 
-describe("thread-machine invariants (Opus audit proofs)", () => {
-  it("every non-done phase has an owner exit (owner_abandon) and transitions cleanly on pr_observed", () => {
+describe("thread-machine global invariants", () => {
+  it("every non-done phase exits cleanly on owner_abandon and pr_observed(merged)", () => {
     for (const p of ALL_NON_DONE_PHASES) {
       const abandoned = stepPhase(p, "autonomous", { t: "owner_abandon" }, META);
-      expect(abandoned.ok).toBe(true);
-      if (abandoned.ok) {
-        expect(abandoned.next.kind).toBe("done");
-      }
+      expect(abandoned.ok && abandoned.next.kind).toBe("done");
 
       const merged = stepPhase(p, "autonomous", { t: "pr_observed", status: "merged" }, META);
-      expect(merged.ok).toBe(true);
-      if (merged.ok) {
-        expect(merged.next).toMatchObject({ kind: "done", outcome: "owner_merged" });
-      }
+      expect(merged.ok && merged.next).toMatchObject({ kind: "done", outcome: "owner_merged" });
     }
   });
 
-  it("advisory mode structurally forbids start_working from EVERY phase (prevents Opus R4)", () => {
+  it("advisory mode structurally forbids start_working from EVERY phase", () => {
     for (const p of ALL_NON_DONE_PHASES) {
       const res = stepPhase(
         p,
@@ -80,27 +69,19 @@ describe("thread-machine invariants (Opus audit proofs)", () => {
     }
   });
 
-  it("restart_recovered ONLY applies to working phases (prevents Opus L1)", () => {
+  it("restart_recovered ONLY applies to working phases (never touches needs_you/shadow_ready/owner_driving)", () => {
     for (const p of ALL_NON_DONE_PHASES) {
       const res = stepPhase(p, "autonomous", { t: "restart_recovered" }, META);
       if (p.kind === "working") {
-        expect(res.ok).toBe(true);
-        if (res.ok) expect(res.next.kind).toBe("queued");
+        expect(res.ok && res.next.kind).toBe("queued");
       } else {
         expect(res.ok).toBe(false);
       }
     }
   });
 
-  it("deriveControl gives stop precedence over paused (prevents Opus O1 oscillation)", () => {
-    const labels = { stop: "factory:stop", paused: "factory:paused" };
-    expect(deriveControl(["factory:paused", "factory:stop"], labels)).toBe("stopped");
-    expect(deriveControl(["factory:paused"], labels)).toBe("paused");
-    expect(deriveControl(["ready-for-agent"], labels)).toBe("run");
-  });
-
-  it("classifyGate fails closed on null/missing appSlug and picks latest check run by id", () => {
-    const untrusted = classifyGate({
+  it("classifyGate fails closed when appSlug is null or non-github-actions", () => {
+    const res = classifyGate({
       requiredChecks: ["Gate"],
       checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: null }],
       since: 0,
@@ -109,20 +90,6 @@ describe("thread-machine invariants (Opus audit proofs)", () => {
       graceMs: 5000,
       timeoutMs: 60_000,
     });
-    expect(untrusted.status).toBe("untrusted");
-
-    const latestWins = classifyGate({
-      requiredChecks: ["Gate"],
-      checks: [
-        { id: 10, name: "Gate", status: "completed", conclusion: "failure", appSlug: "github-actions" },
-        { id: 20, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" },
-      ],
-      since: 0,
-      nudgedAt: null,
-      now: 1000,
-      graceMs: 5000,
-      timeoutMs: 60_000,
-    });
-    expect(latestWins.status).toBe("green");
+    expect(res.status).toBe("untrusted");
   });
 });

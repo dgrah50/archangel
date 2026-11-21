@@ -1376,15 +1376,33 @@ export class Reconciler {
 
     if (watch.kind === "watching") {
       const runIds: number[] = [];
+      let rerunPermitted = true;
       for (const f of failed) {
-        await this.github.rerunCheckRun(f.id);
-        runIds.push(f.id);
+        try {
+          await this.github.rerunCheckRun(f.id);
+          runIds.push(f.id);
+        } catch (err) {
+          // Under strict ADR-0004 least-privilege (checks:read, no checks:write), rerequest returns 403.
+          // Fail closed immediately into circuit-breaker + exact revert PR instead of wedging in `watching`.
+          rerunPermitted = false;
+          this.ledger.appendAudit(
+            "post_merge/rerun_unavailable",
+            m.issueNumber,
+            "archangel",
+            { mergeId: m.id, checkRunId: f.id, error: err instanceof Error ? err.message : String(err) },
+            now,
+          );
+          break;
+        }
       }
-      this.ledger.updateMergeMainWatch(m.id, { kind: "rerun_requested", runIds, at: now });
-      return;
+      if (rerunPermitted && runIds.length > 0) {
+        this.ledger.updateMergeMainWatch(m.id, { kind: "rerun_requested", runIds, at: now });
+        return;
+      }
+      // Fall through to confirm red main immediately when rerun is not permitted.
     }
 
-    if (watch.kind === "rerun_requested") {
+    if (watch.kind === "rerun_requested" || watch.kind === "watching") {
       // Wait if GitHub hasn't yet reflected the rerun (or if the rerun is still in progress).
       // Since our GitHub client deduplicates to latest id, if all failed ids are still completed+failed,
       // confirm red main!

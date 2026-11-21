@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
@@ -50,6 +51,9 @@ export class ClaudeSdkImplementer implements Implementer {
       `issue-${input.issueNumber}-${Date.now()}.jsonl`,
     );
 
+    const goCacheDir = path.join(os.tmpdir(), "archangel-go-build-cache");
+    fs.mkdirSync(goCacheDir, { recursive: true });
+
     const scrubbedEnv: Record<string, string | undefined> = {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: process.env.HOME ?? "/tmp",
@@ -61,6 +65,9 @@ export class ClaudeSdkImplementer implements Implementer {
       GIT_TERMINAL_PROMPT: "0",
       GOTOOLCHAIN: "local",
       GOFLAGS: "-count=1",
+      // Redirect GOCACHE into writable TMPDIR so macOS Seatbelt never blocks ~/Library/Caches/go-build.
+      GOCACHE: goCacheDir,
+      ...(process.env.GOMODCACHE ? { GOMODCACHE: process.env.GOMODCACHE } : {}),
     };
 
     const timer = setTimeout(() => {

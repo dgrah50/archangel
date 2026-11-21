@@ -18,7 +18,7 @@ export function buildImplementPrompt(input: {
     "1. Write at least one NEW top-level Go test function (`func TestIssue" +
       input.issueNumber +
       "_*(t *testing.T)`) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.",
-    "2. NEVER modify, rename, or delete any existing `Test*` function in the repository.",
+    "2. NEVER modify, rename, or delete any existing `Test*` function or any existing top-level helper/type/var/const in pre-existing `*_test.go` files (put new tests/helpers in a new `*_test.go` file or append strictly new declarations).",
     "3. NEVER add `TestMain`, `init()`, `//go:build`, `// +build`, `t.Skip*`, or `//go:generate`.",
     "4. Keep changes tightly scoped: <= 150 non-test changed lines, <= 300 total changed lines, <= 5 files, ZERO new dependencies.",
     "5. NEVER touch protected paths (`.github/**`, `go.mod`, `go.sum`, `scripts/**`, `LICENSE*`, `CLAUDE.md`, `AGENTS.md`, `Makefile`, linter configs).",
