@@ -2,10 +2,6 @@
 
 Language-agnostic autonomous software factory (piloting on `dgrah50/gijq`) with **repo-owned verification** (`.pre-commit-config.yaml` + `.agents/landing.json`), **independent cross-vendor review** (Claude implements → OpenAI + Gemini review), **SQLite level-triggered reconciliation**, and **1-command Paseo Handoff**.
 
-- **Architecture:** [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-- **Glossary:** [GLOSSARY.md](./GLOSSARY.md)
-- **ADRs:** [docs/adr/](./docs/adr/)
-- **Pre-screened `gijq` Pilot Issues:** [docs/GIJQ-PILOT-ISSUES.md](./docs/GIJQ-PILOT-ISSUES.md)
 - **`gijq` Repo Verification Templates:** [templates/gijq/](./templates/gijq/)
 
 ## Quick Start
