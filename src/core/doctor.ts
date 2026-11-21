@@ -86,27 +86,72 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
-  // 3. Metered API keys
-  const missingKeys = [
-    !first.anthropicApiKey ? "ANTHROPIC_API_KEY" : null,
-    !first.openaiApiKey ? "OPENAI_API_KEY" : null,
-    !first.googleApiKey ? "GOOGLE_GENERATIVE_AI_API_KEY" : null,
-  ].filter(Boolean) as string[];
-  if (missingKeys.length > 0) {
-    checks.push({
-      id: "api_keys",
-      name: "Metered Model API Keys",
-      status: "fail",
-      detail: `Missing: ${missingKeys.join(", ")}`,
-      remediation: "Populate all three metered API keys in .env (ADR-0003 independent review)",
-    });
+  // 3. Model authentication (subscription CLIs vs metered API keys)
+  if (first.authMode === "subscription") {
+    const neededProviders = [
+      ...new Set([
+        ...first.implementerChain.map((e) => e.provider),
+        ...first.reviewerChain.map((e) => e.provider),
+      ]),
+    ];
+    const missingBins: string[] = [];
+    const verified: string[] = [];
+    for (const p of neededProviders) {
+      try {
+        if (p === "codex") {
+          const { stdout, stderr } = await execFileAsync("codex", ["login", "status"]);
+          const combined = `${stdout}\n${stderr}`.trim();
+          if (!/logged in/i.test(combined)) {
+            missingBins.push("codex (not logged in — run `codex login`)");
+          } else {
+            verified.push(`codex (${combined})`);
+          }
+        } else {
+          const { stdout } = await execFileAsync(p, ["--version"]);
+          verified.push(`${p} (${stdout.trim().split("\n")[0]})`);
+        }
+      } catch {
+        missingBins.push(`${p} (not found in PATH)`);
+      }
+    }
+    if (missingBins.length > 0) {
+      checks.push({
+        id: "subscription_clis",
+        name: "Subscription CLI Providers",
+        status: "fail",
+        detail: `Unavailable: ${missingBins.join(", ")}`,
+        remediation: "Install/log in to each configured CLI provider in archangel.yaml or switch authMode: api",
+      });
+    } else {
+      checks.push({
+        id: "subscription_clis",
+        name: "Subscription CLI Providers",
+        status: "pass",
+        detail: `${verified.join(", ")} (chain: impl=${first.implementerChain.map((e) => e.provider).join("->")}, rev=${first.reviewerChain.map((e) => e.provider).join("->")})`,
+      });
+    }
   } else {
-    checks.push({
-      id: "api_keys",
-      name: "Metered Model API Keys",
-      status: "pass",
-      detail: "Anthropic, OpenAI, and Google API keys present",
-    });
+    const missingKeys = [
+      !first.anthropicApiKey ? "ANTHROPIC_API_KEY" : null,
+      !first.openaiApiKey ? "OPENAI_API_KEY" : null,
+      !first.googleApiKey ? "GOOGLE_GENERATIVE_AI_API_KEY" : null,
+    ].filter(Boolean) as string[];
+    if (missingKeys.length > 0) {
+      checks.push({
+        id: "api_keys",
+        name: "Metered Model API Keys",
+        status: "fail",
+        detail: `Missing: ${missingKeys.join(", ")}`,
+        remediation: "Populate all three metered API keys in .env, or set authMode: subscription in archangel.yaml",
+      });
+    } else {
+      checks.push({
+        id: "api_keys",
+        name: "Metered Model API Keys",
+        status: "pass",
+        detail: "Anthropic, OpenAI, and Google API keys present",
+      });
+    }
   }
 
   if (Boolean(first.telegramBotToken) !== Boolean(first.telegramChatId)) {

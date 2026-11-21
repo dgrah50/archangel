@@ -6,9 +6,16 @@ pollIntervalMs: 30000
 maxDailyUsd: 20
 dailyTimezone: America/New_York
 
-claudeModel: claude-sonnet-4-6
-openaiReviewerModel: gpt-5.4
-geminiReviewerModel: gemini-2.5-pro
+# Native CLI subscriptions with Paseo Continuity-style fallback chains (no API keys required),
+# or switch to `authMode: api` for metered API keys in .env.
+authMode: subscription
+implementerChain:
+  - provider: codex
+  - provider: agy
+reviewerChain:
+  - provider: agy
+  - provider: claude
+  - provider: codex
 
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767

@@ -33,6 +33,7 @@ export interface ReviewRequest {
   touchedFiles: Record<string, string>;
   reviewRubric?: string;
   skipVendors?: ReviewerVendor[];
+  excludeVendors?: ReviewerVendor[];
 }
 
 export interface VendorReviewResult {
@@ -78,6 +79,7 @@ export function parseStrictVerdict(raw: unknown): ParsedReviewOutput {
 const TOKEN_RATES_PER_M: Record<ReviewerVendor, { input: number; output: number }> = {
   openai: { input: 2.5, output: 10.0 },
   gemini: { input: 1.25, output: 10.0 },
+  anthropic: { input: 3.0, output: 15.0 },
 };
 
 export function estimateReviewCostUsd(

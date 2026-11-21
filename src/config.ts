@@ -2,6 +2,25 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import type { ReviewerVendor } from "./ledger/schema.js";
+
+export const CliProviderSchema = z.enum(["codex", "agy", "claude"]);
+export type CliProvider = z.infer<typeof CliProviderSchema>;
+
+export const ProviderEntrySchema = z.object({
+  provider: CliProviderSchema,
+  model: z.string().min(1).optional(),
+});
+export type ProviderEntry = z.infer<typeof ProviderEntrySchema>;
+
+export const AuthModeSchema = z.enum(["subscription", "api"]);
+export type AuthMode = z.infer<typeof AuthModeSchema>;
+
+export function providerToVendor(provider: CliProvider): ReviewerVendor {
+  if (provider === "codex") return "openai";
+  if (provider === "agy") return "gemini";
+  return "anthropic";
+}
 
 export const GatePolicySchema = z.object({
   maxNonTestLines: z.number().int().min(1).default(150),
@@ -108,7 +127,16 @@ export const ConfigSchema = z.object({
     disagree: "factory:disagree",
   }),
 
-  // Models & optional notifications/handoff
+  // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
+  authMode: AuthModeSchema.default("api"),
+  implementerChain: z
+    .array(ProviderEntrySchema)
+    .min(1)
+    .default([{ provider: "codex" }, { provider: "agy" }]),
+  reviewerChain: z
+    .array(ProviderEntrySchema)
+    .min(2)
+    .default([{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }]),
   anthropicApiKey: z.string().min(1).optional(),
   openaiApiKey: z.string().min(1).optional(),
   googleApiKey: z.string().min(1).optional(),
@@ -154,6 +182,15 @@ export const HostYamlSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  authMode: AuthModeSchema.default("subscription"),
+  implementerChain: z
+    .array(ProviderEntrySchema)
+    .min(1)
+    .default([{ provider: "codex" }, { provider: "agy" }]),
+  reviewerChain: z
+    .array(ProviderEntrySchema)
+    .min(2)
+    .default([{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }]),
   claudeModel: z.string().default("claude-sonnet-4-6"),
   openaiReviewerModel: z.string().default("gpt-5.4"),
   geminiReviewerModel: z.string().default("gemini-2.5-pro"),
@@ -162,6 +199,28 @@ export const HostYamlSchema = z.object({
   labels: LabelsSchema.optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
 });
+
+/**
+ * Resolves the 2 independent reviewer vendors required for a project (ADR-0003: implementer != reviewer).
+ */
+export function resolveRequiredReviewers(
+  cfg: Pick<ArchangelConfig, "authMode" | "implementerChain" | "reviewerChain">,
+  excludeVendors: ReviewerVendor[] = [],
+): ReviewerVendor[] {
+  if (cfg.authMode === "api") {
+    return ["openai", "gemini"];
+  }
+  const primaryImplVendor = providerToVendor(cfg.implementerChain[0]!.provider);
+  const blocked = new Set<ReviewerVendor>([primaryImplVendor, ...excludeVendors]);
+  const chosen: ReviewerVendor[] = [];
+  for (const entry of cfg.reviewerChain) {
+    const v = providerToVendor(entry.provider);
+    if (blocked.has(v) || chosen.includes(v)) continue;
+    chosen.push(v);
+    if (chosen.length === 2) break;
+  }
+  return chosen;
+}
 
 function resolvePrivateKeyPem(env: NodeJS.ProcessEnv): string | undefined {
   if (env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM && env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM.trim()) {
@@ -308,6 +367,9 @@ export function loadProjectConfigs(opts: {
         gate: proj.gate,
         reviewRubric: proj.reviewRubric,
         labels: host.labels,
+        authMode: host.authMode,
+        implementerChain: host.implementerChain,
+        reviewerChain: host.reviewerChain,
         claudeModel: host.claudeModel,
         openaiReviewerModel: host.openaiReviewerModel,
         geminiReviewerModel: host.geminiReviewerModel,

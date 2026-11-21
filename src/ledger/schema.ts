@@ -9,7 +9,7 @@ import type {
 
 export type { AttemptKind, MainWatch, Mode, OutboxEffect, Phase, PhaseKind };
 
-export type ReviewerVendor = "openai" | "gemini";
+export type ReviewerVendor = "openai" | "gemini" | "anthropic";
 
 export type ReviewVerdict = "approve" | "veto";
 

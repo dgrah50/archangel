@@ -2,9 +2,11 @@
 import fs from "node:fs";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
-import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
-import { MastraReviewerSuite } from "../agents/reviewers.js";
+import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
+import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
+import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
 import { TelegramNotifier } from "../core/notifier.js";
@@ -83,9 +85,12 @@ program
         .join(", ")}`,
     );
 
-    if (!first.anthropicApiKey || !first.openaiApiKey || !first.googleApiKey) {
+    if (
+      first.authMode === "api" &&
+      (!first.anthropicApiKey || !first.openaiApiKey || !first.googleApiKey)
+    ) {
       throw new Error(
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, and GOOGLE_GENERATIVE_AI_API_KEY (or GEMINI_API_KEY) are required.",
+        "authMode=api requires ANTHROPIC_API_KEY, OPENAI_API_KEY, and GOOGLE_GENERATIVE_AI_API_KEY (or set authMode: subscription in archangel.yaml).",
       );
     }
 
@@ -101,17 +106,29 @@ program
       rootLedger.heartbeatDaemonLock(daemonOwnerId);
     }, 30_000);
 
-    const reviewers = new MastraReviewerSuite({
-      openaiApiKey: first.openaiApiKey,
-      googleApiKey: first.googleApiKey,
-      openaiModel: first.openaiReviewerModel,
-      geminiModel: first.geminiReviewerModel,
-      mastraDbPath: sharedPaths.mastraDbPath,
-    });
+    const reviewers: ReviewerSuite =
+      first.authMode === "subscription"
+        ? new SubscriptionReviewerSuite({
+            chain: first.reviewerChain,
+            primaryImplementerVendor: providerToVendor(first.implementerChain[0]!.provider),
+          })
+        : new MastraReviewerSuite({
+            openaiApiKey: first.openaiApiKey!,
+            googleApiKey: first.googleApiKey!,
+            openaiModel: first.openaiReviewerModel,
+            geminiModel: first.geminiReviewerModel,
+            mastraDbPath: sharedPaths.mastraDbPath,
+          });
     const notifier = new TelegramNotifier({
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
     });
+
+    console.log(
+      first.authMode === "subscription"
+        ? `[archangel] Auth mode: subscription (impl=${first.implementerChain.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
+        : "[archangel] Auth mode: api (metered keys)",
+    );
 
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -140,12 +157,18 @@ program
         localGateSkipTests: true,
       });
       const pemPath = process.env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH?.trim();
-      const implementer = new ClaudeSdkImplementer({
-        apiKey: first.anthropicApiKey!,
-        model: cfg.claudeModel,
-        transcriptsDir: paths.transcriptsDir,
-        denyReadPaths: [paths.dataDir, ...(pemPath ? [pemPath] : [])],
-      });
+      const implementer =
+        cfg.authMode === "subscription"
+          ? new SubscriptionImplementer({
+              chain: cfg.implementerChain,
+              transcriptsDir: paths.transcriptsDir,
+            })
+          : new ClaudeSdkImplementer({
+              apiKey: first.anthropicApiKey!,
+              model: cfg.claudeModel,
+              transcriptsDir: paths.transcriptsDir,
+              denyReadPaths: [paths.dataDir, ...(pemPath ? [pemPath] : [])],
+            });
       const rec = new Reconciler({
         config: cfg,
         ledger: rootLedger.forRepo(repoSlug),

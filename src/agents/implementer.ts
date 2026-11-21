@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import type { ReviewerVendor } from "../ledger/schema.js";
+
 export interface ImplementInput {
   issueNumber: number;
   cloneDir: string;
@@ -18,6 +20,7 @@ export interface ImplementResult {
   costUsd: number;
   transcriptPath: string | null;
   aborted: boolean;
+  providersUsed?: ReviewerVendor[];
 }
 
 export interface Implementer {

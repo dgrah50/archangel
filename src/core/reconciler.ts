@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mergeLandingJson, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { mergeLandingJson, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -9,7 +9,7 @@ import {
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
-import type { MergeRecord, ReviewFinding, ThreadRecord } from "../ledger/schema.js";
+import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import type { Notifier } from "./notifier.js";
@@ -72,6 +72,7 @@ export class Reconciler {
 
   private isTicking = false;
   private readonly runningTasks = new Map<number, RunningTask>();
+  private readonly shaImplementerVendors = new Map<string, ReviewerVendor[]>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   private effectiveGate: GatePolicy;
   private effectiveRequiredChecks: string[];
@@ -854,6 +855,9 @@ export class Reconciler {
       const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
       await this.broker.pushFactoryBranch(workingThread.branchName, validation.headSha, freshRemoteUrl);
       this.ledger.recordPushedSha(validation.headSha, workingThread.issueNumber, "broker");
+      if (result.providersUsed && result.providersUsed.length > 0) {
+        this.shaImplementerVendors.set(validation.headSha, result.providersUsed);
+      }
 
       const pr = await this.github.createPr({
         title: `fix(#${issue.number}): ${issue.title}`,
@@ -1013,10 +1017,12 @@ export class Reconciler {
     if (thread.phase.kind !== "reviewing") return;
     const headSha = thread.phase.headSha;
     const existing = this.ledger.getReviewsForSha(thread.issueNumber, headSha);
-    const haveOpenAi = existing.some((r) => r.vendor === "openai");
-    const haveGemini = existing.some((r) => r.vendor === "gemini");
+    const excludeVendors = this.shaImplementerVendors.get(headSha) ?? [];
+    const requiredVendors = resolveRequiredReviewers(this.cfg, excludeVendors);
+    const haveVendors = new Set(existing.map((r) => r.vendor));
+    const missingVendors = requiredVendors.filter((v) => !haveVendors.has(v));
 
-    if (!haveOpenAi || !haveGemini) {
+    if (missingVendors.length > 0) {
       // Reserve daily budget BEFORE paid reviewer calls (Codex #10).
       const reservedUsd = this.ledger.reserveBudget(
         this.cfg.maxDailyUsd,
@@ -1054,10 +1060,8 @@ export class Reconciler {
           diffText,
           touchedFiles,
           reviewRubric: this.effectiveReviewRubric,
-          skipVendors: [
-            ...(haveOpenAi ? (["openai"] as const) : []),
-            ...(haveGemini ? (["gemini"] as const) : []),
-          ],
+          skipVendors: [...haveVendors],
+          excludeVendors,
         });
 
         // Persist EVERY settled vendor result immediately even if the other vendor failed (Opus L4/M5!).
@@ -1221,7 +1225,10 @@ export class Reconciler {
       requiredChecks: this.effectiveRequiredChecks,
       checks,
       reviewsForHeadSha: reviews,
-      requiredReviewers: ["openai", "gemini"],
+      requiredReviewers: resolveRequiredReviewers(
+        this.cfg,
+        this.shaImplementerVendors.get(pr.headSha) ?? [],
+      ),
       mergeTreeClean,
       autoMergesToday: this.ledger.getAutoMergeCountToday(now),
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
