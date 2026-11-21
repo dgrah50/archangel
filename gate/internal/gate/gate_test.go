@@ -1,0 +1,407 @@
+package gate
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestIsProtectedPath(t *testing.T) {
+	protected := []string{
+		".github/workflows/ci.yml",
+		"go.mod",
+		"go.sum",
+		"go.work",
+		"scripts/release.sh",
+		"vendor/foo/bar.go",
+		".agents/setup",
+		"LICENSE",
+		"LICENSE.md",
+		"CLAUDE.md",
+		"AGENTS.md",
+		"Makefile",
+		".gitattributes",
+		".gitmodules",
+		".goreleaser.yaml",
+		".golangci.yml",
+	}
+	for _, p := range protected {
+		if !IsProtectedPath(p) {
+			t.Errorf("expected %q to be protected", p)
+		}
+	}
+
+	allowed := []string{
+		"main.go",
+		"internal/autocomplete/parser.go",
+		"internal/autocomplete/parser_test.go",
+		"testdata/simple.json",
+		"README.md",
+	}
+	for _, p := range allowed {
+		if IsProtectedPath(p) {
+			t.Errorf("expected %q to NOT be protected", p)
+		}
+	}
+}
+
+func TestCheckDiffPolicyBounds(t *testing.T) {
+	p := DefaultPolicy()
+
+	// 140 non-test + 120 test = 260 total (within 150 non-test / 300 total)
+	ok := []FileStat{
+		{Path: "pkg/a.go", Added: 100, Deleted: 40, Status: "M"},
+		{Path: "pkg/a_test.go", Added: 120, Deleted: 0, Status: "A"},
+	}
+	if v := CheckDiffPolicy(ok, p); len(v) != 0 {
+		t.Fatalf("expected valid diff, got violations: %v", v)
+	}
+
+	// 151 non-test lines -> fail
+	tooManyProd := []FileStat{
+		{Path: "pkg/a.go", Added: 151, Deleted: 0, Status: "M"},
+	}
+	if v := CheckDiffPolicy(tooManyProd, p); len(v) == 0 {
+		t.Fatalf("expected violation for >150 non-test lines")
+	}
+
+	// 6 files -> fail
+	tooManyFiles := make([]FileStat, 6)
+	for i := range tooManyFiles {
+		tooManyFiles[i] = FileStat{Path: formatf("f%d.go", i), Added: 1, Status: "M"}
+	}
+	if v := CheckDiffPolicy(tooManyFiles, p); len(v) == 0 {
+		t.Fatalf("expected violation for >5 files")
+	}
+}
+
+func TestEndToEndGateScenarios(t *testing.T) {
+	fastPolicy := Policy{
+		MaxNonTestLines: 150,
+		MaxTotalLines:   300,
+		MaxFiles:        5,
+		BaseRuns:        3,
+		HeadNewRuns:     3,
+		HeadFullRuns:    2,
+	}
+
+	t.Run("valid bug fix passes", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		// Fix Add(a, b) and add a new test function without editing existing test.
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+`)
+		writeRepoFile(t, repo, "calc/issue1_test.go", `package calc
+
+import "testing"
+
+func TestIssue1NegativeAdd(t *testing.T) {
+	if got := Add(2, -5); got != -3 {
+		t.Fatalf("got %d, want -3", got)
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "fix Add bug with repro test")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if !rep.Passed {
+			t.Fatalf("expected Gate PASS, got violations: %v", rep.Violations)
+		}
+		if len(rep.ReproTests) != 1 || rep.ReproTests[0] != "calc::TestIssue1NegativeAdd" {
+			t.Fatalf("unexpected repro tests: %v", rep.ReproTests)
+		}
+	})
+
+	t.Run("compile failure on base does NOT count as red repro", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+func BrandNewHelper(x int) int { return x * 2 }
+`)
+		writeRepoFile(t, repo, "calc/fake_test.go", `package calc
+
+import "testing"
+
+func TestIssue2NewSymbol(t *testing.T) {
+	if BrandNewHelper(3) != 6 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "test calls new symbol")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on compile failure on base")
+		}
+		assertContainsViolation(t, rep.Violations, "base build failed")
+	})
+
+	t.Run("TestMain bypass is rejected by AST check", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/bypass_test.go", `package calc
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) { os.Exit(0) }
+func TestIssue3Dummy(t *testing.T) { t.Fatal("never runs") }
+`)
+		head := gitCommitAll(t, repo, "attempt TestMain bypass")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on TestMain")
+		}
+		assertContainsViolation(t, rep.Violations, "banned TestMain")
+	})
+
+	t.Run("t.Skip and init() and build tags are rejected", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/sneaky_test.go", `//go:build linux
+
+package calc
+
+import "testing"
+
+func init() {}
+
+func TestIssue4Skip(t *testing.T) {
+	t.Skip("skipping")
+}
+`)
+		head := gitCommitAll(t, repo, "sneaky test file")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on banned constructs")
+		}
+		assertContainsViolation(t, rep.Violations, "banned build constraint")
+		assertContainsViolation(t, rep.Violations, "banned init()")
+		assertContainsViolation(t, rep.Violations, "banned Skip()")
+	})
+
+	t.Run("modifying existing test is rejected", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+`)
+		writeRepoFile(t, repo, "calc/calc_test.go", `package calc
+
+import "testing"
+
+func TestAddPositive(t *testing.T) {
+	// modified existing test!
+	if Add(1, 2) != 3 {
+		t.Fatal("bad")
+	}
+}
+
+func TestIssue5New(t *testing.T) {
+	if Add(2, -5) != -3 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "modify existing test")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on modified existing test")
+		}
+		assertContainsViolation(t, rep.Violations, "existing test modified")
+	})
+
+	t.Run("go:generate addition is rejected", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+//go:generate echo pwned
+func Add(a, b int) int { return a + b }
+`)
+		writeRepoFile(t, repo, "calc/issue6_test.go", `package calc
+
+import "testing"
+
+func TestIssue6(t *testing.T) {
+	if Add(2, -5) != -3 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "add go:generate")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on //go:generate")
+		}
+		assertContainsViolation(t, rep.Violations, "banned //go:generate")
+	})
+
+	t.Run("already fixed bug flags AlreadyFixed", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		writeRepoFile(t, repo, "calc/issue7_test.go", `package calc
+
+import "testing"
+
+func TestAlreadyPassing(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "test already passes on base")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed || !rep.AlreadyFixed {
+			t.Fatalf("expected Passed=false AlreadyFixed=true, got %+v", rep)
+		}
+	})
+
+	t.Run("exact-inverse revert exemption passes", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		// Simulate a factory squash commit on main.
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+`)
+		factorySquash := gitCommitAll(t, repo, "factory squash commit")
+
+		// Now revert that exact commit on a branch.
+		runCmd(t, repo, "git", "revert", "--no-edit", factorySquash)
+		revertHead := gitHead(t, repo)
+
+		rep, err := Run(Options{
+			RepoDir:  repo,
+			BaseRef:  factorySquash,
+			HeadRef:  revertHead,
+			RevertOf: factorySquash,
+			Policy:   fastPolicy,
+		})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if !rep.Passed || !rep.RevertExempt {
+			t.Fatalf("expected exact-inverse revert to pass, got %+v", rep)
+		}
+	})
+}
+
+func initBuggyGoRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runCmd(t, dir, "git", "init", "-b", "main")
+	runCmd(t, dir, "git", "config", "user.email", "test@example.com")
+	runCmd(t, dir, "git", "config", "user.name", "Test")
+
+	writeRepoFile(t, dir, "go.mod", "module example.com/sample\n\ngo 1.26.0\n")
+	// Bug: returns a - b when b < 0 (abs bug).
+	writeRepoFile(t, dir, "calc/calc.go", `package calc
+
+func Add(a, b int) int {
+	if b < 0 {
+		return a - b
+	}
+	return a + b
+}
+`)
+	writeRepoFile(t, dir, "calc/calc_test.go", `package calc
+
+import "testing"
+
+func TestAddPositive(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("bad")
+	}
+}
+`)
+	gitCommitAll(t, dir, "initial")
+	return dir
+}
+
+func writeRepoFile(t *testing.T, repo, rel, content string) {
+	t.Helper()
+	full := filepath.Join(repo, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitCommitAll(t *testing.T, repo, msg string) string {
+	t.Helper()
+	runCmd(t, repo, "git", "add", "-A")
+	runCmd(t, repo, "git", "commit", "-m", msg)
+	return gitHead(t, repo)
+}
+
+func gitHead(t *testing.T, repo string) string {
+	t.Helper()
+	out := runCmd(t, repo, "git", "rev-parse", "HEAD")
+	return strings.TrimSpace(out)
+}
+
+func runCmd(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+	return string(out)
+}
+
+func assertContainsViolation(t *testing.T, violations []string, needle string) {
+	t.Helper()
+	for _, v := range violations {
+		if strings.Contains(v, needle) {
+			return
+		}
+	}
+	t.Fatalf("expected violation containing %q, got: %v", needle, violations)
+}

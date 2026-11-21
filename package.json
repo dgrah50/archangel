@@ -1,0 +1,37 @@
+{
+  "name": "archangel",
+  "version": "0.1.0",
+  "description": "Autonomous software factory with mechanical merge gates, independent cross-vendor review, and Paseo handoff",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "archangel": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:gate": "cd gate && go test -race -count=1 ./...",
+    "test:all": "npm run typecheck && npm test && npm run test:gate",
+    "dev": "tsx src/cli/index.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^4.0.124",
+    "@ai-sdk/openai": "^4.0.122",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.330",
+    "@getpaseo/client": "^0.16.2",
+    "@mastra/core": "^1.85.0",
+    "@mastra/libsql": "^1.31.1",
+    "better-sqlite3": "^13.2.0",
+    "commander": "^15.1.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.1"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.archangel/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+coverage/
+.DS_Store
+gate/archangel-gate

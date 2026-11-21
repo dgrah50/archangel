@@ -1,0 +1,41 @@
+name: Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    # Ignore fork PRs and non-factory branches (human PRs stay unaffected unless required;
+    # for human PRs on protected main, adjust branch filter or add pass-through step).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'factory/')
+
+    steps:
+      - name: Checkout PR merge ref with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Archangel Mechanical Gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Install/run pinned archangel-gate binary from trusted source or vendored tool.
+          # During local pilot testing, copy gate/ or install from your pinned archangel commit.
+          archangel-gate \
+            --repo . \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"

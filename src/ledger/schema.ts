@@ -1,0 +1,203 @@
+export type ThreadState =
+  | "queued"
+  | "implementing"
+  | "awaiting_gate"
+  | "reviewing"
+  | "revising"
+  | "rebasing"
+  | "ready_to_land"
+  | "shadow_ready"
+  | "merged"
+  | "paused"
+  | "needs_you"
+  | "stopped"
+  | "failed";
+
+export type AttemptKind = "implement" | "revise" | "rebase";
+
+export type ReviewerVendor = "openai" | "gemini";
+
+export type ReviewVerdict = "approve" | "veto";
+
+export interface ReviewFinding {
+  file: string;
+  line?: number;
+  severity: "blocker" | "major" | "minor";
+  summary: string;
+  suggestion?: string;
+}
+
+export interface ThreadRecord {
+  issueNumber: number;
+  repo: string;
+  title: string;
+  themeLabel: string | null;
+  bodySha256: string;
+  state: ThreadState;
+  branchName: string;
+  prNumber: number | null;
+  headSha: string | null;
+  postHandoff: boolean;
+  paseoWorkspaceId: string | null;
+  paseoAgentId: string | null;
+  implementCount: number;
+  revisionCount: number;
+  rebaseCount: number;
+  gateRerunCount: number;
+  gateWaitStartedAt: number | null;
+  reviewOutageStartedAt: number | null;
+  needsYouReason: string | null;
+  leaseOwner: string | null;
+  leaseHeartbeatAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AttemptRecord {
+  id: number;
+  issueNumber: number;
+  kind: AttemptKind;
+  status: "running" | "succeeded" | "failed" | "aborted";
+  headSha: string | null;
+  costUsd: number;
+  transcriptPath: string | null;
+  errorMessage: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface ReviewRecord {
+  id: number;
+  issueNumber: number;
+  headSha: string;
+  vendor: ReviewerVendor;
+  verdict: ReviewVerdict;
+  findingsJson: string;
+  costUsd: number;
+  createdAt: number;
+}
+
+export interface MergeRecord {
+  id: number;
+  issueNumber: number;
+  prNumber: number;
+  headSha: string;
+  squashSha: string | null;
+  shadowOnly: boolean;
+  disagreed: boolean;
+  dayKey: string;
+  mainStatus: "pending" | "green" | "rerun_once" | "red_reverted" | "red_escalated";
+  revertPrNumber: number | null;
+  createdAt: number;
+}
+
+export interface AuditLogEntry {
+  id: number;
+  ts: number;
+  topic: string;
+  issueNumber: number | null;
+  actor: string;
+  payloadJson: string;
+}
+
+export const LEDGER_SCHEMA_SQL = `
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS threads (
+  issue_number INTEGER PRIMARY KEY,
+  repo TEXT NOT NULL,
+  title TEXT NOT NULL,
+  theme_label TEXT,
+  body_sha256 TEXT NOT NULL,
+  state TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  pr_number INTEGER,
+  head_sha TEXT,
+  post_handoff INTEGER NOT NULL DEFAULT 0,
+  paseo_workspace_id TEXT,
+  paseo_agent_id TEXT,
+  implement_count INTEGER NOT NULL DEFAULT 0,
+  revision_count INTEGER NOT NULL DEFAULT 0,
+  rebase_count INTEGER NOT NULL DEFAULT 0,
+  gate_rerun_count INTEGER NOT NULL DEFAULT 0,
+  gate_wait_started_at INTEGER,
+  review_outage_started_at INTEGER,
+  needs_you_reason TEXT,
+  lease_owner TEXT,
+  lease_heartbeat_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  head_sha TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  transcript_path TEXT,
+  error_message TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS pushed_shas (
+  sha TEXT PRIMARY KEY,
+  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  origin TEXT NOT NULL, -- 'broker' | 'owner_resume'
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  head_sha TEXT NOT NULL,
+  vendor TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  findings_json TEXT NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  UNIQUE(issue_number, head_sha, vendor)
+);
+
+CREATE TABLE IF NOT EXISTS merges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  pr_number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  squash_sha TEXT,
+  shadow_only INTEGER NOT NULL DEFAULT 0,
+  disagreed INTEGER NOT NULL DEFAULT 0,
+  day_key TEXT NOT NULL,
+  main_status TEXT NOT NULL DEFAULT 'pending',
+  revert_pr_number INTEGER,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daily_spend (
+  day_key TEXT PRIMARY KEY,
+  usd REAL NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  topic TEXT NOT NULL,
+  issue_number INTEGER,
+  actor TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_topic_ts ON audit_log(topic, ts);
+CREATE INDEX IF NOT EXISTS idx_audit_log_issue ON audit_log(issue_number, ts);
+
+CREATE TABLE IF NOT EXISTS system_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
