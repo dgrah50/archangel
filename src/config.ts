@@ -18,20 +18,22 @@ export const GatePolicySchema = z.object({
 
 export type GatePolicy = z.infer<typeof GatePolicySchema>;
 
-export const LandingJsonSchema = z.object({
-  maxNonTestLines: z.number().int().min(1).optional(),
-  maxTotalLines: z.number().int().min(1).optional(),
-  maxFiles: z.number().int().min(1).optional(),
-  extraProtectedPaths: z.array(z.string().min(1)).optional(),
-  testFileGlobs: z.array(z.string().min(1)).optional(),
-  testDataGlobs: z.array(z.string().min(1)).optional(),
-  testBuildCmd: z.string().min(1).optional(),
-  testCmd: z.string().min(1).optional(),
-  baseTestRuns: z.number().int().min(1).optional(),
-  headTestRuns: z.number().int().min(1).optional(),
-  requiredChecks: z.array(z.string().min(1)).optional(),
-  reviewRubric: z.string().optional(),
-});
+export const LandingJsonSchema = z
+  .object({
+    maxNonTestLines: z.number().int().min(1).optional(),
+    maxTotalLines: z.number().int().min(1).optional(),
+    maxFiles: z.number().int().min(1).optional(),
+    extraProtectedPaths: z.array(z.string().min(1)).optional(),
+    testFileGlobs: z.array(z.string().min(1)).optional(),
+    testDataGlobs: z.array(z.string().min(1)).optional(),
+    testBuildCmd: z.string().min(1).optional(),
+    testCmd: z.string().min(1).optional(),
+    baseTestRuns: z.number().int().min(1).optional(),
+    headTestRuns: z.number().int().min(1).optional(),
+    requiredChecks: z.array(z.string().min(1)).optional(),
+    reviewRubric: z.string().optional(),
+  })
+  .strict();
 
 export type LandingJson = z.infer<typeof LandingJsonSchema>;
 

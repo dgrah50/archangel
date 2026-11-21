@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,19 @@ const UNIVERSAL_PROTECTED_EXACT = new Set([
   ".gitmodules",
   "claude.md",
   "agents.md",
+]);
+
+const SUPPORTED_LOCAL_HOOK_KEYS = new Set([
+  "id",
+  "name",
+  "entry",
+  "language",
+  "files",
+  "exclude",
+  "pass_filenames",
+  "always_run",
+  "stages",
+  "description",
 ]);
 
 export function globToRegExp(pattern: string): RegExp {
@@ -97,14 +111,15 @@ export function isTestFile(relPath: string, policy: Pick<GatePolicy, "testFileGl
   return policy.testFileGlobs.length > 0 && matchesAnyGlob(relPath, policy.testFileGlobs);
 }
 
+export function isTestDataFile(relPath: string, policy: Pick<GatePolicy, "testDataGlobs">): boolean {
+  return policy.testDataGlobs.length > 0 && matchesAnyGlob(relPath, policy.testDataGlobs);
+}
+
 export function isTestOrFixtureFile(
   relPath: string,
   policy: Pick<GatePolicy, "testFileGlobs" | "testDataGlobs">,
 ): boolean {
-  return (
-    isTestFile(relPath, policy) ||
-    (policy.testDataGlobs.length > 0 && matchesAnyGlob(relPath, policy.testDataGlobs))
-  );
+  return isTestFile(relPath, policy) || isTestDataFile(relPath, policy);
 }
 
 export interface GateFileStat {
@@ -149,7 +164,9 @@ interface PreCommitHook {
   files?: string;
   exclude?: string;
   pass_filenames?: boolean;
+  always_run?: boolean;
   stages?: string[];
+  [key: string]: unknown;
 }
 
 interface PreCommitRepo {
@@ -160,48 +177,73 @@ interface PreCommitRepo {
 
 interface PreCommitConfig {
   repos?: PreCommitRepo[];
+  files?: string;
+  exclude?: string;
+  [key: string]: unknown;
 }
 
-function scrubbedEnv(): NodeJS.ProcessEnv {
-  const goCacheDir = path.join(os.tmpdir(), "archangel-go-build-cache");
-  fs.mkdirSync(goCacheDir, { recursive: true });
+function makeIsolatedEnv(runTempDir: string): NodeJS.ProcessEnv {
+  const fakeHome = path.join(runTempDir, "home");
+  const freshGoCache = path.join(runTempDir, "gocache");
+  fs.mkdirSync(fakeHome, { recursive: true });
+  fs.mkdirSync(freshGoCache, { recursive: true });
+
+  const realHome = os.homedir();
+  const defaultGoModCache = process.env.GOMODCACHE ?? path.join(realHome, "go", "pkg", "mod");
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
-    HOME: process.env.HOME ?? "/tmp",
-    TMPDIR: process.env.TMPDIR ?? "/tmp",
+    HOME: fakeHome,
+    TMPDIR: runTempDir,
     LANG: process.env.LANG ?? "en_US.UTF-8",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
-    GOCACHE: goCacheDir,
-    ...(process.env.GOMODCACHE ? { GOMODCACHE: process.env.GOMODCACHE } : {}),
+    GOCACHE: freshGoCache,
+    ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
   };
 }
 
-async function runGit(repoDir: string, args: string[]): Promise<string> {
+async function runGit(repoDir: string, args: string[], env: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
     cwd: repoDir,
-    env: scrubbedEnv(),
+    env,
     maxBuffer: 25 * 1024 * 1024,
   });
   return stdout;
 }
 
-async function readGitFile(repoDir: string, ref: string, relPath: string): Promise<string | null> {
+async function gitObjectExists(repoDir: string, spec: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   try {
-    return await runGit(repoDir, ["show", `${ref}:${relPath}`]);
+    await runGit(repoDir, ["cat-file", "-e", spec], env);
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
-async function readGitFileBuffer(repoDir: string, ref: string, relPath: string): Promise<Buffer> {
+async function readGitFileStrict(
+  repoDir: string,
+  ref: string,
+  relPath: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  const exists = await gitObjectExists(repoDir, `${ref}:${relPath}`, env);
+  if (!exists) return null;
+  return runGit(repoDir, ["show", `${ref}:${relPath}`], env);
+}
+
+async function readGitFileBuffer(
+  repoDir: string,
+  ref: string,
+  relPath: string,
+  env: NodeJS.ProcessEnv,
+): Promise<Buffer> {
   const { stdout } = await execFileAsync(
     "git",
     [...HARDENED_GIT_FLAGS, "show", `${ref}:${relPath}`],
     {
       cwd: repoDir,
-      env: scrubbedEnv(),
+      env,
       encoding: "buffer",
       maxBuffer: 25 * 1024 * 1024,
     },
@@ -209,29 +251,29 @@ async function readGitFileBuffer(repoDir: string, ref: string, relPath: string):
   return stdout;
 }
 
-async function isAncestor(repoDir: string, ancestor: string, descendant: string): Promise<boolean> {
-  try {
-    await runGit(repoDir, ["merge-base", "--is-ancestor", ancestor, descendant]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function extractCommitTree(repoDir: string, sha: string, destDir: string): Promise<void> {
+async function extractCommitTree(
+  repoDir: string,
+  sha: string,
+  destDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
   fs.mkdirSync(destDir, { recursive: true });
-  // Use `git archive` + `tar` so extraction works cleanly on BOTH bare and normal repos with zero hooks.
   await execFileAsync(
     "/bin/sh",
     ["-eu", "-c", 'git -C "$1" archive "$2" | tar -x -C "$3"', "--", repoDir, sha, destDir],
-    { env: scrubbedEnv(), maxBuffer: 25 * 1024 * 1024 },
+    { env, maxBuffer: 25 * 1024 * 1024 },
   );
 }
 
-async function getDiffStats(repoDir: string, baseSha: string, headSha: string): Promise<GateFileStat[]> {
+export async function getDiffStats(
+  repoDir: string,
+  baseSha: string,
+  headSha: string,
+  env: NodeJS.ProcessEnv,
+): Promise<GateFileStat[]> {
   const [numstatRaw, statusRaw] = await Promise.all([
-    runGit(repoDir, ["diff", "--numstat", "--no-renames", "-z", baseSha, headSha]),
-    runGit(repoDir, ["diff", "--name-status", "--no-renames", "-z", baseSha, headSha]),
+    runGit(repoDir, ["diff", "--numstat", "--no-renames", "-z", baseSha, headSha], env),
+    runGit(repoDir, ["diff", "--name-status", "--no-renames", "-z", baseSha, headSha], env),
   ]);
 
   const statusMap = new Map<string, string>();
@@ -265,11 +307,12 @@ async function runShellCmd(
   cwd: string,
   cmd: string,
   timeoutMs: number,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; output: string }> {
   try {
     const { stdout, stderr } = await execFileAsync("/bin/sh", ["-eu", "-c", cmd], {
       cwd,
-      env: scrubbedEnv(),
+      env,
       timeout: timeoutMs,
       maxBuffer: 20 * 1024 * 1024,
     });
@@ -286,14 +329,15 @@ async function runLocalPreCommitHook(
   hook: PreCommitHook,
   files: string[],
   timeoutMs: number,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; output: string }> {
-  const passFilenames = hook.pass_filenames !== false;
+  const passFilenames = hook.pass_filenames !== false && files.length > 0;
   try {
     const cmd = passFilenames ? `${hook.entry} "$@"` : hook.entry;
     const args = passFilenames ? ["-eu", "-c", cmd, "--", ...files] : ["-eu", "-c", cmd];
     const { stdout, stderr } = await execFileAsync("/bin/sh", args, {
       cwd,
-      env: scrubbedEnv(),
+      env,
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -305,12 +349,18 @@ async function runLocalPreCommitHook(
   }
 }
 
+function hashFileIfExists(fullPath: string): string | null {
+  if (!fs.existsSync(fullPath)) return null;
+  return crypto.createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
+}
+
 async function runRepoPreCommit(
   worktreeDir: string,
   configRaw: string,
   configFilename: string,
   changedFiles: string[],
   timeoutMs: number,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ hooksRun: string[]; violations: string[] }> {
   const hooksRun: string[] = [];
   const violations: string[] = [];
@@ -329,24 +379,56 @@ async function runRepoPreCommit(
   const remoteRepos = repos.filter((r) => r.repo !== "local" && r.repo !== "meta");
   const localRepos = repos.filter((r) => r.repo === "local");
 
-  // 1. Run `repo: local` hooks directly (works with zero Python/pre-commit install!).
+  // Fail closed on top-level files/exclude filters if running natively without pre-commit CLI.
+  const topInclude = typeof parsed.files === "string" ? new RegExp(parsed.files) : null;
+  const topExclude = typeof parsed.exclude === "string" ? new RegExp(parsed.exclude) : null;
+
+  const beforeHashes = new Map<string, string | null>();
+  for (const rel of changedFiles) {
+    beforeHashes.set(rel, hashFileIfExists(path.join(worktreeDir, rel)));
+  }
+
+  // 1. Strictly run `repo: local` + `language: system` hooks natively; fail closed on unsupported keys/languages.
   for (const repo of localRepos) {
     for (const hook of repo.hooks ?? []) {
-      const stages = hook.stages ?? [];
-      if (stages.length > 0 && !stages.includes("pre-commit") && !stages.includes("commit") && !stages.includes("pre-merge-commit")) {
+      const lang = hook.language ?? "system";
+      if (lang !== "system") {
+        violations.push(
+          `pre-commit hook '${hook.id}' uses unsupported local language '${lang}' (only 'system' is supported natively; use pre-commit CLI or language: system)`,
+        );
         continue;
       }
+      const unsupportedKeys = Object.keys(hook).filter((k) => !SUPPORTED_LOCAL_HOOK_KEYS.has(k));
+      if (unsupportedKeys.length > 0) {
+        violations.push(
+          `pre-commit hook '${hook.id}' uses unsupported key(s) [${unsupportedKeys.join(", ")}] — failing closed instead of silently ignoring`,
+        );
+        continue;
+      }
+
+      const stages = hook.stages ?? [];
+      if (
+        stages.length > 0 &&
+        !stages.includes("pre-commit") &&
+        !stages.includes("commit") &&
+        !stages.includes("pre-merge-commit")
+      ) {
+        continue;
+      }
+
       const includeRe = hook.files ? new RegExp(hook.files) : null;
       const excludeRe = hook.exclude ? new RegExp(hook.exclude) : null;
       const matched = changedFiles.filter((f) => {
+        if (topInclude && !topInclude.test(f)) return false;
+        if (topExclude && topExclude.test(f)) return false;
         if (includeRe && !includeRe.test(f)) return false;
         if (excludeRe && excludeRe.test(f)) return false;
         return true;
       });
-      if (matched.length === 0) continue;
+      if (matched.length === 0 && !hook.always_run) continue;
 
       hooksRun.push(hook.id);
-      const res = await runLocalPreCommitHook(worktreeDir, hook, matched, timeoutMs);
+      const res = await runLocalPreCommitHook(worktreeDir, hook, matched, timeoutMs, env);
       if (!res.ok) {
         const snippet = res.output.split("\n").slice(0, 8).join(" | ");
         violations.push(`pre-commit hook '${hook.id}' failed: ${snippet}`);
@@ -354,18 +436,17 @@ async function runRepoPreCommit(
     }
   }
 
-  // 2. If the repo also declares external hook repos, delegate them to the official `pre-commit` CLI.
+  // 2. Delegate remote hook repos strictly to the official `pre-commit` CLI (fail closed if absent).
   if (remoteRepos.length > 0 && changedFiles.length > 0) {
     const remoteConfigPath = path.join(worktreeDir, ".archangel-remote-pre-commit.yaml");
     fs.writeFileSync(remoteConfigPath, JSON.stringify({ repos: remoteRepos }, null, 2), "utf8");
     try {
-      // pre-commit requires a git repo; initialize a minimal temporary repo around the extracted tree.
-      await execFileAsync("git", ["init", "-q"], { cwd: worktreeDir, env: scrubbedEnv() });
-      await execFileAsync("git", ["add", "-A"], { cwd: worktreeDir, env: scrubbedEnv() });
+      await execFileAsync("git", ["init", "-q"], { cwd: worktreeDir, env });
+      await execFileAsync("git", ["add", "-A"], { cwd: worktreeDir, env });
       await execFileAsync(
         "pre-commit",
         ["run", "--config", remoteConfigPath, "--files", ...changedFiles],
-        { cwd: worktreeDir, env: scrubbedEnv(), timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+        { cwd: worktreeDir, env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
       );
       for (const rr of remoteRepos) {
         for (const h of rr.hooks ?? []) hooksRun.push(h.id);
@@ -385,161 +466,184 @@ async function runRepoPreCommit(
     }
   }
 
+  // 3. Reject hooks that mutated the checked-out HEAD tree (e.g. `gofmt -w` hiding unformatted code).
+  for (const [rel, before] of beforeHashes.entries()) {
+    const after = hashFileIfExists(path.join(worktreeDir, rel));
+    if (after !== before) {
+      violations.push(`pre-commit hook mutated file '${rel}' — PR must already satisfy hooks cleanly`);
+    }
+  }
+
   return { hooksRun, violations };
 }
 
 /**
- * Language-agnostic Archangel Mechanical Gate (ADR-0003 revised):
- * - Enforces diff bounds, protected paths, and pre-existing test-file immutability.
- * - Executes repo-owned `.pre-commit-config.yaml` read strictly from `base`.
- * - Verifies repo-owned `testBuildCmd` (pass) + `testCmd` (fail N×) on `base` with new tests overlaid,
- *   and `testCmd` (pass M×) on `HEAD`.
+ * Language-agnostic Archangel Mechanical Gate (ADR-0003 + Opus review hardening):
+ * - Throwaway per-run HOME and fresh per-run GOCACHE (no shared cache poisoning / real HOME exposure).
+ * - Fail-closed under `--policy-from-base`: requires strict `.agents/landing.json`, non-empty `testFileGlobs`,
+ *   non-empty `testCmd` (unless `skipTests`), and `.pre-commit-config.yaml` (unless `skipPreCommit`).
+ * - Enforces diff bounds, protected paths, and pre-existing test-file AND test-fixture immutability.
+ * - Executes repo-owned `.pre-commit-config.yaml` strictly from `base` (fail-closed on unsupported keys or file mutation).
+ * - Verifies pristine `base` is green -> overlaid `base` compiles (`testBuildCmd`) and fails `testCmd` N× -> `HEAD` passes `testCmd` M×.
  */
 export async function runGate(opts: GateRunOptions): Promise<GateReport> {
   const timeoutMs = opts.commandTimeoutMs ?? 5 * 60_000;
-  const baseSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.baseRef}^{commit}`])).trim();
-  const headSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.headRef}^{commit}`])).trim();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-gate-"));
+  const env = makeIsolatedEnv(tmpRoot);
 
-  let policy = GatePolicySchema.parse(opts.policy ?? {});
-  if (opts.policyFromBase) {
-    const landingRaw = await readGitFile(opts.repoDir, baseSha, ".agents/landing.json");
-    if (landingRaw) {
-      // Validate strict JSON schema before tightening-only merge.
+  try {
+    const baseSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.baseRef}^{commit}`], env)).trim();
+    const headSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.headRef}^{commit}`], env)).trim();
+
+    const stats = await getDiffStats(opts.repoDir, baseSha, headSha, env);
+    const report: GateReport = {
+      passed: false,
+      base_sha: baseSha,
+      head_sha: headSha,
+      revert_exempt: false,
+      already_fixed: false,
+      new_test_files: [],
+      hooks_run: [],
+      violations: [],
+      file_stats: stats,
+    };
+
+    let policy = GatePolicySchema.parse(opts.policy ?? {});
+    if (opts.policyFromBase) {
+      const landingRaw = await readGitFileStrict(opts.repoDir, baseSha, ".agents/landing.json", env);
+      if (!landingRaw) {
+        report.violations.push("missing .agents/landing.json on base commit (failing closed)");
+        return report;
+      }
+      // Strict schema validation: typos like "testCommand" fail immediately instead of silently disabling tests.
       LandingJsonSchema.parse(JSON.parse(landingRaw));
       policy = mergeLandingJson(policy, [], undefined, landingRaw).gate;
+      if (policy.testFileGlobs.length === 0) {
+        report.violations.push(".agents/landing.json on base must declare non-empty testFileGlobs");
+      }
+      if (!opts.skipTests && !policy.testCmd) {
+        report.violations.push(".agents/landing.json on base must declare non-empty testCmd");
+      }
+      if (report.violations.length > 0) {
+        return report;
+      }
     }
-  }
 
-  const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;
-  const headRuns = opts.headRunsOverride ?? policy.headTestRuns;
-  const stats = await getDiffStats(opts.repoDir, baseSha, headSha);
+    const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;
+    const headRuns = opts.headRunsOverride ?? policy.headTestRuns;
 
-  const report: GateReport = {
-    passed: false,
-    base_sha: baseSha,
-    head_sha: headSha,
-    revert_exempt: false,
-    already_fixed: false,
-    new_test_files: [],
-    hooks_run: [],
-    violations: [],
-    file_stats: stats,
-  };
-
-  // 1. Exact-inverse revert exemption (with ancestry proof).
-  if (opts.revertOf) {
-    const revertSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.revertOf}^{commit}`])).trim();
-    const anc = await isAncestor(opts.repoDir, revertSha, baseSha);
-    if (!anc) {
-      report.violations.push(`revert target ${revertSha} is not an ancestor of base ${baseSha}`);
-      return report;
-    }
-    const parentTree = (await runGit(opts.repoDir, ["rev-parse", `${revertSha}^^{tree}`])).trim();
-    const headTree = (await runGit(opts.repoDir, ["rev-parse", `${headSha}^{tree}`])).trim();
-    if (parentTree !== headTree) {
-      report.violations.push("revert PR tree does not match exact inverse of reverted commit");
-      return report;
-    }
-    report.revert_exempt = true;
-    if (!opts.skipTests && policy.testCmd) {
-      const tmpHead = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-gate-rev-"));
-      try {
-        await extractCommitTree(opts.repoDir, headSha, tmpHead);
-        const res = await runShellCmd(tmpHead, policy.testCmd, timeoutMs);
+    // 1. Exact-inverse revert exemption (H5: require revert target === baseSha so later commits can never be silently dropped).
+    if (opts.revertOf) {
+      const revertSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.revertOf}^{commit}`], env)).trim();
+      if (revertSha !== baseSha) {
+        report.violations.push(
+          `revert target ${revertSha} must match base tip ${baseSha} (cannot silently roll back later commits)`,
+        );
+        return report;
+      }
+      const parentTree = (await runGit(opts.repoDir, ["rev-parse", `${revertSha}^^{tree}`], env)).trim();
+      const headTree = (await runGit(opts.repoDir, ["rev-parse", `${headSha}^{tree}`], env)).trim();
+      if (parentTree !== headTree) {
+        report.violations.push("revert PR tree does not match exact inverse of reverted commit");
+        return report;
+      }
+      report.revert_exempt = true;
+      if (!opts.skipTests && policy.testCmd) {
+        const revDir = path.join(tmpRoot, "revert-head");
+        await extractCommitTree(opts.repoDir, headSha, revDir, env);
+        const res = await runShellCmd(revDir, policy.testCmd, timeoutMs, env);
         if (!res.ok) {
           report.violations.push(`revert testCmd failed: ${res.output.split("\n").slice(0, 6).join(" | ")}`);
           return report;
         }
-      } finally {
-        fs.rmSync(tmpHead, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+      report.passed = true;
+      return report;
+    }
+
+    // 2. Diff budget, protected paths, and pre-existing test-file & test-fixture immutability.
+    if (stats.length === 0) {
+      report.violations.push("diff is empty");
+      return report;
+    }
+    if (stats.length > policy.maxFiles) {
+      report.violations.push(`changed files ${stats.length} exceeds limit ${policy.maxFiles}`);
+    }
+
+    let nonTestLines = 0;
+    let totalLines = 0;
+    const newTestFiles: string[] = [];
+    const overlayFiles: string[] = [];
+
+    for (const st of stats) {
+      if (isProtectedPath(st.path, policy.extraProtectedPaths)) {
+        report.violations.push(`protected path modified: ${st.path}`);
+      }
+      if (st.binary) {
+        report.violations.push(`binary file modified: ${st.path}`);
+      }
+      const lines = st.added + st.deleted;
+      totalLines += lines;
+      if (!isTestOrFixtureFile(st.path, policy)) {
+        nonTestLines += lines;
+      }
+      if (isTestFile(st.path, policy)) {
+        if (st.status !== "A") {
+          report.violations.push(
+            `existing test file modified/deleted (${st.status}): ${st.path}; add new reproduction tests in a new test file`,
+          );
+        } else {
+          newTestFiles.push(st.path);
+          overlayFiles.push(st.path);
+        }
+      } else if (isTestDataFile(st.path, policy)) {
+        if (st.status !== "A") {
+          report.violations.push(
+            `existing test fixture modified/deleted (${st.status}): ${st.path}; pre-existing fixtures are immutable`,
+          );
+        } else {
+          overlayFiles.push(st.path);
+        }
       }
     }
-    report.passed = true;
-    return report;
-  }
 
-  // 2. Diff budget, protected paths, and pre-existing test-file immutability.
-  if (stats.length === 0) {
-    report.violations.push("diff is empty");
-    return report;
-  }
-  if (stats.length > policy.maxFiles) {
-    report.violations.push(`changed files ${stats.length} exceeds limit ${policy.maxFiles}`);
-  }
+    report.new_test_files = newTestFiles;
 
-  let nonTestLines = 0;
-  let totalLines = 0;
-  const newTestFiles: string[] = [];
-  const overlayFiles: string[] = [];
-
-  for (const st of stats) {
-    if (isProtectedPath(st.path, policy.extraProtectedPaths)) {
-      report.violations.push(`protected path modified: ${st.path}`);
+    if (nonTestLines > policy.maxNonTestLines) {
+      report.violations.push(`non-test changed lines ${nonTestLines} exceeds limit ${policy.maxNonTestLines}`);
     }
-    if (st.binary) {
-      report.violations.push(`binary file modified: ${st.path}`);
+    if (totalLines > policy.maxTotalLines) {
+      report.violations.push(`total changed lines ${totalLines} exceeds limit ${policy.maxTotalLines}`);
     }
-    const lines = st.added + st.deleted;
-    totalLines += lines;
-    if (!isTestOrFixtureFile(st.path, policy)) {
-      nonTestLines += lines;
+    if (policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
+      report.violations.push(`no new test file added matching ${policy.testFileGlobs.join(", ")}`);
     }
-    if (isTestFile(st.path, policy)) {
-      if (st.status !== "A") {
-        report.violations.push(
-          `existing test file modified/deleted (${st.status}): ${st.path}; add new reproduction tests in a new test file`,
-        );
-      } else {
-        newTestFiles.push(st.path);
-        overlayFiles.push(st.path);
-      }
-    } else if (
-      policy.testDataGlobs.length > 0 &&
-      matchesAnyGlob(st.path, policy.testDataGlobs) &&
-      st.status !== "D"
-    ) {
-      overlayFiles.push(st.path);
+    if (report.violations.length > 0) {
+      return report;
     }
-  }
 
-  report.new_test_files = newTestFiles;
-
-  if (nonTestLines > policy.maxNonTestLines) {
-    report.violations.push(`non-test changed lines ${nonTestLines} exceeds limit ${policy.maxNonTestLines}`);
-  }
-  if (totalLines > policy.maxTotalLines) {
-    report.violations.push(`total changed lines ${totalLines} exceeds limit ${policy.maxTotalLines}`);
-  }
-  if (policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
-    report.violations.push(
-      `no new test file added matching ${policy.testFileGlobs.join(", ")}`,
-    );
-  }
-  if (report.violations.length > 0) {
-    return report;
-  }
-
-  // 3. Extract HEAD and run repo-owned `.pre-commit-config.yaml` strictly from `baseSha`.
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-gate-"));
-  const headDir = path.join(tmpRoot, "head");
-  const baseDir = path.join(tmpRoot, "base");
-
-  try {
-    await extractCommitTree(opts.repoDir, headSha, headDir);
+    // 3. Extract HEAD and run repo-owned `.pre-commit-config.yaml` strictly from `baseSha`.
+    const headDir = path.join(tmpRoot, "head");
+    const baseDir = path.join(tmpRoot, "base");
+    await extractCommitTree(opts.repoDir, headSha, headDir, env);
 
     if (!opts.skipPreCommit) {
-      const preCommitYaml =
-        (await readGitFile(opts.repoDir, baseSha, ".pre-commit-config.yaml")) ??
-        (await readGitFile(opts.repoDir, baseSha, ".pre-commit-config.yml"));
-      const preCommitName = (await readGitFile(opts.repoDir, baseSha, ".pre-commit-config.yaml"))
-        ? ".pre-commit-config.yaml"
-        : ".pre-commit-config.yml";
+      const yamlPrimary = await readGitFileStrict(opts.repoDir, baseSha, ".pre-commit-config.yaml", env);
+      const yamlAlt = yamlPrimary
+        ? null
+        : await readGitFileStrict(opts.repoDir, baseSha, ".pre-commit-config.yml", env);
+      const preCommitYaml = yamlPrimary ?? yamlAlt;
+      const preCommitName = yamlPrimary ? ".pre-commit-config.yaml" : ".pre-commit-config.yml";
 
-      if (preCommitYaml) {
-        // Always pin pre-commit config to baseSha inside headDir.
+      if (!preCommitYaml) {
+        if (opts.policyFromBase) {
+          report.violations.push("missing .pre-commit-config.yaml on base commit (failing closed)");
+          return report;
+        }
+      } else {
         fs.writeFileSync(path.join(headDir, preCommitName), preCommitYaml, "utf8");
         const nonDeleted = stats.filter((s) => s.status !== "D").map((s) => s.path);
-        const pc = await runRepoPreCommit(headDir, preCommitYaml, preCommitName, nonDeleted, timeoutMs);
+        const pc = await runRepoPreCommit(headDir, preCommitYaml, preCommitName, nonDeleted, timeoutMs, env);
         report.hooks_run = pc.hooksRun;
         report.violations.push(...pc.violations);
       }
@@ -549,20 +653,32 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       return report;
     }
 
-    // 4. Language-agnostic Red-on-base -> Green-on-HEAD verification.
+    // 4. Language-agnostic Pristine-Base-Green -> Overlaid-Base-Red -> Head-Green verification.
     if (!opts.skipTests && policy.testCmd) {
-      // 4a. Red-on-base: overlay new test files + test data onto baseSha.
-      await extractCommitTree(opts.repoDir, baseSha, baseDir);
+      await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
+
+      // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
+      const pristineRes = await runShellCmd(baseDir, policy.testCmd, timeoutMs, env);
+      if (!pristineRes.ok) {
+        report.violations.push(
+          `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
+            .split("\n")
+            .slice(0, 6)
+            .join(" | ")}`,
+        );
+        return report;
+      }
+
+      // 4b. Overlay newly added test files + fixtures onto baseDir.
       for (const rel of overlayFiles) {
         const dest = path.join(baseDir, rel);
         fs.mkdirSync(path.dirname(dest), { recursive: true });
-        const bytes = await readGitFileBuffer(opts.repoDir, headSha, rel);
+        const bytes = await readGitFileBuffer(opts.repoDir, headSha, rel, env);
         fs.writeFileSync(dest, bytes);
       }
 
-      // Compile check on base (if configured): proves the new test compiles against base APIs.
       if (policy.testBuildCmd) {
-        const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs);
+        const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, env);
         if (!buildRes.ok) {
           report.violations.push(
             `base build failed (new test must compile against base APIs): ${buildRes.output
@@ -575,7 +691,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       }
 
       for (let i = 1; i <= baseRuns; i++) {
-        const baseTestRes = await runShellCmd(baseDir, policy.testCmd, timeoutMs);
+        const baseTestRes = await runShellCmd(baseDir, policy.testCmd, timeoutMs, env);
         if (baseTestRes.ok) {
           report.already_fixed = true;
           report.violations.push(
@@ -585,9 +701,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         }
       }
 
-      // 4b. Green-on-HEAD: full testCmd must pass headRuns times uncached.
+      // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
-        const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs);
+        const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, env);
         if (!headTestRes.ok) {
           report.violations.push(
             `head testCmd failed (run ${i}/${headRuns}): ${headTestRes.output

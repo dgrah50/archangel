@@ -28,14 +28,17 @@ export interface ClaudeImplementerOptions {
   apiKey: string;
   model: string;
   transcriptsDir: string;
+  denyReadPaths?: string[];
 }
 
 /**
- * Direct `@anthropic-ai/claude-agent-sdk` implementer (ADR-0001 + ADR-0004):
+ * Direct `@anthropic-ai/claude-agent-sdk` implementer (ADR-0001 + ADR-0004 + H1 hardening):
+ * - Uses a per-attempt throwaway HOME + per-attempt GOCACHE inside TMPDIR.
  * - Scrubs ambient GitHub/SSH/AWS credentials from env.
  * - Disables repo/user settingSources so untrusted repo hooks/CLAUDE.md cannot execute.
- * - Enables Claude Code's built-in Seatbelt sandbox on macOS.
- * - Enforces AbortController + wall-clock timeout + maxTurns + maxBudgetUsd.
+ * - Enables strict Seatbelt sandbox (`allowUnsandboxedCommands: false`, `failIfUnavailable: true`,
+ *   `filesystem.denyRead` covering ~/.config/gh, ~/.ssh, ~/.aws, .env, PEM, and .archangel).
+ * - Disallows `WebFetch` and `WebSearch`.
  */
 export class ClaudeSdkImplementer implements Implementer {
   private readonly opts: ClaudeImplementerOptions;
@@ -51,21 +54,41 @@ export class ClaudeSdkImplementer implements Implementer {
       `issue-${input.issueNumber}-${Date.now()}.jsonl`,
     );
 
-    const goCacheDir = path.join(os.tmpdir(), "archangel-go-build-cache");
+    const attemptTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `archangel-impl-${input.issueNumber}-`));
+    const fakeHome = path.join(attemptTempRoot, "home");
+    const goCacheDir = path.join(attemptTempRoot, "gocache");
+    fs.mkdirSync(fakeHome, { recursive: true });
     fs.mkdirSync(goCacheDir, { recursive: true });
+
+    const realHome = os.homedir();
+    const defaultGoModCache = process.env.GOMODCACHE ?? path.join(realHome, "go", "pkg", "mod");
+    const denyRead = [
+      ...new Set(
+        [
+          path.join(realHome, ".config", "gh"),
+          path.join(realHome, ".config", "archangel"),
+          path.join(realHome, ".ssh"),
+          path.join(realHome, ".aws"),
+          path.join(realHome, ".netrc"),
+          path.resolve(".env"),
+          path.resolve(".env.local"),
+          path.resolve(".archangel"),
+          ...(this.opts.denyReadPaths ?? []).map((p) => path.resolve(p)),
+        ].filter(Boolean),
+      ),
+    ];
 
     const scrubbedEnv: Record<string, string | undefined> = {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
-      HOME: process.env.HOME ?? "/tmp",
-      TMPDIR: process.env.TMPDIR ?? "/tmp",
+      HOME: fakeHome,
+      TMPDIR: attemptTempRoot,
       LANG: process.env.LANG ?? "en_US.UTF-8",
       ANTHROPIC_API_KEY: this.opts.apiKey,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
-      // Redirect GOCACHE into writable TMPDIR if a target repo happens to be Go under macOS Seatbelt.
       GOCACHE: goCacheDir,
-      ...(process.env.GOMODCACHE ? { GOMODCACHE: process.env.GOMODCACHE } : {}),
+      ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
     };
 
     const timer = setTimeout(() => {
@@ -88,11 +111,17 @@ export class ClaudeSdkImplementer implements Implementer {
           maxBudgetUsd: input.maxBudgetUsd,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
+          disallowedTools: ["WebFetch", "WebSearch"],
           settingSources: [],
           persistSession: false,
           sandbox: {
             enabled: true,
+            failIfUnavailable: true,
             autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false,
+            filesystem: {
+              denyRead,
+            },
           },
         },
       });
@@ -126,6 +155,7 @@ export class ClaudeSdkImplementer implements Implementer {
     } finally {
       clearTimeout(timer);
       logStream.end();
+      fs.rmSync(attemptTempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }
 }

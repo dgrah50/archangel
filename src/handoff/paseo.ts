@@ -161,6 +161,8 @@ export async function handoffThreadToPaseo(
     }
     const finalCmd = deps.ledger.getCommand(cmdId);
     if (finalCmd?.status !== "completed") {
+      // Mark timed-out command failed so daemon never later parks the thread as owner_driving without Paseo!
+      deps.ledger.failCommand(cmdId, "Timed out waiting for daemon handoff abort");
       throw new Error("Timed out waiting for live Archangel daemon to complete handoff abort");
     }
     thread = deps.ledger.getThread(issueNumber)!;

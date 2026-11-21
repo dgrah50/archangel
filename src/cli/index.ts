@@ -136,11 +136,15 @@ program
         testBuildCmd: cfg.gate.testBuildCmd,
         testCmd: cfg.gate.testCmd,
         enableLocalGate: true,
+        // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
+        localGateSkipTests: true,
       });
+      const pemPath = process.env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH?.trim();
       const implementer = new ClaudeSdkImplementer({
         apiKey: first.anthropicApiKey!,
         model: cfg.claudeModel,
         transcriptsDir: paths.transcriptsDir,
+        denyReadPaths: [paths.dataDir, ...(pemPath ? [pemPath] : [])],
       });
       const rec = new Reconciler({
         config: cfg,

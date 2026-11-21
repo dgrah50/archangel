@@ -18,25 +18,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Classify PR (pass-through non-factory & fork PRs without checking out untrusted code)
+      - name: Classify PR (enforce Gate on factory/*, reject bot PRs on non-factory branches, pass-through human PRs)
         id: classify
         env:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
           if [ "$HEAD_REPO" = "$BASE_REPO" ] && [[ "$HEAD_REF" == factory/* ]]; then
             echo "is_factory=true" >> "$GITHUB_OUTPUT"
+          elif [ "$AUTHOR_TYPE" = "Bot" ] || [[ "$AUTHOR_LOGIN" == *"[bot]" ]]; then
+            echo "ERROR: Bot-authored PR ($AUTHOR_LOGIN) on non-factory branch ($HEAD_REPO:$HEAD_REF) is forbidden." >&2
+            exit 1
           else
-            echo "Non-factory or fork PR ($HEAD_REPO:$HEAD_REF) — mechanical Gate pass-through."
+            echo "Human non-factory or fork PR ($AUTHOR_LOGIN @ $HEAD_REPO:$HEAD_REF) — mechanical Gate pass-through."
             echo "is_factory=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout PR merge ref with full history
+      - name: Checkout PR merge ref with full history (no persisted credentials)
         if: steps.classify.outputs.is_factory == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js (for language-agnostic Archangel Gate CLI)
         if: steps.classify.outputs.is_factory == 'true'
@@ -51,7 +57,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build pinned Archangel Gate CLI
+      - name: Build pinned Archangel Gate CLI (scrubbing auth before PR tests run)
         if: steps.classify.outputs.is_factory == 'true'
         env:
           ARCHANGEL_READ_TOKEN: ${{ secrets.ARCHANGEL_READ_TOKEN }}
@@ -62,13 +68,16 @@ jobs:
           fi
           rm -rf "$RUNNER_TEMP/archangel-src"
           git init -q "$RUNNER_TEMP/archangel-src"
+          git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://github.com/${ARCHANGEL_REPO}.git"
           if [ -n "$ARCHANGEL_READ_TOKEN" ]; then
-            git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://x-access-token:${ARCHANGEL_READ_TOKEN}@github.com/${ARCHANGEL_REPO}.git"
+            AUTH_B64=$(printf 'x-access-token:%s' "$ARCHANGEL_READ_TOKEN" | base64 | tr -d '\n')
+            git -C "$RUNNER_TEMP/archangel-src" -c "http.extraHeader=Authorization: Basic ${AUTH_B64}" fetch --depth=1 origin "$ARCHANGEL_GATE_SHA"
           else
-            git -C "$RUNNER_TEMP/archangel-src" remote add origin "https://github.com/${ARCHANGEL_REPO}.git"
+            git -C "$RUNNER_TEMP/archangel-src" fetch --depth=1 origin "$ARCHANGEL_GATE_SHA"
           fi
-          git -C "$RUNNER_TEMP/archangel-src" fetch --depth=1 origin "$ARCHANGEL_GATE_SHA"
           git -C "$RUNNER_TEMP/archangel-src" checkout -q FETCH_HEAD
+          # Remove .git immediately so no auth metadata or git config lingers while PR tests execute.
+          rm -rf "$RUNNER_TEMP/archangel-src/.git"
           (cd "$RUNNER_TEMP/archangel-src" && npm ci --no-audit --no-fund && npm run build)
 
       - name: Run Archangel Mechanical Gate (repo-owned .pre-commit-config.yaml + .agents/landing.json from base)

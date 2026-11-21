@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { GatePolicy } from "../config.js";
 import {
+  getDiffStats,
   isProtectedPath,
   isTestOrFixtureFile,
   runGate,
@@ -54,6 +56,7 @@ export interface GitBrokerOptions {
   testBuildCmd?: string;
   testCmd?: string;
   enableLocalGate?: boolean;
+  localGateSkipTests?: boolean;
   localGateTimeoutMs?: number;
 }
 
@@ -63,10 +66,9 @@ export type ValidationBounds = Partial<GatePolicy>;
  * Hardened Git Broker (ADR-0004 B2):
  * - Owns its own bare clone (`broker.git`) that the implementer never has write access to.
  * - Creates isolated throwaway clones (never shared worktrees) with no push remotes for the implementer.
- * - Runs optional `.agents/setup` read strictly from `main` tip with a scrubbed environment.
+ * - Runs optional `.agents/setup` read strictly from `main` tip with a throwaway HOME and scrubbed env.
  * - Fetches commits out of the throwaway clone into the bare clone with hooks/fsmonitor disabled,
- *   validates protected paths, diff bounds, and optional in-process language-agnostic Gate
- *   (repo `.pre-commit-config.yaml` + red-on-base/green-on-head `testCmd`), and pushes only `factory/<n>`.
+ *   validates protected paths, diff bounds, and optional in-process language-agnostic Gate, and pushes only `factory/<n>`.
  */
 export class GitBroker {
   readonly bareRepoPath: string;
@@ -81,6 +83,7 @@ export class GitBroker {
   readonly testBuildCmd?: string;
   readonly testCmd?: string;
   readonly enableLocalGate: boolean;
+  readonly localGateSkipTests: boolean;
   readonly localGateTimeoutMs: number;
 
   constructor(opts: GitBrokerOptions) {
@@ -96,6 +99,7 @@ export class GitBroker {
     this.testBuildCmd = opts.testBuildCmd;
     this.testCmd = opts.testCmd;
     this.enableLocalGate = opts.enableLocalGate ?? false;
+    this.localGateSkipTests = opts.localGateSkipTests ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
   }
 
@@ -148,11 +152,25 @@ export class GitBroker {
 
   /**
    * Creates an isolated throwaway clone for the implementer with no remote credentials.
+   * Fetches the issue's staging ref if `startRef` is an unpushed staging SHA (fixes Opus H4).
    */
   async createThrowawayClone(issueNumber: number, startRef: string): Promise<string> {
     fs.mkdirSync(this.clonesDir, { recursive: true });
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
+    // Ensure unpushed staging refs (`refs/archangel/staging/<n>`) are reachable before checkout.
+    const hasStart = await this.runGit(cloneDir, ["cat-file", "-e", `${startRef}^{commit}`])
+      .then(() => true)
+      .catch(() => false);
+    if (!hasStart) {
+      await this.runGit(cloneDir, [
+        "fetch",
+        this.bareRepoPath,
+        `refs/archangel/staging/${issueNumber}`,
+      ]).catch(async () => {
+        await this.runGit(cloneDir, ["fetch", this.bareRepoPath, startRef]);
+      });
+    }
     await this.runGit(cloneDir, ["checkout", "-B", `factory/${issueNumber}`, startRef]);
     await this.runGit(cloneDir, ["remote", "remove", "origin"]);
     await this.runGit(cloneDir, ["config", "user.name", "Archangel Worker"]);
@@ -175,7 +193,7 @@ export class GitBroker {
   /**
    * Runs the repository's `.agents/setup` script inside a fresh throwaway clone,
    * reading the script bytes strictly from `mainSha` (never from a PR branch)
-   * under a scrubbed environment with no credentials.
+   * under a throwaway HOME and scrubbed environment with no credentials.
    */
   async runRepoSetup(
     cloneDir: string,
@@ -186,22 +204,27 @@ export class GitBroker {
     if (!script || !script.trim()) {
       return { ran: false, stdout: "" };
     }
-    const cleanEnv: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
-      HOME: process.env.HOME ?? "/tmp",
-      TMPDIR: process.env.TMPDIR ?? "/tmp",
-      LANG: process.env.LANG ?? "en_US.UTF-8",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_TERMINAL_PROMPT: "0",
-    };
-    const { stdout } = await execFileAsync("/bin/sh", ["-eu", "-c", script], {
-      cwd: cloneDir,
-      env: cleanEnv,
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return { ran: true, stdout };
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-setup-home-"));
+    try {
+      const cleanEnv: NodeJS.ProcessEnv = {
+        PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
+        HOME: fakeHome,
+        TMPDIR: fakeHome,
+        LANG: process.env.LANG ?? "en_US.UTF-8",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+      };
+      const { stdout } = await execFileAsync("/bin/sh", ["-eu", "-c", script], {
+        cwd: cloneDir,
+        env: cleanEnv,
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      return { ran: true, stdout };
+    } finally {
+      fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   }
 
   /**
@@ -229,6 +252,7 @@ export class GitBroker {
         testCmd: bounds?.testCmd ?? this.testCmd,
       },
       policyFromBase: true,
+      skipTests: this.localGateSkipTests,
       baseRunsOverride: 1,
       headRunsOverride: 1,
       commandTimeoutMs: this.localGateTimeoutMs,
@@ -237,7 +261,7 @@ export class GitBroker {
 
   /**
    * Hardened fetch from an untrusted throwaway clone into the broker's bare repo,
-   * followed by protected-path, diff-bound, and optional local Gate verification inside the bare repo.
+   * followed by NUL-delimited (-z) protected-path, diff-bound, and optional local Gate verification.
    */
   async fetchAndValidateFromClone(
     cloneDir: string,
@@ -256,34 +280,30 @@ export class GitBroker {
     await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
     const headSha = await this.resolveRef(stagingRef);
 
-    const numstat = await this.runGit(this.bareRepoPath, [
-      "diff",
-      "--numstat",
-      "--no-renames",
-      baseSha,
-      headSha,
-    ]);
+    // Use Gate's NUL-delimited `-z` diff parser so non-ASCII/quoted paths cannot dodge protection (Opus S1).
+    const stats = await getDiffStats(this.bareRepoPath, baseSha, headSha, {
+      PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
+      HOME: os.tmpdir(),
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+    });
     const changedFiles: string[] = [];
     const protectedViolations: string[] = [];
     let nonTestLines = 0;
     let totalLines = 0;
 
-    for (const line of numstat.trim().split("\n")) {
-      if (!line) continue;
-      const parts = line.split("\t");
-      const filePath = parts[2];
-      if (!filePath) continue;
-      changedFiles.push(filePath);
-      if (isProtectedPath(filePath, extraProtectedPaths)) {
-        protectedViolations.push(`protected path modified: ${filePath}`);
+    for (const st of stats) {
+      changedFiles.push(st.path);
+      if (isProtectedPath(st.path, extraProtectedPaths)) {
+        protectedViolations.push(`protected path modified: ${st.path}`);
       }
-      if (parts[0] === "-" || parts[1] === "-") {
-        protectedViolations.push(`binary file modified: ${filePath}`);
+      if (st.binary) {
+        protectedViolations.push(`binary file modified: ${st.path}`);
         continue;
       }
-      const lines = Number(parts[0] ?? 0) + Number(parts[1] ?? 0);
+      const lines = st.added + st.deleted;
       totalLines += lines;
-      if (!isTestOrFixtureFile(filePath, { testFileGlobs, testDataGlobs })) {
+      if (!isTestOrFixtureFile(st.path, { testFileGlobs, testDataGlobs })) {
         nonTestLines += lines;
       }
     }
@@ -348,17 +368,10 @@ export class GitBroker {
     }
     await this.runGit(this.bareRepoPath, [
       "push",
-      "--force-with-lease",
+      "--force",
       remoteUrl,
       `${headSha}:refs/heads/${branchName}`,
-    ]).catch(async () => {
-      await this.runGit(this.bareRepoPath, [
-        "push",
-        "--force",
-        remoteUrl,
-        `${headSha}:refs/heads/${branchName}`,
-      ]);
-    });
+    ]);
     await this.runGit(this.bareRepoPath, ["update-ref", `refs/heads/${branchName}`, headSha]);
   }
 

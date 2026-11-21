@@ -16,10 +16,6 @@ function writeFile(root: string, rel: string, content: string): void {
   fs.writeFileSync(full, content, "utf8");
 }
 
-/**
- * Creates a minimal language-agnostic Node repo whose verification rules live 100% inside
- * `.pre-commit-config.yaml` and `.agents/landing.json` on `main`.
- */
 function createRepoFixture(): { root: string; repoDir: string; baseSha: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-gate-test-"));
   const repoDir = path.join(root, "repo");
@@ -29,7 +25,6 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
   git(repoDir, ["config", "user.name", "Test"]);
   git(repoDir, ["config", "user.email", "test@example.com"]);
 
-  // Buggy add(): subtracts when b < 0
   writeFile(
     repoDir,
     "calc.mjs",
@@ -40,6 +35,7 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
     "tests/existing.test.mjs",
     'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(1, 2), 3);\n',
   );
+  writeFile(repoDir, "testdata/golden.txt", "expected=3\n");
   writeFile(
     repoDir,
     ".pre-commit-config.yaml",
@@ -48,8 +44,8 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
       "  - repo: local",
       "    hooks:",
       "      - id: no-banned-marker",
-      "        name: Ban SKIP_ALL or EVAL_HACK",
-      "        entry: bash -c 'if grep -nE \"SKIP_ALL|EVAL_HACK\" \"$@\"; then echo \"banned marker\"; exit 1; fi' --",
+      "        name: Ban SKIP_ALL",
+      "        entry: bash -c 'if grep -nE \"SKIP_ALL\" \"$@\"; then echo \"banned marker\"; exit 1; fi' --",
       "        language: system",
       "        files: '\\.mjs$'",
     ].join("\n") + "\n",
@@ -63,7 +59,7 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
         maxTotalLines: 100,
         maxFiles: 5,
         testFileGlobs: ["tests/*.test.mjs"],
-        // Syntax-check all .mjs files on base to prove new test imports/compiles cleanly against base
+        testDataGlobs: ["testdata/**"],
         testBuildCmd:
           "node -e 'const fs=require(\"fs\"); for (const f of fs.readdirSync(\"tests\")) { const s=fs.readFileSync(\"tests/\"+f,\"utf8\"); if (s.includes(\"NONEXISTENT_API\")) process.exit(1); }'",
         testCmd: 'for f in tests/*.test.mjs; do node "$f" || exit 1; done',
@@ -83,8 +79,8 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
   return { root, repoDir, baseSha };
 }
 
-describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/landing.json)", () => {
-  it("passes a valid bugfix + new test file and runs repo pre-commit hooks from base", async () => {
+describe("language-agnostic Gate (hardened post-Opus review)", () => {
+  it("passes a valid bugfix + new test file and verifies pristine-base-green -> overlaid-base-red -> head-green", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {
       writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
@@ -95,9 +91,8 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix add"]);
-      const headSha = git(repoDir, ["rev-parse", "HEAD"]);
 
-      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: headSha, policyFromBase: true });
+      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
       expect(rep.passed).toBe(true);
       expect(rep.new_test_files).toEqual(["tests/issue1.test.mjs"]);
       expect(rep.hooks_run).toEqual(["no-banned-marker"]);
@@ -107,25 +102,27 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
     }
   });
 
-  it("rejects modifying an existing test file, pre-commit hook failure, tampering with .pre-commit-config.yaml, and base build failure", async () => {
+  it("blocks existing test/fixture edits, hook failures, mutating hooks, tampering, broken base, and base build failures", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {
-      // 1) Modifying pre-existing test file is rejected
-      git(repoDir, ["checkout", "-b", "edit-existing-test", baseSha]);
+      // 1) Modifying existing test file OR existing testdata fixture is rejected
+      git(repoDir, ["checkout", "-b", "edit-existing", baseSha]);
       writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
       writeFile(repoDir, "tests/existing.test.mjs", "// weakened\n");
+      writeFile(repoDir, "testdata/golden.txt", "tampered=999\n");
       writeFile(
         repoDir,
         "tests/issue2.test.mjs",
         'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
       );
       git(repoDir, ["add", "-A"]);
-      git(repoDir, ["commit", "-m", "weaken existing test"]);
+      git(repoDir, ["commit", "-m", "weaken existing test + golden"]);
       const r1 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
       expect(r1.passed).toBe(false);
       expect(r1.violations.some((v) => v.includes("existing test file modified"))).toBe(true);
+      expect(r1.violations.some((v) => v.includes("existing test fixture modified"))).toBe(true);
 
-      // 2) Repo .pre-commit-config.yaml hook failure blocks PR
+      // 2) Pre-commit hook failure blocks PR
       git(repoDir, ["checkout", "-b", "hook-fail", baseSha]);
       writeFile(repoDir, "calc.mjs", "// SKIP_ALL\nexport function add(a, b) {\n  return a + b;\n}\n");
       writeFile(
@@ -139,7 +136,7 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
       expect(r2.passed).toBe(false);
       expect(r2.violations.some((v) => v.includes("pre-commit hook 'no-banned-marker' failed"))).toBe(true);
 
-      // 3) Tampering with .pre-commit-config.yaml or extraProtectedPaths (lock.json) is rejected
+      // 3) Tampering with .pre-commit-config.yaml or extraProtectedPaths is rejected
       git(repoDir, ["checkout", "-b", "tamper-pc", baseSha]);
       writeFile(repoDir, ".pre-commit-config.yaml", "repos: []\n");
       writeFile(repoDir, "lock.json", '{"v":2}\n');
@@ -149,7 +146,7 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
         'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
       );
       git(repoDir, ["add", "-A"]);
-      git(repoDir, ["commit", "-m", "tamper pre-commit"]);
+      git(repoDir, ["commit", "-m", "tamper"]);
       const r3 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
       expect(r3.passed).toBe(false);
       expect(r3.violations.some((v) => v.includes(".pre-commit-config.yaml"))).toBe(true);
@@ -164,12 +161,94 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
       const r4 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
       expect(r4.passed).toBe(false);
       expect(r4.violations.some((v) => v.includes("base build failed"))).toBe(true);
+
+      // 5) Broken pristine base cannot pass red-on-base with a trivial test!
+      git(repoDir, ["checkout", "-b", "red-base", baseSha]);
+      writeFile(repoDir, "calc.mjs", "export function add() { return -999; }\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "break base"]);
+      const redBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
+      writeFile(repoDir, "tests/issue6.test.mjs", 'import assert from "node:assert/strict";\nassert.equal(1, 1);\n');
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "trivial test on red base"]);
+      const r5 = await runGate({ repoDir, baseRef: redBase, headRef: "HEAD", policyFromBase: true });
+      expect(r5.passed).toBe(false);
+      expect(r5.violations.some((v) => v.includes("pristine base testCmd failed"))).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
-  it("flags already_fixed via GitBroker pre-push Gate and enforces exact-inverse revert ancestry", async () => {
+  it("fails closed on missing/typo'd landing.json, unsupported pre-commit keys, and mutating hooks (H3)", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      // Missing landing.json fails closed under policyFromBase
+      git(repoDir, ["checkout", "-b", "no-landing", baseSha]);
+      fs.rmSync(path.join(repoDir, ".agents/landing.json"));
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "drop landing.json"]);
+      const noLandingBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix"]);
+      const rMissing = await runGate({ repoDir, baseRef: noLandingBase, headRef: "HEAD", policyFromBase: true });
+      expect(rMissing.passed).toBe(false);
+      expect(rMissing.violations.some((v) => v.includes("missing .agents/landing.json"))).toBe(true);
+
+      // Typo'd key ("testCommand") in landing.json throws strict Zod error instead of silently passing
+      git(repoDir, ["checkout", "-b", "typo-landing", baseSha]);
+      writeFile(repoDir, ".agents/landing.json", JSON.stringify({ testCommand: "true", testFileGlobs: ["tests/*.test.mjs"] }));
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "typo"]);
+      const typoBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "tests/t.test.mjs", "export {};\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "test"]);
+      await expect(
+        runGate({ repoDir, baseRef: typoBase, headRef: "HEAD", policyFromBase: true }),
+      ).rejects.toThrow(/Unrecognized key/);
+
+      // Unsupported pre-commit hook key (`args`) or mutating hook fails closed
+      git(repoDir, ["checkout", "-b", "mutating-hook", baseSha]);
+      writeFile(
+        repoDir,
+        ".pre-commit-config.yaml",
+        [
+          "repos:",
+          "  - repo: local",
+          "    hooks:",
+          "      - id: mutator",
+          "        entry: bash -c 'echo mutated >> \"$1\"' --",
+          "        language: system",
+          "        files: '\\.mjs$'",
+          "      - id: unsupported-args",
+          "        entry: true",
+          "        language: system",
+          "        args: ['--strict']",
+        ].join("\n") + "\n",
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "bad hooks"]);
+      const badHookBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
+      writeFile(
+        repoDir,
+        "tests/issue8.test.mjs",
+        'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix"]);
+      const rHook = await runGate({ repoDir, baseRef: badHookBase, headRef: "HEAD", policyFromBase: true });
+      expect(rHook.passed).toBe(false);
+      expect(rHook.violations.some((v) => v.includes("unsupported key(s) [args]"))).toBe(true);
+      expect(rHook.violations.some((v) => v.includes("mutated file"))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("supports staging-SHA revision clone (H4), flags already_fixed pre-push, and blocks multi-commit reverts (H5)", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     const remoteBare = path.join(root, "remote.git");
     git(root, ["clone", "--bare", repoDir, remoteBare]);
@@ -178,10 +257,11 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
         bareRepoPath: path.join(root, "broker.git"),
         clonesDir: path.join(root, "clones"),
         enableLocalGate: true,
+        localGateSkipTests: false,
       });
       await broker.ensureBareRepo(remoteBare);
 
-      // Already-passing test on base -> already_fixed: true pre-push!
+      // 1) Already-passing test fails local Gate -> staging SHA can be checked out into a revision clone (H4)!
       const cloneDir = await broker.createThrowawayClone(7, baseSha);
       writeFile(
         cloneDir,
@@ -195,15 +275,29 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
       expect(val.gateReport?.already_fixed).toBe(true);
       broker.removeClone(cloneDir);
 
-      // Exact-inverse revert passes when ancestor of base, fails when non-ancestor
+      // Verify revision clone can check out the unpushed staging SHA (H4)!
+      const revClone = await broker.createThrowawayClone(7, val.headSha);
+      expect(git(revClone, ["rev-parse", "HEAD"])).toBe(val.headSha);
+      broker.removeClone(revClone);
+
+      // 2) Exact-inverse revert passes ONLY when revertOf === base tip (H5 blocks multi-commit rollback)
       git(repoDir, ["checkout", "main"]);
-      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "squash commit"]);
       const squashSha = git(repoDir, ["rev-parse", "HEAD"]);
 
+      writeFile(repoDir, "later.txt", "subsequent main commit\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "later commit on main"]);
+      const laterMain = git(repoDir, ["rev-parse", "HEAD"]);
+
+      // Build a branch whose tree matches squashSha^ (would silently erase `later.txt`!)
+      git(repoDir, ["checkout", "-b", "sneaky-rollback", squashSha]);
       git(repoDir, ["revert", "--no-edit", squashSha]);
       const revertHead = git(repoDir, ["rev-parse", "HEAD"]);
+
+      // Valid when base === squashSha
       const okRev = await runGate({
         repoDir,
         baseRef: squashSha,
@@ -214,15 +308,16 @@ describe("language-agnostic Gate (repo-owned .pre-commit-config.yaml + .agents/l
       expect(okRev.passed).toBe(true);
       expect(okRev.revert_exempt).toBe(true);
 
+      // Rejected when base has advanced past squashSha (H5)
       const badRev = await runGate({
         repoDir,
-        baseRef: baseSha,
+        baseRef: laterMain,
         headRef: revertHead,
         revertOf: squashSha,
         policyFromBase: true,
       });
       expect(badRev.passed).toBe(false);
-      expect(badRev.violations.some((v) => v.includes("not an ancestor"))).toBe(true);
+      expect(badRev.violations.some((v) => v.includes("must match base tip"))).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

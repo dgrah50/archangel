@@ -1228,8 +1228,16 @@ export class Reconciler {
       shadowMode: this.cfg.shadowMode,
     });
 
-    // Handle merge conflicts or stale base with 1 automated rebase Attempt (autonomous mode only!).
+    // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
+    // record the shadow verdict with a note so owner can inspect/merge directly (Opus review).
+    const shadowReadyWithBehind =
+      this.cfg.shadowMode &&
+      blockers.every((b) => b.code === "shadow_mode_active" || b.code === "branch_behind_main") &&
+      blockers.some((b) => b.code === "shadow_mode_active");
+
+    // Handle merge conflicts or stale base with 1 automated rebase Attempt (autonomous non-shadow mode only!).
     if (
+      !shadowReadyWithBehind &&
       blockers.some((b) => b.code === "merge_conflict" || b.code === "branch_behind_main") &&
       thread.mode === "autonomous"
     ) {
@@ -1256,8 +1264,8 @@ export class Reconciler {
       return;
     }
 
-    // Shadow Mode: ready except for shadow_mode_active.
-    if (isShadowReady(blockers)) {
+    // Shadow Mode: ready except for shadow_mode_active (and optional branch_behind_main with clean merge-tree).
+    if (isShadowReady(blockers) || shadowReadyWithBehind) {
       const verdict = this.ledger.recordMerge({
         issueNumber: thread.issueNumber,
         prNumber: pr.number,
