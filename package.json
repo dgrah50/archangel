@@ -9,12 +9,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit",
+    "build:gate": "cd gate && go build -o archangel-gate ./cmd/archangel-gate",
+    "build:all": "npm run build && npm run build:gate",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:gate": "cd gate && go test -race -count=1 ./...",
     "test:all": "npm run typecheck && npm test && npm run test:gate",
-    "dev": "tsx src/cli/index.ts"
+    "dev": "tsx src/cli/index.ts",
+    "pilot:setup": "tsx scripts/setup-gijq-pilot.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.124",

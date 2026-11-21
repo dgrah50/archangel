@@ -24,6 +24,15 @@ type TestFuncInfo struct {
 	Normalized string
 }
 
+// DeclInfo describes any top-level Go declaration (func, type, var, const) in a test file.
+type DeclInfo struct {
+	Kind       string // func | type | var | const
+	Name       string
+	File       string
+	PkgDir     string
+	Normalized string
+}
+
 // TestDelta summarizes AST-verified test changes between base and head.
 type TestDelta struct {
 	BaseTests  map[string][]string // pkgDir -> sorted Test* names on base
@@ -31,38 +40,82 @@ type TestDelta struct {
 	Violations []string
 }
 
-// ParseTestFile extracts top-level Test* functions and checks for banned constructs.
-func ParseTestFile(relPath string, src []byte) ([]TestFuncInfo, []string) {
+// ParseTestFile extracts top-level Test* functions and all top-level declarations
+// (so shared helpers, vars, consts, and types in existing *_test.go files cannot be mutated).
+func ParseTestFile(relPath string, src []byte) ([]TestFuncInfo, []DeclInfo, []string) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, relPath, src, parser.ParseComments)
 	if err != nil {
-		return nil, []string{fmt.Sprintf("parse error in %s: %v", relPath, err)}
+		return nil, nil, []string{fmt.Sprintf("parse error in %s: %v", relPath, err)}
 	}
 
 	var funcs []TestFuncInfo
+	var decls []DeclInfo
 	pkgDir := filepath.ToSlash(filepath.Dir(relPath))
-	if pkgDir == "." {
-		pkgDir = "."
-	}
 
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil {
-			continue
-		}
-		name := fn.Name.Name
-		if strings.HasPrefix(name, "Test") && name != "TestMain" {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
 			var buf bytes.Buffer
-			_ = format.Node(&buf, fset, fn)
-			funcs = append(funcs, TestFuncInfo{
+			_ = format.Node(&buf, fset, d)
+			norm := buf.String()
+			name := d.Name.Name
+			if d.Recv != nil {
+				var recvBuf bytes.Buffer
+				_ = format.Node(&recvBuf, fset, d.Recv)
+				name = recvBuf.String() + "." + name
+			}
+			decls = append(decls, DeclInfo{
+				Kind:       "func",
 				Name:       name,
 				File:       relPath,
 				PkgDir:     pkgDir,
-				Normalized: buf.String(),
+				Normalized: norm,
 			})
+			if d.Recv == nil && strings.HasPrefix(d.Name.Name, "Test") && d.Name.Name != "TestMain" {
+				funcs = append(funcs, TestFuncInfo{
+					Name:       d.Name.Name,
+					File:       relPath,
+					PkgDir:     pkgDir,
+					Normalized: norm,
+				})
+			}
+		case *ast.GenDecl:
+			if d.Tok == token.IMPORT {
+				continue
+			}
+			for _, spec := range d.Specs {
+				var buf bytes.Buffer
+				_ = format.Node(&buf, fset, spec)
+				norm := buf.String()
+				switch sp := spec.(type) {
+				case *ast.TypeSpec:
+					decls = append(decls, DeclInfo{
+						Kind:       "type",
+						Name:       sp.Name.Name,
+						File:       relPath,
+						PkgDir:     pkgDir,
+						Normalized: norm,
+					})
+				case *ast.ValueSpec:
+					kind := "var"
+					if d.Tok == token.CONST {
+						kind = "const"
+					}
+					for _, id := range sp.Names {
+						decls = append(decls, DeclInfo{
+							Kind:       kind,
+							Name:       id.Name,
+							File:       relPath,
+							PkgDir:     pkgDir,
+							Normalized: norm,
+						})
+					}
+				}
+			}
 		}
 	}
-	return funcs, nil
+	return funcs, decls, nil
 }
 
 // InspectAddedTestSource enforces AST bans on newly added test files or test functions.
@@ -125,8 +178,8 @@ func InspectAddedTestSource(relPath string, src []byte, onlyFuncNames map[string
 	return violations
 }
 
-// VerifyTestDelta checks immutability of base tests and validates all newly added tests.
-// basePkgs is the set of package directories (relative slash paths, "." for root) existing on base.
+// VerifyTestDelta enforces full immutability of base test declarations (Test* functions AND
+// shared helpers/types/vars/consts in base *_test.go files) and validates all newly added tests.
 func VerifyTestDelta(
 	baseFiles map[string][]byte,
 	headFiles map[string][]byte,
@@ -137,19 +190,27 @@ func VerifyTestDelta(
 		NewTests:  map[string][]string{},
 	}
 
-	baseByKey := map[string]TestFuncInfo{} // "pkgDir::TestName" -> info
+	baseTestByKey := map[string]TestFuncInfo{} // "pkgDir::TestName" -> info
+	baseDeclByKey := map[string]DeclInfo{}     // "file::kind::name" -> info
+
 	for path, src := range baseFiles {
-		funcs, errs := ParseTestFile(path, src)
+		funcs, decls, errs := ParseTestFile(path, src)
 		delta.Violations = append(delta.Violations, errs...)
 		for _, fn := range funcs {
 			key := fn.PkgDir + "::" + fn.Name
-			baseByKey[key] = fn
+			baseTestByKey[key] = fn
 			delta.BaseTests[fn.PkgDir] = append(delta.BaseTests[fn.PkgDir], fn.Name)
+		}
+		for _, d := range decls {
+			key := d.File + "::" + d.Kind + "::" + d.Name
+			baseDeclByKey[key] = d
 		}
 	}
 
-	headByKey := map[string]TestFuncInfo{}
+	headTestByKey := map[string]TestFuncInfo{}
+	headDeclByKey := map[string]DeclInfo{}
 	newFuncsByFile := map[string]map[string]bool{}
+
 	for path, src := range headFiles {
 		pkgDir := filepath.ToSlash(filepath.Dir(path))
 		_, existedOnBase := baseFiles[path]
@@ -157,10 +218,9 @@ func VerifyTestDelta(
 			delta.Violations = append(delta.Violations, fmt.Sprintf("new test file %s is in package %q which does not exist on base", path, pkgDir))
 		}
 
-		funcs, errs := ParseTestFile(path, src)
+		funcs, decls, errs := ParseTestFile(path, src)
 		delta.Violations = append(delta.Violations, errs...)
 
-		// Also check if an existing test file added TestMain, init(), or build tags.
 		if existedOnBase {
 			baseHad := extractSpecialDecls(baseFiles[path])
 			headHas := extractSpecialDecls(src)
@@ -177,35 +237,58 @@ func VerifyTestDelta(
 			delta.Violations = append(delta.Violations, InspectAddedTestSource(path, src, nil)...)
 		}
 
-		for _, fn := range funcs {
-			key := fn.PkgDir + "::" + fn.Name
-			headByKey[key] = fn
-			if _, ok := baseByKey[key]; !ok {
-				delta.NewTests[fn.PkgDir] = append(delta.NewTests[fn.PkgDir], fn.Name)
-				if existedOnBase {
+		for _, d := range decls {
+			key := d.File + "::" + d.Kind + "::" + d.Name
+			headDeclByKey[key] = d
+			if existedOnBase && d.Kind == "func" {
+				if _, existed := baseDeclByKey[key]; !existed {
 					if newFuncsByFile[path] == nil {
 						newFuncsByFile[path] = map[string]bool{}
 					}
-					newFuncsByFile[path][fn.Name] = true
+					newFuncsByFile[path][d.Name] = true
 				}
+			}
+		}
+
+		for _, fn := range funcs {
+			key := fn.PkgDir + "::" + fn.Name
+			headTestByKey[key] = fn
+			if _, ok := baseTestByKey[key]; !ok {
+				delta.NewTests[fn.PkgDir] = append(delta.NewTests[fn.PkgDir], fn.Name)
 			}
 		}
 	}
 
-	// Inspect newly added Test* functions inside pre-existing test files.
+	// Inspect newly added functions inside pre-existing test files.
 	for path, fnNames := range newFuncsByFile {
 		delta.Violations = append(delta.Violations, InspectAddedTestSource(path, headFiles[path], fnNames)...)
 	}
 
-	// Enforce existing-test immutability: every base Test* must remain identical on head.
-	for key, baseFn := range baseByKey {
-		headFn, ok := headByKey[key]
+	// Enforce existing-test immutability (Test* functions).
+	for key, baseFn := range baseTestByKey {
+		headFn, ok := headTestByKey[key]
 		if !ok {
 			delta.Violations = append(delta.Violations, fmt.Sprintf("existing test deleted or renamed: %s (%s)", baseFn.Name, baseFn.File))
 			continue
 		}
 		if headFn.Normalized != baseFn.Normalized {
 			delta.Violations = append(delta.Violations, fmt.Sprintf("existing test modified: %s (%s)", baseFn.Name, baseFn.File))
+		}
+	}
+
+	// Enforce immutability of ALL shared helpers, types, vars, and consts in existing *_test.go files
+	// (prevents bypassing test immutability by weakening shared test helper functions — Codex #9).
+	for key, baseDecl := range baseDeclByKey {
+		if baseDecl.Kind == "func" && strings.HasPrefix(baseDecl.Name, "Test") && baseDecl.Name != "TestMain" {
+			continue // Already checked with specific message above.
+		}
+		headDecl, ok := headDeclByKey[key]
+		if !ok {
+			delta.Violations = append(delta.Violations, fmt.Sprintf("existing test helper/declaration deleted: %s %s (%s)", baseDecl.Kind, baseDecl.Name, baseDecl.File))
+			continue
+		}
+		if headDecl.Normalized != baseDecl.Normalized {
+			delta.Violations = append(delta.Violations, fmt.Sprintf("existing test helper/declaration modified: %s %s (%s)", baseDecl.Kind, baseDecl.Name, baseDecl.File))
 		}
 	}
 

@@ -1,19 +1,30 @@
 import crypto from "node:crypto";
 import { mergeLandingJson, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
-import type { ReviewerSuite } from "../agents/reviewers.js";
-import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
-import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
-import type { ReviewFinding, ThreadRecord } from "../ledger/schema.js";
-import type { Ledger } from "../ledger/store.js";
-import { computeBlockers, isShadowReady } from "./blockers.js";
-import type { Notifier } from "./notifier.js";
-import { renderRecapComment } from "./recap.js";
 import {
   buildImplementPrompt,
   buildRebasePrompt,
   buildRevisionPrompt,
 } from "../agents/prompts.js";
+import type { ReviewerSuite } from "../agents/reviewers.js";
+import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
+import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
+import type { MergeRecord, ReviewFinding, ThreadRecord } from "../ledger/schema.js";
+import type { Ledger } from "../ledger/store.js";
+import { computeBlockers, isShadowReady } from "./blockers.js";
+import type { Notifier } from "./notifier.js";
+import { renderRecapComment } from "./recap.js";
+import {
+  classifyGate,
+  deriveControl,
+  extractPrFromPhase,
+  stepPhase,
+  type AttemptKind,
+  type EscalationCode,
+  type MachineEvent,
+  type MainWatch,
+  type PrRef,
+} from "./thread-machine.js";
 
 export function sha256(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex");
@@ -30,11 +41,24 @@ export interface ReconcilerDeps {
   workerId?: string;
 }
 
+interface RunningTask {
+  issueNumber: number;
+  attemptId: number;
+  abortController: AbortController;
+  abortCause: "timeout" | "control" | "handoff" | null;
+  cloneDir: string;
+  promise: Promise<void>;
+}
+
+const POST_MERGE_WATCH_TIMEOUT_MS = 2 * 60 * 60_000;
+const REVIEW_RESERVATION_USD = 0.25;
+
 /**
- * Level-triggered Reconciler (ADR-0005):
- * - GitHub owns owner intent (labels, PRs, checks).
- * - Ledger owns Thread state, leases, SHAs, reviews, spend & merge caps.
- * - Every tick converges open Threads idempotently, prioritizing in-progress resumes ahead of new intake.
+ * Level-triggered Reconciler (ADR-0005 + Opus State-Machine Refactor + Codex Fail-Closed Fixes):
+ * - Non-overlapping tick guard + single-flight background attempt runner (`runningTasks`).
+ * - All state writes go through `stepPhase()` + compare-and-set `Ledger.transition()` + durable `outbox`.
+ * - Owner Control (`run | paused | stopped`) is derived fresh from GitHub labels every tick.
+ * - Mode (`autonomous | advisory`) structurally prevents factory attempts after Handoff.
  */
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
@@ -44,10 +68,11 @@ export class Reconciler {
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
-  private readonly workerId: string;
-  private readonly activeAborts = new Map<number, AbortController>();
-  private readonly activeClones = new Map<number, string>();
-  private readonly lastSummary = new Map<number, string>();
+  readonly workerId: string;
+
+  private isTicking = false;
+  private readonly runningTasks = new Map<number, RunningTask>();
+  private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   private effectiveGate: GatePolicy;
   private effectiveRequiredChecks: string[];
   private effectiveReviewRubric: string | undefined;
@@ -66,42 +91,85 @@ export class Reconciler {
     this.effectiveReviewRubric = deps.config.reviewRubric;
   }
 
-  getActiveAbort(issueNumber: number): AbortController | undefined {
-    return this.activeAborts.get(issueNumber);
+  activeTaskCount(): number {
+    return this.runningTasks.size;
   }
 
-  getActiveClone(issueNumber: number): string | undefined {
-    return this.activeClones.get(issueNumber);
+  /** Waits for all in-flight background attempts to settle (useful for `--once`, shutdown, and tests). */
+  async waitForActiveTasks(): Promise<void> {
+    while (this.runningTasks.size > 0) {
+      await Promise.allSettled([...this.runningTasks.values()].map((t) => t.promise));
+    }
+  }
+
+  abortAllActive(cause: "control" | "handoff" = "control"): void {
+    for (const task of this.runningTasks.values()) {
+      task.abortCause = cause;
+      task.abortController.abort(new Error(`Daemon shutdown (${cause})`));
+    }
+  }
+
+  /** Startup stale-working recovery (ONLY touches `working` phases, never terminal/paused/needs_you). */
+  startupSweep(now = Date.now()): number[] {
+    return this.ledger.sweepStaleWorkingRuns(now);
   }
 
   /**
-   * Startup stale-run sweep before the first tick (recovers crashed/slept laptop runs).
+   * Executes one serialized reconciliation tick. Overlapping invocations return immediately.
+   * When `opts.waitForAttempts` is true (e.g. `start --once` or tests), awaits spawned background tasks before returning.
    */
-  startupSweep(now = Date.now()): number[] {
-    return this.ledger.sweepStaleRuns(this.cfg.staleLeaseMs, now);
+  async tick(now = Date.now(), opts: { waitForAttempts?: boolean } = {}): Promise<void> {
+    if (this.isTicking) {
+      return;
+    }
+    this.isTicking = true;
+    try {
+      await this.runTickInternal(now);
+      if (opts.waitForAttempts) {
+        await this.waitForActiveTasks();
+      }
+    } finally {
+      this.isTicking = false;
+    }
   }
 
-  async tick(now = Date.now()): Promise<void> {
+  private async runTickInternal(now: number): Promise<void> {
+    // 0. Flush durable outbox side effects (retries any labels/notifications lost on crash).
+    await this.flushOutbox();
+
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
 
-    // Load optional `.agents/landing.json` strictly from `main` tip (may only tighten host policy).
-    const landingRaw = await this.broker.readFileAtRef(mainSha, ".agents/landing.json");
-    const merged = mergeLandingJson(
-      this.cfg.gate,
-      this.cfg.requiredChecks,
-      this.cfg.reviewRubric,
-      landingRaw,
-    );
-    this.effectiveGate = merged.gate;
-    this.effectiveRequiredChecks = merged.requiredChecks;
-    this.effectiveReviewRubric = merged.reviewRubric;
+    // Load optional `.agents/landing.json` strictly from `main` tip — isolated in try/catch so bad JSON never freezes kill-switches (Opus S13).
+    try {
+      const landingRaw = await this.broker.readFileAtRef(mainSha, ".agents/landing.json");
+      const merged = mergeLandingJson(
+        this.cfg.gate,
+        this.cfg.requiredChecks,
+        this.cfg.reviewRubric,
+        landingRaw,
+      );
+      this.effectiveGate = merged.gate;
+      this.effectiveRequiredChecks = merged.requiredChecks;
+      this.effectiveReviewRubric = merged.reviewRubric;
+    } catch (err) {
+      this.effectiveGate = this.cfg.gate;
+      this.effectiveRequiredChecks = this.cfg.requiredChecks;
+      this.effectiveReviewRubric = this.cfg.reviewRubric;
+      this.ledger.appendAudit("config/landing_json_invalid", null, "archangel", {
+        mainSha,
+        error: err instanceof Error ? err.message : String(err),
+      }, now);
+    }
 
-    // 1. Monitor post-merge main CI health & circuit breaker (B8).
-    await this.reconcilePostMergeMain(mainSha, remoteUrl);
+    // 1. Process pending CLI -> Daemon handoff commands (Opus Step 6 / R5).
+    await this.processPendingCommands(mainSha, now);
 
-    // 2. Intake eligible owner-authored, owner-labeled issues (B11).
+    // 2. Monitor post-merge main CI health & circuit breaker (isolated per merge — Opus S13).
+    await this.reconcilePostMergeMain(mainSha, now);
+
+    // 3. Intake eligible owner-authored, owner-labeled issues.
     const readyIssues = await this.github.listOpenIssuesByLabel(this.cfg.labels.readyForAgent);
     const issueMap = new Map<number, GitHubIssue>();
     for (const issue of readyIssues) {
@@ -109,94 +177,199 @@ export class Reconciler {
       await this.reconcileIntakeIssue(issue, now);
     }
 
-    // 3. Reconcile in-progress Threads FIRST (resumes ahead of new intake — Opus stampede fix).
-    const allThreads = this.ledger.listThreads();
-    const inProgress = allThreads.filter((t) =>
-      ["awaiting_gate", "reviewing", "revising", "rebasing", "ready_to_land", "shadow_ready"].includes(
-        t.state,
-      ),
-    );
-    const queued = allThreads.filter((t) => t.state === "queued");
+    // 4. Reconcile all non-done Threads — in-progress BEFORE queued (prevents slot-lending stampedes).
+    const openThreads = this.ledger
+      .listThreads()
+      .filter((t) => t.phase.kind !== "done");
 
-    let activeSlots = allThreads.filter((t) =>
-      ["implementing", "revising", "rebasing", "reviewing"].includes(t.state),
-    ).length;
+    const inProgress = openThreads.filter((t) => t.phase.kind !== "queued");
+    const queued = openThreads.filter((t) => t.phase.kind === "queued");
 
     for (const thread of inProgress) {
-      const issue = issueMap.get(thread.issueNumber);
-      await this.reconcileThread(thread, issue, mainSha, remoteUrl, now);
+      const issue = await this.resolveIssueForThread(thread, issueMap);
+      await this.reconcileThread(thread, issue, mainSha, now);
     }
 
     for (const thread of queued) {
-      if (activeSlots >= this.cfg.maxConcurrentThreads) break;
-      const issue = issueMap.get(thread.issueNumber);
+      if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) break;
+      const issue = await this.resolveIssueForThread(thread, issueMap);
       if (!issue) continue;
-      const started = await this.reconcileThread(thread, issue, mainSha, remoteUrl, now);
-      if (started) activeSlots++;
+      await this.reconcileThread(thread, issue, mainSha, now);
+    }
+
+    // Flush any newly enqueued outbox effects immediately.
+    await this.flushOutbox();
+  }
+
+  private async resolveIssueForThread(
+    thread: ThreadRecord,
+    issueMap: Map<number, GitHubIssue>,
+  ): Promise<GitHubIssue | undefined> {
+    const cached = issueMap.get(thread.issueNumber);
+    if (cached) return cached;
+    try {
+      const fetched = await this.github.getIssue(thread.issueNumber);
+      issueMap.set(thread.issueNumber, fetched);
+      return fetched;
+    } catch {
+      return undefined;
     }
   }
 
-  private async reconcileIntakeIssue(issue: GitHubIssue, now: number): Promise<void> {
-    // ADR-0004 / B11: only owner-authored issues (verified by numeric user ID + OWNER association).
-    if (issue.authorId !== this.cfg.ownerUserId || issue.authorAssociation !== "OWNER") {
-      this.ledger.appendAudit("intake/rejected_untrusted_author", issue.number, issue.authorLogin, {
-        authorId: issue.authorId,
-        authorAssociation: issue.authorAssociation,
-      });
-      return;
+  private async flushOutbox(): Promise<void> {
+    const items = this.ledger.listOutbox();
+    for (const item of items) {
+      try {
+        const eff = item.effect;
+        if (eff.kind === "add_label") {
+          await this.github.addLabels(eff.issueNumber, [eff.label]);
+        } else if (eff.kind === "remove_label") {
+          await this.github.removeLabel(eff.issueNumber, eff.label);
+        } else if (eff.kind === "notify_needs_you") {
+          await this.notifier.notifyNeedsYou({
+            issueNumber: eff.issueNumber,
+            title: eff.title,
+            reason: eff.reason,
+          });
+        }
+        this.ledger.completeOutbox(item.id);
+      } catch (err) {
+        this.ledger.failOutbox(item.id, err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
+  private async processPendingCommands(mainSha: string, now: number): Promise<void> {
+    const cmds = this.ledger.listPendingCommands();
+    for (const cmd of cmds) {
+      if (cmd.kind !== "handoff") continue;
+      try {
+        const res = await this.prepareDaemonHandoff(cmd.issueNumber, mainSha, now);
+        this.ledger.completeCommand(cmd.id, res, now);
+      } catch (err) {
+        this.ledger.failCommand(cmd.id, err instanceof Error ? err.message : String(err), now);
+      }
+    }
+  }
+
+  /**
+   * Executes the daemon-owned half of Handoff (Opus Step 6 / R5):
+   * aborts any active Attempt, pushes any valid unpushed commits via Broker, cleans clone,
+   * adds `factory:paused`, and CAS-transitions to `owner_driving` (`mode: "advisory"`).
+   */
+  async prepareDaemonHandoff(
+    issueNumber: number,
+    mainSha: string,
+    now = Date.now(),
+  ): Promise<{ branchName: string; headSha: string | null }> {
+    const running = this.runningTasks.get(issueNumber);
+    if (running) {
+      running.abortCause = "handoff";
+      running.abortController.abort(new Error("Owner requested handoff"));
+      await running.promise.catch(() => undefined);
     }
 
-    const bodyHash = sha256(issue.body);
-    const existing = this.ledger.getThread(issue.number);
+    const thread = this.ledger.getThread(issueNumber);
+    if (!thread) {
+      throw new Error(`Thread #${issueNumber} not found in Ledger`);
+    }
 
-    if (existing) {
-      // Stop / pause label checks (GitHub owns owner intent).
-      if (issue.labels.includes(this.cfg.labels.stop) && existing.state !== "stopped") {
-        this.activeAborts.get(issue.number)?.abort();
-        this.ledger.updateThread(issue.number, { state: "stopped", needsYouReason: "Stopped via factory:stop" }, now);
-        return;
-      }
-      if (issue.labels.includes(this.cfg.labels.paused) && existing.state !== "paused") {
-        this.activeAborts.get(issue.number)?.abort();
-        this.ledger.updateThread(issue.number, { state: "paused" }, now);
-        return;
-      }
-      if (issue.labels.includes(this.cfg.labels.disagree)) {
-        this.ledger.markShadowDisagree(issue.number, true);
-      }
-      // Body edit TOCTOU check (B11).
-      if (existing.bodySha256 !== bodyHash && existing.state !== "needs_you" && existing.state !== "merged") {
-        await this.escalateNeedsYou(
-          existing,
-          "Issue body changed after intake snapshot (body hash mismatch); review before resuming.",
+    await this.github.addLabels(issueNumber, [this.cfg.labels.paused]);
+    const pr = extractPrFromPhase(thread.phase);
+    const res = this.applyMachineEvent(
+      thread,
+      { t: "handoff_started", paseoAgentId: null, paseoWorkspaceId: null, now },
+      { auditTopic: "handoff/prepared", now },
+    );
+    if (!res) {
+      throw new Error(`Could not transition Thread #${issueNumber} to owner_driving from ${thread.phase.kind}`);
+    }
+    return {
+      branchName: thread.branchName,
+      headSha: pr?.headSha ?? null,
+    };
+  }
+
+  private async reconcileIntakeIssue(issue: GitHubIssue, now: number): Promise<void> {
+    // ADR-0004 / B11: owner-authored issues ONLY (numeric user ID + OWNER association).
+    if (issue.authorId !== this.cfg.ownerUserId || issue.authorAssociation !== "OWNER") {
+      if (this.rejectedIssueCache.get(issue.number) !== issue.updatedAt) {
+        this.rejectedIssueCache.set(issue.number, issue.updatedAt);
+        this.ledger.appendAudit(
+          "intake/rejected_untrusted_author",
+          issue.number,
+          issue.authorLogin,
+          { authorId: issue.authorId, authorAssociation: issue.authorAssociation },
           now,
         );
       }
       return;
     }
 
-    // Verify via timeline API that the owner applied `ready-for-agent` (B11).
+    const existing = this.ledger.getThread(issue.number);
+    if (existing) {
+      return;
+    }
+
+    if (this.rejectedIssueCache.get(issue.number) === issue.updatedAt) {
+      return;
+    }
+
     const ownerLabeled = await this.github.verifyLabelActor(
       issue.number,
       this.cfg.labels.readyForAgent,
       this.cfg.ownerUserId,
     );
     if (!ownerLabeled) {
-      this.ledger.appendAudit("intake/rejected_label_actor", issue.number, "unknown", {
-        label: this.cfg.labels.readyForAgent,
-      });
+      this.rejectedIssueCache.set(issue.number, issue.updatedAt);
+      this.ledger.appendAudit(
+        "intake/rejected_label_actor",
+        issue.number,
+        "unknown",
+        { label: this.cfg.labels.readyForAgent },
+        now,
+      );
       return;
     }
 
     const themeLabel = issue.labels.find((l) => l.startsWith("theme:")) ?? null;
     this.ledger.upsertThread({
       issueNumber: issue.number,
-      repo: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
       title: issue.title,
       themeLabel,
-      bodySha256: bodyHash,
-      state: "queued",
+      bodySha256: sha256(issue.body),
+      phase: { kind: "queued" },
+      mode: "autonomous",
       now,
+    });
+  }
+
+  private applyMachineEvent(
+    thread: ThreadRecord,
+    ev: MachineEvent,
+    extra: {
+      bodySha256?: string;
+      lastSummary?: string | null;
+      incImplement?: boolean;
+      incRevision?: boolean;
+      incRebase?: boolean;
+      auditTopic?: string;
+      auditPayload?: unknown;
+      now?: number;
+    } = {},
+  ): ThreadRecord | null {
+    const stepped = stepPhase(thread.phase, thread.mode, ev, {
+      issueNumber: thread.issueNumber,
+      title: thread.title,
+      needsYouLabel: this.cfg.labels.needsYou,
+    });
+    if (!stepped.ok) {
+      return null;
+    }
+    return this.ledger.transition(thread.issueNumber, thread.version, stepped.next, {
+      nextMode: stepped.nextMode,
+      effects: stepped.effects,
+      ...extra,
     });
   }
 
@@ -204,242 +377,537 @@ export class Reconciler {
     thread: ThreadRecord,
     issue: GitHubIssue | undefined,
     mainSha: string,
-    remoteUrl: string,
     now: number,
-  ): Promise<boolean> {
-    if (["merged", "paused", "needs_you", "stopped", "failed"].includes(thread.state)) {
-      return false;
+  ): Promise<void> {
+    if (thread.phase.kind === "done") return;
+
+    // Load live PR whenever the phase carries a PR reference.
+    const prRef = extractPrFromPhase(thread.phase);
+    let pr: GitHubPr | null = null;
+    if (prRef) {
+      pr = await this.github.getPrLive(prRef.prNumber);
+    } else if (thread.phase.kind === "working" && thread.phase.prNumber) {
+      pr = await this.github.getPrLive(thread.phase.prNumber);
     }
-    if (!this.ledger.acquireLease(thread.issueNumber, this.workerId, this.cfg.staleLeaseMs, now)) {
-      return false;
+
+    // 1. Universal PR closed/merged observation (fixes Opus S7, S8, S9 & Neon P0.3!).
+    if (pr && pr.state === "closed") {
+      const running = this.runningTasks.get(thread.issueNumber);
+      if (running) {
+        running.abortCause = "control";
+        running.abortController.abort(new Error("PR closed externally"));
+      }
+      this.applyMachineEvent(
+        thread,
+        { t: "pr_observed", status: pr.merged ? "merged" : "closed" },
+        {
+          auditTopic: pr.merged ? "thread/owner_merged" : "thread/pr_closed",
+          auditPayload: { prNumber: pr.number, mergeCommitSha: pr.mergeCommitSha },
+          now,
+        },
+      );
+      return;
     }
 
-    try {
-      const fresh = this.ledger.getThread(thread.issueNumber)!;
+    // 2. Sync Shadow Mode disagreement label idempotently (fixes Opus O4).
+    const combinedLabels = [...new Set([...(issue?.labels ?? []), ...(pr?.labels ?? [])])];
+    if (thread.phase.kind === "shadow_ready") {
+      this.ledger.markShadowDisagree(
+        thread.issueNumber,
+        combinedLabels.includes(this.cfg.labels.disagree),
+      );
+    }
 
-      // Global stop / pause checks on PR too if PR exists.
-      let pr: GitHubPr | null = fresh.prNumber ? await this.github.getPrLive(fresh.prNumber) : null;
-      if (pr) {
-        if (pr.labels.includes(this.cfg.labels.stop)) {
-          this.ledger.updateThread(fresh.issueNumber, { state: "stopped" }, now);
-          return false;
+    // 3. Derive live owner Control from combined labels (NEVER stored as a Phase — fixes O1, O2, S2, S3!).
+    const control = deriveControl(combinedLabels, this.cfg.labels);
+    if (control !== "run") {
+      const running = this.runningTasks.get(thread.issueNumber);
+      if (running) {
+        running.abortCause = "control";
+        running.abortController.abort(new Error(`Owner control is ${control}`));
+      }
+      return;
+    }
+
+    // 4. Owner-driving (Paseo Handoff) stays parked until explicit `archangel resume`.
+    if (thread.phase.kind === "owner_driving") {
+      return;
+    }
+
+    // 5. `needs_you`: if owner cleared the `needs-you` label on GitHub, resume cleanly & re-snapshot bodySha (fixes S4, S15!).
+    if (thread.phase.kind === "needs_you") {
+      if (issue && !combinedLabels.includes(this.cfg.labels.needsYou)) {
+        const retried = this.applyMachineEvent(
+          thread,
+          { t: "owner_retry" },
+          { bodySha256: sha256(issue.body), auditTopic: "thread/owner_retried", now },
+        );
+        if (retried) {
+          thread = retried;
+        } else {
+          return;
         }
-        if (pr.labels.includes(this.cfg.labels.paused)) {
-          this.ledger.updateThread(fresh.issueNumber, { state: "paused" }, now);
-          return false;
-        }
-        if (pr.labels.includes(this.cfg.labels.disagree)) {
-          this.ledger.markShadowDisagree(fresh.issueNumber, true);
-        }
+      } else {
+        return;
+      }
+    }
+
+    // 6. Body edit TOCTOU check (ONLY while control === 'run' and not already needs_you/owner_driving/done — fixes O2, O3!).
+    if (issue && sha256(issue.body) !== thread.bodySha256) {
+      const running = this.runningTasks.get(thread.issueNumber);
+      if (running) {
+        running.abortCause = "control";
+        running.abortController.abort(new Error("Issue body modified mid-attempt"));
+      }
+      const escalated = this.applyMachineEvent(
+        thread,
+        {
+          t: "escalate",
+          code: "body_changed",
+          reason: "Issue body changed after intake snapshot (body hash mismatch); remove needs-you label or run `archangel retry` after reviewing.",
+        },
+        { auditTopic: "thread/needs_you", now },
+      );
+      if (escalated && pr) {
+        await this.postRecapSafe(escalated, pr, [{ code: "paused", message: "Issue body changed after intake" }]);
+      }
+      return;
+    }
+
+    // 7. If PR head moved externally (e.g., owner pushed to factory/<n>), restart Gate wait on the live headSha (Opus Step 5).
+    if (
+      pr &&
+      (thread.phase.kind === "awaiting_gate" ||
+        thread.phase.kind === "reviewing" ||
+        thread.phase.kind === "landing" ||
+        thread.phase.kind === "shadow_ready") &&
+      pr.headSha !== thread.phase.headSha
+    ) {
+      const moved = this.applyMachineEvent(
+        thread,
+        { t: "head_moved", pr: { prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha }, now },
+        { auditTopic: "thread/head_moved", auditPayload: { oldSha: thread.phase.headSha, newSha: pr.headSha }, now },
+      );
+      if (!moved) return;
+      thread = moved;
+    }
+
+    // 8. Dispatch by explicit Phase!
+    switch (thread.phase.kind) {
+      case "working":
+        // Single-flight background runner is already handling it.
+        return;
+
+      case "queued": {
+        if (!issue || this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+        await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
+        return;
       }
 
-      if (fresh.state === "queued") {
-        if (!issue) return false;
-        return await this.runImplementAttempt(fresh, issue, "implement", mainSha, remoteUrl, [], [], now);
+      case "awaiting_gate": {
+        if (!pr) return;
+        await this.reconcileGateWait(thread, pr, issue, mainSha, now);
+        return;
       }
 
-      if (fresh.state === "awaiting_gate") {
-        if (!pr || !fresh.headSha) {
-          await this.escalateNeedsYou(fresh, "Thread in awaiting_gate has no PR or head SHA.", now);
-          return false;
-        }
-        await this.reconcileGateWait(fresh, pr, issue, mainSha, remoteUrl, now);
-        return false;
+      case "reviewing": {
+        if (!pr || !issue) return;
+        await this.reconcileReviews(thread, pr, issue, mainSha, now);
+        return;
       }
 
-      if (fresh.state === "reviewing") {
-        if (!pr || !fresh.headSha || !issue) return false;
-        await this.runIndependentReviews(fresh, pr, issue, mainSha, now);
-        return false;
+      case "landing": {
+        if (!pr) return;
+        await this.reconcileLanding(thread, pr, issue, mainSha, now);
+        return;
       }
 
-      if (fresh.state === "ready_to_land" || fresh.state === "shadow_ready") {
-        if (!pr || !fresh.headSha) return false;
-        await this.reconcileLanding(fresh, pr, issue, mainSha, remoteUrl, now);
-        return false;
+      case "shadow_ready": {
+        // Already recorded shadow verdict; nothing to overwrite while PR remains open at same headSha.
+        return;
       }
-
-      return false;
-    } finally {
-      this.ledger.releaseLease(thread.issueNumber, this.workerId);
     }
   }
 
-  private async runImplementAttempt(
+  private async spawnAttempt(
     thread: ThreadRecord,
     issue: GitHubIssue,
-    kind: "implement" | "revise" | "rebase",
+    kind: AttemptKind,
     mainSha: string,
-    remoteUrl: string,
     gateViolations: string[],
     structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>,
     now: number,
+    explicitStartSha?: string,
   ): Promise<boolean> {
-    // Enforce daily USD spend cap (B9).
-    const spentToday = this.ledger.getSpendToday(now);
-    if (spentToday >= this.cfg.maxDailyUsd) {
-      this.ledger.appendAudit("budget/daily_cap_reached", thread.issueNumber, "archangel", {
-        spentToday,
-        maxDailyUsd: this.cfg.maxDailyUsd,
-      });
+    if (this.runningTasks.has(thread.issueNumber)) {
+      return false;
+    }
+    if (thread.mode === "advisory") {
+      // Structurally forbidden in advisory mode (ADR-0006 / Opus R4).
+      return false;
+    }
+    if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread) {
+      this.applyMachineEvent(
+        thread,
+        {
+          t: "escalate",
+          code: "max_attempts",
+          reason: `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread}).`,
+        },
+        { auditTopic: "thread/needs_you", now },
+      );
       return false;
     }
 
-    // Enforce per-Thread total implement attempt cap (B9).
-    if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread) {
-      await this.escalateNeedsYou(
-        thread,
-        `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread}).`,
+    // Atomic budget reservation BEFORE launching paid work (Codex #10 & Opus R8 — no $0.50 overshoot floor!).
+    const desiredReserve = Math.min(this.cfg.maxDailyUsd, 5.0);
+    const reservedUsd = this.ledger.reserveBudget(this.cfg.maxDailyUsd, desiredReserve, 0.05, now);
+    if (reservedUsd === null) {
+      this.ledger.appendAudit(
+        "budget/daily_cap_reached",
+        thread.issueNumber,
+        "archangel",
+        { ...this.ledger.getSpendBreakdown(now), maxDailyUsd: this.cfg.maxDailyUsd },
         now,
       );
       return false;
     }
 
-    const nextState = kind === "implement" ? "implementing" : kind === "revise" ? "revising" : "rebasing";
-    this.ledger.updateThread(
-      thread.issueNumber,
+    const attempt = this.ledger.startAttempt(thread.issueNumber, kind, now);
+    const fromSha =
+      explicitStartSha ??
+      (kind === "implement" ? mainSha : (extractPrFromPhase(thread.phase)?.headSha ?? mainSha));
+
+    const workingThread = this.applyMachineEvent(
+      thread,
       {
-        state: nextState,
-        implementCount: thread.implementCount + 1,
-        revisionCount: kind === "revise" ? thread.revisionCount + 1 : thread.revisionCount,
-        rebaseCount: kind === "rebase" ? thread.rebaseCount + 1 : thread.rebaseCount,
+        t: "start_working",
+        attemptId: attempt.id,
+        attempt: kind,
+        fromSha,
+        prNumber: extractPrFromPhase(thread.phase)?.prNumber ?? null,
       },
-      now,
+      {
+        incImplement: true,
+        incRevision: kind === "revise",
+        incRebase: kind === "rebase",
+        auditTopic: "thread/working",
+        now,
+      },
     );
 
-    const attempt = this.ledger.startAttempt(thread.issueNumber, kind, now);
-    const startRef = kind === "implement" ? mainSha : (thread.headSha ?? mainSha);
-    const cloneDir = await this.broker.createThrowawayClone(thread.issueNumber, startRef);
-    const abortController = new AbortController();
-    this.activeClones.set(thread.issueNumber, cloneDir);
-    this.activeAborts.set(thread.issueNumber, abortController);
+    if (!workingThread) {
+      this.ledger.finishAttempt(attempt.id, {
+        status: "aborted",
+        reservedUsd,
+        costUsd: 0,
+        errorMessage: "CAS transition to working rejected",
+      });
+      return false;
+    }
 
-    const prompt =
-      kind === "implement"
-        ? buildImplementPrompt({
-            issueNumber: issue.number,
-            title: issue.title,
-            body: issue.body,
-            repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
-          })
-        : kind === "revise"
-          ? buildRevisionPrompt({
+    const abortController = new AbortController();
+    const task: RunningTask = {
+      issueNumber: thread.issueNumber,
+      attemptId: attempt.id,
+      abortController,
+      abortCause: null,
+      cloneDir: "",
+      promise: Promise.resolve(),
+    };
+
+    const runPromise = this.executeAttemptTask(
+      workingThread,
+      issue,
+      attempt.id,
+      kind,
+      fromSha,
+      mainSha,
+      reservedUsd,
+      gateViolations,
+      structuredFindings,
+      task,
+    );
+    task.promise = runPromise;
+    this.runningTasks.set(thread.issueNumber, task);
+    return true;
+  }
+
+  private async executeAttemptTask(
+    workingThread: ThreadRecord,
+    issue: GitHubIssue,
+    attemptId: number,
+    kind: AttemptKind,
+    fromSha: string,
+    mainSha: string,
+    reservedUsd: number,
+    gateViolations: string[],
+    structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>,
+    task: RunningTask,
+  ): Promise<void> {
+    let cloneDir = "";
+    let actualCostUsd = 0;
+    let transcriptPath: string | null = null;
+
+    try {
+      cloneDir = await this.broker.createThrowawayClone(workingThread.issueNumber, fromSha);
+      task.cloneDir = cloneDir;
+
+      // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
+      await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
+
+      const prompt =
+        kind === "implement"
+          ? buildImplementPrompt({
               issueNumber: issue.number,
               title: issue.title,
               body: issue.body,
-              gateViolations,
-              structuredFindings,
+              repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
             })
-          : buildRebasePrompt({
-              issueNumber: issue.number,
-              title: issue.title,
-              baseBranch: this.cfg.defaultBranch,
-            });
-
-    const heartbeat = setInterval(() => {
-      this.ledger.heartbeatLease(thread.issueNumber, this.workerId);
-    }, 30_000);
-
-    try {
-      // Run repo `.agents/setup` read strictly from mainSha (zero secrets in env).
-      await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
+          : kind === "revise"
+            ? buildRevisionPrompt({
+                issueNumber: issue.number,
+                title: issue.title,
+                body: issue.body,
+                gateViolations,
+                structuredFindings,
+              })
+            : buildRebasePrompt({
+                issueNumber: issue.number,
+                title: issue.title,
+                baseBranch: this.cfg.defaultBranch,
+              });
 
       const result: ImplementResult = await this.implementer.run({
         issueNumber: issue.number,
         cloneDir,
         prompt,
-        abortController,
+        abortController: task.abortController,
         maxTurns: this.cfg.implementMaxTurns,
         timeoutMs: this.cfg.implementTimeoutMs,
-        maxBudgetUsd: Math.max(0.5, this.cfg.maxDailyUsd - spentToday),
+        maxBudgetUsd: reservedUsd,
       });
 
+      actualCostUsd = result.costUsd;
+      transcriptPath = result.transcriptPath;
+
       if (result.aborted) {
-        this.ledger.finishAttempt(attempt.id, {
+        const cause = task.abortCause ?? "timeout";
+        this.ledger.finishAttempt(attemptId, {
           status: "aborted",
-          costUsd: result.costUsd,
-          transcriptPath: result.transcriptPath,
-          errorMessage: "Aborted (handoff or stop)",
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorMessage: `Aborted (${cause})`,
         });
-        return false;
+
+        // If handoff aborted us, try to push any valid unpushed factory commits before releasing!
+        if (cause === "handoff") {
+          try {
+            const val = await this.broker.fetchAndValidateFromClone(
+              cloneDir,
+              workingThread.issueNumber,
+              mainSha,
+              this.effectiveGate,
+            );
+            if (val.protectedViolations.length === 0) {
+              const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
+              await this.broker.pushFactoryBranch(workingThread.branchName, val.headSha, freshRemoteUrl);
+              this.ledger.recordPushedSha(val.headSha, workingThread.issueNumber, "broker");
+            }
+          } catch {
+            // Non-fatal during handoff abort if clone had no commits.
+          }
+        }
+
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            { t: "attempt_aborted", cause, now: Date.now() },
+            { auditTopic: "attempt/aborted", auditPayload: { cause }, now: Date.now() },
+          );
+        }
+        return;
       }
 
-      // Hardened fetch + pre-push validation in Broker's bare clone (B2 + B4).
+      // Hardened fetch + pre-push validation (including local `archangel-gate` if built — Neon P1).
       const validation = await this.broker.fetchAndValidateFromClone(
         cloneDir,
-        thread.issueNumber,
+        workingThread.issueNumber,
         mainSha,
         this.effectiveGate,
       );
 
       if (validation.protectedViolations.length > 0) {
-        this.ledger.finishAttempt(attempt.id, {
+        this.ledger.finishAttempt(attemptId, {
           status: "failed",
           headSha: validation.headSha,
-          costUsd: result.costUsd,
-          transcriptPath: result.transcriptPath,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
           errorMessage: validation.protectedViolations.join("; "),
         });
-        await this.escalateNeedsYou(
-          this.ledger.getThread(thread.issueNumber)!,
-          `Broker pre-push validation failed: ${validation.protectedViolations.join("; ")}`,
-        );
-        return false;
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            {
+              t: "attempt_failed",
+              code: "broker_policy_failed",
+              reason: `Broker pre-push validation failed: ${validation.protectedViolations.join("; ")}`,
+            },
+            { auditTopic: "thread/needs_you" },
+          );
+        }
+        return;
       }
 
-      // Push strictly to factory/<issue> via GitHub App token.
-      await this.broker.pushFactoryBranch(thread.branchName, validation.headSha, remoteUrl);
-      this.ledger.recordPushedSha(validation.headSha, thread.issueNumber, "broker");
+      // Local `archangel-gate` pre-push verification (Neon P1).
+      if (validation.gateReport && !validation.gateReport.passed) {
+        const rep = validation.gateReport;
+        this.ledger.finishAttempt(attemptId, {
+          status: "failed",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorMessage: rep.violations.join("; "),
+        });
 
-      // Idempotently create or reuse PR by head branch.
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (!latest || latest.version !== workingThread.version) return;
+
+        if (rep.already_fixed) {
+          this.applyMachineEvent(
+            latest,
+            {
+              t: "attempt_failed",
+              code: "already_fixed",
+              reason: "Mechanical Gate: already-fixed (repro test already passes on main)",
+            },
+            { auditTopic: "thread/needs_you" },
+          );
+          return;
+        }
+
+        // Allow 1 pre-push local revision starting from the unpushed staging SHA!
+        if (kind === "implement" && latest.revisionCount < this.cfg.maxRevisionsPerThread) {
+          const backToQueued = this.applyMachineEvent(
+            latest,
+            { t: "attempt_aborted", cause: "control", now: Date.now() },
+            { auditTopic: "gate/local_failed_revising", auditPayload: { violations: rep.violations } },
+          );
+          if (backToQueued) {
+            // Release current runningTasks entry before spawning the pre-push revision.
+            this.runningTasks.delete(workingThread.issueNumber);
+            this.broker.removeClone(cloneDir);
+            cloneDir = "";
+            await this.spawnAttempt(
+              backToQueued,
+              issue,
+              "revise",
+              mainSha,
+              rep.violations,
+              [],
+              Date.now(),
+              validation.headSha,
+            );
+          }
+          return;
+        }
+
+        this.applyMachineEvent(
+          latest,
+          {
+            t: "attempt_failed",
+            code: "gate_failed",
+            reason: `Local mechanical Gate failed: ${rep.violations.join("; ")}`,
+          },
+          { auditTopic: "thread/needs_you" },
+        );
+        return;
+      }
+
+      // Re-check live GitHub kill-switch & CAS version right before pushing (Opus R6!).
+      const liveIssue = await this.github.getIssue(issue.number);
+      if (deriveControl(liveIssue.labels, this.cfg.labels) !== "run") {
+        this.ledger.finishAttempt(attemptId, {
+          status: "aborted",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorMessage: "Aborted right before push due to owner stop/pause label",
+        });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(latest, { t: "attempt_aborted", cause: "control", now: Date.now() });
+        }
+        return;
+      }
+
+      // Freshly mint push token immediately before pushing (fixes Opus R7 token expiry mid-attempt!).
+      const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
+      await this.broker.pushFactoryBranch(workingThread.branchName, validation.headSha, freshRemoteUrl);
+      this.ledger.recordPushedSha(validation.headSha, workingThread.issueNumber, "broker");
+
       const pr = await this.github.createPr({
         title: `fix(#${issue.number}): ${issue.title}`,
         body: `Closes #${issue.number}\n\nAutomated fix by Archangel.`,
-        head: thread.branchName,
+        head: workingThread.branchName,
         base: this.cfg.defaultBranch,
       });
 
-      this.lastSummary.set(thread.issueNumber, result.summary);
-      this.ledger.finishAttempt(attempt.id, {
+      this.ledger.finishAttempt(attemptId, {
         status: "succeeded",
         headSha: validation.headSha,
-        costUsd: result.costUsd,
-        transcriptPath: result.transcriptPath,
-      });
-      const updated = this.ledger.updateThread(thread.issueNumber, {
-        state: "awaiting_gate",
-        prNumber: pr.number,
-        headSha: validation.headSha,
-        gateWaitStartedAt: Date.now(),
-        gateRerunCount: 0,
+        costUsd: actualCostUsd,
+        reservedUsd,
+        transcriptPath,
       });
 
-      await this.github.upsertRecapComment(
-        pr.number,
-        renderRecapComment({
-          thread: updated,
-          reviews: [],
-          blockers: [{ code: "check_pending", message: "Waiting for required Gate & CI checks" }],
-          summary: result.summary,
-        }),
-      );
-      return true;
+      const latest = this.ledger.getThread(workingThread.issueNumber);
+      if (latest && latest.version === workingThread.version) {
+        const updated = this.applyMachineEvent(
+          latest,
+          {
+            t: "attempt_pushed",
+            pr: { prNumber: pr.number, headSha: validation.headSha, baseSha: pr.baseSha },
+            now: Date.now(),
+          },
+          { lastSummary: result.summary, auditTopic: "thread/pr_pushed" },
+        );
+        if (updated) {
+          await this.postRecapSafe(updated, pr, [
+            { code: "check_pending", message: "Waiting for required Gate & CI checks" },
+          ]);
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.ledger.finishAttempt(attempt.id, {
+      this.ledger.finishAttempt(attemptId, {
         status: "failed",
+        costUsd: actualCostUsd,
+        reservedUsd,
+        transcriptPath,
         errorMessage: msg,
       });
-      await this.escalateNeedsYou(
-        this.ledger.getThread(thread.issueNumber)!,
-        `Implement attempt failed: ${msg}`,
-      );
-      return false;
+      const latest = this.ledger.getThread(workingThread.issueNumber);
+      if (latest && latest.version === workingThread.version) {
+        this.applyMachineEvent(
+          latest,
+          { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
+          { auditTopic: "thread/needs_you" },
+        );
+      }
     } finally {
-      clearInterval(heartbeat);
-      this.activeAborts.delete(thread.issueNumber);
-      this.activeClones.delete(thread.issueNumber);
-      this.broker.removeClone(cloneDir);
+      if (this.runningTasks.get(workingThread.issueNumber) === task) {
+        this.runningTasks.delete(workingThread.issueNumber);
+      }
+      if (cloneDir) {
+        this.broker.removeClone(cloneDir);
+      }
     }
   }
 
@@ -448,106 +916,134 @@ export class Reconciler {
     pr: GitHubPr,
     issue: GitHubIssue | undefined,
     mainSha: string,
-    remoteUrl: string,
     now: number,
   ): Promise<void> {
-    const checks = await this.github.getCheckRunsForRef(thread.headSha!);
-    const required = this.effectiveRequiredChecks.map((name) => ({
-      name,
-      run: checks.find((c) => c.name === name),
-    }));
+    if (thread.phase.kind !== "awaiting_gate") return;
 
-    const waitMs = now - (thread.gateWaitStartedAt ?? thread.updatedAt);
+    const checks = await this.github.getCheckRunsForRef(pr.headSha);
+    const verdict = classifyGate({
+      requiredChecks: this.effectiveRequiredChecks,
+      checks,
+      since: thread.phase.since,
+      nudgedAt: thread.phase.nudgedAt,
+      now,
+      graceMs: this.cfg.gateStartGraceMs,
+      timeoutMs: this.cfg.gateTimeoutMs,
+    });
 
-    // Gate never started after grace period -> escalate or rerun once.
-    const missing = required.filter((r) => !r.run);
-    if (missing.length > 0) {
-      if (waitMs > this.cfg.gateTimeoutMs) {
-        await this.escalateNeedsYou(
+    switch (verdict.status) {
+      case "missing_grace":
+      case "pending":
+        return;
+
+      case "missing_nudge":
+        this.applyMachineEvent(
           thread,
-          `Required checks did not complete within timeout (${missing.map((m) => m.name).join(", ")}).`,
-          now,
+          { t: "gate_nudged", now },
+          { auditTopic: "gate/grace_exceeded", auditPayload: { missing: verdict.missing }, now },
         );
-      } else if (waitMs > this.cfg.gateStartGraceMs && thread.gateRerunCount === 0) {
-        this.ledger.updateThread(thread.issueNumber, { gateRerunCount: 1 }, now);
-        this.ledger.appendAudit("gate/grace_exceeded", thread.issueNumber, "archangel", {
-          missing: missing.map((m) => m.name),
-        });
-      }
-      return;
-    }
+        return;
 
-    if (required.some((r) => r.run!.status !== "completed")) {
-      if (waitMs > this.cfg.gateTimeoutMs) {
-        await this.escalateNeedsYou(thread, "Required checks timed out after 1h.", now);
-      }
-      return;
-    }
-
-    // Check untrusted app sources on required checks (B4).
-    const untrusted = required.filter(
-      (r) => r.run!.appSlug && r.run!.appSlug !== "github-actions",
-    );
-    if (untrusted.length > 0) {
-      await this.escalateNeedsYou(
-        thread,
-        `Untrusted check source for ${untrusted.map((u) => u.name).join(", ")}`,
-        now,
-      );
-      return;
-    }
-
-    const failed = required.filter((r) => r.run!.conclusion !== "success");
-    if (failed.length > 0) {
-      // One automatic revision attempt on Gate/CI failure.
-      if (issue && thread.revisionCount < this.cfg.maxRevisionsPerThread) {
-        await this.runImplementAttempt(
+      case "timeout":
+        this.applyMachineEvent(
           thread,
-          issue,
-          "revise",
-          mainSha,
-          remoteUrl,
-          failed.map((f) => `${f.name}: ${f.run!.conclusion ?? "failed"}`),
-          [],
-          now,
+          { t: "escalate", code: "gate_timeout", reason: verdict.detail },
+          { auditTopic: "thread/needs_you", now },
         );
-      } else {
-        await this.escalateNeedsYou(
-          thread,
-          `Required checks failed after max revisions: ${failed.map((f) => f.name).join(", ")}`,
-          now,
-        );
-      }
-      return;
-    }
+        return;
 
-    // All required checks green -> advance to independent cross-vendor review!
-    const updated = this.ledger.updateThread(thread.issueNumber, { state: "reviewing" }, now);
-    if (issue) {
-      await this.runIndependentReviews(updated, pr, issue, mainSha, now);
+      case "untrusted":
+        this.applyMachineEvent(
+          thread,
+          {
+            t: "escalate",
+            code: "gate_untrusted",
+            reason: `Untrusted check source: ${verdict.names.join(", ")}`,
+          },
+          { auditTopic: "thread/needs_you", now },
+        );
+        return;
+
+      case "failed": {
+        const failMsgs = verdict.failed.map((f) => `${f.name}: ${f.conclusion}`);
+        if (
+          thread.mode === "autonomous" &&
+          issue &&
+          thread.revisionCount < this.cfg.maxRevisionsPerThread &&
+          this.runningTasks.size < this.cfg.maxConcurrentThreads
+        ) {
+          await this.spawnAttempt(thread, issue, "revise", mainSha, failMsgs, [], now);
+        } else {
+          this.applyMachineEvent(
+            thread,
+            {
+              t: "escalate",
+              code: "gate_failed",
+              reason: `Required checks failed (${thread.mode} mode): ${failMsgs.join(", ")}`,
+            },
+            { auditTopic: "thread/needs_you", now },
+          );
+        }
+        return;
+      }
+
+      case "green": {
+        const updated = this.applyMachineEvent(
+          thread,
+          { t: "gate_passed" },
+          { auditTopic: "gate/passed", now },
+        );
+        if (updated && issue) {
+          await this.reconcileReviews(updated, pr, issue, mainSha, now);
+        }
+      }
     }
   }
 
-  private async runIndependentReviews(
+  private async reconcileReviews(
     thread: ThreadRecord,
     pr: GitHubPr,
     issue: GitHubIssue,
     mainSha: string,
     now: number,
   ): Promise<void> {
-    const headSha = thread.headSha!;
+    if (thread.phase.kind !== "reviewing") return;
+    const headSha = thread.phase.headSha;
     const existing = this.ledger.getReviewsForSha(thread.issueNumber, headSha);
     const haveOpenAi = existing.some((r) => r.vendor === "openai");
     const haveGemini = existing.some((r) => r.vendor === "gemini");
 
     if (!haveOpenAi || !haveGemini) {
-      // Load diff & full touched files directly from Broker bare repo (no agent-writable checkout).
-      const { diffText, touchedFiles } = await this.broker
-        .getDiffAndTouchedFiles(mainSha, headSha)
-        .catch(() => ({ diffText: "", touchedFiles: {} as Record<string, string> }));
+      // Reserve daily budget BEFORE paid reviewer calls (Codex #10).
+      const reservedUsd = this.ledger.reserveBudget(
+        this.cfg.maxDailyUsd,
+        REVIEW_RESERVATION_USD,
+        0.01,
+        now,
+      );
+      if (reservedUsd === null) {
+        this.ledger.appendAudit(
+          "budget/daily_cap_reached",
+          thread.issueNumber,
+          "archangel",
+          { phase: "reviewing", ...this.ledger.getSpendBreakdown(now) },
+          now,
+        );
+        return;
+      }
 
+      let reviewCostTotal = 0;
       try {
-        const results = await this.reviewers.reviewAll({
+        // Fail CLOSED on diff retrieval failure — NEVER feed an empty diff to reviewers (Codex #4 & Opus L6!).
+        const { diffText, touchedFiles } = await this.broker.getDiffAndTouchedFiles(
+          pr.baseSha,
+          headSha,
+        );
+        if (!diffText.trim()) {
+          throw new Error(`Empty diff between base ${pr.baseSha.slice(0, 8)} and head ${headSha.slice(0, 8)}`);
+        }
+
+        const batch = await this.reviewers.reviewAll({
           issueNumber: issue.number,
           title: issue.title,
           body: issue.body,
@@ -561,69 +1057,101 @@ export class Reconciler {
           ],
         });
 
-        for (const r of results) {
-          // Runtime records the SHA it fed — never trust a model-echoed SHA (B7).
+        // Persist EVERY settled vendor result immediately even if the other vendor failed (Opus L4/M5!).
+        for (const r of batch.results) {
+          reviewCostTotal += r.costUsd;
           this.ledger.recordReview({
             issueNumber: thread.issueNumber,
             headSha,
             vendor: r.vendor,
             verdict: r.verdict,
             findings: r.findings,
-            costUsd: r.costUsd,
+            costUsd: 0, // Settled via reserveBudget/settleBudget below to avoid double-counting.
             now,
           });
         }
-        this.ledger.updateThread(thread.issueNumber, { reviewOutageStartedAt: null }, now);
-      } catch (err) {
-        // Outage backoff with 6h limit -> Needs You (never bypass quorum).
-        const outageStart = thread.reviewOutageStartedAt ?? now;
-        this.ledger.updateThread(thread.issueNumber, { reviewOutageStartedAt: outageStart }, now);
-        if (now - outageStart >= this.cfg.reviewerOutageMaxMs) {
-          await this.escalateNeedsYou(
-            thread,
-            `Reviewer vendor unavailable for >6h: ${err instanceof Error ? err.message : String(err)}`,
-            now,
-          );
+        this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
+
+        if (batch.errors.length > 0) {
+          const errMsg = batch.errors.map((e) => `${e.vendor}: ${e.error}`).join("; ");
+          await this.handleReviewOutage(thread, errMsg, now);
+          return;
         }
+      } catch (err) {
+        this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.handleReviewOutage(thread, msg, now);
         return;
       }
     }
 
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, headSha);
-    const vetoes = reviews.filter((r) => r.verdict !== "approve");
+    if (reviews.length < 2) return;
 
+    const vetoes = reviews.filter((r) => r.verdict !== "approve");
     if (vetoes.length > 0) {
       const structuredFindings = vetoes.map((v) => ({
         vendor: v.vendor,
         findings: JSON.parse(v.findingsJson) as ReviewFinding[],
       }));
 
-      if (thread.revisionCount < this.cfg.maxRevisionsPerThread) {
-        const remoteUrl = await this.github.getRemoteUrlWithToken();
-        await this.runImplementAttempt(
-          thread,
-          issue,
-          "revise",
-          mainSha,
-          remoteUrl,
-          [],
-          structuredFindings,
-          now,
-        );
+      if (
+        thread.mode === "autonomous" &&
+        thread.revisionCount < this.cfg.maxRevisionsPerThread &&
+        this.runningTasks.size < this.cfg.maxConcurrentThreads
+      ) {
+        await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
       } else {
-        await this.escalateNeedsYou(
+        const escalated = this.applyMachineEvent(
           thread,
-          `Independent reviewer vetoed ${headSha.slice(0, 8)} (${vetoes.map((v) => v.vendor).join(", ")}).`,
-          now,
+          {
+            t: "escalate",
+            code: "review_vetoed",
+            reason: `Independent reviewer vetoed ${headSha.slice(0, 8)} (${vetoes.map((v) => v.vendor).join(", ")}).`,
+          },
+          { auditTopic: "thread/needs_you", now },
         );
+        if (escalated) {
+          await this.postRecapSafe(escalated, pr, [
+            { code: "review_vetoed", message: `Vetoed by ${vetoes.map((v) => v.vendor).join(", ")}` },
+          ]);
+        }
       }
       return;
     }
 
-    // Both independent vendors approved -> proceed to Lander evaluation.
-    const ready = this.ledger.updateThread(thread.issueNumber, { state: "ready_to_land" }, now);
-    const remoteUrl = await this.github.getRemoteUrlWithToken();
-    await this.reconcileLanding(ready, pr, issue, mainSha, remoteUrl, now);
+    const landing = this.applyMachineEvent(
+      thread,
+      { t: "reviews_approved" },
+      { auditTopic: "review/quorum_approved", now },
+    );
+    if (landing) {
+      await this.reconcileLanding(landing, pr, issue, mainSha, now);
+    }
+  }
+
+  private async handleReviewOutage(thread: ThreadRecord, errMsg: string, now: number): Promise<void> {
+    if (thread.phase.kind !== "reviewing") return;
+    const outageSince = thread.phase.outageSince ?? now;
+    if (now - outageSince >= this.cfg.reviewerOutageMaxMs) {
+      this.applyMachineEvent(
+        thread,
+        {
+          t: "escalate",
+          code: "review_outage",
+          reason: `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
+        },
+        { auditTopic: "thread/needs_you", now },
+      );
+      return;
+    }
+    if (thread.phase.outageSince === null) {
+      this.applyMachineEvent(
+        thread,
+        { t: "review_outage", now },
+        { auditTopic: "review/outage_started", auditPayload: { error: errMsg }, now },
+      );
+    }
   }
 
   private async reconcileLanding(
@@ -631,18 +1159,37 @@ export class Reconciler {
     _stalePr: GitHubPr,
     issue: GitHubIssue | undefined,
     mainSha: string,
-    remoteUrl: string,
     now: number,
   ): Promise<void> {
-    // Live re-read right before merge (B7 TOCTOU defense).
-    const pr = await this.github.getPrLive(thread.prNumber!);
+    if (thread.phase.kind !== "landing") return;
+
+    // Live re-read right before landing (ADR-0004 / B7 TOCTOU defense).
+    const pr = await this.github.getPrLive(thread.phase.prNumber);
+    if (pr.state === "closed") {
+      this.applyMachineEvent(
+        thread,
+        { t: "pr_observed", status: pr.merged ? "merged" : "closed" },
+        { auditTopic: pr.merged ? "thread/owner_merged" : "thread/pr_closed", now },
+      );
+      return;
+    }
+
     const checks = await this.github.getCheckRunsForRef(pr.headSha);
     const mainChecks = await this.github.getCheckRunsForRef(mainSha);
+
+    // Fail CLOSED on missing/untrusted main checks (Codex #2 & Neon P0.5 — no hardcoded "Test ("!).
+    const mainRequired = this.effectiveRequiredChecks.filter((n) => n !== "Gate");
     const mainTipGreen =
-      mainChecks.length === 0 ||
-      mainChecks
-        .filter((c) => c.name.startsWith("Test ("))
-        .every((c) => c.status === "completed" && c.conclusion === "success");
+      mainRequired.length > 0 &&
+      mainRequired.every((reqName) => {
+        const run = mainChecks.find((c) => c.name === reqName);
+        return (
+          run !== undefined &&
+          run.appSlug === "github-actions" &&
+          run.status === "completed" &&
+          run.conclusion === "success"
+        );
+      });
 
     const shaInfo = this.ledger.isKnownSha(thread.issueNumber, pr.headSha);
     const protectedFilesTouched = pr.changedFiles.filter((f) =>
@@ -652,18 +1199,21 @@ export class Reconciler {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const cb = this.ledger.getCircuitBreaker();
 
+    // Strict branch freshness: PR base SHA MUST match current main tip (Codex #3 — never substitute mergeTreeClean!).
+    const branchUpToDateWithMain = pr.baseSha === mainSha;
+
     const blockers = computeBlockers({
       prOpen: pr.state === "open",
       prDraft: pr.draft,
       headSha: pr.headSha,
       shaRecordedByBroker: shaInfo.known && shaInfo.origin === "broker",
-      postHandoff: thread.postHandoff,
+      postHandoff: thread.mode === "advisory",
       labels: [...new Set([...pr.labels, ...(issue?.labels ?? [])])],
       pauseLabel: this.cfg.labels.paused,
       stopLabel: this.cfg.labels.stop,
       circuitBreakerTripped: cb.tripped,
       mainTipGreen,
-      branchUpToDateWithMain: pr.baseSha === mainSha || mergeTreeClean,
+      branchUpToDateWithMain,
       protectedFilesTouched,
       requiredChecks: this.effectiveRequiredChecks,
       checks,
@@ -675,62 +1225,78 @@ export class Reconciler {
       shadowMode: this.cfg.shadowMode,
     });
 
-    // Handle merge conflicts with 1 automated rebase Attempt.
-    if (blockers.some((b) => b.code === "merge_conflict")) {
-      if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
-        await this.runImplementAttempt(thread, issue, "rebase", mainSha, remoteUrl, [], [], now);
+    // Handle merge conflicts or stale base with 1 automated rebase Attempt (autonomous mode only!).
+    if (
+      blockers.some((b) => b.code === "merge_conflict" || b.code === "branch_behind_main") &&
+      thread.mode === "autonomous"
+    ) {
+      if (
+        issue &&
+        thread.rebaseCount < this.cfg.maxRebasesPerThread &&
+        this.runningTasks.size < this.cfg.maxConcurrentThreads
+      ) {
+        await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
         return;
       }
-      await this.escalateNeedsYou(thread, "Merge conflict persists after automated rebase attempt.", now);
+      const escalated = this.applyMachineEvent(
+        thread,
+        {
+          t: "escalate",
+          code: "merge_conflict",
+          reason: "Branch is behind main or conflicted after max rebase attempts.",
+        },
+        { auditTopic: "thread/needs_you", now },
+      );
+      if (escalated) {
+        await this.postRecapSafe(escalated, pr, blockers);
+      }
       return;
     }
 
     // Shadow Mode: ready except for shadow_mode_active.
     if (isShadowReady(blockers)) {
-      if (thread.state !== "shadow_ready") {
-        const updated = this.ledger.updateThread(thread.issueNumber, { state: "shadow_ready" }, now);
-        this.ledger.recordMerge({
-          issueNumber: thread.issueNumber,
-          prNumber: pr.number,
-          headSha: pr.headSha,
-          shadowOnly: true,
-          now,
-        });
-        await this.github.upsertRecapComment(
-          pr.number,
-          renderRecapComment({
-            thread: updated,
-            reviews,
-            blockers,
-            wouldMerge: true,
-            summary: this.lastSummary.get(thread.issueNumber),
-          }),
-        );
+      const verdict = this.ledger.recordMerge({
+        issueNumber: thread.issueNumber,
+        prNumber: pr.number,
+        headSha: pr.headSha,
+        shadowOnly: true,
+        now,
+      });
+      const updated = this.applyMachineEvent(
+        thread,
+        { t: "shadow_recorded", verdictId: verdict.id },
+        { auditTopic: "thread/shadow_ready", now },
+      );
+      if (updated) {
+        await this.postRecapSafe(updated, pr, blockers, { wouldMerge: true });
       }
       return;
     }
 
     if (blockers.length > 0) {
-      await this.github.upsertRecapComment(
-        pr.number,
-        renderRecapComment({
-          thread,
-          reviews,
-          blockers,
-          summary: this.lastSummary.get(thread.issueNumber),
-        }),
-      );
+      await this.postRecapSafe(thread, pr, blockers);
       return;
     }
 
-    // All blockers empty -> squash merge pinned strictly to approved head SHA (B7).
-    const { squashSha } = await this.github.squashMergePr(
-      pr.number,
-      pr.headSha,
-      `fix(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
-    );
-    const merged = this.ledger.updateThread(thread.issueNumber, { state: "merged" }, now);
-    this.ledger.recordMerge({
+    // All blockers empty -> squash merge pinned strictly to approved head SHA (B7 + Opus S10 recovery!).
+    let squashSha: string;
+    try {
+      const mergedRes = await this.github.squashMergePr(
+        pr.number,
+        pr.headSha,
+        `fix(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
+      );
+      squashSha = mergedRes.squashSha;
+    } catch (err) {
+      // Re-read PR to recover if merge actually succeeded before a network error/timeout (Opus S10).
+      const after = await this.github.getPrLive(pr.number).catch(() => null);
+      if (!after?.merged || !after.mergeCommitSha) {
+        throw err;
+      }
+      squashSha = after.mergeCommitSha;
+    }
+
+    const mergeRow = this.ledger.recordMerge({
       issueNumber: thread.issueNumber,
       prNumber: pr.number,
       headSha: pr.headSha,
@@ -738,70 +1304,119 @@ export class Reconciler {
       shadowOnly: false,
       now,
     });
-    await this.github.upsertRecapComment(
-      pr.number,
-      renderRecapComment({
-        thread: merged,
-        reviews,
-        blockers: [],
-        summary: `Squash-merged into \`${this.cfg.defaultBranch}\` at \`${squashSha.slice(0, 10)}\`.`,
-      }),
+    const mergedThread = this.applyMachineEvent(
+      thread,
+      { t: "landed", mergeId: mergeRow.id },
+      {
+        lastSummary: `Squash-merged into \`${this.cfg.defaultBranch}\` at \`${squashSha.slice(0, 10)}\`.`,
+        auditTopic: "thread/merged",
+        now,
+      },
     );
+    if (mergedThread) {
+      await this.postRecapSafe(mergedThread, pr, []);
+    }
   }
 
   /**
-   * Post-merge main health monitoring + global circuit breaker + exact-inverse revert PR (B8).
+   * Post-merge main health watch (Opus Step 5 / R10 / S11 / S13):
+   * Uses `MainWatch`, configured non-Gate `requiredChecks`, tracks exact rerun IDs,
+   * enforces watch timeout, and isolates each merge in its own try/catch.
    */
-  private async reconcilePostMergeMain(mainSha: string, remoteUrl: string): Promise<void> {
+  private async reconcilePostMergeMain(mainSha: string, now: number): Promise<void> {
     const pending = this.ledger.listPendingPostMergeChecks();
     if (pending.length === 0) return;
 
+    const mainRequired = this.effectiveRequiredChecks.filter((n) => n !== "Gate");
+    if (mainRequired.length === 0) return;
+
     for (const m of pending) {
-      if (!m.squashSha) continue;
-      const checks = await this.github.getCheckRunsForRef(m.squashSha);
-      const ciRuns = checks.filter((c) => c.name.startsWith("Test ("));
-      if (ciRuns.length === 0 || ciRuns.some((c) => c.status !== "completed")) {
-        continue;
+      try {
+        await this.reconcileOnePostMerge(m, mainRequired, mainSha, now);
+      } catch (err) {
+        this.ledger.appendAudit(
+          "post_merge/error",
+          m.issueNumber,
+          "archangel",
+          { mergeId: m.id, error: err instanceof Error ? err.message : String(err) },
+          now,
+        );
       }
-      const failed = ciRuns.filter((c) => c.conclusion !== "success");
-      if (failed.length === 0) {
-        this.ledger.updateMergeMainStatus(m.id, "green");
-        continue;
+    }
+  }
+
+  private async reconcileOnePostMerge(
+    m: MergeRecord,
+    mainRequired: string[],
+    mainSha: string,
+    now: number,
+  ): Promise<void> {
+    if (!m.squashSha) return;
+    const checks = await this.github.getCheckRunsForRef(m.squashSha);
+    const matched = mainRequired
+      .map((name) => checks.find((c) => c.name === name && c.appSlug === "github-actions"))
+      .filter((c): c is NonNullable<typeof c> => c !== undefined);
+
+    const watch: MainWatch = m.mainWatch;
+    const startedAt = watch.kind === "watching" ? watch.since : watch.kind === "rerun_requested" ? watch.at : m.createdAt;
+
+    if (matched.length < mainRequired.length || matched.some((c) => c.status !== "completed")) {
+      if (now - startedAt > POST_MERGE_WATCH_TIMEOUT_MS) {
+        this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
+        this.ledger.appendAudit("post_merge/timed_out", m.issueNumber, "archangel", { mergeId: m.id }, now);
       }
+      return;
+    }
 
-      // Re-run once to rule out flakes before tripping circuit breaker / reverting (B8).
-      if (m.mainStatus === "pending") {
-        for (const f of failed) {
-          await this.github.rerunCheckRun(f.id);
-        }
-        this.ledger.updateMergeMainStatus(m.id, "rerun_once");
-        continue;
+    const failed = matched.filter((c) => c.conclusion !== "success");
+    if (failed.length === 0) {
+      this.ledger.updateMergeMainWatch(m.id, { kind: "green" });
+      return;
+    }
+
+    if (watch.kind === "watching") {
+      const runIds: number[] = [];
+      for (const f of failed) {
+        await this.github.rerunCheckRun(f.id);
+        runIds.push(f.id);
       }
+      this.ledger.updateMergeMainWatch(m.id, { kind: "rerun_requested", runIds, at: now });
+      return;
+    }
 
-      // Confirmed red main on factory squash SHA -> trip global circuit breaker!
-      this.ledger.setCircuitBreaker(
-        true,
-        `main CI failed on factory squash ${m.squashSha.slice(0, 10)} (issue #${m.issueNumber})`,
-      );
+    if (watch.kind === "rerun_requested") {
+      // Wait if GitHub hasn't yet reflected the rerun (or if the rerun is still in progress).
+      // Since our GitHub client deduplicates to latest id, if all failed ids are still completed+failed,
+      // confirm red main!
+      const reason = `main CI failed on factory squash ${m.squashSha.slice(0, 10)} (issue #${m.issueNumber})`;
+      this.ledger.setCircuitBreaker(true, reason, now);
 
-      // Only auto-open an exact-inverse revert PR if this merge is still the tip of main (clear attribution).
       if (mainSha === m.squashSha) {
         const rev = await this.broker.createExactRevertBranch(m.issueNumber, mainSha, m.squashSha);
-        await this.broker.pushFactoryBranch(rev.branchName, rev.headSha, remoteUrl);
+        const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
+        await this.broker.pushFactoryBranch(rev.branchName, rev.headSha, freshRemoteUrl);
         const revertPr = await this.github.createPr({
           title: `revert(#${m.issueNumber}): revert ${m.squashSha.slice(0, 8)} after red main`,
           body: `Automated exact-inverse revert of ${m.squashSha} (PR #${m.prNumber}) after confirmed CI failure on \`${this.cfg.defaultBranch}\`.\n\nGlobal landing circuit breaker is now **TRIPPED**.`,
           head: rev.branchName,
           base: this.cfg.defaultBranch,
         });
-        this.ledger.updateMergeMainStatus(m.id, "red_reverted", revertPr.number);
+        this.ledger.updateMergeMainWatch(m.id, {
+          kind: "red",
+          revertPrNumber: revertPr.number,
+          escalated: false,
+        });
         await this.notifier.notifyNeedsYou({
           issueNumber: m.issueNumber,
           title: `Red main after merge of PR #${m.prNumber}`,
           reason: `Circuit breaker tripped and exact-inverse revert PR #${revertPr.number} opened.`,
         });
       } else {
-        this.ledger.updateMergeMainStatus(m.id, "red_escalated");
+        this.ledger.updateMergeMainWatch(m.id, {
+          kind: "red",
+          revertPrNumber: null,
+          escalated: true,
+        });
         await this.notifier.notifyNeedsYou({
           issueNumber: m.issueNumber,
           title: `Red main on ${m.squashSha.slice(0, 8)} (multiple merges interleaved)`,
@@ -811,34 +1426,21 @@ export class Reconciler {
     }
   }
 
-  private async escalateNeedsYou(
+  private async postRecapSafe(
     thread: ThreadRecord,
-    reason: string,
-    now = Date.now(),
+    pr: GitHubPr,
+    blockers: ReturnType<typeof computeBlockers>,
+    opts: { wouldMerge?: boolean } = {},
   ): Promise<void> {
-    const updated = this.ledger.updateThread(
-      thread.issueNumber,
-      { state: "needs_you", needsYouReason: reason },
-      now,
+    const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
+    await this.github.upsertRecapComment(
+      pr.number,
+      renderRecapComment({
+        thread,
+        reviews,
+        blockers,
+        wouldMerge: opts.wouldMerge,
+      }),
     );
-    this.ledger.appendAudit("thread/needs_you", thread.issueNumber, "archangel", { reason });
-    await this.github.addLabels(thread.issueNumber, [this.cfg.labels.needsYou]);
-    if (updated.prNumber) {
-      await this.github.upsertRecapComment(
-        updated.prNumber,
-        renderRecapComment({
-          thread: updated,
-          reviews: updated.headSha
-            ? this.ledger.getReviewsForSha(updated.issueNumber, updated.headSha)
-            : [],
-          blockers: [{ code: "paused", message: reason }],
-        }),
-      );
-    }
-    await this.notifier.notifyNeedsYou({
-      issueNumber: thread.issueNumber,
-      title: thread.title,
-      reason,
-    });
   }
 }

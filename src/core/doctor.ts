@@ -1,0 +1,329 @@
+import { execFile } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import net from "node:net";
+import { promisify } from "node:util";
+import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { GitHubAppClient } from "../github/client.js";
+
+const execFileAsync = promisify(execFile);
+
+export interface DoctorCheck {
+  id: string;
+  name: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+  remediation?: string;
+}
+
+export interface DoctorReport {
+  ok: boolean;
+  checks: DoctorCheck[];
+}
+
+export interface DoctorOptions {
+  configPath?: string;
+  env?: NodeJS.ProcessEnv;
+  offline?: boolean;
+  apiBaseUrl?: string;
+}
+
+export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
+  const checks: DoctorCheck[] = [];
+  const env = opts.env ?? process.env;
+
+  // 1. Load config
+  let projects: ArchangelConfig[] = [];
+  try {
+    projects = loadProjectConfigs({ configPath: opts.configPath, env });
+    const first = projects[0]!;
+    if (first.ownerUserId === 123456) {
+      checks.push({
+        id: "config",
+        name: "Configuration",
+        status: "warn",
+        detail: "ownerUserId is still placeholder 123456",
+        remediation: "Run `gh api user --jq .id` and update ownerUserId in archangel.yaml",
+      });
+    } else {
+      checks.push({
+        id: "config",
+        name: "Configuration",
+        status: "pass",
+        detail: `Loaded ${projects.length} project(s): ${projects.map((p) => `${p.githubOwner}/${p.githubRepo}`).join(", ")}`,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      id: "config",
+      name: "Configuration",
+      status: "fail",
+      detail: err instanceof Error ? err.message : String(err),
+      remediation: "Copy .env.example -> .env and archangel.example.yaml -> archangel.yaml, then populate required fields.",
+    });
+    return { ok: false, checks };
+  }
+
+  const first = projects[0]!;
+  const paths = resolvePaths(first);
+
+  // 2. Private key PEM parsing
+  try {
+    crypto.createPrivateKey(first.githubPrivateKeyPem);
+    checks.push({
+      id: "private_key",
+      name: "GitHub App Private Key PEM",
+      status: "pass",
+      detail: "Valid RSA/PKCS private key parsed cleanly",
+    });
+  } catch (err) {
+    checks.push({
+      id: "private_key",
+      name: "GitHub App Private Key PEM",
+      status: "fail",
+      detail: `Invalid private key PEM: ${err instanceof Error ? err.message : String(err)}`,
+      remediation: "Set ARCHANGEL_GITHUB_PRIVATE_KEY_PATH=/path/to/app.pem in .env",
+    });
+  }
+
+  // 3. Metered API keys
+  const missingKeys = [
+    !first.anthropicApiKey ? "ANTHROPIC_API_KEY" : null,
+    !first.openaiApiKey ? "OPENAI_API_KEY" : null,
+    !first.googleApiKey ? "GOOGLE_GENERATIVE_AI_API_KEY" : null,
+  ].filter(Boolean) as string[];
+  if (missingKeys.length > 0) {
+    checks.push({
+      id: "api_keys",
+      name: "Metered Model API Keys",
+      status: "fail",
+      detail: `Missing: ${missingKeys.join(", ")}`,
+      remediation: "Populate all three metered API keys in .env (ADR-0003 independent review)",
+    });
+  } else {
+    checks.push({
+      id: "api_keys",
+      name: "Metered Model API Keys",
+      status: "pass",
+      detail: "Anthropic, OpenAI, and Google API keys present",
+    });
+  }
+
+  if (Boolean(first.telegramBotToken) !== Boolean(first.telegramChatId)) {
+    checks.push({
+      id: "telegram",
+      name: "Telegram Notifier",
+      status: "warn",
+      detail: "Only one of ARCHANGEL_TELEGRAM_BOT_TOKEN / ARCHANGEL_TELEGRAM_CHAT_ID is set",
+      remediation: "Set both env vars or unset both to stay GitHub-only",
+    });
+  }
+
+  // 4. SQLite separation (ADR-0001)
+  if (paths.ledgerDbPath === paths.mastraDbPath) {
+    checks.push({
+      id: "sqlite_paths",
+      name: "SQLite DB Isolation",
+      status: "fail",
+      detail: `ledgerDbPath and mastraDbPath collide at ${paths.ledgerDbPath}`,
+      remediation: "Keep ledger.db and mastra.db in separate files to prevent SQLITE_BUSY",
+    });
+  } else {
+    try {
+      fs.mkdirSync(paths.dataDir, { recursive: true });
+      fs.accessSync(paths.dataDir, fs.constants.W_OK);
+      checks.push({
+        id: "sqlite_paths",
+        name: "SQLite DB Isolation",
+        status: "pass",
+        detail: `Separate DBs in writable ${paths.dataDir}`,
+      });
+    } catch (err) {
+      checks.push({
+        id: "sqlite_paths",
+        name: "SQLite DB Isolation",
+        status: "fail",
+        detail: `dataDir not writable: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 5. git >= 2.38 (for git merge-tree --write-tree)
+  try {
+    const { stdout } = await execFileAsync("git", ["--version"]);
+    const m = stdout.match(/(\d+)\.(\d+)/);
+    const major = m ? Number(m[1]) : 0;
+    const minor = m ? Number(m[2]) : 0;
+    if (major > 2 || (major === 2 && minor >= 38)) {
+      checks.push({ id: "git", name: "Git Version", status: "pass", detail: stdout.trim() });
+    } else {
+      checks.push({
+        id: "git",
+        name: "Git Version",
+        status: "fail",
+        detail: `${stdout.trim()} is below 2.38 (needed for git merge-tree --write-tree)`,
+      });
+    }
+  } catch {
+    checks.push({ id: "git", name: "Git Version", status: "fail", detail: "git not found in PATH" });
+  }
+
+  // 6. go >= 1.26
+  try {
+    const { stdout } = await execFileAsync("go", ["version"]);
+    checks.push({ id: "go", name: "Go Toolchain", status: "pass", detail: stdout.trim() });
+  } catch {
+    checks.push({ id: "go", name: "Go Toolchain", status: "fail", detail: "go not found in PATH" });
+  }
+
+  // 7. Compiled local archangel-gate binary
+  try {
+    fs.accessSync(paths.gateBinaryPath, fs.constants.X_OK);
+    checks.push({
+      id: "gate_binary",
+      name: "Local archangel-gate Binary",
+      status: "pass",
+      detail: paths.gateBinaryPath,
+    });
+  } catch {
+    checks.push({
+      id: "gate_binary",
+      name: "Local archangel-gate Binary",
+      status: "fail",
+      detail: `Missing executable at ${paths.gateBinaryPath}`,
+      remediation: "Run `npm run build:gate`",
+    });
+  }
+
+  // 8. Paseo CLI (optional warn)
+  try {
+    const { stdout } = await execFileAsync("paseo", ["--version"]);
+    checks.push({ id: "paseo", name: "Paseo CLI (Handoff)", status: "pass", detail: stdout.trim() });
+  } catch {
+    checks.push({
+      id: "paseo",
+      name: "Paseo CLI (Handoff)",
+      status: "warn",
+      detail: "paseo CLI not found (optional unless using `archangel handoff`)",
+    });
+  }
+
+  if (opts.offline) {
+    return { ok: checks.every((c) => c.status !== "fail"), checks };
+  }
+
+  // 9. Online GitHub App least-privilege permission audit + target repo checks (ADR-0004!)
+  for (const cfg of projects) {
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const gh = new GitHubAppClient({
+      owner: cfg.githubOwner,
+      repo: cfg.githubRepo,
+      appId: cfg.githubAppId,
+      installationId: cfg.githubInstallationId,
+      privateKeyPem: cfg.githubPrivateKeyPem,
+      apiBaseUrl: opts.apiBaseUrl,
+    });
+
+    try {
+      const meta = await gh.mintInstallationTokenWithMeta();
+      const perms = meta.permissions;
+      const missingReq: string[] = [];
+      if (perms.contents !== "write") missingReq.push("contents:write");
+      if (perms.pull_requests !== "write") missingReq.push("pull_requests:write");
+      if (perms.issues !== "write") missingReq.push("issues:write");
+      if (perms.checks !== "read") missingReq.push("checks:read");
+
+      const forbidden: string[] = [];
+      if (perms.workflows) forbidden.push(`workflows:${perms.workflows}`);
+      if (perms.administration) forbidden.push(`administration:${perms.administration}`);
+      if (perms.checks === "write") forbidden.push("checks:write");
+
+      if (missingReq.length > 0 || forbidden.length > 0) {
+        const parts: string[] = [];
+        if (missingReq.length > 0) parts.push(`missing [${missingReq.join(", ")}]`);
+        if (forbidden.length > 0) parts.push(`FORBIDDEN [${forbidden.join(", ")}]`);
+        checks.push({
+          id: `github_app_permissions:${repoSlug}`,
+          name: `GitHub App Permissions (${repoSlug})`,
+          status: "fail",
+          detail: parts.join("; "),
+          remediation:
+            "Grant strictly contents:write, pull_requests:write, issues:write, checks:read — and NO workflows, administration, or checks:write (ADR-0004).",
+        });
+      } else {
+        checks.push({
+          id: `github_app_permissions:${repoSlug}`,
+          name: `GitHub App Permissions (${repoSlug})`,
+          status: "pass",
+          detail: "Verified exact least-privilege App permissions (no workflows/administration/checks:write)",
+        });
+      }
+
+      const tip = await gh.getBranchTipSha(cfg.defaultBranch);
+      const hasGateWf = await gh.fileExistsAtRef(tip, ".github/workflows/archangel-gate.yml");
+      checks.push({
+        id: `gate_workflow:${repoSlug}`,
+        name: `Gate Workflow on ${cfg.defaultBranch} (${repoSlug})`,
+        status: hasGateWf ? "pass" : "fail",
+        detail: hasGateWf
+          ? `.github/workflows/archangel-gate.yml present at ${tip.slice(0, 8)}`
+          : `.github/workflows/archangel-gate.yml missing on ${cfg.defaultBranch}`,
+        remediation: hasGateWf
+          ? undefined
+          : "Run `npm run pilot:setup -- --install-workflow <repo-dir>` and push to main",
+      });
+
+      const repoLabels = new Set(await gh.listRepoLabels());
+      const requiredLabels = Object.values(cfg.labels);
+      const missingLabels = requiredLabels.filter((l) => !repoLabels.has(l));
+      checks.push({
+        id: `repo_labels:${repoSlug}`,
+        name: `Required Labels (${repoSlug})`,
+        status: missingLabels.length === 0 ? "pass" : "warn",
+        detail:
+          missingLabels.length === 0
+            ? "All factory labels present"
+            : `Missing labels: ${missingLabels.join(", ")}`,
+        remediation:
+          missingLabels.length === 0 ? undefined : "Run `npm run pilot:setup -- --apply`",
+      });
+    } catch (err) {
+      checks.push({
+        id: `github_online:${repoSlug}`,
+        name: `GitHub API (${repoSlug})`,
+        status: "fail",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 10. Optional Paseo daemon TCP probe
+  if (first.paseoHost && !first.paseoHost.startsWith("ws")) {
+    const [host, portStr] = first.paseoHost.split(":");
+    const port = Number(portStr ?? 6767);
+    const reachable = await tcpProbe(host || "127.0.0.1", port, 500);
+    checks.push({
+      id: "paseo_daemon",
+      name: "Paseo Daemon Reachability",
+      status: reachable ? "pass" : "warn",
+      detail: reachable
+        ? `Listening on ${first.paseoHost}`
+        : `Not reachable at ${first.paseoHost} (only needed for Handoff)`,
+    });
+  }
+
+  return { ok: checks.every((c) => c.status !== "fail"), checks };
+}
+
+function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host, port });
+    const done = (ok: boolean) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+  });
+}

@@ -18,13 +18,14 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
     protectedFilesTouched: [],
     requiredChecks: ["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"],
     checks: [
-      { name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" },
-      { name: "Test (ubuntu-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
-      { name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+      { id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" },
+      { id: 2, name: "Test (ubuntu-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+      { id: 3, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
     ],
     reviewsForHeadSha: [
       {
         id: 1,
+        repo: "dgrah50/gijq",
         issueNumber: 1,
         headSha: "aaaa1111bbbb2222",
         vendor: "openai",
@@ -35,6 +36,7 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
       },
       {
         id: 2,
+        repo: "dgrah50/gijq",
         issueNumber: 1,
         headSha: "aaaa1111bbbb2222",
         vendor: "gemini",
@@ -63,6 +65,31 @@ describe("computeBlockers", () => {
     expect(isShadowReady(b)).toBe(true);
   });
 
+  it("fails CLOSED on null appSlug and picks latest check run by highest id", () => {
+    const bNull = computeBlockers(
+      cleanSnapshot({
+        checks: [
+          { id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: null },
+          { id: 2, name: "Test (ubuntu-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+          { id: 3, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+        ],
+      }),
+    );
+    expect(bNull.map((x) => x.code)).toContain("check_untrusted_source");
+
+    const bDup = computeBlockers(
+      cleanSnapshot({
+        checks: [
+          { id: 1, name: "Gate", status: "completed", conclusion: "failure", appSlug: "github-actions" },
+          { id: 9, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" },
+          { id: 2, name: "Test (ubuntu-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+          { id: 3, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+        ],
+      }),
+    );
+    expect(bDup).toEqual([]);
+  });
+
   it("blocks untrusted check sources, unverified SHAs, post-handoff, red main, and vetoes", () => {
     const b = computeBlockers(
       cleanSnapshot({
@@ -72,13 +99,14 @@ describe("computeBlockers", () => {
         mainTipGreen: false,
         protectedFilesTouched: [".github/workflows/archangel-gate.yml"],
         checks: [
-          { name: "Gate", status: "completed", conclusion: "success", appSlug: "evil-app" },
-          { name: "Test (ubuntu-latest)", status: "in_progress", conclusion: null, appSlug: "github-actions" },
-          { name: "Test (macos-latest)", status: "completed", conclusion: "failure", appSlug: "github-actions" },
+          { id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: "evil-app" },
+          { id: 2, name: "Test (ubuntu-latest)", status: "in_progress", conclusion: null, appSlug: "github-actions" },
+          { id: 3, name: "Test (macos-latest)", status: "completed", conclusion: "failure", appSlug: "github-actions" },
         ],
         reviewsForHeadSha: [
           {
             id: 1,
+            repo: "dgrah50/gijq",
             issueNumber: 1,
             headSha: "aaaa1111bbbb2222",
             vendor: "openai",

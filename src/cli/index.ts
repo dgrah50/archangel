@@ -1,14 +1,22 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import { Command } from "commander";
+import { loadDotEnv } from "../env.js";
 import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite } from "../agents/reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
+import { runDoctor } from "../core/doctor.js";
 import { TelegramNotifier } from "../core/notifier.js";
-import { Reconciler } from "../core/reconciler.js";
+import { Reconciler, sha256 } from "../core/reconciler.js";
+import { launchStudio } from "../core/studio.js";
+import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
+
+// Auto-load local `.env` before reading config (never overrides existing shell env).
+loadDotEnv();
 
 const program = new Command();
 
@@ -34,6 +42,19 @@ function pickProjectConfig(configs: ArchangelConfig[], repoFlag?: string): Archa
   return configs[0]!;
 }
 
+function resolveDataDirFromOpts(opts: { config?: string; dataDir?: string }): string {
+  if (opts.dataDir) return opts.dataDir;
+  if (opts.config || fs.existsSync("archangel.yaml")) {
+    try {
+      const cfgs = loadProjectConfigs({ configPath: opts.config });
+      if (cfgs[0]) return cfgs[0].dataDir;
+    } catch {
+      // Fallback to default dataDir when reading status/events without full secrets
+    }
+  }
+  return process.env.ARCHANGEL_DATA_DIR ?? ".archangel";
+}
+
 program
   .name("archangel")
   .description("Archangel autonomous software factory CLI")
@@ -48,6 +69,7 @@ program
     const projects = loadProjectConfigs({ configPath: opts.config });
     const first = projects[0]!;
     const sharedPaths = resolvePaths(first);
+    const daemonOwnerId = `daemon-${process.pid}-${Date.now()}`;
 
     if (!opts.once) {
       console.log(
@@ -67,6 +89,17 @@ program
     }
 
     const rootLedger = new Ledger(sharedPaths.ledgerDbPath, { timeZone: first.dailyTimezone });
+
+    // Single daemon lock prevents `start` and `start --once` from colliding or sweeping live work (Opus R9 / Codex #6).
+    if (!rootLedger.acquireDaemonLock(daemonOwnerId, first.staleLeaseMs)) {
+      rootLedger.close();
+      throw new Error("Another live Archangel daemon already holds the Ledger lock.");
+    }
+
+    const lockHeartbeat = setInterval(() => {
+      rootLedger.heartbeatDaemonLock(daemonOwnerId);
+    }, 30_000);
+
     const reviewers = new MastraReviewerSuite({
       openaiApiKey: first.openaiApiKey,
       googleApiKey: first.googleApiKey,
@@ -78,6 +111,13 @@ program
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
     });
+
+    const gateBinExists = fs.existsSync(sharedPaths.gateBinaryPath);
+    if (!gateBinExists) {
+      console.warn(
+        `[archangel] WARNING: local gate binary not found at ${sharedPaths.gateBinaryPath} (run \`npm run build:gate\` for pre-push local Gate checks).`,
+      );
+    }
 
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -97,6 +137,7 @@ program
         maxTotalLines: cfg.gate.maxTotalLines,
         maxFiles: cfg.gate.maxFiles,
         extraProtectedPaths: cfg.gate.extraProtectedPaths,
+        gateBinaryPath: gateBinExists ? paths.gateBinaryPath : undefined,
       });
       const implementer = new ClaudeSdkImplementer({
         apiKey: first.anthropicApiKey!,
@@ -111,63 +152,138 @@ program
         implementer,
         reviewers,
         notifier,
+        workerId: daemonOwnerId,
       });
       const swept = rec.startupSweep();
       if (swept.length > 0) {
-        console.log(`[archangel] [${repoSlug}] Stale-run sweep recovered threads: ${swept.join(", ")}`);
+        console.log(`[archangel] [${repoSlug}] Stale-working sweep recovered threads: ${swept.join(", ")}`);
       }
       return { repoSlug, rec };
     });
 
+    let stopping = false;
+    let nextTimer: NodeJS.Timeout | null = null;
+
     const runTick = async () => {
       for (const { repoSlug, rec } of reconcilers) {
+        if (stopping) break;
         try {
-          await rec.tick();
+          await rec.tick(Date.now(), { waitForAttempts: Boolean(opts.once) });
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
         }
       }
     };
 
-    await runTick();
-    if (opts.once) {
+    const cleanup = async () => {
+      stopping = true;
+      if (nextTimer) clearTimeout(nextTimer);
+      clearInterval(lockHeartbeat);
+      for (const { rec } of reconcilers) {
+        rec.abortAllActive("control");
+        await rec.waitForActiveTasks();
+      }
+      rootLedger.releaseDaemonLock(daemonOwnerId);
       rootLedger.close();
+    };
+
+    if (opts.once) {
+      try {
+        await runTick();
+      } finally {
+        await cleanup();
+      }
       return;
     }
 
-    const timer = setInterval(runTick, first.pollIntervalMs);
-    const shutdown = () => {
-      clearInterval(timer);
-      rootLedger.close();
-      process.exit(0);
+    const scheduleNext = () => {
+      if (stopping) return;
+      nextTimer = setTimeout(async () => {
+        await runTick();
+        scheduleNext();
+      }, first.pollIntervalMs);
     };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+
+    process.on("SIGINT", () => {
+      void cleanup().finally(() => process.exit(0));
+    });
+    process.on("SIGTERM", () => {
+      void cleanup().finally(() => process.exit(0));
+    });
+
+    await runTick();
+    scheduleNext();
+  });
+
+program
+  .command("doctor")
+  .description("Run offline & online preflight checks (config, PEM, tools, GitHub App least-privilege permissions)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--offline", "Skip GitHub API and Paseo daemon network checks")
+  .option("--json", "Output JSON")
+  .action(async (opts: { config?: string; offline?: boolean; json?: boolean }) => {
+    const report = await runDoctor({ configPath: opts.config, offline: opts.offline });
+    if (opts.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      for (const c of report.checks) {
+        const icon = c.status === "pass" ? "PASS" : c.status === "warn" ? "WARN" : "FAIL";
+        console.log(`[${icon}] ${c.name}: ${c.detail}`);
+        if (c.remediation) console.log(`       Fix: ${c.remediation}`);
+      }
+      console.log(`\nDoctor verdict: ${report.ok ? "READY" : "FAILED"}`);
+    }
+    if (!report.ok) process.exit(1);
+  });
+
+program
+  .command("studio")
+  .description("Launch read-only Mastra Studio on 127.0.0.1 pointed strictly at mastra.db")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--port <n>", "Loopback port", "4111")
+  .action(async (opts: { config?: string; dataDir?: string; port: string }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const paths = resolvePaths({ dataDir });
+    const code = await launchStudio({
+      mastraDbPath: paths.mastraDbPath,
+      ledgerDbPath: paths.ledgerDbPath,
+      port: Number(opts.port),
+    });
+    process.exit(code);
   });
 
 program
   .command("status")
   .description("Show Threads, Needs You queue, spend, merges, and Shadow Mode agreement")
-  .option("--data-dir <dir>", "Archangel data directory", process.env.ARCHANGEL_DATA_DIR ?? ".archangel")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
   .option("--repo <owner/name>", "Filter by repository")
   .option("--json", "Output JSON")
-  .action((opts: { dataDir: string; repo?: string; json?: boolean }) => {
-    const paths = resolvePaths({ dataDir: opts.dataDir });
+  .action((opts: { config?: string; dataDir?: string; repo?: string; json?: boolean }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const paths = resolvePaths({ dataDir });
+    if (!fs.existsSync(paths.ledgerDbPath)) {
+      const empty = { message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
+      console.log(opts.json ? JSON.stringify(empty, null, 2) : empty.message);
+      return;
+    }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
     try {
       const threads = opts.repo ? ledger.listThreads(undefined, opts.repo) : ledger.listAllThreads();
       const shadow = ledger.getShadowStats(opts.repo ?? null);
-      const spendToday = ledger.getSpendToday();
+      const spend = ledger.getSpendBreakdown();
       const autoMergesToday = ledger.getAutoMergeCountToday(Date.now(), opts.repo ?? null);
       const repos = [...new Set(threads.map((t) => t.repo))];
       const breakers = Object.fromEntries(repos.map((r) => [r, ledger.getCircuitBreaker(r)]));
 
       const payload = {
-        spendTodayUsd: Number(spendToday.toFixed(4)),
+        spendTodayUsd: Number(spend.spentUsd.toFixed(4)),
+        reservedUsd: Number(spend.reservedUsd.toFixed(4)),
         autoMergesToday,
         circuitBreakers: breakers,
         shadowModeStats: shadow,
-        needsYou: threads.filter((t) => t.state === "needs_you"),
+        needsYou: threads.filter((t) => t.phase.kind === "needs_you"),
         threads,
       };
 
@@ -176,7 +292,7 @@ program
         return;
       }
 
-      console.log(`Spend today:      $${payload.spendTodayUsd.toFixed(2)}`);
+      console.log(`Spend today:      $${payload.spendTodayUsd.toFixed(2)} (reserved: $${payload.reservedUsd.toFixed(2)})`);
       console.log(`Auto-merges:      ${autoMergesToday}`);
       console.log(
         `Shadow agreement: ${shadow.agreed}/${shadow.total} (${Math.round(shadow.agreementRate * 100)}%)`,
@@ -190,9 +306,10 @@ program
         return;
       }
       for (const t of threads) {
-        const pr = t.prNumber ? `PR #${t.prNumber}` : "no PR";
-        const note = t.needsYouReason ? ` — ${t.needsYouReason}` : "";
-        console.log(`${t.repo}#${t.issueNumber}  [${t.state}]  ${pr}  ${t.title}${note}`);
+        const pr = extractPrFromPhase(t.phase);
+        const prStr = pr ? `PR #${pr.prNumber}` : "no PR";
+        const note = t.phase.kind === "needs_you" ? ` — [${t.phase.code}] ${t.phase.reason}` : "";
+        console.log(`${t.repo}#${t.issueNumber}  [${t.phase.kind}/${t.mode}]  ${prStr}  ${t.title}${note}`);
       }
     } finally {
       ledger.close();
@@ -202,13 +319,19 @@ program
 program
   .command("events")
   .description("Inspect the append-only Ledger audit log")
-  .option("--data-dir <dir>", "Archangel data directory", process.env.ARCHANGEL_DATA_DIR ?? ".archangel")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
   .option("--repo <owner/name>", "Filter by repository")
   .option("--topic <prefix>", "Filter by topic prefix")
   .option("--issue <number>", "Filter by issue number")
   .option("--limit <n>", "Max entries", "40")
-  .action((opts: { dataDir: string; repo?: string; topic?: string; issue?: string; limit: string }) => {
-    const paths = resolvePaths({ dataDir: opts.dataDir });
+  .action((opts: { config?: string; dataDir?: string; repo?: string; topic?: string; issue?: string; limit: string }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const paths = resolvePaths({ dataDir });
+    if (!fs.existsSync(paths.ledgerDbPath)) {
+      console.log(`No Ledger found yet at ${paths.ledgerDbPath}.`);
+      return;
+    }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
     try {
       const entries = ledger.listAudit({
@@ -231,7 +354,7 @@ program
   .command("handoff <issue>")
   .description("Pause factory autonomy and hand off a Thread to Paseo")
   .option("-c, --config <path>", "Path to archangel.yaml")
-  .option("--repo <owner/name>", "Target repository (required when multiple projects configured)")
+  .option("--repo <owner/name>", "Target repository")
   .option("--repo-dir <dir>", "Local repo path for Paseo worktree creation")
   .action(async (issueArg: string, opts: { config?: string; repo?: string; repoDir?: string }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
@@ -250,10 +373,6 @@ program
         bareRepoPath: paths.brokerBareRepoPath,
         clonesDir: paths.clonesDir,
         defaultBranch: cfg.defaultBranch,
-        maxNonTestLines: cfg.gate.maxNonTestLines,
-        maxTotalLines: cfg.gate.maxTotalLines,
-        maxFiles: cfg.gate.maxFiles,
-        extraProtectedPaths: cfg.gate.extraProtectedPaths,
       });
       const paseo = new PaseoCliRunner({ host: cfg.paseoHost, home: cfg.paseoHome });
       const res = await handoffThreadToPaseo(Number(issueArg), {
@@ -298,8 +417,78 @@ program
         paseo,
       });
       console.log(
-        `Resumed ${repoSlug}#${issueArg} at owner-authorized SHA ${res.headSha.slice(0, 10)} (advisory mode).`,
+        `Resumed ${repoSlug}#${issueArg} at owner-authorized SHA ${res.headSha?.slice(0, 10) ?? "none"} (advisory mode).`,
       );
+    } finally {
+      ledger.close();
+    }
+  });
+
+program
+  .command("retry <issue>")
+  .description("Clear needs_you on a Thread, re-snapshot its issue body, and return it to its resume target")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--repo <owner/name>", "Target repository")
+  .action(async (issueArg: string, opts: { config?: string; repo?: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const paths = resolvePaths(cfg);
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
+    try {
+      const issueNumber = Number(issueArg);
+      const thread = ledger.getThread(issueNumber);
+      if (!thread) throw new Error(`Thread ${repoSlug}#${issueNumber} not found`);
+      const github = new GitHubAppClient({
+        owner: cfg.githubOwner,
+        repo: cfg.githubRepo,
+        appId: cfg.githubAppId,
+        installationId: cfg.githubInstallationId,
+        privateKeyPem: cfg.githubPrivateKeyPem,
+      });
+      const issue = await github.getIssue(issueNumber);
+      const stepped = stepPhase(
+        thread.phase,
+        thread.mode,
+        { t: "owner_retry" },
+        { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
+      );
+      if (!stepped.ok) throw new Error(stepped.reject);
+      await github.removeLabel(issueNumber, cfg.labels.needsYou);
+      ledger.transition(issueNumber, thread.version, stepped.next, {
+        bodySha256: sha256(issue.body),
+        auditTopic: "thread/owner_retried",
+      });
+      console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
+    } finally {
+      ledger.close();
+    }
+  });
+
+program
+  .command("abandon <issue>")
+  .description("Explicitly move a Thread to done(abandoned)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--repo <owner/name>", "Target repository")
+  .action((issueArg: string, opts: { config?: string; repo?: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const paths = resolvePaths(cfg);
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
+    try {
+      const issueNumber = Number(issueArg);
+      const thread = ledger.getThread(issueNumber);
+      if (!thread) throw new Error(`Thread ${repoSlug}#${issueNumber} not found`);
+      const stepped = stepPhase(
+        thread.phase,
+        thread.mode,
+        { t: "owner_abandon" },
+        { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
+      );
+      if (!stepped.ok) throw new Error(stepped.reject);
+      ledger.transition(issueNumber, thread.version, stepped.next, {
+        auditTopic: "thread/owner_abandoned",
+      });
+      console.log(`Abandoned ${repoSlug}#${issueNumber}.`);
     } finally {
       ledger.close();
     }
@@ -338,10 +527,12 @@ program
 program
   .command("reset-breaker")
   .description("Reset a repo's red-main landing circuit breaker after main is green")
-  .option("--data-dir <dir>", "Archangel data directory", process.env.ARCHANGEL_DATA_DIR ?? ".archangel")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
   .option("--repo <owner/name>", "Target repository", "dgrah50/gijq")
-  .action((opts: { dataDir: string; repo: string }) => {
-    const paths = resolvePaths({ dataDir: opts.dataDir });
+  .action((opts: { config?: string; dataDir?: string; repo: string }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const paths = resolvePaths({ dataDir });
     const ledger = new Ledger(paths.ledgerDbPath, { repo: opts.repo });
     try {
       ledger.setCircuitBreaker(false, "manually reset by owner");

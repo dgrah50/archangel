@@ -334,6 +334,123 @@ func Add(a, b int) int { return a + b }
 			t.Fatalf("expected exact-inverse revert to pass, got %+v", rep)
 		}
 	})
+
+	t.Run("modifying shared test helper inside existing test file is rejected", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		// Add a base test file with a shared helper function.
+		writeRepoFile(t, repo, "calc/helper_test.go", `package calc
+
+import "testing"
+
+func assertEqual(t *testing.T, got, want int) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("got %d, want %d", got, want)
+	}
+}
+
+func TestViaHelper(t *testing.T) {
+	assertEqual(t, Add(1, 2), 3)
+}
+`)
+		base := gitCommitAll(t, repo, "add shared helper test")
+
+		// Weaken assertEqual without touching TestViaHelper!
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+`)
+		writeRepoFile(t, repo, "calc/helper_test.go", `package calc
+
+import "testing"
+
+func assertEqual(t *testing.T, got, want int) {
+	t.Helper()
+	// weakened helper: never fails!
+}
+
+func TestViaHelper(t *testing.T) {
+	assertEqual(t, Add(1, 2), 3)
+}
+`)
+		writeRepoFile(t, repo, "calc/issue99_test.go", `package calc
+
+import "testing"
+
+func TestIssue99(t *testing.T) {
+	if Add(2, -5) != -3 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "weaken shared helper")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL when shared test helper is modified")
+		}
+		assertContainsViolation(t, rep.Violations, "existing test helper/declaration modified")
+	})
+
+	t.Run("policy-from-base tightens bounds and ignores loosening", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		writeRepoFile(t, repo, ".agents/landing.json", `{"maxNonTestLines": 2, "maxTotalLines": 9999, "extraProtectedPaths": ["secret/**"]}`)
+		base := gitCommitAll(t, repo, "add base landing.json")
+
+		// Touch 4 non-test lines -> exceeds tightened maxNonTestLines=2 from base!
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+// line 1
+// line 2
+// line 3
+func Add(a, b int) int { return a + b }
+`)
+		writeRepoFile(t, repo, "calc/issue100_test.go", `package calc
+
+import "testing"
+
+func TestIssue100(t *testing.T) {
+	if Add(2, -5) != -3 {
+		t.Fatal("bad")
+	}
+}
+`)
+		head := gitCommitAll(t, repo, "exceed tightened non-test lines")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: head, PolicyFromBase: true, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL on tightened base policy")
+		}
+		assertContainsViolation(t, rep.Violations, "exceeds limit 2")
+	})
+
+	t.Run("revert-of non-ancestor commit is rejected", func(t *testing.T) {
+		repo := initBuggyGoRepo(t)
+		base := gitHead(t, repo)
+
+		// Create an unrelated commit on a side branch (not an ancestor of base).
+		runCmd(t, repo, "git", "checkout", "-b", "side")
+		writeRepoFile(t, repo, "calc/calc.go", `package calc
+
+func Add(a, b int) int { return a + b }
+`)
+		unrelated := gitCommitAll(t, repo, "unrelated commit")
+
+		rep, err := Run(Options{RepoDir: repo, BaseRef: base, HeadRef: unrelated, RevertOf: unrelated, Policy: fastPolicy})
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if rep.Passed {
+			t.Fatalf("expected Gate FAIL when revert-of is not ancestor of base")
+		}
+		assertContainsViolation(t, rep.Violations, "not an ancestor")
+	})
 }
 
 func initBuggyGoRepo(t *testing.T) string {

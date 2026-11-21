@@ -2,11 +2,15 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ArchangelConfig } from "../config.js";
 import type { GitBroker } from "../broker/git-broker.js";
+import { renderRecapComment } from "../core/recap.js";
+import { sha256 } from "../core/reconciler.js";
+import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
-import { renderRecapComment } from "../core/recap.js";
 
 const execFileAsync = promisify(execFile);
+
+const STOPPED_PASEO_STATUSES = new Set(["idle", "stopped", "finished", "completed", "archived", "error"]);
 
 export interface PaseoRunner {
   checkoutBranchAndSeed(input: {
@@ -74,14 +78,14 @@ export class PaseoCliRunner implements PaseoRunner {
     const agentId = parsed.id ?? parsed.agentId ?? "";
     const workspaceId = parsed.workspaceId ?? null;
 
-    // Best-effort UI workspace label via @getpaseo/client if workspaceId and themeLabel are known.
     if (workspaceId && input.themeLabel) {
       try {
         const { createPaseoClient } = await import("@getpaseo/client");
         const rawHost = this.host ?? "127.0.0.1:6767";
-        const url = rawHost.startsWith("ws://") || rawHost.startsWith("wss://")
-          ? rawHost
-          : `ws://${rawHost}`;
+        const url =
+          rawHost.startsWith("ws://") || rawHost.startsWith("wss://")
+            ? rawHost
+            : `ws://${rawHost}`;
         const client = createPaseoClient({ url });
         await client.connect();
         try {
@@ -99,14 +103,21 @@ export class PaseoCliRunner implements PaseoRunner {
   }
 
   async isAgentRunning(agentId: string): Promise<boolean> {
-    const { stdout } = await execFileAsync(
-      "paseo",
-      [...this.baseArgs(), "inspect", agentId, "--json"],
-      { maxBuffer: 2 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(stdout) as { Status?: string; status?: string };
-    const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
-    return st === "running" || st === "working" || st === "busy";
+    try {
+      const { stdout } = await execFileAsync(
+        "paseo",
+        [...this.baseArgs(), "inspect", agentId, "--json"],
+        { maxBuffer: 2 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(stdout) as { Status?: string; status?: string; Archived?: boolean };
+      if (parsed.Archived) return false;
+      const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
+      // Explicit allowlist for stopped statuses (Opus Step 6 / S16).
+      return !STOPPED_PASEO_STATUSES.has(st);
+    } catch {
+      // Agent deleted or archived (404/non-zero) -> treat as stopped so resume never deadlocks (Opus S16).
+      return false;
+    }
   }
 }
 
@@ -116,129 +127,174 @@ export interface HandoffDeps {
   github: GitHubClient;
   broker: GitBroker;
   paseo: PaseoRunner;
-  activeAbort?: AbortController;
-  activeCloneDir?: string;
   localRepoDir?: string;
+  daemonWaitTimeoutMs?: number;
 }
 
 /**
- * Transfers active ownership of a factory Thread to Paseo (ADR-0006):
- * 1. Aborts any in-flight Claude Agent SDK Attempt via AbortController.
- * 2. Fetches & pushes any unpushed factory commits via the Broker and deletes the throwaway clone.
- * 3. Applies `factory:paused` on GitHub and updates Ledger state to `paused`.
- * 4. Launches Paseo on `factory/<issue>` with Theme label and latest Recap + findings.
+ * Transfers active ownership of a factory Thread to Paseo (ADR-0006 + Opus Step 6):
+ * - If a live daemon holds the lock, enqueues a `handoff` command in SQLite and waits for the
+ *   daemon (which owns the AbortController & clone) to abort, push, and transition to `owner_driving`.
+ * - Otherwise applies `factory:paused` and CAS-transitions directly.
+ * - Launches Paseo on `factory/<issue>` tagged with the Theme label and seeded with Recap + findings.
  */
 export async function handoffThreadToPaseo(
   issueNumber: number,
   deps: HandoffDeps,
 ): Promise<{ branchName: string; agentId: string; workspaceId: string | null }> {
-  const thread = deps.ledger.getThread(issueNumber);
+  let thread = deps.ledger.getThread(issueNumber);
   if (!thread) {
     throw new Error(`Thread #${issueNumber} not found in Ledger`);
   }
 
-  // 1. Abort running step if any.
-  if (deps.activeAbort && !deps.activeAbort.signal.aborted) {
-    deps.activeAbort.abort(new Error("Owner requested handoff to Paseo"));
-  }
-
-  // 2. Push any unpushed commits from active throwaway clone via Broker, then remove clone.
-  const remoteUrl = await deps.github.getRemoteUrlWithToken();
-  await deps.broker.ensureBareRepo(remoteUrl);
-  if (deps.activeCloneDir) {
-    try {
-      const mainSha = await deps.github.getBranchTipSha(deps.config.defaultBranch);
-      const val = await deps.broker.fetchAndValidateFromClone(
-        deps.activeCloneDir,
-        issueNumber,
-        mainSha,
-      );
-      if (val.protectedViolations.length === 0) {
-        await deps.broker.pushFactoryBranch(thread.branchName, val.headSha, remoteUrl);
-        deps.ledger.recordPushedSha(val.headSha, issueNumber, "broker");
-        deps.ledger.updateThread(issueNumber, { headSha: val.headSha });
+  const now = Date.now();
+  if (deps.ledger.isDaemonActive(deps.config.staleLeaseMs, now)) {
+    const cmdId = deps.ledger.enqueueCommand(issueNumber, "handoff", now);
+    const deadline = now + (deps.daemonWaitTimeoutMs ?? 30_000);
+    while (Date.now() < deadline) {
+      const cmd = deps.ledger.getCommand(cmdId);
+      if (cmd?.status === "completed") break;
+      if (cmd?.status === "failed") {
+        throw new Error(`Daemon handoff command failed: ${cmd.errorMessage ?? "unknown"}`);
       }
-    } finally {
-      deps.broker.removeClone(deps.activeCloneDir);
+      await new Promise((r) => setTimeout(r, 250));
     }
+    const finalCmd = deps.ledger.getCommand(cmdId);
+    if (finalCmd?.status !== "completed") {
+      throw new Error("Timed out waiting for live Archangel daemon to complete handoff abort");
+    }
+    thread = deps.ledger.getThread(issueNumber)!;
+  } else {
+    await deps.github.addLabels(issueNumber, [deps.config.labels.paused]);
+    const stepped = stepPhase(
+      thread.phase,
+      thread.mode,
+      { t: "handoff_started", paseoAgentId: null, paseoWorkspaceId: null, now },
+      { issueNumber, title: thread.title, needsYouLabel: deps.config.labels.needsYou },
+    );
+    if (!stepped.ok) {
+      throw new Error(`Cannot hand off Thread #${issueNumber}: ${stepped.reject}`);
+    }
+    const updated = deps.ledger.transition(issueNumber, thread.version, stepped.next, {
+      nextMode: stepped.nextMode,
+      effects: stepped.effects,
+      auditTopic: "handoff/started",
+      now,
+    });
+    if (!updated) {
+      throw new Error(`Concurrent modification while handing off Thread #${issueNumber}`);
+    }
+    thread = updated;
   }
 
-  // 3. Pause factory autonomy on GitHub + Ledger.
-  await deps.github.addLabels(issueNumber, [deps.config.labels.paused]);
-  const updated = deps.ledger.updateThread(issueNumber, {
-    state: "paused",
-    postHandoff: true,
-  });
-
-  const reviews = updated.headSha
-    ? deps.ledger.getReviewsForSha(issueNumber, updated.headSha)
-    : [];
+  const pr = extractPrFromPhase(thread.phase);
+  const reviews = pr ? deps.ledger.getReviewsForSha(issueNumber, pr.headSha) : [];
   const recap = renderRecapComment({
-    thread: updated,
+    thread,
     reviews,
     blockers: [{ code: "paused", message: "Handed off to owner in Paseo" }],
   });
 
-  // 4. Launch Paseo worktree seeded with Recap.
   const launched = await deps.paseo.checkoutBranchAndSeed({
-    branchName: updated.branchName,
-    title: `Archangel #${issueNumber}: ${updated.title}`,
-    themeLabel: updated.themeLabel,
+    branchName: thread.branchName,
+    title: `Archangel #${issueNumber}: ${thread.title}`,
+    themeLabel: thread.themeLabel,
     repoDir: deps.localRepoDir,
     prompt: [
-      `Taking over Archangel Thread #${issueNumber} on branch \`${updated.branchName}\`.`,
+      `Taking over Archangel Thread #${issueNumber} on branch \`${thread.branchName}\`.`,
       "Review the latest recap and findings below, then await my instructions:",
       "",
       recap,
     ].join("\n"),
   });
 
-  deps.ledger.updateThread(issueNumber, {
-    paseoAgentId: launched.agentId || null,
-    paseoWorkspaceId: launched.workspaceId,
-  });
-  deps.ledger.appendAudit("handoff/started", issueNumber, "owner", launched);
+  if (thread.phase.kind === "owner_driving") {
+    deps.ledger.transition(
+      issueNumber,
+      thread.version,
+      {
+        ...thread.phase,
+        paseoAgentId: launched.agentId || null,
+        paseoWorkspaceId: launched.workspaceId,
+      },
+      { auditTopic: "handoff/paseo_launched", auditPayload: launched },
+    );
+  }
 
   return {
-    branchName: updated.branchName,
+    branchName: thread.branchName,
     agentId: launched.agentId,
     workspaceId: launched.workspaceId,
   };
 }
 
 /**
- * Resumes advisory Gate + Review tracking after owner finishes in Paseo (ADR-0006):
- * - Verifies Paseo session is stopped (prevents two active owners).
- * - Pins the owner-authorized head SHA in `pushed_shas` (`owner_resume`).
- * - Clears `factory:paused` and keeps `postHandoff = true` (owner merges manually in v0).
+ * Resumes advisory Gate + Review tracking after owner finishes in Paseo (ADR-0006 + Opus Step 6):
+ * - Allowed ONLY from `owner_driving`.
+ * - Verifies Paseo session is stopped (prevents two active owners; 404/archived counts as stopped).
+ * - Pins owner-authorized head SHA with `INSERT OR IGNORE` (preserving broker provenance).
+ * - Re-snapshots issue `bodySha256`, clears `factory:paused` + `needs-you`, and keeps `mode: "advisory"`.
  */
 export async function resumeThreadFromPaseo(
   issueNumber: number,
   deps: Pick<HandoffDeps, "config" | "ledger" | "github" | "paseo">,
-): Promise<{ headSha: string }> {
+): Promise<{ headSha: string | null }> {
   const thread = deps.ledger.getThread(issueNumber);
   if (!thread) {
     throw new Error(`Thread #${issueNumber} not found in Ledger`);
   }
-  if (thread.paseoAgentId) {
-    const running = await deps.paseo.isAgentRunning(thread.paseoAgentId);
+  if (thread.phase.kind !== "owner_driving") {
+    throw new Error(
+      `Thread #${issueNumber} is in phase '${thread.phase.kind}', not 'owner_driving'. Use 'archangel retry ${issueNumber}' to clear needs_you.`,
+    );
+  }
+  if (thread.phase.paseoAgentId) {
+    const running = await deps.paseo.isAgentRunning(thread.phase.paseoAgentId);
     if (running) {
       throw new Error(
-        `Paseo agent ${thread.paseoAgentId} is still running; stop it before resuming Archangel.`,
+        `Paseo agent ${thread.phase.paseoAgentId} is still running; stop it before resuming Archangel.`,
       );
     }
   }
 
-  const headSha = await deps.github.getBranchTipSha(thread.branchName);
-  deps.ledger.recordPushedSha(headSha, issueNumber, "owner_resume");
+  const issue = await deps.github.getIssue(issueNumber);
+  const pr = await deps.github.findPrByHeadBranch(thread.branchName);
+  let headSha: string | null = pr?.headSha ?? null;
+  if (!headSha) {
+    headSha = await deps.github.getBranchTipSha(thread.branchName).catch(() => null);
+  }
+  if (headSha) {
+    deps.ledger.recordPushedSha(headSha, issueNumber, "owner_resume");
+  }
+
   await deps.github.removeLabel(issueNumber, deps.config.labels.paused);
-  deps.ledger.updateThread(issueNumber, {
-    state: "awaiting_gate",
-    headSha,
-    postHandoff: true,
-    gateWaitStartedAt: Date.now(),
-    needsYouReason: null,
+  await deps.github.removeLabel(issueNumber, deps.config.labels.needsYou);
+
+  const now = Date.now();
+  const stepped = stepPhase(
+    thread.phase,
+    thread.mode,
+    {
+      t: "owner_resume",
+      pr: pr ? { prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha } : null,
+      now,
+    },
+    { issueNumber, title: thread.title, needsYouLabel: deps.config.labels.needsYou },
+  );
+  if (!stepped.ok) {
+    throw new Error(`Resume transition rejected: ${stepped.reject}`);
+  }
+
+  const updated = deps.ledger.transition(issueNumber, thread.version, stepped.next, {
+    nextMode: stepped.nextMode ?? "advisory",
+    bodySha256: sha256(issue.body),
+    auditTopic: "handoff/resumed",
+    auditPayload: { headSha },
+    now,
   });
-  deps.ledger.appendAudit("handoff/resumed", issueNumber, "owner", { headSha });
+  if (!updated) {
+    throw new Error(`Concurrent modification while resuming Thread #${issueNumber}`);
+  }
+
   return { headSha };
 }

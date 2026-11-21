@@ -6,6 +6,7 @@ dist/
 *.db-shm
 .env
 .env.local
+archangel.yaml
 coverage/
 .DS_Store
 gate/archangel-gate

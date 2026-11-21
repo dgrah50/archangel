@@ -1,19 +1,13 @@
-export type ThreadState =
-  | "queued"
-  | "implementing"
-  | "awaiting_gate"
-  | "reviewing"
-  | "revising"
-  | "rebasing"
-  | "ready_to_land"
-  | "shadow_ready"
-  | "merged"
-  | "paused"
-  | "needs_you"
-  | "stopped"
-  | "failed";
+import type {
+  AttemptKind,
+  MainWatch,
+  Mode,
+  OutboxEffect,
+  Phase,
+  PhaseKind,
+} from "../core/thread-machine.js";
 
-export type AttemptKind = "implement" | "revise" | "rebase";
+export type { AttemptKind, MainWatch, Mode, OutboxEffect, Phase, PhaseKind };
 
 export type ReviewerVendor = "openai" | "gemini";
 
@@ -33,22 +27,15 @@ export interface ThreadRecord {
   title: string;
   themeLabel: string | null;
   bodySha256: string;
-  state: ThreadState;
+  phase: Phase;
+  state: PhaseKind;
+  version: number;
+  mode: Mode;
   branchName: string;
-  prNumber: number | null;
-  headSha: string | null;
-  postHandoff: boolean;
-  paseoWorkspaceId: string | null;
-  paseoAgentId: string | null;
+  lastSummary: string | null;
   implementCount: number;
   revisionCount: number;
   rebaseCount: number;
-  gateRerunCount: number;
-  gateWaitStartedAt: number | null;
-  reviewOutageStartedAt: number | null;
-  needsYouReason: string | null;
-  leaseOwner: string | null;
-  leaseHeartbeatAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -89,9 +76,29 @@ export interface MergeRecord {
   shadowOnly: boolean;
   disagreed: boolean;
   dayKey: string;
-  mainStatus: "pending" | "green" | "rerun_once" | "red_reverted" | "red_escalated";
-  revertPrNumber: number | null;
+  mainWatch: MainWatch;
   createdAt: number;
+}
+
+export interface OutboxRecord {
+  id: number;
+  repo: string;
+  effect: OutboxEffect;
+  attempts: number;
+  lastError: string | null;
+  createdAt: number;
+}
+
+export interface DaemonCommandRecord {
+  id: number;
+  repo: string;
+  issueNumber: number;
+  kind: "handoff";
+  status: "pending" | "completed" | "failed";
+  resultJson: string | null;
+  errorMessage: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface AuditLogEntry {
@@ -115,22 +122,15 @@ CREATE TABLE IF NOT EXISTS threads (
   title TEXT NOT NULL,
   theme_label TEXT,
   body_sha256 TEXT NOT NULL,
-  state TEXT NOT NULL,
+  phase_json TEXT NOT NULL,
+  state TEXT GENERATED ALWAYS AS (json_extract(phase_json, '$.kind')) STORED,
+  version INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'autonomous' CHECK (mode IN ('autonomous', 'advisory')),
   branch_name TEXT NOT NULL,
-  pr_number INTEGER,
-  head_sha TEXT,
-  post_handoff INTEGER NOT NULL DEFAULT 0,
-  paseo_workspace_id TEXT,
-  paseo_agent_id TEXT,
+  last_summary TEXT,
   implement_count INTEGER NOT NULL DEFAULT 0,
   revision_count INTEGER NOT NULL DEFAULT 0,
   rebase_count INTEGER NOT NULL DEFAULT 0,
-  gate_rerun_count INTEGER NOT NULL DEFAULT 0,
-  gate_wait_started_at INTEGER,
-  review_outage_started_at INTEGER,
-  needs_you_reason TEXT,
-  lease_owner TEXT,
-  lease_heartbeat_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)
@@ -185,15 +185,40 @@ CREATE TABLE IF NOT EXISTS merges (
   shadow_only INTEGER NOT NULL DEFAULT 0,
   disagreed INTEGER NOT NULL DEFAULT 0,
   day_key TEXT NOT NULL,
-  main_status TEXT NOT NULL DEFAULT 'pending',
-  revert_pr_number INTEGER,
+  main_watch_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merges_shadow_unique
+  ON merges(repo, issue_number, head_sha)
+  WHERE shadow_only = 1;
+
 CREATE TABLE IF NOT EXISTS daily_spend (
   day_key TEXT PRIMARY KEY,
   usd REAL NOT NULL DEFAULT 0,
+  reserved_usd REAL NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  effect_json TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS daemon_commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  result_json TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 

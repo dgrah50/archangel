@@ -2,17 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
-  LEDGER_SCHEMA_SQL,
+  MainWatchSchema,
+  PhaseSchema,
   type AttemptKind,
+  type MainWatch,
+  type Mode,
+  type OutboxEffect,
+  type Phase,
+  type PhaseKind,
+} from "../core/thread-machine.js";
+import {
+  LEDGER_SCHEMA_SQL,
   type AttemptRecord,
   type AuditLogEntry,
+  type DaemonCommandRecord,
   type MergeRecord,
+  type OutboxRecord,
   type ReviewFinding,
   type ReviewRecord,
   type ReviewerVendor,
   type ReviewVerdict,
   type ThreadRecord,
-  type ThreadState,
 } from "./schema.js";
 
 export function formatDayKey(ts: number, timeZone: string): string {
@@ -50,10 +60,6 @@ export class Ledger {
     }
   }
 
-  /**
-   * Returns a lightweight repo-scoped view sharing the same underlying SQLite connection
-   * (so global `daily_spend` and `audit_log` are shared while Threads are isolated per repo).
-   */
   forRepo(repo: string): Ledger {
     const view = Object.create(Ledger.prototype) as Ledger;
     Object.assign(view, { db: this.db, timeZone: this.timeZone, repo });
@@ -64,7 +70,65 @@ export class Ledger {
     this.db.close();
   }
 
-  // --- Threads ---
+  // --- Single Daemon Lock (Opus Step 4 / R9) ---
+
+  acquireDaemonLock(ownerId: string, staleMs: number, now = Date.now()): boolean {
+    const tx = this.db.transaction(() => {
+      const existing = this.getSystemState("daemon_lock");
+      if (existing) {
+        try {
+          const parsed = JSON.parse(existing) as { ownerId: string; heartbeatAt: number };
+          if (parsed.ownerId !== ownerId && now - parsed.heartbeatAt < staleMs) {
+            return false;
+          }
+        } catch {
+          // Corrupted lock row: overwrite cleanly.
+        }
+      }
+      this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+      return true;
+    });
+    return tx();
+  }
+
+  heartbeatDaemonLock(ownerId: string, now = Date.now()): void {
+    const existing = this.getSystemState("daemon_lock");
+    if (!existing) return;
+    try {
+      const parsed = JSON.parse(existing) as { ownerId: string };
+      if (parsed.ownerId === ownerId) {
+        this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  releaseDaemonLock(ownerId: string): void {
+    const existing = this.getSystemState("daemon_lock");
+    if (!existing) return;
+    try {
+      const parsed = JSON.parse(existing) as { ownerId: string };
+      if (parsed.ownerId === ownerId) {
+        this.db.prepare(`DELETE FROM system_state WHERE key = 'daemon_lock'`).run();
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  isDaemonActive(staleMs: number, now = Date.now()): boolean {
+    const existing = this.getSystemState("daemon_lock");
+    if (!existing) return false;
+    try {
+      const parsed = JSON.parse(existing) as { heartbeatAt: number };
+      return now - parsed.heartbeatAt < staleMs;
+    } catch {
+      return false;
+    }
+  }
+
+  // --- Threads & Compare-And-Set Transitions ---
 
   upsertThread(input: {
     issueNumber: number;
@@ -73,7 +137,8 @@ export class Ledger {
     themeLabel?: string | null;
     bodySha256: string;
     branchName?: string;
-    state?: ThreadState;
+    phase?: Phase;
+    mode?: Mode;
     now?: number;
   }): ThreadRecord {
     const repo = input.repo ?? this.repo;
@@ -88,12 +153,13 @@ export class Ledger {
       return this.getThread(input.issueNumber, repo)!;
     }
 
+    const phase: Phase = PhaseSchema.parse(input.phase ?? { kind: "queued" });
     const branchName = input.branchName ?? `factory/${input.issueNumber}`;
     this.db
       .prepare(
         `INSERT INTO threads (
-          repo, issue_number, title, theme_label, body_sha256, state, branch_name, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -101,16 +167,20 @@ export class Ledger {
         input.title,
         input.themeLabel ?? null,
         input.bodySha256,
-        input.state ?? "queued",
+        JSON.stringify(phase),
+        input.mode ?? "autonomous",
         branchName,
         now,
         now,
       );
-    this.appendAudit("thread/created", input.issueNumber, "archangel", {
-      title: input.title,
-      branchName,
-      bodySha256: input.bodySha256,
-    }, now, repo);
+    this.appendAudit(
+      "thread/created",
+      input.issueNumber,
+      "archangel",
+      { title: input.title, branchName, bodySha256: input.bodySha256 },
+      now,
+      repo,
+    );
     return this.getThread(input.issueNumber, repo)!;
   }
 
@@ -121,7 +191,7 @@ export class Ledger {
     return row ? mapThread(row) : null;
   }
 
-  listThreads(states?: ThreadState[], repo: string | null = this.repo): ThreadRecord[] {
+  listThreads(states?: PhaseKind[], repo: string | null = this.repo): ThreadRecord[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (repo !== null) {
@@ -139,141 +209,198 @@ export class Ledger {
     return rows.map(mapThread);
   }
 
-  listAllThreads(states?: ThreadState[]): ThreadRecord[] {
+  listAllThreads(states?: PhaseKind[]): ThreadRecord[] {
     return this.listThreads(states, null);
   }
 
-  updateThread(
+  /**
+   * Compare-and-set transition: atomically updates `phase_json`, increments `version`,
+   * updates optional counters/mode/bodySha/summary, and enqueues durable `outbox` side effects.
+   * Returns `null` if another transition won (`version` mismatch), preventing blind overwrites!
+   */
+  transition(
     issueNumber: number,
-    patch: Partial<{
-      state: ThreadState;
-      prNumber: number | null;
-      headSha: string | null;
-      postHandoff: boolean;
-      paseoWorkspaceId: string | null;
-      paseoAgentId: string | null;
-      implementCount: number;
-      revisionCount: number;
-      rebaseCount: number;
-      gateRerunCount: number;
-      gateWaitStartedAt: number | null;
-      reviewOutageStartedAt: number | null;
-      needsYouReason: string | null;
-    }>,
-    now = Date.now(),
-    repo = this.repo,
-  ): ThreadRecord {
-    const sets: string[] = ["updated_at = ?"];
-    const vals: unknown[] = [now];
-    const push = (col: string, val: unknown) => {
-      sets.push(`${col} = ?`);
-      vals.push(val);
-    };
-    if (patch.state !== undefined) push("state", patch.state);
-    if (patch.prNumber !== undefined) push("pr_number", patch.prNumber);
-    if (patch.headSha !== undefined) push("head_sha", patch.headSha);
-    if (patch.postHandoff !== undefined) push("post_handoff", patch.postHandoff ? 1 : 0);
-    if (patch.paseoWorkspaceId !== undefined) push("paseo_workspace_id", patch.paseoWorkspaceId);
-    if (patch.paseoAgentId !== undefined) push("paseo_agent_id", patch.paseoAgentId);
-    if (patch.implementCount !== undefined) push("implement_count", patch.implementCount);
-    if (patch.revisionCount !== undefined) push("revision_count", patch.revisionCount);
-    if (patch.rebaseCount !== undefined) push("rebase_count", patch.rebaseCount);
-    if (patch.gateRerunCount !== undefined) push("gate_rerun_count", patch.gateRerunCount);
-    if (patch.gateWaitStartedAt !== undefined) push("gate_wait_started_at", patch.gateWaitStartedAt);
-    if (patch.reviewOutageStartedAt !== undefined) {
-      push("review_outage_started_at", patch.reviewOutageStartedAt);
-    }
-    if (patch.needsYouReason !== undefined) push("needs_you_reason", patch.needsYouReason);
+    expectedVersion: number,
+    nextPhase: Phase,
+    opts: {
+      nextMode?: Mode;
+      effects?: OutboxEffect[];
+      bodySha256?: string;
+      lastSummary?: string | null;
+      incImplement?: boolean;
+      incRevision?: boolean;
+      incRebase?: boolean;
+      auditTopic?: string;
+      auditPayload?: unknown;
+      now?: number;
+      repo?: string;
+    } = {},
+  ): ThreadRecord | null {
+    const repo = opts.repo ?? this.repo;
+    const now = opts.now ?? Date.now();
+    const validated = PhaseSchema.parse(nextPhase);
 
-    vals.push(repo, issueNumber);
-    this.db
-      .prepare(`UPDATE threads SET ${sets.join(", ")} WHERE repo = ? AND issue_number = ?`)
-      .run(...vals);
-    return this.getThread(issueNumber, repo)!;
+    const tx = this.db.transaction((): ThreadRecord | null => {
+      const sets: string[] = ["phase_json = ?", "version = version + 1", "updated_at = ?"];
+      const vals: unknown[] = [JSON.stringify(validated), now];
+
+      if (opts.nextMode !== undefined) {
+        sets.push("mode = ?");
+        vals.push(opts.nextMode);
+      }
+      if (opts.bodySha256 !== undefined) {
+        sets.push("body_sha256 = ?");
+        vals.push(opts.bodySha256);
+      }
+      if (opts.lastSummary !== undefined) {
+        sets.push("last_summary = ?");
+        vals.push(opts.lastSummary);
+      }
+      if (opts.incImplement) sets.push("implement_count = implement_count + 1");
+      if (opts.incRevision) sets.push("revision_count = revision_count + 1");
+      if (opts.incRebase) sets.push("rebase_count = rebase_count + 1");
+
+      vals.push(repo, issueNumber, expectedVersion);
+      const res = this.db
+        .prepare(
+          `UPDATE threads SET ${sets.join(", ")} WHERE repo = ? AND issue_number = ? AND version = ?`,
+        )
+        .run(...vals);
+
+      if (res.changes !== 1) {
+        return null;
+      }
+
+      for (const eff of opts.effects ?? []) {
+        this.db
+          .prepare(`INSERT INTO outbox (repo, effect_json, created_at) VALUES (?, ?, ?)`)
+          .run(repo, JSON.stringify(eff), now);
+      }
+
+      if (opts.auditTopic) {
+        this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+      }
+
+      return this.getThread(issueNumber, repo);
+    });
+
+    return tx();
   }
 
-  // --- Per-Thread Leases & Stale-Run Sweep ---
-
-  acquireLease(
-    issueNumber: number,
-    owner: string,
-    staleMs: number,
-    now = Date.now(),
-    repo = this.repo,
-  ): boolean {
-    const cutoff = now - staleMs;
-    const res = this.db
-      .prepare(
-        `UPDATE threads
-         SET lease_owner = ?, lease_heartbeat_at = ?, updated_at = ?
-         WHERE repo = ? AND issue_number = ?
-           AND (lease_owner IS NULL OR lease_owner = ? OR lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?)`,
-      )
-      .run(owner, now, now, repo, issueNumber, owner, cutoff);
-    return res.changes === 1;
-  }
-
-  heartbeatLease(issueNumber: number, owner: string, now = Date.now(), repo = this.repo): void {
-    this.db
-      .prepare(
-        `UPDATE threads SET lease_heartbeat_at = ?, updated_at = ?
-         WHERE repo = ? AND issue_number = ? AND lease_owner = ?`,
-      )
-      .run(now, now, repo, issueNumber, owner);
-  }
-
-  releaseLease(issueNumber: number, owner: string, now = Date.now(), repo = this.repo): void {
-    this.db
-      .prepare(
-        `UPDATE threads SET lease_owner = NULL, lease_heartbeat_at = NULL, updated_at = ?
-         WHERE repo = ? AND issue_number = ? AND lease_owner = ?`,
-      )
-      .run(now, repo, issueNumber, owner);
-  }
-
-  sweepStaleRuns(staleMs: number, now = Date.now(), repo = this.repo): number[] {
-    const cutoff = now - staleMs;
-    const staleThreads = this.db
-      .prepare(
-        `SELECT issue_number, state FROM threads
-         WHERE repo = ?
-           AND ((lease_owner IS NOT NULL AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?))
-                OR state IN ('implementing', 'revising', 'rebasing', 'reviewing'))`,
-      )
-      .all(repo, cutoff) as Array<{ issue_number: number; state: ThreadState }>;
-
+  /**
+   * Startup crash recovery (Opus L1/L2 fix):
+   * ONLY recovers threads stuck in `working` phase to their saved `resumeTo`.
+   * NEVER touches `needs_you`, `shadow_ready`, `owner_driving`, or `done`!
+   */
+  sweepStaleWorkingRuns(now = Date.now(), repo = this.repo): number[] {
+    const workingRows = this.listThreads(["working"], repo);
     const recovered: number[] = [];
+
     const tx = this.db.transaction(() => {
-      for (const row of staleThreads) {
+      for (const t of workingRows) {
+        if (t.phase.kind !== "working") continue;
         this.db
           .prepare(
-            `UPDATE attempts SET status = 'failed', error_message = 'stale run swept on startup', finished_at = ?
+            `UPDATE attempts SET status = 'failed', error_message = 'stale working run swept on startup', finished_at = ?
              WHERE repo = ? AND issue_number = ? AND status = 'running'`,
           )
-          .run(now, repo, row.issue_number);
+          .run(now, repo, t.issueNumber);
 
-        const nextState: ThreadState = row.state === "reviewing" ? "awaiting_gate" : "queued";
-        this.db
-          .prepare(
-            `UPDATE threads
-             SET state = ?, lease_owner = NULL, lease_heartbeat_at = NULL, updated_at = ?
-             WHERE repo = ? AND issue_number = ?`,
-          )
-          .run(nextState, now, repo, row.issue_number);
+        const nextPhase: Phase =
+          t.phase.resumeTo.kind === "awaiting_gate"
+            ? {
+                kind: "awaiting_gate",
+                prNumber: t.phase.resumeTo.prNumber,
+                headSha: t.phase.resumeTo.headSha,
+                baseSha: t.phase.resumeTo.baseSha,
+                since: now,
+                nudgedAt: null,
+              }
+            : { kind: "queued" };
 
-        this.appendAudit(
-          "thread/stale_swept",
-          row.issue_number,
-          "archangel",
-          { previousState: row.state, nextState },
+        const updated = this.transition(t.issueNumber, t.version, nextPhase, {
+          auditTopic: "thread/stale_swept",
+          auditPayload: { previousAttempt: t.phase.attempt, next: nextPhase.kind },
           now,
           repo,
-        );
-        recovered.push(row.issue_number);
+        });
+        if (updated) recovered.push(t.issueNumber);
       }
+      // Also release any leaked in-flight budget reservations from crashed runs on startup.
+      this.db
+        .prepare(`UPDATE daily_spend SET reserved_usd = 0, updated_at = ? WHERE reserved_usd > 0`)
+        .run(now);
     });
     tx();
     return recovered;
+  }
+
+  // --- Durable Outbox (Opus L3) ---
+
+  listOutbox(repo = this.repo, limit = 50): OutboxRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM outbox WHERE repo = ? ORDER BY id ASC LIMIT ?`)
+      .all(repo, limit) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: Number(r.id),
+      repo: String(r.repo),
+      effect: JSON.parse(String(r.effect_json)) as OutboxEffect,
+      attempts: Number(r.attempts),
+      lastError: r.last_error === null ? null : String(r.last_error),
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  completeOutbox(id: number): void {
+    this.db.prepare(`DELETE FROM outbox WHERE id = ?`).run(id);
+  }
+
+  failOutbox(id: number, error: string): void {
+    this.db
+      .prepare(`UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?`)
+      .run(error, id);
+  }
+
+  // --- Daemon Commands Queue (Handoff across CLI <-> Daemon, Opus Step 6 / R5) ---
+
+  enqueueCommand(issueNumber: number, kind: "handoff", now = Date.now(), repo = this.repo): number {
+    const info = this.db
+      .prepare(
+        `INSERT INTO daemon_commands (repo, issue_number, kind, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?)`,
+      )
+      .run(repo, issueNumber, kind, now, now);
+    return Number(info.lastInsertRowid);
+  }
+
+  listPendingCommands(repo = this.repo): DaemonCommandRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM daemon_commands WHERE repo = ? AND status = 'pending' ORDER BY id ASC`)
+      .all(repo) as Record<string, unknown>[];
+    return rows.map(mapCommand);
+  }
+
+  getCommand(id: number): DaemonCommandRecord | null {
+    const row = this.db.prepare(`SELECT * FROM daemon_commands WHERE id = ?`).get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? mapCommand(row) : null;
+  }
+
+  completeCommand(id: number, result: unknown, now = Date.now()): void {
+    this.db
+      .prepare(
+        `UPDATE daemon_commands SET status = 'completed', result_json = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(JSON.stringify(result), now, id);
+  }
+
+  failCommand(id: number, errorMessage: string, now = Date.now()): void {
+    this.db
+      .prepare(
+        `UPDATE daemon_commands SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(errorMessage, now, id);
   }
 
   // --- Attempts ---
@@ -295,6 +422,7 @@ export class Ledger {
       status: "succeeded" | "failed" | "aborted";
       headSha?: string | null;
       costUsd?: number;
+      reservedUsd?: number;
       transcriptPath?: string | null;
       errorMessage?: string | null;
     },
@@ -316,7 +444,9 @@ export class Ledger {
         now,
         attemptId,
       );
-    if (cost > 0) {
+    if (result.reservedUsd !== undefined) {
+      this.settleBudget(result.reservedUsd, cost, now);
+    } else if (cost > 0) {
       this.addSpend(cost, now);
     }
     const attempt = this.getAttempt(attemptId)!;
@@ -344,7 +474,7 @@ export class Ledger {
     return row ? mapAttempt(row) : null;
   }
 
-  // --- Recorded Pushed SHAs (ADR-0004 / B7) ---
+  // --- Recorded Pushed SHAs (INSERT OR IGNORE preserves broker provenance — Opus R14) ---
 
   recordPushedSha(
     sha: string,
@@ -353,12 +483,14 @@ export class Ledger {
     now = Date.now(),
     repo = this.repo,
   ): void {
-    this.db
+    const res = this.db
       .prepare(
-        `INSERT OR REPLACE INTO pushed_shas (repo, sha, issue_number, origin, created_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO pushed_shas (repo, sha, issue_number, origin, created_at) VALUES (?, ?, ?, ?, ?)`,
       )
       .run(repo, sha, issueNumber, origin, now);
-    this.appendAudit("broker/sha_recorded", issueNumber, origin, { sha }, now, repo);
+    if (res.changes > 0) {
+      this.appendAudit("broker/sha_recorded", issueNumber, origin, { sha }, now, repo);
+    }
   }
 
   isKnownSha(
@@ -372,7 +504,7 @@ export class Ledger {
     return row ? { known: true, origin: row.origin } : { known: false, origin: null };
   }
 
-  // --- Reviews (Runtime records SHA, never model-echoed — B7) ---
+  // --- Reviews ---
 
   recordReview(input: {
     issueNumber: number;
@@ -451,10 +583,25 @@ export class Ledger {
     const repo = input.repo ?? this.repo;
     const now = input.now ?? Date.now();
     const dayKey = formatDayKey(now, this.timeZone);
+    const initialWatch: MainWatch = input.shadowOnly
+      ? { kind: "green" }
+      : { kind: "watching", since: now };
+
+    if (input.shadowOnly) {
+      const existing = this.db
+        .prepare(
+          `SELECT * FROM merges WHERE repo = ? AND issue_number = ? AND head_sha = ? AND shadow_only = 1`,
+        )
+        .get(repo, input.issueNumber, input.headSha) as Record<string, unknown> | undefined;
+      if (existing) {
+        return mapMerge(existing);
+      }
+    }
+
     const info = this.db
       .prepare(
-        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, main_watch_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -464,6 +611,7 @@ export class Ledger {
         input.squashSha ?? null,
         input.shadowOnly ? 1 : 0,
         dayKey,
+        JSON.stringify(initialWatch),
         now,
       );
     this.appendAudit(
@@ -506,30 +654,34 @@ export class Ledger {
     const rows = this.db
       .prepare(
         `SELECT * FROM merges
-         WHERE repo = ? AND shadow_only = 0 AND squash_sha IS NOT NULL AND main_status IN ('pending', 'rerun_once')
+         WHERE repo = ? AND shadow_only = 0 AND squash_sha IS NOT NULL
+           AND json_extract(main_watch_json, '$.kind') IN ('watching', 'rerun_requested')
          ORDER BY created_at ASC`,
       )
       .all(repo) as Record<string, unknown>[];
     return rows.map(mapMerge);
   }
 
-  updateMergeMainStatus(
-    mergeId: number,
-    status: MergeRecord["mainStatus"],
-    revertPrNumber?: number | null,
-  ): void {
+  updateMergeMainWatch(mergeId: number, watch: MainWatch): void {
+    const validated = MainWatchSchema.parse(watch);
     this.db
-      .prepare(
-        `UPDATE merges SET main_status = ?, revert_pr_number = COALESCE(?, revert_pr_number) WHERE id = ?`,
-      )
-      .run(status, revertPrNumber ?? null, mergeId);
+      .prepare(`UPDATE merges SET main_watch_json = ? WHERE id = ?`)
+      .run(JSON.stringify(validated), mergeId);
   }
 
+  /**
+   * Synchronizes shadow disagreement idempotently (no duplicate audit rows on unchanged ticks).
+   */
   markShadowDisagree(issueNumber: number, disagreed = true, repo = this.repo): void {
-    this.db
-      .prepare(`UPDATE merges SET disagreed = ? WHERE repo = ? AND issue_number = ? AND shadow_only = 1`)
-      .run(disagreed ? 1 : 0, repo, issueNumber);
-    this.appendAudit("shadow/disagree", issueNumber, "owner", { disagreed }, Date.now(), repo);
+    const flag = disagreed ? 1 : 0;
+    const res = this.db
+      .prepare(
+        `UPDATE merges SET disagreed = ? WHERE repo = ? AND issue_number = ? AND shadow_only = 1 AND disagreed != ?`,
+      )
+      .run(flag, repo, issueNumber, flag);
+    if (res.changes > 0) {
+      this.appendAudit("shadow/disagree", issueNumber, "owner", { disagreed }, Date.now(), repo);
+    }
   }
 
   getShadowStats(repo: string | null = null): {
@@ -564,33 +716,94 @@ export class Ledger {
     };
   }
 
-  // --- Global Daily Spend Accounting ($20/day across all projects — B9) ---
+  // --- Hard Daily Spend Cap with Atomic Budget Reservation (Codex #10 & Opus R8) ---
+
+  getSpendBreakdown(now = Date.now()): { spentUsd: number; reservedUsd: number; committedUsd: number } {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const row = this.db
+      .prepare(`SELECT usd, reserved_usd FROM daily_spend WHERE day_key = ?`)
+      .get(dayKey) as { usd: number; reserved_usd: number } | undefined;
+    const spentUsd = row?.usd ?? 0;
+    const reservedUsd = row?.reserved_usd ?? 0;
+    return { spentUsd, reservedUsd, committedUsd: spentUsd + reservedUsd };
+  }
+
+  getSpendToday(now = Date.now()): number {
+    return this.getSpendBreakdown(now).spentUsd;
+  }
+
+  /**
+   * Atomically reserves up to `desiredUsd` from the remaining daily budget.
+   * Returns the reserved amount (> 0) or `null` if insufficient budget remains (< `minRequiredUsd`).
+   */
+  reserveBudget(
+    maxDailyUsd: number,
+    desiredUsd: number,
+    minRequiredUsd = 0.01,
+    now = Date.now(),
+  ): number | null {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const tx = this.db.transaction((): number | null => {
+      const { committedUsd } = this.getSpendBreakdown(now);
+      const remaining = maxDailyUsd - committedUsd;
+      if (remaining < minRequiredUsd) {
+        return null;
+      }
+      const grant = Math.min(desiredUsd, remaining);
+      this.db
+        .prepare(
+          `INSERT INTO daily_spend (day_key, usd, reserved_usd, updated_at) VALUES (?, 0, ?, ?)
+           ON CONFLICT(day_key) DO UPDATE SET reserved_usd = reserved_usd + excluded.reserved_usd, updated_at = excluded.updated_at`,
+        )
+        .run(dayKey, grant, now);
+      return grant;
+    });
+    return tx();
+  }
+
+  settleBudget(reservedUsd: number, actualUsd: number, now = Date.now()): void {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const actual = Math.max(0, actualUsd);
+    const reserved = Math.max(0, reservedUsd);
+    this.db
+      .prepare(
+        `INSERT INTO daily_spend (day_key, usd, reserved_usd, updated_at) VALUES (?, ?, 0, ?)
+         ON CONFLICT(day_key) DO UPDATE SET
+           usd = usd + excluded.usd,
+           reserved_usd = MAX(0, reserved_usd - ?),
+           updated_at = excluded.updated_at`,
+      )
+      .run(dayKey, actual, now, reserved);
+  }
 
   addSpend(usd: number, now = Date.now()): number {
     const dayKey = formatDayKey(now, this.timeZone);
     this.db
       .prepare(
-        `INSERT INTO daily_spend (day_key, usd, updated_at) VALUES (?, ?, ?)
+        `INSERT INTO daily_spend (day_key, usd, reserved_usd, updated_at) VALUES (?, ?, 0, ?)
          ON CONFLICT(day_key) DO UPDATE SET usd = usd + excluded.usd, updated_at = excluded.updated_at`,
       )
       .run(dayKey, usd, now);
     return this.getSpendToday(now);
   }
 
-  getSpendToday(now = Date.now()): number {
-    const dayKey = formatDayKey(now, this.timeZone);
-    const row = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`).get(dayKey) as
-      | { usd: number }
-      | undefined;
-    return row?.usd ?? 0;
-  }
-
-  // --- Per-Repo Circuit Breaker (Red Main — B8) ---
+  // --- Per-Repo Circuit Breaker ---
 
   setCircuitBreaker(tripped: boolean, reason?: string, now = Date.now(), repo = this.repo): void {
+    const current = this.getCircuitBreaker(repo);
+    if (current.tripped === tripped && current.reason === (reason ?? "")) {
+      return;
+    }
     this.setSystemState(`circuit_breaker_tripped:${repo}`, tripped ? "1" : "0", now);
     this.setSystemState(`circuit_breaker_reason:${repo}`, reason ?? "", now);
-    this.appendAudit("system/circuit_breaker", null, "archangel", { tripped, reason: reason ?? "" }, now, repo);
+    this.appendAudit(
+      "system/circuit_breaker",
+      null,
+      "archangel",
+      { tripped, reason: reason ?? "" },
+      now,
+      repo,
+    );
   }
 
   getCircuitBreaker(repo = this.repo): { tripped: boolean; reason: string } {
@@ -669,29 +882,22 @@ export class Ledger {
 }
 
 function mapThread(r: Record<string, unknown>): ThreadRecord {
+  const phase = PhaseSchema.parse(JSON.parse(String(r.phase_json)));
   return {
     issueNumber: Number(r.issue_number),
     repo: String(r.repo),
     title: String(r.title),
     themeLabel: r.theme_label === null ? null : String(r.theme_label),
     bodySha256: String(r.body_sha256),
-    state: String(r.state) as ThreadState,
+    phase,
+    state: phase.kind,
+    version: Number(r.version),
+    mode: String(r.mode) as Mode,
     branchName: String(r.branch_name),
-    prNumber: r.pr_number === null ? null : Number(r.pr_number),
-    headSha: r.head_sha === null ? null : String(r.head_sha),
-    postHandoff: Number(r.post_handoff) === 1,
-    paseoWorkspaceId: r.paseo_workspace_id === null ? null : String(r.paseo_workspace_id),
-    paseoAgentId: r.paseo_agent_id === null ? null : String(r.paseo_agent_id),
+    lastSummary: r.last_summary === null ? null : String(r.last_summary),
     implementCount: Number(r.implement_count),
     revisionCount: Number(r.revision_count),
     rebaseCount: Number(r.rebase_count),
-    gateRerunCount: Number(r.gate_rerun_count),
-    gateWaitStartedAt: r.gate_wait_started_at === null ? null : Number(r.gate_wait_started_at),
-    reviewOutageStartedAt:
-      r.review_outage_started_at === null ? null : Number(r.review_outage_started_at),
-    needsYouReason: r.needs_you_reason === null ? null : String(r.needs_you_reason),
-    leaseOwner: r.lease_owner === null ? null : String(r.lease_owner),
-    leaseHeartbeatAt: r.lease_heartbeat_at === null ? null : Number(r.lease_heartbeat_at),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -738,8 +944,21 @@ function mapMerge(r: Record<string, unknown>): MergeRecord {
     shadowOnly: Number(r.shadow_only) === 1,
     disagreed: Number(r.disagreed) === 1,
     dayKey: String(r.day_key),
-    mainStatus: String(r.main_status) as MergeRecord["mainStatus"],
-    revertPrNumber: r.revert_pr_number === null ? null : Number(r.revert_pr_number),
+    mainWatch: MainWatchSchema.parse(JSON.parse(String(r.main_watch_json))),
     createdAt: Number(r.created_at),
+  };
+}
+
+function mapCommand(r: Record<string, unknown>): DaemonCommandRecord {
+  return {
+    id: Number(r.id),
+    repo: String(r.repo),
+    issueNumber: Number(r.issue_number),
+    kind: String(r.kind) as "handoff",
+    status: String(r.status) as DaemonCommandRecord["status"],
+    resultJson: r.result_json === null ? null : String(r.result_json),
+    errorMessage: r.error_message === null ? null : String(r.error_message),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
   };
 }

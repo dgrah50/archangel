@@ -1,80 +1,105 @@
 import { describe, expect, it } from "vitest";
 import { Ledger } from "../src/ledger/store.js";
 
-describe("Ledger", () => {
-  it("tracks threads, leases, stale-run sweeps, and audit logs", () => {
+describe("Ledger (CAS transitions, daemon lock, budget reservations, multi-project)", () => {
+  it("enforces compare-and-set version checks and sweeps ONLY working phases on startup", () => {
     const ledger = new Ledger(":memory:", { timeZone: "America/New_York" });
     try {
-      const t = ledger.upsertThread({
+      const t1 = ledger.upsertThread({
         issueNumber: 42,
-        repo: "dgrah50/gijq",
         title: "Fix parser panic",
         themeLabel: "theme:reliability",
         bodySha256: "abc123",
         now: 1000,
       });
-      expect(t.state).toBe("queued");
-      expect(t.branchName).toBe("factory/42");
+      expect(t1.phase.kind).toBe("queued");
+      expect(t1.version).toBe(0);
 
-      // Acquire and block second worker
-      expect(ledger.acquireLease(42, "w1", 60_000, 2000)).toBe(true);
-      expect(ledger.acquireLease(42, "w2", 60_000, 3000)).toBe(false);
+      // CAS transition succeeds on matching version, rejects stale version
+      const att = ledger.startAttempt(42, "implement", 2000);
+      const tWorking = ledger.transition(
+        42,
+        0,
+        {
+          kind: "working",
+          attemptId: att.id,
+          attempt: "implement",
+          fromSha: "base1",
+          resumeTo: { kind: "queued" },
+        },
+        { now: 2000 },
+      );
+      expect(tWorking?.version).toBe(1);
+      expect(ledger.transition(42, 0, { kind: "done", outcome: "abandoned" })).toBeNull();
 
-      // Simulate crashed implementing attempt -> stale sweep recovers it
-      ledger.updateThread(42, { state: "implementing" }, 3000);
-      const att = ledger.startAttempt(42, "implement", 3000);
-      const swept = ledger.sweepStaleRuns(60_000, 100_000);
+      // Create a second thread already in needs_you — startup sweep MUST NOT touch it (Opus L1)!
+      ledger.upsertThread({
+        issueNumber: 43,
+        title: "Escalated bug",
+        bodySha256: "def456",
+        phase: {
+          kind: "needs_you",
+          code: "gate_failed",
+          reason: "needs owner",
+          resumeTo: { kind: "queued" },
+        },
+        now: 1000,
+      });
+
+      const swept = ledger.sweepStaleWorkingRuns(5000);
       expect(swept).toEqual([42]);
-      expect(ledger.getThread(42)?.state).toBe("queued");
-      expect(ledger.getThread(42)?.leaseOwner).toBeNull();
+      expect(ledger.getThread(42)?.phase.kind).toBe("queued");
+      expect(ledger.getThread(43)?.phase.kind).toBe("needs_you");
       expect(ledger.getAttempt(att.id)?.status).toBe("failed");
 
-      const logs = ledger.listAudit({ issueNumber: 42 });
-      expect(logs.some((e) => e.topic === "thread/stale_swept")).toBe(true);
+      // Single daemon lock prevents concurrent daemon start
+      expect(ledger.acquireDaemonLock("d1", 60_000, 10_000)).toBe(true);
+      expect(ledger.acquireDaemonLock("d2", 60_000, 20_000)).toBe(false);
+      ledger.releaseDaemonLock("d1");
+      expect(ledger.acquireDaemonLock("d2", 60_000, 25_000)).toBe(true);
     } finally {
       ledger.close();
     }
   });
 
-  it("enforces daily spend, daily merge count, shadow agreement, and circuit breaker", () => {
+  it("enforces atomic budget reservations, INSERT OR IGNORE SHA provenance, shadow dedupe, and multi-project isolation", () => {
     const ledger = new Ledger(":memory:", { timeZone: "America/New_York" });
     try {
       const day1 = Date.parse("2026-11-21T15:00:00-05:00");
       const day2 = Date.parse("2026-11-22T15:00:00-05:00");
 
-      ledger.addSpend(12.5, day1);
-      ledger.addSpend(8.0, day1);
-      expect(ledger.getSpendToday(day1)).toBeCloseTo(20.5);
+      // Atomic reservations prevent overspending $20/day across concurrent attempts
+      const r1 = ledger.reserveBudget(20, 12, 0.05, day1);
+      const r2 = ledger.reserveBudget(20, 12, 0.05, day1);
+      const r3 = ledger.reserveBudget(20, 12, 0.05, day1);
+      expect(r1).toBe(12);
+      expect(r2).toBe(8);
+      expect(r3).toBeNull();
+
+      ledger.settleBudget(12, 10.5, day1);
+      ledger.settleBudget(8, 9.5, day1);
+      expect(ledger.getSpendToday(day1)).toBeCloseTo(20.0);
       expect(ledger.getSpendToday(day2)).toBe(0);
 
-      ledger.upsertThread({ issueNumber: 1, repo: "dgrah50/gijq", title: "a", bodySha256: "h1", now: day1 });
-      ledger.upsertThread({ issueNumber: 2, repo: "dgrah50/gijq", title: "b", bodySha256: "h2", now: day1 });
-      ledger.upsertThread({ issueNumber: 3, repo: "dgrah50/gijq", title: "c", bodySha256: "h3", now: day1 });
+      ledger.upsertThread({ issueNumber: 1, title: "a", bodySha256: "h1", now: day1 });
+      // INSERT OR IGNORE keeps broker provenance even if owner_resume touches same SHA (Opus R14)
+      ledger.recordPushedSha("sha1", 1, "broker", day1);
+      ledger.recordPushedSha("sha1", 1, "owner_resume", day1);
+      expect(ledger.isKnownSha(1, "sha1")).toEqual({ known: true, origin: "broker" });
 
-      ledger.recordMerge({ issueNumber: 1, prNumber: 10, headSha: "s1", shadowOnly: true, now: day1 });
-      ledger.recordMerge({ issueNumber: 2, prNumber: 11, headSha: "s2", shadowOnly: true, now: day1 });
-      ledger.markShadowDisagree(2, true);
-      expect(ledger.getAutoMergeCountToday(day1)).toBe(0);
-      expect(ledger.getShadowStats()).toEqual({
-        total: 2,
-        agreed: 1,
-        disagreed: 1,
-        agreementRate: 0.5,
-      });
+      // Shadow Mode deduplicates by (repo, issue, headSha)
+      const m1 = ledger.recordMerge({ issueNumber: 1, prNumber: 10, headSha: "sha1", shadowOnly: true, now: day1 });
+      const m2 = ledger.recordMerge({ issueNumber: 1, prNumber: 10, headSha: "sha1", shadowOnly: true, now: day1 });
+      expect(m2.id).toBe(m1.id);
+      expect(ledger.getShadowStats().total).toBe(1);
 
-      ledger.recordMerge({ issueNumber: 3, prNumber: 12, headSha: "s3", squashSha: "sq3", shadowOnly: false, now: day1 });
-      expect(ledger.getAutoMergeCountToday(day1)).toBe(1);
-      expect(ledger.getAutoMergeCountToday(day2)).toBe(0);
-
-      ledger.setCircuitBreaker(true, "red main on sq3", day1);
-      expect(ledger.getCircuitBreaker()).toEqual({ tripped: true, reason: "red main on sq3" });
-
-      // Multi-project isolation: same issue number in a second repo does not collide, while sharing daily_spend
+      // Multi-project isolation shares daily_spend but isolates threads and circuit breakers
       const repo2 = ledger.forRepo("dgrah50/other");
-      repo2.upsertThread({ issueNumber: 1, title: "other repo #1", bodySha256: "otherh1", now: day1 });
+      repo2.upsertThread({ issueNumber: 1, title: "other #1", bodySha256: "oh1", now: day1 });
+      ledger.setCircuitBreaker(true, "red main", day1);
       expect(ledger.getThread(1)?.title).toBe("a");
-      expect(repo2.getThread(1)?.title).toBe("other repo #1");
-      expect(repo2.getSpendToday(day1)).toBeCloseTo(20.5);
+      expect(repo2.getThread(1)?.title).toBe("other #1");
+      expect(repo2.getSpendToday(day1)).toBeCloseTo(20.0);
       expect(repo2.getCircuitBreaker().tripped).toBe(false);
     } finally {
       ledger.close();

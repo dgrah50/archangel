@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
-import type { ReviewerSuite, VendorReviewResult } from "../src/agents/reviewers.js";
+import type { ReviewBatchOutcome, ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema, type ArchangelConfig } from "../src/config.js";
 import type { CheckStatus } from "../src/core/blockers.js";
@@ -38,6 +38,11 @@ class FakeGitHub implements GitHubClient {
   async listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]> {
     return [...this.issues.values()].filter((i) => i.state === "open" && i.labels.includes(label));
   }
+  async getIssue(issueNumber: number): Promise<GitHubIssue> {
+    const issue = this.issues.get(issueNumber);
+    if (!issue) throw new Error(`Issue #${issueNumber} not found`);
+    return { ...issue, labels: [...issue.labels] };
+  }
   async verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean> {
     return this.labelActors.get(`${issueNumber}:${labelName}`) === expectedOwnerId;
   }
@@ -59,6 +64,8 @@ class FakeGitHub implements GitHubClient {
       number: this.nextPrNumber++,
       title: input.title,
       state: "open",
+      merged: false,
+      mergeCommitSha: null,
       draft: false,
       headRef: input.head,
       headSha,
@@ -73,13 +80,12 @@ class FakeGitHub implements GitHubClient {
   async getPrLive(prNumber: number): Promise<GitHubPr> {
     const pr = this.prs.get(prNumber);
     if (!pr) throw new Error(`PR #${prNumber} not found`);
-    const headSha = await this.getBranchTipSha(pr.headRef);
-    const baseSha = await this.getBranchTipSha(pr.baseRef);
-    pr.headSha = headSha;
-    pr.baseSha = baseSha;
-    pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", baseSha, headSha])
-      .split("\n")
-      .filter(Boolean);
+    if (pr.state === "open") {
+      pr.headSha = await this.getBranchTipSha(pr.headRef);
+      pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", pr.baseSha, pr.headSha])
+        .split("\n")
+        .filter(Boolean);
+    }
     return { ...pr, labels: [...pr.labels], changedFiles: [...pr.changedFiles] };
   }
   async getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>> {
@@ -98,15 +104,11 @@ class FakeGitHub implements GitHubClient {
   }
   async addLabels(issueNumber: number, labels: string[]): Promise<void> {
     const issue = this.issues.get(issueNumber);
-    if (issue) {
-      issue.labels = [...new Set([...issue.labels, ...labels])];
-    }
+    if (issue) issue.labels = [...new Set([...issue.labels, ...labels])];
   }
   async removeLabel(issueNumber: number, label: string): Promise<void> {
     const issue = this.issues.get(issueNumber);
-    if (issue) {
-      issue.labels = issue.labels.filter((l) => l !== label);
-    }
+    if (issue) issue.labels = issue.labels.filter((l) => l !== label);
   }
   async squashMergePr(
     prNumber: number,
@@ -117,7 +119,6 @@ class FakeGitHub implements GitHubClient {
     if (pr.headSha !== expectedHeadSha) {
       throw new Error(`Head SHA mismatch: expected ${expectedHeadSha}, got ${pr.headSha}`);
     }
-    // Apply squash merge commit onto main in remoteBare via a temp workdir
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-merge-"));
     try {
       git(tmp, ["clone", this.remoteBare, "."]);
@@ -129,9 +130,11 @@ class FakeGitHub implements GitHubClient {
       git(tmp, ["push", "origin", "main"]);
       const squashSha = git(tmp, ["rev-parse", "HEAD"]);
       pr.state = "closed";
+      pr.merged = true;
+      pr.mergeCommitSha = squashSha;
       return { squashSha };
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }
 }
@@ -171,8 +174,8 @@ function allGreenChecks(): Array<CheckStatus & { id: number }> {
   ];
 }
 
-describe("Reconciler end-to-end", () => {
-  it("rejects untrusted issue authors, runs full Shadow Mode lifecycle, and handles Paseo handoff/resume", async () => {
+describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", () => {
+  it("runs Shadow Mode, closes cleanly on owner merge, and enforces advisory-only post-handoff", async () => {
     const { root, remoteBare } = setupRepo();
     const ledger = new Ledger(":memory:");
     const github = new FakeGitHub(remoteBare);
@@ -187,8 +190,10 @@ describe("Reconciler end-to-end", () => {
       },
     };
 
+    let implementCalls = 0;
     const implementer: Implementer = {
       async run(input) {
+        implementCalls++;
         fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 42 }\n");
         git(input.cloneDir, ["add", "-A"]);
         git(input.cloneDir, ["commit", "-m", "fix Val"]);
@@ -197,11 +202,14 @@ describe("Reconciler end-to-end", () => {
     };
 
     const reviewers: ReviewerSuite = {
-      async reviewAll(): Promise<VendorReviewResult[]> {
-        return [
-          { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.03 },
-          { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
-        ];
+      async reviewAll(): Promise<ReviewBatchOutcome> {
+        return {
+          results: [
+            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.03 },
+            { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
+          ],
+          errors: [],
+        };
       },
     };
 
@@ -209,7 +217,7 @@ describe("Reconciler end-to-end", () => {
     const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
 
     try {
-      // Untrusted external issue must be ignored.
+      // Untrusted external issue ignored
       github.issues.set(1, {
         number: 1,
         title: "External injection",
@@ -222,7 +230,6 @@ describe("Reconciler end-to-end", () => {
         updatedAt: new Date().toISOString(),
       });
 
-      // Trusted owner-authored & owner-labeled issue.
       github.issues.set(2, {
         number: 2,
         title: "Val returns 1 instead of 42",
@@ -236,26 +243,30 @@ describe("Reconciler end-to-end", () => {
       });
       github.labelActors.set("2:ready-for-agent", 999);
 
-      // Tick 1: intake + implement + push + open PR -> awaiting_gate
-      await reconciler.tick();
+      // Tick 1: intake + implement + push -> awaiting_gate
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getThread(1)).toBeNull();
       const t2 = ledger.getThread(2)!;
-      expect(t2.state).toBe("awaiting_gate");
-      expect(t2.prNumber).toBe(100);
-      expect(t2.headSha).toBeTruthy();
+      expect(t2.phase.kind).toBe("awaiting_gate");
+      const headSha = t2.phase.kind === "awaiting_gate" ? t2.phase.headSha : "";
 
-      // Mark required checks green on headSha and main
+      // Removing ready-for-agent mid-flight does NOT stall (uses getIssue fallback — Neon P0.5)
+      github.issues.get(2)!.labels = ["theme:reliability"];
+
+      // Missing main checks must FAIL CLOSED (Codex #2): stays in landing with main_not_green!
+      github.checks.set(headSha, allGreenChecks());
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(2)?.phase.kind).toBe("landing");
+
+      // Now main checks are green -> transitions to shadow_ready!
       const mainSha = await github.getBranchTipSha("main");
       github.checks.set(mainSha, allGreenChecks());
-      github.checks.set(t2.headSha!, allGreenChecks());
-
-      // Tick 2: Gate green -> parallel reviews -> shadow_ready!
-      await reconciler.tick();
-      expect(ledger.getThread(2)?.state).toBe("shadow_ready");
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(2)?.phase.kind).toBe("shadow_ready");
       expect(ledger.getShadowStats().total).toBe(1);
       expect(ledger.getSpendToday()).toBeCloseTo(0.5);
 
-      // Test Paseo Handoff & Resume guard
+      // Handoff to Paseo -> owner_driving (advisory mode), resume refuses while running
       let paseoRunning = true;
       const paseo: PaseoRunner = {
         async checkoutBranchAndSeed() {
@@ -265,29 +276,43 @@ describe("Reconciler end-to-end", () => {
           return paseoRunning;
         },
       };
-      const ho = await handoffThreadToPaseo(2, { config: cfg, ledger, github, broker, paseo });
-      expect(ho.agentId).toBe("ag_1");
-      expect(ledger.getThread(2)?.state).toBe("paused");
-      expect(ledger.getThread(2)?.postHandoff).toBe(true);
+      await handoffThreadToPaseo(2, { config: cfg, ledger, github, broker, paseo });
+      expect(ledger.getThread(2)?.phase.kind).toBe("owner_driving");
+      expect(ledger.getThread(2)?.mode).toBe("advisory");
 
-      // Resume refused while Paseo agent is still running
       await expect(resumeThreadFromPaseo(2, { config: cfg, ledger, github, paseo })).rejects.toThrow(
         /still running/,
       );
 
-      // Stop Paseo -> resume succeeds in advisory postHandoff mode
       paseoRunning = false;
-      const resumed = await resumeThreadFromPaseo(2, { config: cfg, ledger, github, paseo });
-      expect(resumed.headSha).toBe(t2.headSha);
-      expect(ledger.getThread(2)?.state).toBe("awaiting_gate");
-      expect(ledger.getThread(2)?.postHandoff).toBe(true);
+      await resumeThreadFromPaseo(2, { config: cfg, ledger, github, paseo });
+      expect(ledger.getThread(2)?.phase.kind).toBe("awaiting_gate");
+      expect(ledger.getThread(2)?.mode).toBe("advisory");
+
+      // Even if Gate fails in advisory mode, factory MUST NOT run revise/force-push (Opus R4)!
+      github.checks.set(headSha, [
+        { id: 99, name: "Gate", status: "completed", conclusion: "failure", appSlug: "github-actions" },
+        { id: 100, name: "Test (ubuntu-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+        { id: 101, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+      ]);
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(implementCalls).toBe(1);
+      expect(ledger.getThread(2)?.phase.kind).toBe("needs_you");
+
+      // Owner merges PR manually -> cleanly transitions to done(owner_merged) without rewriting recap!
+      github.prs.get(100)!.state = "closed";
+      github.prs.get(100)!.merged = true;
+      github.prs.get(100)!.mergeCommitSha = "owner_sq_1";
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(2)?.phase).toMatchObject({ kind: "done", outcome: "owner_merged" });
+      expect(ledger.getAutoMergeCountToday()).toBe(0);
     } finally {
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
-  it("auto-merges when shadowMode=false, then trips circuit breaker & opens exact revert PR if main turns red", async () => {
+  it("auto-merges when shadowMode=false, reruns red main once, trips circuit breaker & opens exact revert PR", async () => {
     const { root, remoteBare } = setupRepo();
     const ledger = new Ledger(":memory:");
     const github = new FakeGitHub(remoteBare);
@@ -312,10 +337,13 @@ describe("Reconciler end-to-end", () => {
     };
     const reviewers: ReviewerSuite = {
       async reviewAll() {
-        return [
-          { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
-          { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
-        ];
+        return {
+          results: [
+            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
+            { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
+          ],
+          errors: [],
+        };
       },
     };
 
@@ -336,31 +364,31 @@ describe("Reconciler end-to-end", () => {
       });
       github.labelActors.set("5:ready-for-agent", 999);
 
-      await reconciler.tick();
-      const headSha = ledger.getThread(5)!.headSha!;
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      const p5 = ledger.getThread(5)!.phase;
+      expect(p5.kind).toBe("awaiting_gate");
+      const headSha = p5.kind === "awaiting_gate" ? p5.headSha : "";
       const mainBefore = await github.getBranchTipSha("main");
       github.checks.set(mainBefore, allGreenChecks());
       github.checks.set(headSha, allGreenChecks());
 
-      // Tick 2: auto squash-merge!
-      await reconciler.tick();
-      expect(ledger.getThread(5)?.state).toBe("merged");
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(5)?.phase).toMatchObject({ kind: "done", outcome: "merged" });
       expect(ledger.getAutoMergeCountToday()).toBe(1);
 
-      // Simulate red main CI on the new squash SHA
       const mainAfter = await github.getBranchTipSha("main");
-      expect(mainAfter).not.toBe(mainBefore);
       github.checks.set(mainAfter, [
         { id: 77, name: "Test (ubuntu-latest)", status: "completed", conclusion: "failure", appSlug: "github-actions" },
+        { id: 78, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
       ]);
 
-      // Tick 3: reruns failed check once to rule out flakes
-      await reconciler.tick();
+      // Tick 3: reruns failed check once
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(github.rerunCalls).toEqual([77]);
       expect(ledger.getCircuitBreaker().tripped).toBe(false);
 
       // Tick 4: still failing -> trips circuit breaker + opens exact-inverse revert PR + notifies!
-      await reconciler.tick();
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getCircuitBreaker().tripped).toBe(true);
       const revertPr = [...github.prs.values()].find((p) => p.headRef === "factory/revert-5");
       expect(revertPr).toBeTruthy();
@@ -371,7 +399,7 @@ describe("Reconciler end-to-end", () => {
     }
   });
 
-  it("handles reviewer veto -> 1 structured revision -> approve, body TOCTOU escalation, and $20/day spend cap", async () => {
+  it("persists partial Promise.allSettled reviews, handles veto->revision, body TOCTOU->retry, timeout, and hard $20/day cap", async () => {
     const { root, remoteBare } = setupRepo();
     const ledger = new Ledger(":memory:");
     const github = new FakeGitHub(remoteBare);
@@ -379,19 +407,17 @@ describe("Reconciler end-to-end", () => {
       bareRepoPath: path.join(root, "broker.git"),
       clonesDir: path.join(root, "clones"),
     });
-    const notifications: string[] = [];
-    const notifier: Notifier = {
-      async notifyNeedsYou(i) {
-        notifications.push(`${i.issueNumber}:${i.reason}`);
-      },
-    };
+    const notifier: Notifier = { async notifyNeedsYou() {} };
 
-    const promptsSeen: string[] = [];
     let attemptNum = 0;
+    const promptsSeen: string[] = [];
     const implementer: Implementer = {
       async run(input) {
         attemptNum++;
         promptsSeen.push(input.prompt);
+        if (input.issueNumber === 12) {
+          return { summary: "Aborted", costUsd: 0.25, transcriptPath: null, aborted: true };
+        }
         fs.writeFileSync(
           path.join(input.cloneDir, "app.go"),
           `package demo\n\nfunc Val() int { return ${attemptNum === 1 ? 10 : 20} }\n`,
@@ -402,25 +428,40 @@ describe("Reconciler end-to-end", () => {
       },
     };
 
-    let reviewRound = 0;
+    let reviewCalls = 0;
     const reviewers: ReviewerSuite = {
-      async reviewAll() {
-        reviewRound++;
-        if (reviewRound === 1) {
-          return [
-            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
-            {
-              vendor: "gemini",
-              verdict: "veto",
-              findings: [{ file: "app.go", line: 3, severity: "blocker", summary: "Should return 20 not 10" }],
-              costUsd: 0.02,
-            },
-          ];
+      async reviewAll(req): Promise<ReviewBatchOutcome> {
+        reviewCalls++;
+        // Call 1: OpenAI approves, Gemini errors -> OpenAI approval MUST be saved so Call 2 skips OpenAI!
+        if (reviewCalls === 1) {
+          return {
+            results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0.03 }],
+            errors: [{ vendor: "gemini", error: "503 temporary outage" }],
+          };
         }
-        return [
-          { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
-          { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
-        ];
+        // Call 2: only Gemini runs -> vetoes with structured finding -> triggers 1 revision
+        if (reviewCalls === 2) {
+          expect(req.skipVendors).toEqual(["openai"]);
+          return {
+            results: [
+              {
+                vendor: "gemini",
+                verdict: "veto",
+                findings: [{ file: "app.go", line: 3, severity: "blocker", summary: "Return 20 not 10" }],
+                costUsd: 0.02,
+              },
+            ],
+            errors: [],
+          };
+        }
+        // Call 3: both approve revised SHA
+        return {
+          results: [
+            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
+            { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
+          ],
+          errors: [],
+        };
       },
     };
 
@@ -428,6 +469,9 @@ describe("Reconciler end-to-end", () => {
     const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
 
     try {
+      const mainSha = await github.getBranchTipSha("main");
+      github.checks.set(mainSha, allGreenChecks());
+
       github.issues.set(8, {
         number: 8,
         title: "Val should return 20",
@@ -441,37 +485,42 @@ describe("Reconciler end-to-end", () => {
       });
       github.labelActors.set("8:ready-for-agent", 999);
 
-      // Tick 1: initial implement -> awaiting_gate
-      await reconciler.tick();
-      const sha1 = ledger.getThread(8)!.headSha!;
-      const mainSha = await github.getBranchTipSha("main");
-      github.checks.set(mainSha, allGreenChecks());
+      // Tick 1: implement
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      const sha1 = ledger.getThread(8)!.phase.kind === "awaiting_gate"
+        ? (ledger.getThread(8)!.phase as { headSha: string }).headSha
+        : "";
       github.checks.set(sha1, allGreenChecks());
 
-      // Tick 2: Gate green -> Gemini vetoes -> automatically triggers 1 structured revision!
-      await reconciler.tick();
+      // Tick 2: Gate green -> Call 1 partial outage saves OpenAI approval & stays reviewing
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(8)?.phase.kind).toBe("reviewing");
+      expect(ledger.getReviewsForSha(8, sha1)).toHaveLength(1);
+
+      // Tick 3: Call 2 skips OpenAI, Gemini vetoes -> spawns 1 structured revision!
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(attemptNum).toBe(2);
-      expect(promptsSeen[1]).toContain("Should return 20 not 10");
-      const sha2 = ledger.getThread(8)!.headSha!;
-      expect(sha2).not.toBe(sha1);
-      expect(ledger.getThread(8)?.state).toBe("awaiting_gate");
-
-      // Tick 3: Gate green on revised SHA -> both approve -> shadow_ready!
+      expect(promptsSeen[1]).toContain("Return 20 not 10");
+      const sha2 = (ledger.getThread(8)!.phase as { headSha: string }).headSha;
       github.checks.set(sha2, allGreenChecks());
-      await reconciler.tick();
-      expect(ledger.getThread(8)?.state).toBe("shadow_ready");
 
-      // Issue body TOCTOU edit on an active thread -> escalates to Needs You!
-      github.issues.get(8)!.body = "Tampered body after intake";
-      await reconciler.tick();
-      expect(ledger.getThread(8)?.state).toBe("needs_you");
+      // Tick 4: Revised SHA green -> both approve -> shadow_ready!
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(8)?.phase.kind).toBe("shadow_ready");
 
-      // Daily spend cap ($20) refuses new Attempts!
-      ledger.addSpend(19.0); // now > $20 today
-      github.issues.set(9, {
-        number: 9,
-        title: "Another bug",
-        body: "Repro steps",
+      // Body edit TOCTOU -> needs_you -> removing needs-you label re-snapshots bodySha & recovers (Opus S15)!
+      github.issues.get(8)!.body = "Updated body by owner";
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(8)?.phase.kind).toBe("needs_you");
+      github.issues.get(8)!.labels = ["ready-for-agent"]; // owner cleared needs-you
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(8)?.phase.kind).not.toBe("needs_you");
+
+      // Implementer timeout -> cleanly transitions to needs_you(attempt_timeout) instead of sticking in working (Opus S1)!
+      github.issues.set(12, {
+        number: 12,
+        title: "Slow bug",
+        body: "Takes too long",
         state: "open",
         authorId: 999,
         authorLogin: "dgrah50",
@@ -479,10 +528,29 @@ describe("Reconciler end-to-end", () => {
         labels: ["ready-for-agent"],
         updatedAt: new Date().toISOString(),
       });
-      github.labelActors.set("9:ready-for-agent", 999);
-      await reconciler.tick();
-      expect(ledger.getThread(9)?.state).toBe("queued");
-      expect(attemptNum).toBe(2); // did NOT run implementer over budget
+      github.labelActors.set("12:ready-for-agent", 999);
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(12)?.phase).toMatchObject({ kind: "needs_you", code: "attempt_timeout" });
+      expect(reconciler.activeTaskCount()).toBe(0);
+
+      // Hard $20/day spend cap refuses new Attempts
+      ledger.addSpend(19.0);
+      github.issues.set(13, {
+        number: 13,
+        title: "Over budget",
+        body: "Should wait",
+        state: "open",
+        authorId: 999,
+        authorLogin: "dgrah50",
+        authorAssociation: "OWNER",
+        labels: ["ready-for-agent"],
+        updatedAt: new Date().toISOString(),
+      });
+      github.labelActors.set("13:ready-for-agent", 999);
+      const before = attemptNum;
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(13)?.phase.kind).toBe("queued");
+      expect(attemptNum).toBe(before);
     } finally {
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

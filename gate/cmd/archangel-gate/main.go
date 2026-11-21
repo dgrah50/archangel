@@ -24,6 +24,7 @@ func main() {
 	headNewRuns := flag.Int("head-new-runs", policy.HeadNewRuns, "Race-enabled runs of new tests on head")
 	headFullRuns := flag.Int("head-full-runs", policy.HeadFullRuns, "Uncached race-enabled full suite runs on head")
 	skipFull := flag.Bool("skip-full-suite", false, "Skip full suite runs (for fast broker pre-push validation)")
+	policyFromBase := flag.Bool("policy-from-base", false, "Read optional .agents/landing.json strictly from base commit (tightening only)")
 	extraProtected := flag.String("extra-protected-paths", "", "Comma-separated per-project extra protected path patterns")
 	flag.Parse()
 
@@ -43,11 +44,12 @@ func main() {
 	}
 
 	report, err := gate.Run(gate.Options{
-		RepoDir:  *repoDir,
-		BaseRef:  *baseRef,
-		HeadRef:  *headRef,
-		RevertOf: *revertOf,
-		Policy:   policy,
+		RepoDir:        *repoDir,
+		BaseRef:        *baseRef,
+		HeadRef:        *headRef,
+		RevertOf:       *revertOf,
+		PolicyFromBase: *policyFromBase,
+		Policy:         policy,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "archangel-gate error: %v\n", err)

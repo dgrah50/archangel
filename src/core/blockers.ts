@@ -1,6 +1,7 @@
 import type { ReviewRecord, ReviewerVendor } from "../ledger/schema.js";
 
 export interface CheckStatus {
+  id?: number;
   name: string;
   status: "queued" | "in_progress" | "completed";
   conclusion: string | null;
@@ -18,6 +19,7 @@ export interface LandingSnapshot {
   stopLabel: string;
   circuitBreakerTripped: boolean;
   mainTipGreen: boolean;
+  /** Strictly requires PR base SHA == current main SHA (never satisfied by mergeTreeClean alone). */
   branchUpToDateWithMain: boolean;
   protectedFilesTouched: string[];
   requiredChecks: string[];
@@ -57,6 +59,8 @@ export interface Blocker {
 /**
  * Single deterministic blockers(pr) function (Polaris pattern) shared by the Lander,
  * `archangel status`, and in-place PR Recaps.
+ * Fails CLOSED on missing/null `appSlug`, duplicate checks (uses latest by highest `id`),
+ * stale base SHA, and missing main CI checks.
  */
 export function computeBlockers(s: LandingSnapshot): Blocker[] {
   const blockers: Blocker[] = [];
@@ -82,7 +86,7 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
     });
   }
   if (!s.mainTipGreen) {
-    blockers.push({ code: "main_not_green", message: "main tip CI is not green" });
+    blockers.push({ code: "main_not_green", message: "main tip CI is not green or missing required checks" });
   }
   if (!s.shaRecordedByBroker) {
     blockers.push({
@@ -99,21 +103,32 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
   if (!s.branchUpToDateWithMain) {
     blockers.push({
       code: "branch_behind_main",
-      message: "Branch is behind main tip; Gate must run against current main",
+      message: "Branch base SHA is behind current main tip; Gate must run against current main",
     });
   }
 
+  // Deduplicate check runs by name, taking the latest execution (highest id).
+  const latestByName = new Map<string, CheckStatus>();
+  for (const c of s.checks) {
+    const prev = latestByName.get(c.name);
+    if (!prev || (c.id ?? 0) >= (prev.id ?? 0)) {
+      latestByName.set(c.name, c);
+    }
+  }
+
   for (const reqName of s.requiredChecks) {
-    const match = s.checks.find((c) => c.name === reqName);
+    const match = latestByName.get(reqName);
     if (!match) {
       blockers.push({ code: "check_missing", message: `Required check missing: ${reqName}` });
       continue;
     }
-    if (match.appSlug && match.appSlug !== "github-actions") {
+    // Fail CLOSED if appSlug is absent or anything other than `github-actions` (Codex #7).
+    if (match.appSlug !== "github-actions") {
       blockers.push({
         code: "check_untrusted_source",
-        message: `Check ${reqName} came from untrusted app ${match.appSlug}`,
+        message: `Check ${reqName} came from untrusted or missing app (${match.appSlug ?? "none"})`,
       });
+      continue;
     }
     if (match.status !== "completed") {
       blockers.push({ code: "check_pending", message: `Check pending: ${reqName}` });
@@ -152,7 +167,8 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
   if (s.shadowMode) {
     blockers.push({
       code: "shadow_mode_active",
-      message: "Shadow Mode active — would merge (owner merges manually; add factory:disagree if you disagree)",
+      message:
+        "Shadow Mode active — would merge (owner merges manually; add factory:disagree if you disagree)",
     });
   }
 

@@ -132,6 +132,7 @@ const HostProjectYamlSchema = z.object({
 export const HostYamlSchema = z.object({
   ownerUserId: z.number().int().positive(),
   dataDir: z.string().min(1).default(".archangel"),
+  gateBinaryPath: z.string().min(1).optional(),
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
@@ -143,6 +144,17 @@ export const HostYamlSchema = z.object({
   labels: LabelsSchema.optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
 });
+
+function resolvePrivateKeyPem(env: NodeJS.ProcessEnv): string | undefined {
+  if (env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM && env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM.trim()) {
+    return env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM.replace(/\\n/g, "\n");
+  }
+  if (env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH && env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH.trim()) {
+    const keyPath = path.resolve(env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH.trim());
+    return fs.readFileSync(keyPath, "utf8");
+  }
+  return undefined;
+}
 
 export interface ResolvedPaths {
   dataDir: string;
@@ -250,11 +262,12 @@ export function loadProjectConfigs(opts: {
           (env.ARCHANGEL_GITHUB_INSTALLATION_ID
             ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
             : undefined),
-        githubPrivateKeyPem: env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n"),
+        githubPrivateKeyPem: resolvePrivateKeyPem(env),
         githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
           ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
           : undefined,
         dataDir: host.dataDir,
+        gateBinaryPath: host.gateBinaryPath ?? (env.ARCHANGEL_GATE_BINARY || undefined),
         pollIntervalMs: host.pollIntervalMs,
         maxDailyUsd: host.maxDailyUsd,
         dailyTimezone: host.dailyTimezone,
@@ -292,11 +305,12 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Archang
     githubInstallationId: env.ARCHANGEL_GITHUB_INSTALLATION_ID
       ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
       : undefined,
-    githubPrivateKeyPem: env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n"),
+    githubPrivateKeyPem: resolvePrivateKeyPem(env),
     githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
       ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
       : undefined,
     dataDir: env.ARCHANGEL_DATA_DIR ?? ".archangel",
+    gateBinaryPath: env.ARCHANGEL_GATE_BINARY || undefined,
     maxConcurrentThreads: env.ARCHANGEL_MAX_CONCURRENT ? Number(env.ARCHANGEL_MAX_CONCURRENT) : 2,
     pollIntervalMs: env.ARCHANGEL_POLL_MS ? Number(env.ARCHANGEL_POLL_MS) : 30_000,
     maxDailyUsd: env.ARCHANGEL_MAX_DAILY_USD ? Number(env.ARCHANGEL_MAX_DAILY_USD) : 20,

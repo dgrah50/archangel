@@ -10,34 +10,50 @@ Autonomous software factory for Go repositories (piloting on `dgrah50/gijq`) wit
 ## Quick Start
 
 ```bash
-# Install deps & run full TypeScript + Go Gate test suite
+# Install deps, run full TypeScript + Go Gate test suite, and build both TS + Go Gate binary
 npm install
 npm run test:all
-npm run build
-
-# Build the zero-dependency Go mechanical Gate binary
-(cd gate && go build -o archangel-gate ./cmd/archangel-gate)
+npm run build:all
 ```
 
 ### Configure & Run
 
-1. Create a GitHub App installed only on `dgrah50/gijq` with permissions:
-   - `contents: write`, `pull_requests: write`, `issues: write`, `checks: read`
-   - **No** `workflows`, **no** `administration`, **no** `checks: write`
-2. Enable a GitHub ruleset / branch protection on `dgrah50/gijq` `main` (zero bypass actors) requiring `Gate`, `Test (ubuntu-latest)`, and `Test (macos-latest)` from GitHub Actions, and add [workflows/archangel-gate.yml](./workflows/archangel-gate.yml).
-3. Copy `.env.example` to `.env` and fill in your GitHub App credentials, numeric GitHub user ID (`gh api user --jq .id`), and metered API keys.
-4. Start Archangel in Shadow Mode (recommended under `caffeinate -i` on macOS laptops):
+1. Copy `archangel.example.yaml` to `archangel.yaml` (gitignored) and set your numeric GitHub user ID (`gh api user --jq .id`) and project list.
+2. Copy `.env.example` to `.env` (auto-loaded by the CLI) and configure:
+   - Your dedicated GitHub App credentials (`ARCHANGEL_GITHUB_APP_ID`, `ARCHANGEL_GITHUB_INSTALLATION_ID`, and `ARCHANGEL_GITHUB_PRIVATE_KEY_PATH`), installed only on target repos with:
+     - `contents: write`, `pull_requests: write`, `issues: write`, `checks: read`
+     - **No** `workflows`, **no** `administration`, **no** `checks: write`
+   - Metered API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`).
+3. Bootstrap the `dgrah50/gijq` pilot (dry-run by default; add `--apply` when ready):
+   ```bash
+   # Preview all 6 labels & 10 pre-screened issues
+   npm run pilot:setup -- --dry-run
 
-```bash
-caffeinate -i npm run dev -- start
-```
+   # Print the exact GitHub branch ruleset JSON for main
+   npm run pilot:setup -- --print-ruleset
+
+   # Install the self-contained Gate workflow (pinned to current Archangel commit SHA)
+   npm run pilot:setup -- --install-workflow /path/to/gijq --apply
+   ```
+4. Run preflight checks (verifies local toolchain, compiled Gate binary, `.env`, and audits live GitHub App least-privilege permissions):
+   ```bash
+   npm run dev -- doctor
+   ```
+5. Start Archangel in Shadow Mode (recommended under `caffeinate -i` on macOS laptops):
+   ```bash
+   caffeinate -i npm run dev -- start
+   ```
 
 ### CLI Commands
 
-- `archangel start [--once]` — run the level-triggered reconciler daemon
-- `archangel status [--json]` — show Threads, `Needs You` queue, daily spend, merges, circuit breaker, and Shadow Mode agreement
+- `archangel start [--once]` — run the level-triggered reconciler daemon (single-instance locked)
+- `archangel doctor [--offline] [--json]` — preflight local toolchain, config, compiled Gate binary, and live GitHub App least-privilege permissions
+- `archangel studio [--port 4111]` — start read-only loopback (`127.0.0.1`) Mastra Studio against `mastra.db`
+- `archangel status [--json]` — show Threads, Phase/Mode, `Needs You` queue, daily spend + reserved budget, merges, circuit breaker, and Shadow Mode agreement
 - `archangel events [--topic <prefix>] [--issue <n>]` — inspect the append-only SQLite `audit_log`
-- `archangel handoff <issue#>` — abort active run, push pending commits via Broker, pause factory, and launch Paseo worktree with Recap
-- `archangel resume <issue#>` — verify Paseo is stopped and resume advisory Gate/Review tracking (owner merges manually)
+- `archangel handoff <issue#>` — enqueue/execute daemon handoff, push pending commits via Broker, pause factory, and launch Paseo worktree with Recap
+- `archangel resume <issue#>` — verify Paseo is stopped, refresh issue-body hash, and resume advisory Gate/Review tracking (owner merges manually)
+- `archangel retry <issue#>` — retry a `needs_you` thread (refreshes issue-body hash and clears `needs-you` / `factory:paused`)
+- `archangel abandon <issue#>` — stop a thread permanently and clean up active work
 - `archangel disagree <issue#>` — record a Shadow Mode disagreement (`factory:disagree`)
 - `archangel reset-breaker` — reset the global landing circuit breaker after fixing red `main`

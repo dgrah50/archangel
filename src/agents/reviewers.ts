@@ -40,8 +40,13 @@ export interface VendorReviewResult {
   costUsd: number;
 }
 
+export interface ReviewBatchOutcome {
+  results: VendorReviewResult[];
+  errors: Array<{ vendor: ReviewerVendor; error: string }>;
+}
+
 export interface ReviewerSuite {
-  reviewAll(req: ReviewRequest): Promise<VendorReviewResult[]>;
+  reviewAll(req: ReviewRequest): Promise<ReviewBatchOutcome>;
 }
 
 /**
@@ -137,18 +142,41 @@ export class MastraReviewerSuite implements ReviewerSuite {
     this.geminiAgent = geminiAgent;
   }
 
-  async reviewAll(req: ReviewRequest): Promise<VendorReviewResult[]> {
+  async reviewAll(req: ReviewRequest): Promise<ReviewBatchOutcome> {
     const skip = new Set(req.skipVendors ?? []);
-    const tasks: Array<Promise<VendorReviewResult>> = [];
+    const entries: Array<{ vendor: ReviewerVendor; promise: Promise<VendorReviewResult> }> = [];
 
     if (!skip.has("openai")) {
-      tasks.push(this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req)));
+      entries.push({
+        vendor: "openai",
+        promise: this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req)),
+      });
     }
     if (!skip.has("gemini")) {
-      tasks.push(this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req)));
+      entries.push({
+        vendor: "gemini",
+        promise: this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req)),
+      });
     }
 
-    return Promise.all(tasks);
+    // Use Promise.allSettled so surviving vendor verdicts and costs are NEVER lost when one vendor fails (Opus L4/M5).
+    const settled = await Promise.allSettled(entries.map((e) => e.promise));
+    const results: VendorReviewResult[] = [];
+    const errors: Array<{ vendor: ReviewerVendor; error: string }> = [];
+
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i]!;
+      const vendor = entries[i]!.vendor;
+      if (outcome.status === "fulfilled") {
+        results.push(outcome.value);
+      } else {
+        errors.push({
+          vendor,
+          error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+        });
+      }
+    }
+    return { results, errors };
   }
 
   private async runOne(

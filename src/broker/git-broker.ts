@@ -69,6 +69,16 @@ export function isTestOrFixturePath(relPath: string): boolean {
   return p.endsWith("_test.go") || p.startsWith("testdata/") || p.includes("/testdata/");
 }
 
+export interface LocalGateReport {
+  passed: boolean;
+  base_sha: string;
+  head_sha: string;
+  revert_exempt: boolean;
+  already_fixed: boolean;
+  repro_tests: string[];
+  violations: string[];
+}
+
 export interface BrokerFetchValidation {
   headSha: string;
   changedFiles: string[];
@@ -77,6 +87,7 @@ export interface BrokerFetchValidation {
   totalLines: number;
   diffText: string;
   touchedFiles: Record<string, string>;
+  gateReport?: LocalGateReport;
 }
 
 export interface GitBrokerOptions {
@@ -87,6 +98,8 @@ export interface GitBrokerOptions {
   maxTotalLines?: number;
   maxFiles?: number;
   extraProtectedPaths?: string[];
+  gateBinaryPath?: string;
+  localGateTimeoutMs?: number;
 }
 
 export interface ValidationBounds {
@@ -112,6 +125,8 @@ export class GitBroker {
   readonly maxTotalLines: number;
   readonly maxFiles: number;
   readonly extraProtectedPaths: string[];
+  readonly gateBinaryPath?: string;
+  readonly localGateTimeoutMs: number;
 
   constructor(opts: GitBrokerOptions) {
     this.bareRepoPath = path.resolve(opts.bareRepoPath);
@@ -121,6 +136,8 @@ export class GitBroker {
     this.maxTotalLines = opts.maxTotalLines ?? 300;
     this.maxFiles = opts.maxFiles ?? 5;
     this.extraProtectedPaths = opts.extraProtectedPaths ?? [];
+    this.gateBinaryPath = opts.gateBinaryPath ? path.resolve(opts.gateBinaryPath) : undefined;
+    this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
   }
 
   private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
@@ -231,6 +248,73 @@ export class GitBroker {
   }
 
   /**
+   * Executes the compiled `archangel-gate` Go binary strictly against `this.bareRepoPath`
+   * (never against the implementer clone) under a scrubbed environment (Neon P1).
+   */
+  async runLocalGate(
+    baseSha: string,
+    headSha: string,
+    bounds?: ValidationBounds,
+  ): Promise<LocalGateReport> {
+    if (!this.gateBinaryPath) {
+      throw new Error("gateBinaryPath is not configured on GitBroker");
+    }
+    const maxNonTestLines = bounds?.maxNonTestLines ?? this.maxNonTestLines;
+    const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
+    const maxFiles = bounds?.maxFiles ?? this.maxFiles;
+    const extraProtectedPaths = bounds?.extraProtectedPaths ?? this.extraProtectedPaths;
+
+    const args = [
+      "--repo",
+      this.bareRepoPath,
+      "--base",
+      baseSha,
+      "--head",
+      headSha,
+      "--skip-full-suite",
+      "--base-runs",
+      "1",
+      "--head-new-runs",
+      "1",
+      "--max-non-test-lines",
+      String(maxNonTestLines),
+      "--max-total-lines",
+      String(maxTotalLines),
+      "--max-files",
+      String(maxFiles),
+    ];
+    if (extraProtectedPaths.length > 0) {
+      args.push("--extra-protected-paths", extraProtectedPaths.join(","));
+    }
+
+    const cleanEnv: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
+      HOME: process.env.HOME ?? "/tmp",
+      TMPDIR: process.env.TMPDIR ?? "/tmp",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GOTOOLCHAIN: "local",
+      GOFLAGS: "-count=1",
+    };
+
+    try {
+      const { stdout } = await execFileAsync(this.gateBinaryPath, args, {
+        env: cleanEnv,
+        timeout: this.localGateTimeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      return JSON.parse(stdout) as LocalGateReport;
+    } catch (err: unknown) {
+      const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+      // archangel-gate exits 1 on Gate violations with structured JSON on stdout; exit 2 on crash.
+      if (e.code === 1 && typeof e.stdout === "string" && e.stdout.trim().startsWith("{")) {
+        return JSON.parse(e.stdout) as LocalGateReport;
+      }
+      throw new Error(`Local archangel-gate error: ${e.stderr || e.message || String(err)}`);
+    }
+  }
+
+  /**
    * Hardened fetch from an untrusted throwaway clone into the broker's bare repo,
    * followed by protected-path and diff-bound inspection inside the broker's bare repo.
    */
@@ -315,6 +399,11 @@ export class GitBroker {
       }
     }
 
+    let gateReport: LocalGateReport | undefined;
+    if (this.gateBinaryPath && protectedViolations.length === 0) {
+      gateReport = await this.runLocalGate(baseSha, headSha, bounds);
+    }
+
     return {
       headSha,
       changedFiles,
@@ -323,6 +412,7 @@ export class GitBroker {
       totalLines,
       diffText,
       touchedFiles,
+      gateReport,
     };
   }
 

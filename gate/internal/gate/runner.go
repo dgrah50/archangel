@@ -17,11 +17,19 @@ import (
 
 // Options configures a Gate evaluation run.
 type Options struct {
-	RepoDir  string
-	BaseRef  string
-	HeadRef  string
-	RevertOf string // Optional recorded factory squash-merge SHA for exact-inverse exemption
-	Policy   Policy
+	RepoDir        string
+	BaseRef        string
+	HeadRef        string
+	RevertOf       string // Optional recorded factory squash-merge SHA for exact-inverse exemption
+	PolicyFromBase bool   // Read optional .agents/landing.json strictly from baseSHA (tightening only)
+	Policy         Policy
+}
+
+type baseLandingJSON struct {
+	MaxNonTestLines     *int     `json:"maxNonTestLines"`
+	MaxTotalLines       *int     `json:"maxTotalLines"`
+	MaxFiles            *int     `json:"maxFiles"`
+	ExtraProtectedPaths []string `json:"extraProtectedPaths"`
 }
 
 // Report is the structured JSON verdict produced by archangel-gate.
@@ -145,6 +153,27 @@ func Run(opts Options) (*Report, error) {
 		HeadSHA: headSHA,
 	}
 
+	// Optionally merge .agents/landing.json strictly from baseSHA (may ONLY tighten bounds / add protected paths).
+	if opts.PolicyFromBase {
+		if raw, err := gitShowBytes(opts.RepoDir, baseSHA, ".agents/landing.json"); err == nil && len(bytes.TrimSpace(raw)) > 0 {
+			var lj baseLandingJSON
+			if err := json.Unmarshal(raw, &lj); err != nil {
+				report.Violations = append(report.Violations, fmt.Sprintf("invalid .agents/landing.json on base: %v", err))
+				return report, nil
+			}
+			if lj.MaxNonTestLines != nil && *lj.MaxNonTestLines > 0 && *lj.MaxNonTestLines < opts.Policy.MaxNonTestLines {
+				opts.Policy.MaxNonTestLines = *lj.MaxNonTestLines
+			}
+			if lj.MaxTotalLines != nil && *lj.MaxTotalLines > 0 && *lj.MaxTotalLines < opts.Policy.MaxTotalLines {
+				opts.Policy.MaxTotalLines = *lj.MaxTotalLines
+			}
+			if lj.MaxFiles != nil && *lj.MaxFiles > 0 && *lj.MaxFiles < opts.Policy.MaxFiles {
+				opts.Policy.MaxFiles = *lj.MaxFiles
+			}
+			opts.Policy.ExtraProtectedPaths = append(opts.Policy.ExtraProtectedPaths, lj.ExtraProtectedPaths...)
+		}
+	}
+
 	stats, err := gitDiffStats(opts.RepoDir, baseSHA, headSHA)
 	if err != nil {
 		return nil, err
@@ -158,8 +187,13 @@ func Run(opts Options) (*Report, error) {
 		}
 	}
 
-	// Exact-inverse revert exemption (B8).
+	// Exact-inverse revert exemption (B8) — require RevertOf to be an ancestor of BaseSHA.
 	if opts.RevertOf != "" {
+		if !isAncestor(opts.RepoDir, opts.RevertOf, baseSHA) {
+			report.Violations = append(report.Violations, fmt.Sprintf("revert target %s is not an ancestor of base %s", opts.RevertOf, baseSHA))
+			report.Violations = dedupeSorted(report.Violations)
+			return report, nil
+		}
 		ok, err := isExactInverseDiff(opts.RepoDir, baseSHA, headSHA, opts.RevertOf)
 		if err != nil {
 			report.Violations = append(report.Violations, fmt.Sprintf("revert check failed: %v", err))
@@ -372,6 +406,12 @@ func runHeadFullSuiteOnly(opts Options, headSHA string, baseTests map[string][]s
 	return nil
 }
 
+func isAncestor(repoDir, maybeAncestor, descendant string) bool {
+	cmd := exec.Command("git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "merge-base", "--is-ancestor", maybeAncestor, descendant)
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
+}
+
 func isExactInverseDiff(repoDir, baseSHA, headSHA, squashSHA string) (bool, error) {
 	prDiff, err := gitOutputRaw(repoDir, "diff", "--no-color", "--binary", baseSHA, headSHA)
 	if err != nil {
@@ -388,31 +428,31 @@ func isExactInverseDiff(repoDir, baseSHA, headSHA, squashSHA string) (bool, erro
 }
 
 func gitDiffStats(repoDir, baseSHA, headSHA string) ([]FileStat, error) {
-	nameStatusOut, err := gitOutputRaw(repoDir, "diff", "--name-status", "--no-renames", baseSHA, headSHA)
+	// Use -z (NUL-delimited) so paths with spaces, quotes, or newlines never break parsing.
+	nameStatusOut, err := gitOutputRaw(repoDir, "diff", "--name-status", "--no-renames", "-z", baseSHA, headSHA)
 	if err != nil {
 		return nil, err
 	}
 	statusByPath := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(nameStatusOut), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 {
-			statusByPath[parts[1]] = parts[0]
+	nsTokens := strings.Split(nameStatusOut, "\x00")
+	for i := 0; i+1 < len(nsTokens); i += 2 {
+		stCode := nsTokens[i]
+		p := nsTokens[i+1]
+		if stCode != "" && p != "" {
+			statusByPath[p] = stCode
 		}
 	}
 
-	numstatOut, err := gitOutputRaw(repoDir, "diff", "--numstat", "--no-renames", baseSHA, headSHA)
+	numstatOut, err := gitOutputRaw(repoDir, "diff", "--numstat", "--no-renames", "-z", baseSHA, headSHA)
 	if err != nil {
 		return nil, err
 	}
 	var stats []FileStat
-	for _, line := range strings.Split(strings.TrimSpace(numstatOut), "\n") {
-		if line == "" {
+	for _, entry := range strings.Split(numstatOut, "\x00") {
+		if entry == "" {
 			continue
 		}
-		parts := strings.Split(line, "\t")
+		parts := strings.SplitN(entry, "\t", 3)
 		if len(parts) < 3 {
 			continue
 		}
