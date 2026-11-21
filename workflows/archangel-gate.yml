@@ -38,14 +38,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Go
+      - name: Setup Node.js (for language-agnostic Archangel Gate CLI)
         if: steps.classify.outputs.is_factory == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Go (when target repository has go.mod)
+        if: steps.classify.outputs.is_factory == 'true' && hashFiles('go.mod') != ''
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Build pinned archangel-gate binary
+      - name: Build pinned Archangel Gate CLI
         if: steps.classify.outputs.is_factory == 'true'
         env:
           ARCHANGEL_READ_TOKEN: ${{ secrets.ARCHANGEL_READ_TOKEN }}
@@ -63,9 +69,9 @@ jobs:
           fi
           git -C "$RUNNER_TEMP/archangel-src" fetch --depth=1 origin "$ARCHANGEL_GATE_SHA"
           git -C "$RUNNER_TEMP/archangel-src" checkout -q FETCH_HEAD
-          (cd "$RUNNER_TEMP/archangel-src/gate" && go build -o "$RUNNER_TEMP/archangel-gate" ./cmd/archangel-gate)
+          (cd "$RUNNER_TEMP/archangel-src" && npm ci --no-audit --no-fund && npm run build)
 
-      - name: Run Archangel Mechanical Gate
+      - name: Run Archangel Mechanical Gate (repo-owned .pre-commit-config.yaml + .agents/landing.json from base)
         if: steps.classify.outputs.is_factory == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -83,7 +89,7 @@ jobs:
             fi
             EXTRA_ARGS+=(--revert-of "$REVERT_OF")
           fi
-          "$RUNNER_TEMP/archangel-gate" \
+          node "$RUNNER_TEMP/archangel-src/dist/cli/index.js" gate \
             --repo . \
             --base "$BASE_SHA" \
             --head HEAD \

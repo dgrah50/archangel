@@ -168,34 +168,20 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     checks.push({ id: "git", name: "Git Version", status: "fail", detail: "git not found in PATH" });
   }
 
-  // 6. go >= 1.26
+  // 6. Optional pre-commit CLI (only needed if target repo's .pre-commit-config.yaml uses remote hook repos)
   try {
-    const { stdout } = await execFileAsync("go", ["version"]);
-    checks.push({ id: "go", name: "Go Toolchain", status: "pass", detail: stdout.trim() });
+    const { stdout } = await execFileAsync("pre-commit", ["--version"]);
+    checks.push({ id: "pre_commit", name: "pre-commit CLI (optional)", status: "pass", detail: stdout.trim() });
   } catch {
-    checks.push({ id: "go", name: "Go Toolchain", status: "fail", detail: "go not found in PATH" });
-  }
-
-  // 7. Compiled local archangel-gate binary
-  try {
-    fs.accessSync(paths.gateBinaryPath, fs.constants.X_OK);
     checks.push({
-      id: "gate_binary",
-      name: "Local archangel-gate Binary",
+      id: "pre_commit",
+      name: "pre-commit CLI (optional)",
       status: "pass",
-      detail: paths.gateBinaryPath,
-    });
-  } catch {
-    checks.push({
-      id: "gate_binary",
-      name: "Local archangel-gate Binary",
-      status: "fail",
-      detail: `Missing executable at ${paths.gateBinaryPath}`,
-      remediation: "Run `npm run build:gate`",
+      detail: "Not installed (repo: local hooks run natively without Python pre-commit)",
     });
   }
 
-  // 8. Paseo CLI (optional warn)
+  // 7. Paseo CLI (optional warn)
   try {
     const { stdout } = await execFileAsync("paseo", ["--version"]);
     checks.push({ id: "paseo", name: "Paseo CLI (Handoff)", status: "pass", detail: stdout.trim() });
@@ -270,7 +256,22 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           : `.github/workflows/archangel-gate.yml missing on ${cfg.defaultBranch}`,
         remediation: hasGateWf
           ? undefined
-          : "Run `npm run pilot:setup -- --install-workflow <repo-dir>` and push to main",
+          : "Run `npm run pilot:setup -- --install-workflow <repo-dir> --apply` and push to main",
+      });
+
+      const hasPreCommit =
+        (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
+        (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
+      const hasLandingJson = await gh.fileExistsAtRef(tip, ".agents/landing.json");
+      checks.push({
+        id: `repo_verification:${repoSlug}`,
+        name: `Repo Verification Config (${repoSlug})`,
+        status: hasPreCommit && hasLandingJson ? "pass" : "warn",
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${hasLandingJson ? "present" : "missing"}`,
+        remediation:
+          hasPreCommit && hasLandingJson
+            ? undefined
+            : "Commit .pre-commit-config.yaml and .agents/landing.json to main (see templates/gijq/ or run pilot:setup --install-workflow)",
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());

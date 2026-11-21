@@ -9,4 +9,3 @@ dist/
 archangel.yaml
 coverage/
 .DS_Store
-gate/archangel-gate

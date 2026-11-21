@@ -8,6 +8,12 @@ export const GatePolicySchema = z.object({
   maxTotalLines: z.number().int().min(1).default(300),
   maxFiles: z.number().int().min(1).default(5),
   extraProtectedPaths: z.array(z.string().min(1)).default([]),
+  testFileGlobs: z.array(z.string().min(1)).default([]),
+  testDataGlobs: z.array(z.string().min(1)).default([]),
+  testBuildCmd: z.string().min(1).optional(),
+  testCmd: z.string().min(1).optional(),
+  baseTestRuns: z.number().int().min(1).default(3),
+  headTestRuns: z.number().int().min(1).default(2),
 });
 
 export type GatePolicy = z.infer<typeof GatePolicySchema>;
@@ -17,6 +23,12 @@ export const LandingJsonSchema = z.object({
   maxTotalLines: z.number().int().min(1).optional(),
   maxFiles: z.number().int().min(1).optional(),
   extraProtectedPaths: z.array(z.string().min(1)).optional(),
+  testFileGlobs: z.array(z.string().min(1)).optional(),
+  testDataGlobs: z.array(z.string().min(1)).optional(),
+  testBuildCmd: z.string().min(1).optional(),
+  testCmd: z.string().min(1).optional(),
+  baseTestRuns: z.number().int().min(1).optional(),
+  headTestRuns: z.number().int().min(1).optional(),
   requiredChecks: z.array(z.string().min(1)).optional(),
   reviewRubric: z.string().optional(),
 });
@@ -32,11 +44,10 @@ export const LabelsSchema = z.object({
 });
 
 export const ConfigSchema = z.object({
-  // Target repository
+  // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/landing.json)
   githubOwner: z.string().min(1).default("dgrah50"),
   githubRepo: z.string().min(1).default("gijq"),
   defaultBranch: z.string().min(1).default("main"),
-  language: z.enum(["go"]).default("go"),
   workspace: z.enum(["local-clone"]).default("local-clone"),
   ownerUserId: z.number().int().positive(),
 
@@ -52,7 +63,6 @@ export const ConfigSchema = z.object({
   mastraDbPath: z.string().min(1).optional(),
   brokerBareRepoPath: z.string().min(1).optional(),
   clonesDir: z.string().min(1).optional(),
-  gateBinaryPath: z.string().min(1).optional(),
 
   // Concurrency, spend & merge bounds
   maxConcurrentThreads: z.number().int().min(1).max(3).default(2),
@@ -78,6 +88,10 @@ export const ConfigSchema = z.object({
     maxTotalLines: 300,
     maxFiles: 5,
     extraProtectedPaths: [],
+    testFileGlobs: [],
+    testDataGlobs: [],
+    baseTestRuns: 3,
+    headTestRuns: 2,
   }),
   requiredChecks: z
     .array(z.string().min(1))
@@ -111,7 +125,6 @@ export type ArchangelConfig = z.infer<typeof ConfigSchema>;
 const HostProjectYamlSchema = z.object({
   repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must be 'owner/name'"),
   defaultBranch: z.string().min(1).default("main"),
-  language: z.enum(["go"]).default("go"),
   workspace: z.enum(["local-clone"]).default("local-clone"),
   githubInstallationId: z.number().int().positive().optional(),
   shadowMode: z.boolean().default(true),
@@ -125,6 +138,10 @@ const HostProjectYamlSchema = z.object({
     maxTotalLines: 300,
     maxFiles: 5,
     extraProtectedPaths: [],
+    testFileGlobs: [],
+    testDataGlobs: [],
+    baseTestRuns: 3,
+    headTestRuns: 2,
   }),
   reviewRubric: z.string().optional(),
 });
@@ -132,7 +149,6 @@ const HostProjectYamlSchema = z.object({
 export const HostYamlSchema = z.object({
   ownerUserId: z.number().int().positive(),
   dataDir: z.string().min(1).default(".archangel"),
-  gateBinaryPath: z.string().min(1).optional(),
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
@@ -163,13 +179,12 @@ export interface ResolvedPaths {
   brokerBareRepoPath: string;
   clonesDir: string;
   transcriptsDir: string;
-  gateBinaryPath: string;
 }
 
 export function resolvePaths(
   cfg: Pick<
     ArchangelConfig,
-    "dataDir" | "ledgerDbPath" | "mastraDbPath" | "brokerBareRepoPath" | "clonesDir" | "gateBinaryPath"
+    "dataDir" | "ledgerDbPath" | "mastraDbPath" | "brokerBareRepoPath" | "clonesDir"
   > & { githubOwner?: string; githubRepo?: string },
 ): ResolvedPaths {
   const dataDir = path.resolve(cfg.dataDir);
@@ -185,9 +200,6 @@ export function resolvePaths(
       : path.join(projectDir, "broker.git"),
     clonesDir: cfg.clonesDir ? path.resolve(cfg.clonesDir) : path.join(projectDir, "clones"),
     transcriptsDir: path.join(projectDir, "transcripts"),
-    gateBinaryPath: cfg.gateBinaryPath
-      ? path.resolve(cfg.gateBinaryPath)
-      : path.resolve("gate/archangel-gate"),
   };
 }
 
@@ -222,6 +234,24 @@ export function mergeLandingJson(
     extraProtectedPaths: [
       ...new Set([...hostGate.extraProtectedPaths, ...(parsed.extraProtectedPaths ?? [])]),
     ],
+    testFileGlobs:
+      parsed.testFileGlobs && parsed.testFileGlobs.length > 0
+        ? parsed.testFileGlobs
+        : hostGate.testFileGlobs,
+    testDataGlobs:
+      parsed.testDataGlobs && parsed.testDataGlobs.length > 0
+        ? parsed.testDataGlobs
+        : hostGate.testDataGlobs,
+    testBuildCmd: parsed.testBuildCmd ?? hostGate.testBuildCmd,
+    testCmd: parsed.testCmd ?? hostGate.testCmd,
+    baseTestRuns:
+      parsed.baseTestRuns !== undefined
+        ? Math.max(hostGate.baseTestRuns, parsed.baseTestRuns)
+        : hostGate.baseTestRuns,
+    headTestRuns:
+      parsed.headTestRuns !== undefined
+        ? Math.max(hostGate.headTestRuns, parsed.headTestRuns)
+        : hostGate.headTestRuns,
   };
   const requiredChecks = [
     ...new Set([...hostRequiredChecks, ...(parsed.requiredChecks ?? [])]),
@@ -253,7 +283,6 @@ export function loadProjectConfigs(opts: {
         githubOwner,
         githubRepo,
         defaultBranch: proj.defaultBranch,
-        language: proj.language,
         workspace: proj.workspace,
         ownerUserId: host.ownerUserId,
         githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
@@ -267,7 +296,6 @@ export function loadProjectConfigs(opts: {
           ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
           : undefined,
         dataDir: host.dataDir,
-        gateBinaryPath: host.gateBinaryPath ?? (env.ARCHANGEL_GATE_BINARY || undefined),
         pollIntervalMs: host.pollIntervalMs,
         maxDailyUsd: host.maxDailyUsd,
         dailyTimezone: host.dailyTimezone,
@@ -310,7 +338,6 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Archang
       ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
       : undefined,
     dataDir: env.ARCHANGEL_DATA_DIR ?? ".archangel",
-    gateBinaryPath: env.ARCHANGEL_GATE_BINARY || undefined,
     maxConcurrentThreads: env.ARCHANGEL_MAX_CONCURRENT ? Number(env.ARCHANGEL_MAX_CONCURRENT) : 2,
     pollIntervalMs: env.ARCHANGEL_POLL_MS ? Number(env.ARCHANGEL_POLL_MS) : 30_000,
     maxDailyUsd: env.ARCHANGEL_MAX_DAILY_USD ? Number(env.ARCHANGEL_MAX_DAILY_USD) : 20,

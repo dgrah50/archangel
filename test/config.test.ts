@@ -26,7 +26,7 @@ describe("config security invariants", () => {
       const yamlPath = path.join(tmp, "archangel.yaml");
       fs.writeFileSync(
         yamlPath,
-        `ownerUserId: 999\nprojects:\n  - repo: dgrah50/gijq\n    language: go\n`,
+        `ownerUserId: 999\nprojects:\n  - repo: dgrah50/gijq\n`,
       );
       const cfgs = loadProjectConfigs({
         configPath: yamlPath,
@@ -40,7 +40,16 @@ describe("config security invariants", () => {
 
   it("allows .agents/landing.json to tighten bounds and add protected paths, never loosen them", () => {
     const merged = mergeLandingJson(
-      { maxNonTestLines: 150, maxTotalLines: 300, maxFiles: 5, extraProtectedPaths: ["proto/**"] },
+      {
+        maxNonTestLines: 150,
+        maxTotalLines: 300,
+        maxFiles: 5,
+        extraProtectedPaths: ["proto/**"],
+        testFileGlobs: [],
+        testDataGlobs: [],
+        baseTestRuns: 3,
+        headTestRuns: 2,
+      },
       ["Gate"],
       "Host rubric",
       JSON.stringify({
@@ -48,6 +57,10 @@ describe("config security invariants", () => {
         maxTotalLines: 999,
         maxFiles: 10,
         extraProtectedPaths: ["migrations/**"],
+        testFileGlobs: ["**/*_test.go"],
+        testCmd: "go test ./...",
+        baseTestRuns: 1,
+        headTestRuns: 4,
         requiredChecks: ["Lint"],
         reviewRubric: "Repo rubric",
       }),
@@ -56,6 +69,10 @@ describe("config security invariants", () => {
     expect(merged.gate.maxNonTestLines).toBe(80);
     expect(merged.gate.maxTotalLines).toBe(300);
     expect(merged.gate.maxFiles).toBe(5);
+    expect(merged.gate.baseTestRuns).toBe(3); // repo cannot loosen baseTestRuns below host
+    expect(merged.gate.headTestRuns).toBe(4); // repo can tighten headTestRuns above host
+    expect(merged.gate.testFileGlobs).toEqual(["**/*_test.go"]);
+    expect(merged.gate.testCmd).toBe("go test ./...");
     expect(merged.gate.extraProtectedPaths).toEqual(["proto/**", "migrations/**"]);
     expect(merged.requiredChecks).toEqual(["Gate", "Lint"]);
     expect(merged.reviewRubric).toContain("Host rubric");

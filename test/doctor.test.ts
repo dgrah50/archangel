@@ -18,7 +18,7 @@ describe("archangel doctor (Neon P3)", () => {
     const pem = makeKey();
     fs.writeFileSync(
       yamlPath,
-      `ownerUserId: 999\ndataDir: ${path.join(tmp, "data")}\ngateBinaryPath: ${path.resolve("gate/archangel-gate")}\nprojects:\n  - repo: dgrah50/gijq\n    language: go\n`,
+      `ownerUserId: 999\ndataDir: ${path.join(tmp, "data")}\nprojects:\n  - repo: dgrah50/gijq\n`,
     );
 
     let grantForbidden = true;

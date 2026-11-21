@@ -11,6 +11,7 @@ import { TelegramNotifier } from "../core/notifier.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
+import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
@@ -112,13 +113,6 @@ program
       chatId: first.telegramChatId,
     });
 
-    const gateBinExists = fs.existsSync(sharedPaths.gateBinaryPath);
-    if (!gateBinExists) {
-      console.warn(
-        `[archangel] WARNING: local gate binary not found at ${sharedPaths.gateBinaryPath} (run \`npm run build:gate\` for pre-push local Gate checks).`,
-      );
-    }
-
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -137,7 +131,11 @@ program
         maxTotalLines: cfg.gate.maxTotalLines,
         maxFiles: cfg.gate.maxFiles,
         extraProtectedPaths: cfg.gate.extraProtectedPaths,
-        gateBinaryPath: gateBinExists ? paths.gateBinaryPath : undefined,
+        testFileGlobs: cfg.gate.testFileGlobs,
+        testDataGlobs: cfg.gate.testDataGlobs,
+        testBuildCmd: cfg.gate.testBuildCmd,
+        testCmd: cfg.gate.testCmd,
+        enableLocalGate: true,
       });
       const implementer = new ClaudeSdkImplementer({
         apiKey: first.anthropicApiKey!,
@@ -214,6 +212,51 @@ program
     await runTick();
     scheduleNext();
   });
+
+program
+  .command("gate")
+  .description("Run the language-agnostic mechanical Gate against a git repository (reads .pre-commit-config.yaml and .agents/landing.json from base)")
+  .option("--repo <dir>", "Path to git repository (normal or bare)", ".")
+  .requiredOption("--base <ref>", "Base commit/branch ref (e.g. main)")
+  .option("--head <ref>", "Head commit/branch ref", "HEAD")
+  .option("--policy-from-base", "Read .agents/landing.json strictly from base commit", false)
+  .option("--revert-of <sha>", "Verify exact-inverse revert of recorded squash commit SHA")
+  .option("--base-runs <n>", "Override red-on-base run count")
+  .option("--head-runs <n>", "Override green-on-head run count")
+  .option("--skip-pre-commit", "Skip repo .pre-commit-config.yaml hooks", false)
+  .option("--skip-tests", "Skip red-on-base / green-on-head test execution", false)
+  .action(
+    async (opts: {
+      repo: string;
+      base: string;
+      head: string;
+      policyFromBase?: boolean;
+      revertOf?: string;
+      baseRuns?: string;
+      headRuns?: string;
+      skipPreCommit?: boolean;
+      skipTests?: boolean;
+    }) => {
+      try {
+        const report = await runGate({
+          repoDir: opts.repo,
+          baseRef: opts.base,
+          headRef: opts.head,
+          policyFromBase: Boolean(opts.policyFromBase),
+          revertOf: opts.revertOf,
+          baseRunsOverride: opts.baseRuns ? Number(opts.baseRuns) : undefined,
+          headRunsOverride: opts.headRuns ? Number(opts.headRuns) : undefined,
+          skipPreCommit: Boolean(opts.skipPreCommit),
+          skipTests: Boolean(opts.skipTests),
+        });
+        console.log(JSON.stringify(report, null, 2));
+        process.exit(report.passed ? 0 : 1);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(2);
+      }
+    },
+  );
 
 program
   .command("doctor")

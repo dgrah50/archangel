@@ -99,17 +99,31 @@ export function installGateWorkflow(opts: {
   sourceWorkflowPath: string;
   targetRepoDir: string;
   pinnedSha: string;
-}): string {
+  templateDir?: string;
+}): string[] {
   if (!/^[0-9a-f]{40}$/.test(opts.pinnedSha)) {
     throw new Error(`pinnedSha must be a 40-char commit SHA, got: ${opts.pinnedSha}`);
   }
+  const written: string[] = [];
   const content = fs
     .readFileSync(opts.sourceWorkflowPath, "utf8")
     .replace("REPLACE_WITH_PINNED_ARCHANGEL_COMMIT_SHA", opts.pinnedSha);
   const dest = path.join(opts.targetRepoDir, ".github", "workflows", "archangel-gate.yml");
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, content, "utf8");
-  return dest;
+  written.push(dest);
+
+  if (opts.templateDir && fs.existsSync(opts.templateDir)) {
+    for (const rel of [".pre-commit-config.yaml", ".agents/landing.json"]) {
+      const src = path.join(opts.templateDir, rel);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(opts.targetRepoDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.copyFileSync(src, dst);
+      written.push(dst);
+    }
+  }
+  return written;
 }
 
 export function renderMainRulesetJson(): Record<string, unknown> {
@@ -255,13 +269,17 @@ function main(): void {
 
   if (targetRepoDir) {
     const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const dest = installGateWorkflow({
+    const files = installGateWorkflow({
       sourceWorkflowPath: path.resolve("workflows/archangel-gate.yml"),
       targetRepoDir,
       pinnedSha: sha,
+      templateDir: path.resolve("templates/gijq"),
     });
-    console.log(`Installed pinned Gate workflow at ${dest} (ARCHANGEL_GATE_SHA=${sha}).`);
-    console.log(`Next: cd ${targetRepoDir} && git add .github/workflows/archangel-gate.yml && git commit -m "ci: add Archangel Gate" && git push`);
+    console.log(`Installed repo verification files (ARCHANGEL_GATE_SHA=${sha}):`);
+    for (const f of files) console.log(`  - ${f}`);
+    console.log(
+      `Next: cd ${targetRepoDir} && git add .github/workflows/archangel-gate.yml .pre-commit-config.yaml .agents/landing.json && git commit -m "ci: add Archangel Gate & pre-commit verification" && git push`,
+    );
   }
 }
 

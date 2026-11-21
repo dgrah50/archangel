@@ -1,19 +1,20 @@
 # Archangel
 
-Autonomous software factory for Go repositories (piloting on `dgrah50/gijq`) with **mechanical merge gates**, **independent cross-vendor review** (Claude implements → OpenAI + Gemini review), **SQLite level-triggered reconciliation**, and **1-command Paseo Handoff**.
+Language-agnostic autonomous software factory (piloting on `dgrah50/gijq`) with **repo-owned verification** (`.pre-commit-config.yaml` + `.agents/landing.json`), **independent cross-vendor review** (Claude implements → OpenAI + Gemini review), **SQLite level-triggered reconciliation**, and **1-command Paseo Handoff**.
 
 - **Architecture:** [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 - **Glossary:** [GLOSSARY.md](./GLOSSARY.md)
 - **ADRs:** [docs/adr/](./docs/adr/)
 - **Pre-screened `gijq` Pilot Issues:** [docs/GIJQ-PILOT-ISSUES.md](./docs/GIJQ-PILOT-ISSUES.md)
+- **`gijq` Repo Verification Templates:** [templates/gijq/](./templates/gijq/)
 
 ## Quick Start
 
 ```bash
-# Install deps, run full TypeScript + Go Gate test suite, and build both TS + Go Gate binary
+# Install deps, typecheck, run tests, and build
 npm install
 npm run test:all
-npm run build:all
+npm run build
 ```
 
 ### Configure & Run
@@ -30,12 +31,12 @@ npm run build:all
    npm run pilot:setup -- --dry-run
 
    # Print the exact GitHub branch ruleset JSON for main
-   npm run pilot:setup -- --print-ruleset
+   npm run -s pilot:setup -- --print-ruleset
 
-   # Install the self-contained Gate workflow (pinned to current Archangel commit SHA)
+   # Install the pinned Gate workflow + gijq's .pre-commit-config.yaml & .agents/landing.json
    npm run pilot:setup -- --install-workflow /path/to/gijq --apply
    ```
-4. Run preflight checks (verifies local toolchain, compiled Gate binary, `.env`, and audits live GitHub App least-privilege permissions):
+4. Run preflight checks (verifies local toolchain, config, repo `.pre-commit-config.yaml` / `.agents/landing.json`, and audits live GitHub App least-privilege permissions):
    ```bash
    npm run dev -- doctor
    ```
@@ -47,7 +48,8 @@ npm run build:all
 ### CLI Commands
 
 - `archangel start [--once]` — run the level-triggered reconciler daemon (single-instance locked)
-- `archangel doctor [--offline] [--json]` — preflight local toolchain, config, compiled Gate binary, and live GitHub App least-privilege permissions
+- `archangel gate --repo <dir> --base <ref> --head <ref> [--policy-from-base]` — run the language-agnostic mechanical Gate (reads repo `.pre-commit-config.yaml` and `.agents/landing.json` strictly from `base`)
+- `archangel doctor [--offline] [--json]` — preflight local toolchain, config, repo verification files, and live GitHub App least-privilege permissions
 - `archangel studio [--port 4111]` — start read-only loopback (`127.0.0.1`) Mastra Studio against `mastra.db`
 - `archangel status [--json]` — show Threads, Phase/Mode, `Needs You` queue, daily spend + reserved budget, merges, circuit breaker, and Shadow Mode agreement
 - `archangel events [--topic <prefix>] [--issue <n>]` — inspect the append-only SQLite `audit_log`

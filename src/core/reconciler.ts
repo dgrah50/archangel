@@ -663,6 +663,7 @@ export class Reconciler {
               title: issue.title,
               body: issue.body,
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
+              gate: this.effectiveGate,
             })
           : kind === "revise"
             ? buildRevisionPrompt({
@@ -671,11 +672,13 @@ export class Reconciler {
                 body: issue.body,
                 gateViolations,
                 structuredFindings,
+                gate: this.effectiveGate,
               })
             : buildRebasePrompt({
                 issueNumber: issue.number,
                 title: issue.title,
                 baseBranch: this.cfg.defaultBranch,
+                gate: this.effectiveGate,
               });
 
       const result: ImplementResult = await this.implementer.run({

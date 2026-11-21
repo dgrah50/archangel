@@ -2,6 +2,16 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { GatePolicy } from "../config.js";
+import {
+  isProtectedPath,
+  isTestOrFixtureFile,
+  runGate,
+  type GateReport,
+} from "../gate/gate.js";
+
+export { isProtectedPath };
+export type LocalGateReport = GateReport;
 
 const execFileAsync = promisify(execFile);
 
@@ -19,65 +29,6 @@ const HARDENED_GIT_FLAGS = [
 ];
 
 const FACTORY_BRANCH_RE = /^factory\/(?:revert-)?\d+$/;
-
-const PROTECTED_PREFIXES = [".github/", "scripts/", "vendor/", ".agents/"];
-const PROTECTED_EXACT = new Set([
-  "go.mod",
-  "go.sum",
-  "go.work",
-  "go.work.sum",
-  "claude.md",
-  "agents.md",
-  "makefile",
-  "gnumakefile",
-  ".gitattributes",
-  ".gitmodules",
-  ".editorconfig",
-  ".golangci.yml",
-  ".golangci.yaml",
-  ".golangci.toml",
-  ".golangci.json",
-  ".pre-commit-config.yaml",
-]);
-
-export function isProtectedPath(relPath: string, extraProtectedPaths: string[] = []): boolean {
-  const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-  const lower = normalized.toLowerCase();
-  const base = path.posix.basename(lower);
-  if (PROTECTED_PREFIXES.some((p) => lower.startsWith(p))) return true;
-  if (PROTECTED_EXACT.has(lower) || PROTECTED_EXACT.has(base)) return true;
-  if (base.startsWith("license") || base.startsWith("copying")) return true;
-  if (base.startsWith(".goreleaser") || base.startsWith(".golangci")) return true;
-  if (lower.includes("/.git/") || lower === ".git") return true;
-  for (const rawPattern of extraProtectedPaths) {
-    const pat = rawPattern.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
-    if (!pat) continue;
-    if (pat.endsWith("/**")) {
-      const prefix = pat.slice(0, -2); // keep trailing "/"
-      if (lower.startsWith(prefix)) return true;
-    } else if (pat.endsWith("/")) {
-      if (lower.startsWith(pat)) return true;
-    } else if (lower === pat) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function isTestOrFixturePath(relPath: string): boolean {
-  const p = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
-  return p.endsWith("_test.go") || p.startsWith("testdata/") || p.includes("/testdata/");
-}
-
-export interface LocalGateReport {
-  passed: boolean;
-  base_sha: string;
-  head_sha: string;
-  revert_exempt: boolean;
-  already_fixed: boolean;
-  repro_tests: string[];
-  violations: string[];
-}
 
 export interface BrokerFetchValidation {
   headSha: string;
@@ -98,16 +49,15 @@ export interface GitBrokerOptions {
   maxTotalLines?: number;
   maxFiles?: number;
   extraProtectedPaths?: string[];
-  gateBinaryPath?: string;
+  testFileGlobs?: string[];
+  testDataGlobs?: string[];
+  testBuildCmd?: string;
+  testCmd?: string;
+  enableLocalGate?: boolean;
   localGateTimeoutMs?: number;
 }
 
-export interface ValidationBounds {
-  maxNonTestLines?: number;
-  maxTotalLines?: number;
-  maxFiles?: number;
-  extraProtectedPaths?: string[];
-}
+export type ValidationBounds = Partial<GatePolicy>;
 
 /**
  * Hardened Git Broker (ADR-0004 B2):
@@ -115,7 +65,8 @@ export interface ValidationBounds {
  * - Creates isolated throwaway clones (never shared worktrees) with no push remotes for the implementer.
  * - Runs optional `.agents/setup` read strictly from `main` tip with a scrubbed environment.
  * - Fetches commits out of the throwaway clone into the bare clone with hooks/fsmonitor disabled,
- *   validates protected paths and diff bounds in the bare clone, and pushes only `factory/<n>` branches.
+ *   validates protected paths, diff bounds, and optional in-process language-agnostic Gate
+ *   (repo `.pre-commit-config.yaml` + red-on-base/green-on-head `testCmd`), and pushes only `factory/<n>`.
  */
 export class GitBroker {
   readonly bareRepoPath: string;
@@ -125,7 +76,11 @@ export class GitBroker {
   readonly maxTotalLines: number;
   readonly maxFiles: number;
   readonly extraProtectedPaths: string[];
-  readonly gateBinaryPath?: string;
+  readonly testFileGlobs: string[];
+  readonly testDataGlobs: string[];
+  readonly testBuildCmd?: string;
+  readonly testCmd?: string;
+  readonly enableLocalGate: boolean;
   readonly localGateTimeoutMs: number;
 
   constructor(opts: GitBrokerOptions) {
@@ -136,7 +91,11 @@ export class GitBroker {
     this.maxTotalLines = opts.maxTotalLines ?? 300;
     this.maxFiles = opts.maxFiles ?? 5;
     this.extraProtectedPaths = opts.extraProtectedPaths ?? [];
-    this.gateBinaryPath = opts.gateBinaryPath ? path.resolve(opts.gateBinaryPath) : undefined;
+    this.testFileGlobs = opts.testFileGlobs ?? [];
+    this.testDataGlobs = opts.testDataGlobs ?? [];
+    this.testBuildCmd = opts.testBuildCmd;
+    this.testCmd = opts.testCmd;
+    this.enableLocalGate = opts.enableLocalGate ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
   }
 
@@ -195,7 +154,6 @@ export class GitBroker {
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
     await this.runGit(cloneDir, ["checkout", "-B", `factory/${issueNumber}`, startRef]);
-    // Strip origin so the clone has zero remote pointers.
     await this.runGit(cloneDir, ["remote", "remove", "origin"]);
     await this.runGit(cloneDir, ["config", "user.name", "Archangel Worker"]);
     await this.runGit(cloneDir, ["config", "user.email", "archangel-worker@users.noreply.github.com"]);
@@ -217,7 +175,7 @@ export class GitBroker {
   /**
    * Runs the repository's `.agents/setup` script inside a fresh throwaway clone,
    * reading the script bytes strictly from `mainSha` (never from a PR branch)
-   * under a scrubbed environment with no credentials (Polaris contract + ADR-0004).
+   * under a scrubbed environment with no credentials.
    */
   async runRepoSetup(
     cloneDir: string,
@@ -236,7 +194,6 @@ export class GitBroker {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
-      GOTOOLCHAIN: "local",
     };
     const { stdout } = await execFileAsync("/bin/sh", ["-eu", "-c", script], {
       cwd: cloneDir,
@@ -248,75 +205,39 @@ export class GitBroker {
   }
 
   /**
-   * Executes the compiled `archangel-gate` Go binary strictly against `this.bareRepoPath`
-   * (never against the implementer clone) under a scrubbed environment (Neon P1).
+   * Executes the language-agnostic Archangel Gate strictly against `this.bareRepoPath`
+   * (never against the implementer clone), reading `.agents/landing.json` and
+   * `.pre-commit-config.yaml` strictly from `baseSha`.
    */
   async runLocalGate(
     baseSha: string,
     headSha: string,
     bounds?: ValidationBounds,
   ): Promise<LocalGateReport> {
-    if (!this.gateBinaryPath) {
-      throw new Error("gateBinaryPath is not configured on GitBroker");
-    }
-    const maxNonTestLines = bounds?.maxNonTestLines ?? this.maxNonTestLines;
-    const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
-    const maxFiles = bounds?.maxFiles ?? this.maxFiles;
-    const extraProtectedPaths = bounds?.extraProtectedPaths ?? this.extraProtectedPaths;
-
-    const args = [
-      "--repo",
-      this.bareRepoPath,
-      "--base",
-      baseSha,
-      "--head",
-      headSha,
-      "--skip-full-suite",
-      "--base-runs",
-      "1",
-      "--head-new-runs",
-      "1",
-      "--max-non-test-lines",
-      String(maxNonTestLines),
-      "--max-total-lines",
-      String(maxTotalLines),
-      "--max-files",
-      String(maxFiles),
-    ];
-    if (extraProtectedPaths.length > 0) {
-      args.push("--extra-protected-paths", extraProtectedPaths.join(","));
-    }
-
-    const cleanEnv: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
-      HOME: process.env.HOME ?? "/tmp",
-      TMPDIR: process.env.TMPDIR ?? "/tmp",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GOTOOLCHAIN: "local",
-      GOFLAGS: "-count=1",
-    };
-
-    try {
-      const { stdout } = await execFileAsync(this.gateBinaryPath, args, {
-        env: cleanEnv,
-        timeout: this.localGateTimeoutMs,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      return JSON.parse(stdout) as LocalGateReport;
-    } catch (err: unknown) {
-      const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
-      // archangel-gate exits 1 on Gate violations with structured JSON on stdout; exit 2 on crash.
-      if (e.code === 1 && typeof e.stdout === "string" && e.stdout.trim().startsWith("{")) {
-        return JSON.parse(e.stdout) as LocalGateReport;
-      }
-      throw new Error(`Local archangel-gate error: ${e.stderr || e.message || String(err)}`);
-    }
+    return runGate({
+      repoDir: this.bareRepoPath,
+      baseRef: baseSha,
+      headRef: headSha,
+      policy: {
+        maxNonTestLines: bounds?.maxNonTestLines ?? this.maxNonTestLines,
+        maxTotalLines: bounds?.maxTotalLines ?? this.maxTotalLines,
+        maxFiles: bounds?.maxFiles ?? this.maxFiles,
+        extraProtectedPaths: bounds?.extraProtectedPaths ?? this.extraProtectedPaths,
+        testFileGlobs: bounds?.testFileGlobs ?? this.testFileGlobs,
+        testDataGlobs: bounds?.testDataGlobs ?? this.testDataGlobs,
+        testBuildCmd: bounds?.testBuildCmd ?? this.testBuildCmd,
+        testCmd: bounds?.testCmd ?? this.testCmd,
+      },
+      policyFromBase: true,
+      baseRunsOverride: 1,
+      headRunsOverride: 1,
+      commandTimeoutMs: this.localGateTimeoutMs,
+    });
   }
 
   /**
    * Hardened fetch from an untrusted throwaway clone into the broker's bare repo,
-   * followed by protected-path and diff-bound inspection inside the broker's bare repo.
+   * followed by protected-path, diff-bound, and optional local Gate verification inside the bare repo.
    */
   async fetchAndValidateFromClone(
     cloneDir: string,
@@ -328,6 +249,8 @@ export class GitBroker {
     const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
     const maxFiles = bounds?.maxFiles ?? this.maxFiles;
     const extraProtectedPaths = bounds?.extraProtectedPaths ?? this.extraProtectedPaths;
+    const testFileGlobs = bounds?.testFileGlobs ?? this.testFileGlobs;
+    const testDataGlobs = bounds?.testDataGlobs ?? this.testDataGlobs;
 
     const stagingRef = `refs/archangel/staging/${issueNumber}`;
     await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
@@ -360,7 +283,7 @@ export class GitBroker {
       }
       const lines = Number(parts[0] ?? 0) + Number(parts[1] ?? 0);
       totalLines += lines;
-      if (!isTestOrFixturePath(filePath)) {
+      if (!isTestOrFixtureFile(filePath, { testFileGlobs, testDataGlobs })) {
         nonTestLines += lines;
       }
     }
@@ -400,7 +323,7 @@ export class GitBroker {
     }
 
     let gateReport: LocalGateReport | undefined;
-    if (this.gateBinaryPath && protectedViolations.length === 0) {
+    if (this.enableLocalGate && protectedViolations.length === 0) {
       gateReport = await this.runLocalGate(baseSha, headSha, bounds);
     }
 
@@ -429,7 +352,6 @@ export class GitBroker {
       remoteUrl,
       `${headSha}:refs/heads/${branchName}`,
     ]).catch(async () => {
-      // First push when remote branch doesn't exist yet or force-pushing a rebased factory branch.
       await this.runGit(this.bareRepoPath, [
         "push",
         "--force",
@@ -437,7 +359,6 @@ export class GitBroker {
         `${headSha}:refs/heads/${branchName}`,
       ]);
     });
-    // Record local branch ref in broker's bare repo so subsequent clones/reverts can always resolve it.
     await this.runGit(this.bareRepoPath, ["update-ref", `refs/heads/${branchName}`, headSha]);
   }
 

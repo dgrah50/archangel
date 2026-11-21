@@ -63,9 +63,7 @@ export class ClaudeSdkImplementer implements Implementer {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0",
-      GOTOOLCHAIN: "local",
-      GOFLAGS: "-count=1",
-      // Redirect GOCACHE into writable TMPDIR so macOS Seatbelt never blocks ~/Library/Caches/go-build.
+      // Redirect GOCACHE into writable TMPDIR if a target repo happens to be Go under macOS Seatbelt.
       GOCACHE: goCacheDir,
       ...(process.env.GOMODCACHE ? { GOMODCACHE: process.env.GOMODCACHE } : {}),
     };

@@ -1,4 +1,5 @@
 # Archangel host configuration (no secrets here — secrets live in .env)
+# Language/repo-specific verification (.pre-commit-config.yaml + .agents/landing.json) lives in each repo's default branch.
 ownerUserId: 123456
 dataDir: .archangel
 pollIntervalMs: 30000
@@ -15,8 +16,7 @@ paseoHost: 127.0.0.1:6767
 projects:
   - repo: dgrah50/gijq
     defaultBranch: main
-    language: go
-    workspace: local-clone        # Phase 2: apple-container | docker | boat | sail
+    workspace: local-clone        # Phase 2: apple-container | docker
     shadowMode: true
     maxConcurrentThreads: 2
     maxAutoMergesPerDay: 3
@@ -29,7 +29,3 @@ projects:
       maxTotalLines: 300
       maxFiles: 5
       extraProtectedPaths: []
-    # Optional extra instructions appended to independent reviewers for this project
-    reviewRubric: |
-      Pay close attention to UTF-8/rune vs byte slicing, Bubble Tea v2 model immutability,
-      and cancellation safety in background goroutines.
