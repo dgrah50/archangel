@@ -100,4 +100,45 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  it("runs .agents/setup strictly from mainSha with scrubbed env and enforces extraProtectedPaths", async () => {
+    const { root, remoteBare } = createFixtureRemote();
+    const seed = path.join(root, "seed");
+    try {
+      // Commit .agents/setup on main that writes a marker and verifies GH_TOKEN is absent.
+      fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
+      fs.writeFileSync(
+        path.join(seed, ".agents", "setup"),
+        '#!/bin/sh\necho "setup-ok:${GH_TOKEN:-scrubbed}" > .setup-ran\n',
+        { mode: 0o755 },
+      );
+      git(seed, ["add", "-A"]);
+      git(seed, ["commit", "-m", "add .agents/setup"]);
+      git(seed, ["push", remoteBare, "main"]);
+      const mainSha = git(remoteBare, ["rev-parse", "refs/heads/main"]);
+
+      const broker = new GitBroker({
+        bareRepoPath: path.join(root, "broker.git"),
+        clonesDir: path.join(root, "clones"),
+        extraProtectedPaths: ["migrations/**"],
+      });
+      await broker.ensureBareRepo(remoteBare);
+
+      const cloneDir = await broker.createThrowawayClone(12, mainSha);
+      const setupRes = await broker.runRepoSetup(cloneDir, mainSha);
+      expect(setupRes.ran).toBe(true);
+      expect(fs.readFileSync(path.join(cloneDir, ".setup-ran"), "utf8").trim()).toBe("setup-ok:scrubbed");
+
+      // Extra protected path check
+      fs.mkdirSync(path.join(cloneDir, "migrations"), { recursive: true });
+      fs.writeFileSync(path.join(cloneDir, "migrations", "001.sql"), "DROP TABLE x;\n");
+      fs.rmSync(path.join(cloneDir, ".setup-ran"));
+      git(cloneDir, ["add", "-A"]);
+      git(cloneDir, ["commit", "-m", "touch migration"]);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 12, mainSha);
+      expect(val.protectedViolations.some((v) => v.includes("migrations/001.sql"))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });

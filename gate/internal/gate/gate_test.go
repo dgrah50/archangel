@@ -45,6 +45,13 @@ func TestIsProtectedPath(t *testing.T) {
 			t.Errorf("expected %q to NOT be protected", p)
 		}
 	}
+
+	if !IsProtectedPathWithExtras("migrations/001.sql", []string{"migrations/**"}) {
+		t.Errorf("expected migrations/001.sql to match extra protected glob")
+	}
+	if IsProtectedPathWithExtras("internal/app.go", []string{"migrations/**"}) {
+		t.Errorf("expected internal/app.go not to match migrations/**")
+	}
 }
 
 func TestCheckDiffPolicyBounds(t *testing.T) {

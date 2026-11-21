@@ -7,13 +7,14 @@ import (
 
 // Policy defines the mechanical bounds enforced by the Gate.
 type Policy struct {
-	MaxNonTestLines int
-	MaxTotalLines   int
-	MaxFiles        int
-	BaseRuns        int
-	HeadNewRuns     int
-	HeadFullRuns    int
-	SkipFullSuite   bool
+	MaxNonTestLines     int
+	MaxTotalLines       int
+	MaxFiles            int
+	BaseRuns            int
+	HeadNewRuns         int
+	HeadFullRuns        int
+	SkipFullSuite       bool
+	ExtraProtectedPaths []string
 }
 
 // DefaultPolicy returns the agreed Archangel v0 policy for gijq.
@@ -65,6 +66,11 @@ var protectedExact = map[string]bool{
 
 // IsProtectedPath returns true if a repo-relative path may never be modified by a factory PR.
 func IsProtectedPath(relPath string) bool {
+	return IsProtectedPathWithExtras(relPath, nil)
+}
+
+// IsProtectedPathWithExtras checks global protected paths plus per-project extra patterns.
+func IsProtectedPathWithExtras(relPath string, extras []string) bool {
 	p := filepath.ToSlash(strings.TrimPrefix(relPath, "./"))
 	lower := strings.ToLower(p)
 	base := strings.ToLower(filepath.Base(p))
@@ -85,6 +91,23 @@ func IsProtectedPath(relPath string) bool {
 	}
 	if strings.Contains(lower, "/.git/") || lower == ".git" {
 		return true
+	}
+	for _, raw := range extras {
+		pat := strings.ToLower(filepath.ToSlash(strings.TrimPrefix(strings.TrimSpace(raw), "./")))
+		if pat == "" {
+			continue
+		}
+		if strings.HasSuffix(pat, "/**") {
+			if strings.HasPrefix(lower, strings.TrimSuffix(pat, "**")) {
+				return true
+			}
+		} else if strings.HasSuffix(pat, "/") {
+			if strings.HasPrefix(lower, pat) {
+				return true
+			}
+		} else if lower == pat {
+			return true
+		}
 	}
 	return false
 }
@@ -114,7 +137,7 @@ func CheckDiffPolicy(stats []FileStat, policy Policy) []string {
 	nonTestLines := 0
 	totalLines := 0
 	for _, st := range stats {
-		if IsProtectedPath(st.Path) {
+		if IsProtectedPathWithExtras(st.Path, policy.ExtraProtectedPaths) {
 			violations = append(violations, formatf("protected path modified: %s", st.Path))
 		}
 		if st.Binary {

@@ -93,6 +93,7 @@ export function buildOpenAiReviewerPrompt(input: {
   title: string;
   body: string;
   diffText: string;
+  reviewRubric?: string;
 }): string {
   return [
     "You are an independent, read-only code reviewer (OpenAI). You can ONLY approve or veto.",
@@ -111,6 +112,7 @@ export function buildOpenAiReviewerPrompt(input: {
     "1. Does the new reproduction test actually assert the exact input -> expected output contract described in the issue?",
     "2. Does the fix genuinely solve the root cause without hacks, regressions, or edge-case breakage?",
     "3. Are any tests weakened, mocked out, or misleading?",
+    ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='approve' ONLY if you are confident the fix is correct and minimal; otherwise return verdict='veto' with concrete structured findings.",
   ].join("\n");
 }
@@ -121,6 +123,7 @@ export function buildGeminiAdversarialPrompt(input: {
   body: string;
   diffText: string;
   touchedFiles: Record<string, string>;
+  reviewRubric?: string;
 }): string {
   const fileBlocks = Object.entries(input.touchedFiles)
     .map(([file, content]) => `### FILE: ${file}\n${content.slice(0, 12_000)}`)
@@ -146,6 +149,7 @@ export function buildGeminiAdversarialPrompt(input: {
     "Try to break the fix:",
     "- Look for panics, slice out-of-bounds, UTF-8/rune vs byte bugs, nil dereferences, concurrency races, or inputs where the bug still manifests.",
     "- Verify the test isn't bending correct behavior to match a flawed assertion.",
+    ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='veto' with exact file/line findings if you find ANY real defect or risk; otherwise return verdict='approve'.",
   ].join("\n");
 }

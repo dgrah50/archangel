@@ -29,6 +29,7 @@ export interface ReviewRequest {
   headSha: string;
   diffText: string;
   touchedFiles: Record<string, string>;
+  reviewRubric?: string;
   skipVendors?: ReviewerVendor[];
 }
 

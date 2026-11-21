@@ -153,7 +153,7 @@ func Run(opts Options) (*Report, error) {
 
 	// Check protected paths always (even for reverts).
 	for _, st := range stats {
-		if IsProtectedPath(st.Path) {
+		if IsProtectedPathWithExtras(st.Path, opts.Policy.ExtraProtectedPaths) {
 			report.Violations = append(report.Violations, fmt.Sprintf("protected path modified: %s", st.Path))
 		}
 	}

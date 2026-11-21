@@ -31,18 +31,33 @@ export function formatDayKey(ts: number, timeZone: string): string {
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
+  readonly repo: string;
 
-  constructor(dbPath: string, opts: { timeZone?: string; readonly?: boolean } = {}) {
+  constructor(
+    dbPath: string,
+    opts: { repo?: string; timeZone?: string; readonly?: boolean } = {},
+  ) {
     if (!opts.readonly && dbPath !== ":memory:") {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     }
     this.db = new Database(dbPath, { readonly: opts.readonly ?? false });
+    this.repo = opts.repo ?? "dgrah50/gijq";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
       this.db.exec(LEDGER_SCHEMA_SQL);
     } else {
       this.db.pragma("busy_timeout = 5000");
     }
+  }
+
+  /**
+   * Returns a lightweight repo-scoped view sharing the same underlying SQLite connection
+   * (so global `daily_spend` and `audit_log` are shared while Threads are isolated per repo).
+   */
+  forRepo(repo: string): Ledger {
+    const view = Object.create(Ledger.prototype) as Ledger;
+    Object.assign(view, { db: this.db, timeZone: this.timeZone, repo });
+    return view;
   }
 
   close(): void {
@@ -53,7 +68,7 @@ export class Ledger {
 
   upsertThread(input: {
     issueNumber: number;
-    repo: string;
+    repo?: string;
     title: string;
     themeLabel?: string | null;
     bodySha256: string;
@@ -61,27 +76,28 @@ export class Ledger {
     state?: ThreadState;
     now?: number;
   }): ThreadRecord {
+    const repo = input.repo ?? this.repo;
     const now = input.now ?? Date.now();
-    const existing = this.getThread(input.issueNumber);
+    const existing = this.getThread(input.issueNumber, repo);
     if (existing) {
       this.db
         .prepare(
-          `UPDATE threads SET title = ?, theme_label = ?, updated_at = ? WHERE issue_number = ?`,
+          `UPDATE threads SET title = ?, theme_label = ?, updated_at = ? WHERE repo = ? AND issue_number = ?`,
         )
-        .run(input.title, input.themeLabel ?? existing.themeLabel, now, input.issueNumber);
-      return this.getThread(input.issueNumber)!;
+        .run(input.title, input.themeLabel ?? existing.themeLabel, now, repo, input.issueNumber);
+      return this.getThread(input.issueNumber, repo)!;
     }
 
     const branchName = input.branchName ?? `factory/${input.issueNumber}`;
     this.db
       .prepare(
         `INSERT INTO threads (
-          issue_number, repo, title, theme_label, body_sha256, state, branch_name, created_at, updated_at
+          repo, issue_number, title, theme_label, body_sha256, state, branch_name, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
+        repo,
         input.issueNumber,
-        input.repo,
         input.title,
         input.themeLabel ?? null,
         input.bodySha256,
@@ -94,29 +110,37 @@ export class Ledger {
       title: input.title,
       branchName,
       bodySha256: input.bodySha256,
-    });
-    return this.getThread(input.issueNumber)!;
+    }, now, repo);
+    return this.getThread(input.issueNumber, repo)!;
   }
 
-  getThread(issueNumber: number): ThreadRecord | null {
+  getThread(issueNumber: number, repo = this.repo): ThreadRecord | null {
     const row = this.db
-      .prepare(`SELECT * FROM threads WHERE issue_number = ?`)
-      .get(issueNumber) as Record<string, unknown> | undefined;
+      .prepare(`SELECT * FROM threads WHERE repo = ? AND issue_number = ?`)
+      .get(repo, issueNumber) as Record<string, unknown> | undefined;
     return row ? mapThread(row) : null;
   }
 
-  listThreads(states?: ThreadState[]): ThreadRecord[] {
-    if (!states || states.length === 0) {
-      const rows = this.db
-        .prepare(`SELECT * FROM threads ORDER BY issue_number ASC`)
-        .all() as Record<string, unknown>[];
-      return rows.map(mapThread);
+  listThreads(states?: ThreadState[], repo: string | null = this.repo): ThreadRecord[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (repo !== null) {
+      where.push("repo = ?");
+      params.push(repo);
     }
-    const placeholders = states.map(() => "?").join(",");
+    if (states && states.length > 0) {
+      where.push(`state IN (${states.map(() => "?").join(",")})`);
+      params.push(...states);
+    }
+    const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
-      .prepare(`SELECT * FROM threads WHERE state IN (${placeholders}) ORDER BY issue_number ASC`)
-      .all(...states) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM threads ${clause} ORDER BY repo ASC, issue_number ASC`)
+      .all(...params) as Record<string, unknown>[];
     return rows.map(mapThread);
+  }
+
+  listAllThreads(states?: ThreadState[]): ThreadRecord[] {
+    return this.listThreads(states, null);
   }
 
   updateThread(
@@ -137,6 +161,7 @@ export class Ledger {
       needsYouReason: string | null;
     }>,
     now = Date.now(),
+    repo = this.repo,
   ): ThreadRecord {
     const sets: string[] = ["updated_at = ?"];
     const vals: unknown[] = [now];
@@ -160,57 +185,62 @@ export class Ledger {
     }
     if (patch.needsYouReason !== undefined) push("needs_you_reason", patch.needsYouReason);
 
-    vals.push(issueNumber);
-    this.db.prepare(`UPDATE threads SET ${sets.join(", ")} WHERE issue_number = ?`).run(...vals);
-    return this.getThread(issueNumber)!;
+    vals.push(repo, issueNumber);
+    this.db
+      .prepare(`UPDATE threads SET ${sets.join(", ")} WHERE repo = ? AND issue_number = ?`)
+      .run(...vals);
+    return this.getThread(issueNumber, repo)!;
   }
 
   // --- Per-Thread Leases & Stale-Run Sweep ---
 
-  acquireLease(issueNumber: number, owner: string, staleMs: number, now = Date.now()): boolean {
+  acquireLease(
+    issueNumber: number,
+    owner: string,
+    staleMs: number,
+    now = Date.now(),
+    repo = this.repo,
+  ): boolean {
     const cutoff = now - staleMs;
     const res = this.db
       .prepare(
         `UPDATE threads
          SET lease_owner = ?, lease_heartbeat_at = ?, updated_at = ?
-         WHERE issue_number = ?
+         WHERE repo = ? AND issue_number = ?
            AND (lease_owner IS NULL OR lease_owner = ? OR lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?)`,
       )
-      .run(owner, now, now, issueNumber, owner, cutoff);
+      .run(owner, now, now, repo, issueNumber, owner, cutoff);
     return res.changes === 1;
   }
 
-  heartbeatLease(issueNumber: number, owner: string, now = Date.now()): void {
+  heartbeatLease(issueNumber: number, owner: string, now = Date.now(), repo = this.repo): void {
     this.db
       .prepare(
         `UPDATE threads SET lease_heartbeat_at = ?, updated_at = ?
-         WHERE issue_number = ? AND lease_owner = ?`,
+         WHERE repo = ? AND issue_number = ? AND lease_owner = ?`,
       )
-      .run(now, now, issueNumber, owner);
+      .run(now, now, repo, issueNumber, owner);
   }
 
-  releaseLease(issueNumber: number, owner: string, now = Date.now()): void {
+  releaseLease(issueNumber: number, owner: string, now = Date.now(), repo = this.repo): void {
     this.db
       .prepare(
         `UPDATE threads SET lease_owner = NULL, lease_heartbeat_at = NULL, updated_at = ?
-         WHERE issue_number = ? AND lease_owner = ?`,
+         WHERE repo = ? AND issue_number = ? AND lease_owner = ?`,
       )
-      .run(now, issueNumber, owner);
+      .run(now, repo, issueNumber, owner);
   }
 
-  /**
-   * Startup stale-run sweep (Opus edge case): recovers from laptop sleep/crashes by marking
-   * abandoned running attempts as failed and clearing stale leases so the reconciler can decide next action.
-   */
-  sweepStaleRuns(staleMs: number, now = Date.now()): number[] {
+  sweepStaleRuns(staleMs: number, now = Date.now(), repo = this.repo): number[] {
     const cutoff = now - staleMs;
     const staleThreads = this.db
       .prepare(
         `SELECT issue_number, state FROM threads
-         WHERE (lease_owner IS NOT NULL AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?))
-            OR state IN ('implementing', 'revising', 'rebasing', 'reviewing')`,
+         WHERE repo = ?
+           AND ((lease_owner IS NOT NULL AND (lease_heartbeat_at IS NULL OR lease_heartbeat_at < ?))
+                OR state IN ('implementing', 'revising', 'rebasing', 'reviewing'))`,
       )
-      .all(cutoff) as Array<{ issue_number: number; state: ThreadState }>;
+      .all(repo, cutoff) as Array<{ issue_number: number; state: ThreadState }>;
 
     const recovered: number[] = [];
     const tx = this.db.transaction(() => {
@@ -218,25 +248,27 @@ export class Ledger {
         this.db
           .prepare(
             `UPDATE attempts SET status = 'failed', error_message = 'stale run swept on startup', finished_at = ?
-             WHERE issue_number = ? AND status = 'running'`,
+             WHERE repo = ? AND issue_number = ? AND status = 'running'`,
           )
-          .run(now, row.issue_number);
+          .run(now, repo, row.issue_number);
 
-        // Return interrupted active states to safe resumable states (Pine: pause/safe recovery).
-        const nextState: ThreadState =
-          row.state === "reviewing" ? "awaiting_gate" : "queued";
+        const nextState: ThreadState = row.state === "reviewing" ? "awaiting_gate" : "queued";
         this.db
           .prepare(
             `UPDATE threads
              SET state = ?, lease_owner = NULL, lease_heartbeat_at = NULL, updated_at = ?
-             WHERE issue_number = ?`,
+             WHERE repo = ? AND issue_number = ?`,
           )
-          .run(nextState, now, row.issue_number);
+          .run(nextState, now, repo, row.issue_number);
 
-        this.appendAudit("thread/stale_swept", row.issue_number, "archangel", {
-          previousState: row.state,
-          nextState,
-        });
+        this.appendAudit(
+          "thread/stale_swept",
+          row.issue_number,
+          "archangel",
+          { previousState: row.state, nextState },
+          now,
+          repo,
+        );
         recovered.push(row.issue_number);
       }
     });
@@ -246,14 +278,14 @@ export class Ledger {
 
   // --- Attempts ---
 
-  startAttempt(issueNumber: number, kind: AttemptKind, now = Date.now()): AttemptRecord {
+  startAttempt(issueNumber: number, kind: AttemptKind, now = Date.now(), repo = this.repo): AttemptRecord {
     const info = this.db
       .prepare(
-        `INSERT INTO attempts (issue_number, kind, status, started_at) VALUES (?, ?, 'running', ?)`,
+        `INSERT INTO attempts (repo, issue_number, kind, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
       )
-      .run(issueNumber, kind, now);
+      .run(repo, issueNumber, kind, now);
     const id = Number(info.lastInsertRowid);
-    this.appendAudit("attempt/started", issueNumber, "archangel", { attemptId: id, kind });
+    this.appendAudit("attempt/started", issueNumber, "archangel", { attemptId: id, kind }, now, repo);
     return this.getAttempt(id)!;
   }
 
@@ -288,13 +320,20 @@ export class Ledger {
       this.addSpend(cost, now);
     }
     const attempt = this.getAttempt(attemptId)!;
-    this.appendAudit("attempt/finished", attempt.issueNumber, "archangel", {
-      attemptId,
-      status: result.status,
-      headSha: result.headSha ?? null,
-      costUsd: cost,
-      error: result.errorMessage ?? null,
-    });
+    this.appendAudit(
+      "attempt/finished",
+      attempt.issueNumber,
+      "archangel",
+      {
+        attemptId,
+        status: result.status,
+        headSha: result.headSha ?? null,
+        costUsd: cost,
+        error: result.errorMessage ?? null,
+      },
+      now,
+      attempt.repo,
+    );
     return attempt;
   }
 
@@ -312,19 +351,24 @@ export class Ledger {
     issueNumber: number,
     origin: "broker" | "owner_resume",
     now = Date.now(),
+    repo = this.repo,
   ): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO pushed_shas (sha, issue_number, origin, created_at) VALUES (?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO pushed_shas (repo, sha, issue_number, origin, created_at) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(sha, issueNumber, origin, now);
-    this.appendAudit("broker/sha_recorded", issueNumber, origin, { sha });
+      .run(repo, sha, issueNumber, origin, now);
+    this.appendAudit("broker/sha_recorded", issueNumber, origin, { sha }, now, repo);
   }
 
-  isKnownSha(issueNumber: number, sha: string): { known: boolean; origin: string | null } {
+  isKnownSha(
+    issueNumber: number,
+    sha: string,
+    repo = this.repo,
+  ): { known: boolean; origin: string | null } {
     const row = this.db
-      .prepare(`SELECT origin FROM pushed_shas WHERE sha = ? AND issue_number = ?`)
-      .get(sha, issueNumber) as { origin: string } | undefined;
+      .prepare(`SELECT origin FROM pushed_shas WHERE repo = ? AND sha = ? AND issue_number = ?`)
+      .get(repo, sha, issueNumber) as { origin: string } | undefined;
     return row ? { known: true, origin: row.origin } : { known: false, origin: null };
   }
 
@@ -338,20 +382,23 @@ export class Ledger {
     findings: ReviewFinding[];
     costUsd: number;
     now?: number;
+    repo?: string;
   }): ReviewRecord {
+    const repo = input.repo ?? this.repo;
     const now = input.now ?? Date.now();
     const cost = Math.max(0, input.costUsd);
     this.db
       .prepare(
-        `INSERT INTO reviews (issue_number, head_sha, vendor, verdict, findings_json, cost_usd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(issue_number, head_sha, vendor) DO UPDATE SET
+        `INSERT INTO reviews (repo, issue_number, head_sha, vendor, verdict, findings_json, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo, issue_number, head_sha, vendor) DO UPDATE SET
            verdict = excluded.verdict,
            findings_json = excluded.findings_json,
            cost_usd = excluded.cost_usd,
            created_at = excluded.created_at`,
       )
       .run(
+        repo,
         input.issueNumber,
         input.headSha,
         input.vendor,
@@ -363,21 +410,30 @@ export class Ledger {
     if (cost > 0) {
       this.addSpend(cost, now);
     }
-    this.appendAudit("review/recorded", input.issueNumber, input.vendor, {
-      headSha: input.headSha,
-      verdict: input.verdict,
-      findingsCount: input.findings.length,
-      costUsd: cost,
-    });
-    return this.getReviewsForSha(input.issueNumber, input.headSha).find(
+    this.appendAudit(
+      "review/recorded",
+      input.issueNumber,
+      input.vendor,
+      {
+        headSha: input.headSha,
+        verdict: input.verdict,
+        findingsCount: input.findings.length,
+        costUsd: cost,
+      },
+      now,
+      repo,
+    );
+    return this.getReviewsForSha(input.issueNumber, input.headSha, repo).find(
       (r) => r.vendor === input.vendor,
     )!;
   }
 
-  getReviewsForSha(issueNumber: number, headSha: string): ReviewRecord[] {
+  getReviewsForSha(issueNumber: number, headSha: string, repo = this.repo): ReviewRecord[] {
     const rows = this.db
-      .prepare(`SELECT * FROM reviews WHERE issue_number = ? AND head_sha = ? ORDER BY vendor ASC`)
-      .all(issueNumber, headSha) as Record<string, unknown>[];
+      .prepare(
+        `SELECT * FROM reviews WHERE repo = ? AND issue_number = ? AND head_sha = ? ORDER BY vendor ASC`,
+      )
+      .all(repo, issueNumber, headSha) as Record<string, unknown>[];
     return rows.map(mapReview);
   }
 
@@ -390,15 +446,18 @@ export class Ledger {
     squashSha?: string | null;
     shadowOnly: boolean;
     now?: number;
+    repo?: string;
   }): MergeRecord {
+    const repo = input.repo ?? this.repo;
     const now = input.now ?? Date.now();
     const dayKey = formatDayKey(now, this.timeZone);
     const info = this.db
       .prepare(
-        `INSERT INTO merges (issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
+        repo,
         input.issueNumber,
         input.prNumber,
         input.headSha,
@@ -407,11 +466,18 @@ export class Ledger {
         dayKey,
         now,
       );
-    this.appendAudit(input.shadowOnly ? "lander/shadow_ready" : "lander/merged", input.issueNumber, "lander", {
-      prNumber: input.prNumber,
-      headSha: input.headSha,
-      squashSha: input.squashSha ?? null,
-    });
+    this.appendAudit(
+      input.shadowOnly ? "lander/shadow_ready" : "lander/merged",
+      input.issueNumber,
+      "lander",
+      {
+        prNumber: input.prNumber,
+        headSha: input.headSha,
+        squashSha: input.squashSha ?? null,
+      },
+      now,
+      repo,
+    );
     return this.getMerge(Number(info.lastInsertRowid))!;
   }
 
@@ -422,20 +488,28 @@ export class Ledger {
     return row ? mapMerge(row) : null;
   }
 
-  getAutoMergeCountToday(now = Date.now()): number {
+  getAutoMergeCountToday(now = Date.now(), repo: string | null = this.repo): number {
     const dayKey = formatDayKey(now, this.timeZone);
+    if (repo === null) {
+      const row = this.db
+        .prepare(`SELECT COUNT(*) AS cnt FROM merges WHERE day_key = ? AND shadow_only = 0`)
+        .get(dayKey) as { cnt: number };
+      return row.cnt;
+    }
     const row = this.db
-      .prepare(`SELECT COUNT(*) AS cnt FROM merges WHERE day_key = ? AND shadow_only = 0`)
-      .get(dayKey) as { cnt: number };
+      .prepare(`SELECT COUNT(*) AS cnt FROM merges WHERE repo = ? AND day_key = ? AND shadow_only = 0`)
+      .get(repo, dayKey) as { cnt: number };
     return row.cnt;
   }
 
-  listPendingPostMergeChecks(): MergeRecord[] {
+  listPendingPostMergeChecks(repo = this.repo): MergeRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT * FROM merges WHERE shadow_only = 0 AND squash_sha IS NOT NULL AND main_status IN ('pending', 'rerun_once') ORDER BY created_at ASC`,
+        `SELECT * FROM merges
+         WHERE repo = ? AND shadow_only = 0 AND squash_sha IS NOT NULL AND main_status IN ('pending', 'rerun_once')
+         ORDER BY created_at ASC`,
       )
-      .all() as Record<string, unknown>[];
+      .all(repo) as Record<string, unknown>[];
     return rows.map(mapMerge);
   }
 
@@ -445,24 +519,40 @@ export class Ledger {
     revertPrNumber?: number | null,
   ): void {
     this.db
-      .prepare(`UPDATE merges SET main_status = ?, revert_pr_number = COALESCE(?, revert_pr_number) WHERE id = ?`)
+      .prepare(
+        `UPDATE merges SET main_status = ?, revert_pr_number = COALESCE(?, revert_pr_number) WHERE id = ?`,
+      )
       .run(status, revertPrNumber ?? null, mergeId);
   }
 
-  markShadowDisagree(issueNumber: number, disagreed = true): void {
+  markShadowDisagree(issueNumber: number, disagreed = true, repo = this.repo): void {
     this.db
-      .prepare(`UPDATE merges SET disagreed = ? WHERE issue_number = ? AND shadow_only = 1`)
-      .run(disagreed ? 1 : 0, issueNumber);
-    this.appendAudit("shadow/disagree", issueNumber, "owner", { disagreed });
+      .prepare(`UPDATE merges SET disagreed = ? WHERE repo = ? AND issue_number = ? AND shadow_only = 1`)
+      .run(disagreed ? 1 : 0, repo, issueNumber);
+    this.appendAudit("shadow/disagree", issueNumber, "owner", { disagreed }, Date.now(), repo);
   }
 
-  getShadowStats(): { total: number; agreed: number; disagreed: number; agreementRate: number } {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
-         FROM merges WHERE shadow_only = 1`,
-      )
-      .get() as { total: number; disagreed: number | null };
+  getShadowStats(repo: string | null = null): {
+    total: number;
+    agreed: number;
+    disagreed: number;
+    agreementRate: number;
+  } {
+    const row = (
+      repo === null
+        ? this.db
+            .prepare(
+              `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
+               FROM merges WHERE shadow_only = 1`,
+            )
+            .get()
+        : this.db
+            .prepare(
+              `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
+               FROM merges WHERE repo = ? AND shadow_only = 1`,
+            )
+            .get(repo)
+    ) as { total: number; disagreed: number | null };
     const total = row.total;
     const disagreed = row.disagreed ?? 0;
     const agreed = total - disagreed;
@@ -474,7 +564,7 @@ export class Ledger {
     };
   }
 
-  // --- Spend Accounting ($20/day hard cap — B9) ---
+  // --- Global Daily Spend Accounting ($20/day across all projects — B9) ---
 
   addSpend(usd: number, now = Date.now()): number {
     const dayKey = formatDayKey(now, this.timeZone);
@@ -495,18 +585,18 @@ export class Ledger {
     return row?.usd ?? 0;
   }
 
-  // --- Global Circuit Breaker (Red Main — B8) ---
+  // --- Per-Repo Circuit Breaker (Red Main — B8) ---
 
-  setCircuitBreaker(tripped: boolean, reason?: string, now = Date.now()): void {
-    this.setSystemState("circuit_breaker_tripped", tripped ? "1" : "0", now);
-    this.setSystemState("circuit_breaker_reason", reason ?? "", now);
-    this.appendAudit("system/circuit_breaker", null, "archangel", { tripped, reason: reason ?? "" });
+  setCircuitBreaker(tripped: boolean, reason?: string, now = Date.now(), repo = this.repo): void {
+    this.setSystemState(`circuit_breaker_tripped:${repo}`, tripped ? "1" : "0", now);
+    this.setSystemState(`circuit_breaker_reason:${repo}`, reason ?? "", now);
+    this.appendAudit("system/circuit_breaker", null, "archangel", { tripped, reason: reason ?? "" }, now, repo);
   }
 
-  getCircuitBreaker(): { tripped: boolean; reason: string } {
+  getCircuitBreaker(repo = this.repo): { tripped: boolean; reason: string } {
     return {
-      tripped: this.getSystemState("circuit_breaker_tripped") === "1",
-      reason: this.getSystemState("circuit_breaker_reason") ?? "",
+      tripped: this.getSystemState(`circuit_breaker_tripped:${repo}`) === "1",
+      reason: this.getSystemState(`circuit_breaker_reason:${repo}`) ?? "",
     };
   }
 
@@ -534,17 +624,24 @@ export class Ledger {
     actor: string,
     payload: unknown,
     now = Date.now(),
+    repo: string | null = this.repo,
   ): void {
     this.db
       .prepare(
-        `INSERT INTO audit_log (ts, topic, issue_number, actor, payload_json) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO audit_log (ts, repo, topic, issue_number, actor, payload_json) VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(now, topic, issueNumber, actor, JSON.stringify(payload));
+      .run(now, repo, topic, issueNumber, actor, JSON.stringify(payload));
   }
 
-  listAudit(opts: { topicPrefix?: string; issueNumber?: number; limit?: number } = {}): AuditLogEntry[] {
+  listAudit(
+    opts: { repo?: string; topicPrefix?: string; issueNumber?: number; limit?: number } = {},
+  ): AuditLogEntry[] {
     const where: string[] = [];
     const params: unknown[] = [];
+    if (opts.repo) {
+      where.push(`repo = ?`);
+      params.push(opts.repo);
+    }
     if (opts.topicPrefix) {
       where.push(`topic LIKE ?`);
       params.push(`${opts.topicPrefix}%`);
@@ -562,6 +659,7 @@ export class Ledger {
     return rows.map((r) => ({
       id: Number(r.id),
       ts: Number(r.ts),
+      repo: r.repo === null ? null : String(r.repo),
       topic: String(r.topic),
       issueNumber: r.issue_number === null ? null : Number(r.issue_number),
       actor: String(r.actor),
@@ -602,6 +700,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
 function mapAttempt(r: Record<string, unknown>): AttemptRecord {
   return {
     id: Number(r.id),
+    repo: String(r.repo),
     issueNumber: Number(r.issue_number),
     kind: String(r.kind) as AttemptKind,
     status: String(r.status) as AttemptRecord["status"],
@@ -617,6 +716,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
 function mapReview(r: Record<string, unknown>): ReviewRecord {
   return {
     id: Number(r.id),
+    repo: String(r.repo),
     issueNumber: Number(r.issue_number),
     headSha: String(r.head_sha),
     vendor: String(r.vendor) as ReviewerVendor,
@@ -630,6 +730,7 @@ function mapReview(r: Record<string, unknown>): ReviewRecord {
 function mapMerge(r: Record<string, unknown>): MergeRecord {
   return {
     id: Number(r.id),
+    repo: String(r.repo),
     issueNumber: Number(r.issue_number),
     prNumber: Number(r.pr_number),
     headSha: String(r.head_sha),

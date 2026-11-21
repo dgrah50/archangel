@@ -1,0 +1,35 @@
+# Archangel host configuration (no secrets here — secrets live in .env)
+ownerUserId: 123456
+dataDir: .archangel
+pollIntervalMs: 30000
+maxDailyUsd: 20
+dailyTimezone: America/New_York
+
+claudeModel: claude-sonnet-4-6
+openaiReviewerModel: gpt-5.4
+geminiReviewerModel: gemini-2.5-pro
+
+# Optional Paseo daemon endpoint for Handoff
+paseoHost: 127.0.0.1:6767
+
+projects:
+  - repo: dgrah50/gijq
+    defaultBranch: main
+    language: go
+    workspace: local-clone        # Phase 2: apple-container | docker | boat | sail
+    shadowMode: true
+    maxConcurrentThreads: 2
+    maxAutoMergesPerDay: 3
+    requiredChecks:
+      - Gate
+      - Test (ubuntu-latest)
+      - Test (macos-latest)
+    gate:
+      maxNonTestLines: 150
+      maxTotalLines: 300
+      maxFiles: 5
+      extraProtectedPaths: []
+    # Optional extra instructions appended to independent reviewers for this project
+    reviewRubric: |
+      Pay close attention to UTF-8/rune vs byte slicing, Bubble Tea v2 model immutability,
+      and cancellation safety in background goroutines.

@@ -27,7 +27,6 @@ export interface ClaudeImplementerOptions {
   apiKey: string;
   model: string;
   transcriptsDir: string;
-  workerOsUser?: string;
 }
 
 /**

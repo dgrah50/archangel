@@ -40,7 +40,7 @@ const PROTECTED_EXACT = new Set([
   ".pre-commit-config.yaml",
 ]);
 
-export function isProtectedPath(relPath: string): boolean {
+export function isProtectedPath(relPath: string, extraProtectedPaths: string[] = []): boolean {
   const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
   const lower = normalized.toLowerCase();
   const base = path.posix.basename(lower);
@@ -49,6 +49,18 @@ export function isProtectedPath(relPath: string): boolean {
   if (base.startsWith("license") || base.startsWith("copying")) return true;
   if (base.startsWith(".goreleaser") || base.startsWith(".golangci")) return true;
   if (lower.includes("/.git/") || lower === ".git") return true;
+  for (const rawPattern of extraProtectedPaths) {
+    const pat = rawPattern.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+    if (!pat) continue;
+    if (pat.endsWith("/**")) {
+      const prefix = pat.slice(0, -2); // keep trailing "/"
+      if (lower.startsWith(prefix)) return true;
+    } else if (pat.endsWith("/")) {
+      if (lower.startsWith(pat)) return true;
+    } else if (lower === pat) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -74,12 +86,21 @@ export interface GitBrokerOptions {
   maxNonTestLines?: number;
   maxTotalLines?: number;
   maxFiles?: number;
+  extraProtectedPaths?: string[];
+}
+
+export interface ValidationBounds {
+  maxNonTestLines?: number;
+  maxTotalLines?: number;
+  maxFiles?: number;
+  extraProtectedPaths?: string[];
 }
 
 /**
  * Hardened Git Broker (ADR-0004 B2):
  * - Owns its own bare clone (`broker.git`) that the implementer never has write access to.
  * - Creates isolated throwaway clones (never shared worktrees) with no push remotes for the implementer.
+ * - Runs optional `.agents/setup` read strictly from `main` tip with a scrubbed environment.
  * - Fetches commits out of the throwaway clone into the bare clone with hooks/fsmonitor disabled,
  *   validates protected paths and diff bounds in the bare clone, and pushes only `factory/<n>` branches.
  */
@@ -90,6 +111,7 @@ export class GitBroker {
   readonly maxNonTestLines: number;
   readonly maxTotalLines: number;
   readonly maxFiles: number;
+  readonly extraProtectedPaths: string[];
 
   constructor(opts: GitBrokerOptions) {
     this.bareRepoPath = path.resolve(opts.bareRepoPath);
@@ -98,6 +120,7 @@ export class GitBroker {
     this.maxNonTestLines = opts.maxNonTestLines ?? 150;
     this.maxTotalLines = opts.maxTotalLines ?? 300;
     this.maxFiles = opts.maxFiles ?? 5;
+    this.extraProtectedPaths = opts.extraProtectedPaths ?? [];
   }
 
   private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
@@ -163,6 +186,51 @@ export class GitBroker {
   }
 
   /**
+   * Reads a file directly from the broker's bare repo at a trusted ref (e.g. `main` tip).
+   * Returns null if the file does not exist at that ref.
+   */
+  async readFileAtRef(ref: string, relPath: string): Promise<string | null> {
+    try {
+      return await this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Runs the repository's `.agents/setup` script inside a fresh throwaway clone,
+   * reading the script bytes strictly from `mainSha` (never from a PR branch)
+   * under a scrubbed environment with no credentials (Polaris contract + ADR-0004).
+   */
+  async runRepoSetup(
+    cloneDir: string,
+    mainSha: string,
+    timeoutMs = 5 * 60_000,
+  ): Promise<{ ran: boolean; stdout: string }> {
+    const script = await this.readFileAtRef(mainSha, ".agents/setup");
+    if (!script || !script.trim()) {
+      return { ran: false, stdout: "" };
+    }
+    const cleanEnv: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
+      HOME: process.env.HOME ?? "/tmp",
+      TMPDIR: process.env.TMPDIR ?? "/tmp",
+      LANG: process.env.LANG ?? "en_US.UTF-8",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0",
+      GOTOOLCHAIN: "local",
+    };
+    const { stdout } = await execFileAsync("/bin/sh", ["-eu", "-c", script], {
+      cwd: cloneDir,
+      env: cleanEnv,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return { ran: true, stdout };
+  }
+
+  /**
    * Hardened fetch from an untrusted throwaway clone into the broker's bare repo,
    * followed by protected-path and diff-bound inspection inside the broker's bare repo.
    */
@@ -170,7 +238,13 @@ export class GitBroker {
     cloneDir: string,
     issueNumber: number,
     baseSha: string,
+    bounds?: ValidationBounds,
   ): Promise<BrokerFetchValidation> {
+    const maxNonTestLines = bounds?.maxNonTestLines ?? this.maxNonTestLines;
+    const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
+    const maxFiles = bounds?.maxFiles ?? this.maxFiles;
+    const extraProtectedPaths = bounds?.extraProtectedPaths ?? this.extraProtectedPaths;
+
     const stagingRef = `refs/archangel/staging/${issueNumber}`;
     await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
     const headSha = await this.resolveRef(stagingRef);
@@ -193,7 +267,7 @@ export class GitBroker {
       const filePath = parts[2];
       if (!filePath) continue;
       changedFiles.push(filePath);
-      if (isProtectedPath(filePath)) {
+      if (isProtectedPath(filePath, extraProtectedPaths)) {
         protectedViolations.push(`protected path modified: ${filePath}`);
       }
       if (parts[0] === "-" || parts[1] === "-") {
@@ -210,16 +284,16 @@ export class GitBroker {
     if (changedFiles.length === 0) {
       protectedViolations.push("diff is empty");
     }
-    if (changedFiles.length > this.maxFiles) {
-      protectedViolations.push(`changed files ${changedFiles.length} exceeds limit ${this.maxFiles}`);
+    if (changedFiles.length > maxFiles) {
+      protectedViolations.push(`changed files ${changedFiles.length} exceeds limit ${maxFiles}`);
     }
-    if (nonTestLines > this.maxNonTestLines) {
+    if (nonTestLines > maxNonTestLines) {
       protectedViolations.push(
-        `non-test changed lines ${nonTestLines} exceeds limit ${this.maxNonTestLines}`,
+        `non-test changed lines ${nonTestLines} exceeds limit ${maxNonTestLines}`,
       );
     }
-    if (totalLines > this.maxTotalLines) {
-      protectedViolations.push(`total changed lines ${totalLines} exceeds limit ${this.maxTotalLines}`);
+    if (totalLines > maxTotalLines) {
+      protectedViolations.push(`total changed lines ${totalLines} exceeds limit ${maxTotalLines}`);
     }
 
     const diffText = await this.runGit(this.bareRepoPath, [

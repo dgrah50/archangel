@@ -55,6 +55,7 @@ export interface ThreadRecord {
 
 export interface AttemptRecord {
   id: number;
+  repo: string;
   issueNumber: number;
   kind: AttemptKind;
   status: "running" | "succeeded" | "failed" | "aborted";
@@ -68,6 +69,7 @@ export interface AttemptRecord {
 
 export interface ReviewRecord {
   id: number;
+  repo: string;
   issueNumber: number;
   headSha: string;
   vendor: ReviewerVendor;
@@ -79,6 +81,7 @@ export interface ReviewRecord {
 
 export interface MergeRecord {
   id: number;
+  repo: string;
   issueNumber: number;
   prNumber: number;
   headSha: string;
@@ -94,6 +97,7 @@ export interface MergeRecord {
 export interface AuditLogEntry {
   id: number;
   ts: number;
+  repo: string | null;
   topic: string;
   issueNumber: number | null;
   actor: string;
@@ -106,8 +110,8 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS threads (
-  issue_number INTEGER PRIMARY KEY,
   repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
   title TEXT NOT NULL,
   theme_label TEXT,
   body_sha256 TEXT NOT NULL,
@@ -128,12 +132,14 @@ CREATE TABLE IF NOT EXISTS threads (
   lease_owner TEXT,
   lease_heartbeat_at INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   head_sha TEXT,
@@ -141,31 +147,38 @@ CREATE TABLE IF NOT EXISTS attempts (
   transcript_path TEXT,
   error_message TEXT,
   started_at INTEGER NOT NULL,
-  finished_at INTEGER
+  finished_at INTEGER,
+  FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS pushed_shas (
-  sha TEXT PRIMARY KEY,
-  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  repo TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
   origin TEXT NOT NULL, -- 'broker' | 'owner_resume'
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, sha),
+  FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
   vendor TEXT NOT NULL,
   verdict TEXT NOT NULL,
   findings_json TEXT NOT NULL,
   cost_usd REAL NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  UNIQUE(issue_number, head_sha, vendor)
+  UNIQUE(repo, issue_number, head_sha, vendor),
+  FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS merges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  issue_number INTEGER NOT NULL REFERENCES threads(issue_number),
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
   pr_number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
   squash_sha TEXT,
@@ -174,7 +187,8 @@ CREATE TABLE IF NOT EXISTS merges (
   day_key TEXT NOT NULL,
   main_status TEXT NOT NULL DEFAULT 'pending',
   revert_pr_number INTEGER,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
 CREATE TABLE IF NOT EXISTS daily_spend (
@@ -186,6 +200,7 @@ CREATE TABLE IF NOT EXISTS daily_spend (
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
+  repo TEXT,
   topic TEXT NOT NULL,
   issue_number INTEGER,
   actor TEXT NOT NULL,
@@ -193,7 +208,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_topic_ts ON audit_log(topic, ts);
-CREATE INDEX IF NOT EXISTS idx_audit_log_issue ON audit_log(issue_number, ts);
+CREATE INDEX IF NOT EXISTS idx_audit_log_issue ON audit_log(repo, issue_number, ts);
 
 CREATE TABLE IF NOT EXISTS system_state (
   key TEXT PRIMARY KEY,

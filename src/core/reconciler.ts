@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { ArchangelConfig } from "../config.js";
+import { mergeLandingJson, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
@@ -48,16 +48,22 @@ export class Reconciler {
   private readonly activeAborts = new Map<number, AbortController>();
   private readonly activeClones = new Map<number, string>();
   private readonly lastSummary = new Map<number, string>();
+  private effectiveGate: GatePolicy;
+  private effectiveRequiredChecks: string[];
+  private effectiveReviewRubric: string | undefined;
 
   constructor(deps: ReconcilerDeps) {
     this.cfg = deps.config;
-    this.ledger = deps.ledger;
+    this.ledger = deps.ledger.forRepo(`${deps.config.githubOwner}/${deps.config.githubRepo}`);
     this.github = deps.github;
     this.broker = deps.broker;
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
     this.workerId = deps.workerId ?? `archangel-${process.pid}`;
+    this.effectiveGate = deps.config.gate;
+    this.effectiveRequiredChecks = deps.config.requiredChecks;
+    this.effectiveReviewRubric = deps.config.reviewRubric;
   }
 
   getActiveAbort(issueNumber: number): AbortController | undefined {
@@ -79,6 +85,18 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+
+    // Load optional `.agents/landing.json` strictly from `main` tip (may only tighten host policy).
+    const landingRaw = await this.broker.readFileAtRef(mainSha, ".agents/landing.json");
+    const merged = mergeLandingJson(
+      this.cfg.gate,
+      this.cfg.requiredChecks,
+      this.cfg.reviewRubric,
+      landingRaw,
+    );
+    this.effectiveGate = merged.gate;
+    this.effectiveRequiredChecks = merged.requiredChecks;
+    this.effectiveReviewRubric = merged.reviewRubric;
 
     // 1. Monitor post-merge main CI health & circuit breaker (B8).
     await this.reconcilePostMergeMain(mainSha, remoteUrl);
@@ -323,6 +341,9 @@ export class Reconciler {
     }, 30_000);
 
     try {
+      // Run repo `.agents/setup` read strictly from mainSha (zero secrets in env).
+      await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
+
       const result: ImplementResult = await this.implementer.run({
         issueNumber: issue.number,
         cloneDir,
@@ -348,6 +369,7 @@ export class Reconciler {
         cloneDir,
         thread.issueNumber,
         mainSha,
+        this.effectiveGate,
       );
 
       if (validation.protectedViolations.length > 0) {
@@ -430,7 +452,7 @@ export class Reconciler {
     now: number,
   ): Promise<void> {
     const checks = await this.github.getCheckRunsForRef(thread.headSha!);
-    const required = this.cfg.requiredChecks.map((name) => ({
+    const required = this.effectiveRequiredChecks.map((name) => ({
       name,
       run: checks.find((c) => c.name === name),
     }));
@@ -532,6 +554,7 @@ export class Reconciler {
           headSha,
           diffText,
           touchedFiles,
+          reviewRubric: this.effectiveReviewRubric,
           skipVendors: [
             ...(haveOpenAi ? (["openai"] as const) : []),
             ...(haveGemini ? (["gemini"] as const) : []),
@@ -622,7 +645,9 @@ export class Reconciler {
         .every((c) => c.status === "completed" && c.conclusion === "success");
 
     const shaInfo = this.ledger.isKnownSha(thread.issueNumber, pr.headSha);
-    const protectedFilesTouched = pr.changedFiles.filter((f) => isProtectedPath(f));
+    const protectedFilesTouched = pr.changedFiles.filter((f) =>
+      isProtectedPath(f, this.effectiveGate.extraProtectedPaths),
+    );
     const mergeTreeClean = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const cb = this.ledger.getCircuitBreaker();
@@ -640,7 +665,7 @@ export class Reconciler {
       mainTipGreen,
       branchUpToDateWithMain: pr.baseSha === mainSha || mergeTreeClean,
       protectedFilesTouched,
-      requiredChecks: this.cfg.requiredChecks,
+      requiredChecks: this.effectiveRequiredChecks,
       checks,
       reviewsForHeadSha: reviews,
       requiredReviewers: ["openai", "gemini"],

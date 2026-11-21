@@ -68,6 +68,14 @@ describe("Ledger", () => {
 
       ledger.setCircuitBreaker(true, "red main on sq3", day1);
       expect(ledger.getCircuitBreaker()).toEqual({ tripped: true, reason: "red main on sq3" });
+
+      // Multi-project isolation: same issue number in a second repo does not collide, while sharing daily_spend
+      const repo2 = ledger.forRepo("dgrah50/other");
+      repo2.upsertThread({ issueNumber: 1, title: "other repo #1", bodySha256: "otherh1", now: day1 });
+      expect(ledger.getThread(1)?.title).toBe("a");
+      expect(repo2.getThread(1)?.title).toBe("other repo #1");
+      expect(repo2.getSpendToday(day1)).toBeCloseTo(20.5);
+      expect(repo2.getCircuitBreaker().tripped).toBe(false);
     } finally {
       ledger.close();
     }

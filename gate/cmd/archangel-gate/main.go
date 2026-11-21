@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/dayangraham/archangel/gate/internal/gate"
 )
@@ -23,6 +24,7 @@ func main() {
 	headNewRuns := flag.Int("head-new-runs", policy.HeadNewRuns, "Race-enabled runs of new tests on head")
 	headFullRuns := flag.Int("head-full-runs", policy.HeadFullRuns, "Uncached race-enabled full suite runs on head")
 	skipFull := flag.Bool("skip-full-suite", false, "Skip full suite runs (for fast broker pre-push validation)")
+	extraProtected := flag.String("extra-protected-paths", "", "Comma-separated per-project extra protected path patterns")
 	flag.Parse()
 
 	policy.MaxNonTestLines = *maxNonTest
@@ -32,6 +34,13 @@ func main() {
 	policy.HeadNewRuns = *headNewRuns
 	policy.HeadFullRuns = *headFullRuns
 	policy.SkipFullSuite = *skipFull
+	if *extraProtected != "" {
+		for _, p := range strings.Split(*extraProtected, ",") {
+			if t := strings.TrimSpace(p); t != "" {
+				policy.ExtraProtectedPaths = append(policy.ExtraProtectedPaths, t)
+			}
+		}
+	}
 
 	report, err := gate.Run(gate.Options{
 		RepoDir:  *repoDir,
