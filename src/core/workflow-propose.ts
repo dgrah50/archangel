@@ -9,6 +9,7 @@ import {
   type FieldChange,
   type HostWorkflowInput,
 } from "./workflow.js";
+import { resolveSkills } from "./skills.js";
 
 export const PROPOSE_BRANCH = "chore/archangel-workflow";
 export const LOOSENS_LABEL = "policy:loosens";
@@ -106,6 +107,11 @@ export async function planWorkflowProposal(
   const prompts = opts.scoutPrompts ?? {};
   for (const s of proposed.scouts) {
     if (prompts[s.name] === undefined) throw new Error(`Scout '${s.name}' has no prompt file (${SCOUT_DIR}/${s.name}.md) in the proposal`);
+    try {
+      resolveSkills(s.skills);
+    } catch (err) {
+      throw new Error(`Scout '${s.name}': ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const defaultBranch = (await runner.run("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).trim();
