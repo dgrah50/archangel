@@ -36,6 +36,8 @@ export interface UiState {
   /** Owner corrections over the last 30 days, all repos (closed categories only). */
   corrections: CorrectionCounts;
   autonomySteps: Record<string, number>;
+  /** Last daemon heartbeat (ms), or null when no daemon lock exists: the dashboard shows an offline banner when it is old or null. */
+  daemonHeartbeatAt: number | null;
   /** Last 14 local days, oldest first. */
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
@@ -129,6 +131,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
     stages,
     outcomes: ledger.computeMetrics({ now }).outcomes,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
+    daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({
@@ -322,15 +325,21 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
   if (wf.status === "invalid") {
     return { repo, status: "invalid", error: wf.error, mainSha: wf.mainSha, fileSha256: wf.fileSha256, stages: kernelStages(null) };
   }
-  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, draft: safeDraft(wf), stages: kernelStages(wf) };
-}
-
-function safeDraft(wf: OkWorkflow): Workflow | undefined {
+  let draft: Workflow;
   try {
-    return draftFromEffective(wf);
-  } catch {
-    return undefined; // a corrupt cache row must not take the whole page down
+    draft = draftFromEffective(wf);
+  } catch (e) {
+    // A workflow that resolves but cannot be turned into an editable draft is not "ok": say so instead of hiding the editor.
+    return {
+      repo,
+      status: "unreadable",
+      error: `The workflow resolved but its editable draft could not be built: ${e instanceof Error ? e.message : String(e)}`,
+      mainSha: wf.mainSha,
+      fileSha256: wf.fileSha256,
+      stages: kernelStages(wf),
+    };
   }
+  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, draft, stages: kernelStages(wf) };
 }
 
 const Source = z.enum(["kernel", "host", "repo"]);
