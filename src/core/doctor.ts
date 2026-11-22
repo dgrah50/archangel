@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { REPO_POLICY_PATH, loadProjectConfigs, providerToVendor, resolvePaths, resolveRequiredReviewers, type ArchangelConfig } from "../config.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
 import { execRunner } from "./onboard.js";
+import { loadWorkflow, workflowError } from "./workflow-load.js";
+import type { EffectiveWorkflow } from "./workflow.js";
 import { GitHubAppClient } from "../github/client.js";
 import { Ledger } from "../ledger/store.js";
 
@@ -359,7 +361,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
               name: `Gate Pin (${repoSlug})`,
               status: drift.drifted ? "warn" : "pass",
               detail: drift.drifted ? drift.reasons.join("; ") : `pin is current (latest gate-relevant commit ${gateLatest.slice(0, 10)})`,
-              remediation: drift.drifted ? `archangel gate bump --repo ${repoSlug}` : undefined,
+              remediation: drift.drifted ? `archangel gate-bump --repo ${repoSlug}` : undefined,
             });
           } catch (err) {
             checks.push({
@@ -371,6 +373,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           }
         }
       }
+
+      checks.push(describeLanding(repoSlug, await loadWorkflow(gh, cfg, { isScoutAutoPromoteRevoked: () => false }, tip)));
 
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
@@ -482,4 +486,21 @@ export function findReviewerIndependenceGaps(
 ): string[] {
   const vendors = [...new Set(cfg.implementerChain.map((e) => providerToVendor(e.provider)))];
   return vendors.filter((v) => resolveRequiredReviewers(cfg, [v]).length < 2);
+}
+
+/** One line per repo: the effective bugfix landing mode and who decided it, so a silent switch is visible. */
+export function describeLanding(repoSlug: string, wf: EffectiveWorkflow): DoctorCheck {
+  const base = { id: `landing:${repoSlug}`, name: `Bugfix Landing (${repoSlug})` };
+  if (wf.status !== "ok") {
+    return {
+      ...base,
+      status: "warn",
+      detail: `workflow ${wf.status}: ${workflowError(wf)}; the repo is halted until .agents/archangel.json is valid`,
+    };
+  }
+  const l = wf.landingBugfix;
+  const detail = l.declared
+    ? `${l.value} (source: ${l.source}; repo declares ${l.declared})`
+    : `${l.value} (source: ${l.source}${l.source === "repo" ? ", from landing.bugfix" : ""}); features always land by owner merge`;
+  return { ...base, status: "pass", detail };
 }

@@ -58,7 +58,7 @@ export const ScoutSpec = z
   .strict();
 export type ScoutSpec = z.infer<typeof ScoutSpec>;
 
-export const WorkflowV2 = z
+export const Workflow = z
   .object({
     version: z.literal(1),
     gate: z
@@ -96,7 +96,7 @@ export const WorkflowV2 = z
       seen.add(s.name);
     });
   });
-export type WorkflowV2 = z.infer<typeof WorkflowV2>;
+export type Workflow = z.infer<typeof Workflow>;
 
 // ---------------------------------------------------------------------------
 // trustHash
@@ -143,7 +143,7 @@ export interface HostWorkflowInput {
   isRevoked: (scoutName: string, trustHash: string) => boolean;
 }
 
-/** The repo's contribution at `mainSha`: the raw v2 file (null if absent) and `.agents/scouts/<name>.md` bodies. */
+/** The repo's contribution at `mainSha`: the raw workflow file (null if absent) and `.agents/scouts/<name>.md` bodies. */
 export interface RepoWorkflowInput {
   repo: string;
   mainSha: string;
@@ -186,9 +186,9 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     return { ...base, status: "missing", error: "workflow file .agents/archangel.json not found" };
   }
   const fileSha256 = crypto.createHash("sha256").update(repoIn.fileRaw).digest("hex");
-  let wf: WorkflowV2;
+  let wf: Workflow;
   try {
-    const parsed = WorkflowV2.safeParse(JSON.parse(repoIn.fileRaw));
+    const parsed = Workflow.safeParse(JSON.parse(repoIn.fileRaw));
     if (!parsed.success) {
       const msg = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
       return { ...base, status: "invalid", error: msg, fileSha256 };
@@ -271,7 +271,7 @@ export interface FieldChange {
 const eq = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
 
 /** Per-field effect of replacing `prev` with `next`. "changed" means a human must read it (no safe ordering). */
-export function classifyChange(prev: WorkflowV2, next: WorkflowV2): FieldChange[] {
+export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   const out: FieldChange[] = [];
   const add = (field: string, direction: ChangeDirection) => out.push({ field, direction });
 

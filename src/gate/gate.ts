@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { GatePolicySchema, REPO_POLICY_PATH, type GatePolicy } from "../config.js";
-import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, WorkflowV2 } from "../core/workflow.js";
+import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, Workflow } from "../core/workflow.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -558,7 +558,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         report.violations.push(`.agents/archangel.json on base is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
         return report;
       }
-      const parsed = WorkflowV2.safeParse(json);
+      const parsed = Workflow.safeParse(json);
       if (!parsed.success) {
         report.violations.push(
           `.agents/archangel.json on base is not a valid workflow: ${parsed.error.issues
