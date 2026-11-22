@@ -28,6 +28,7 @@ import {
   type Phase,
   type PhaseKind,
 } from "../core/thread-machine.js";
+import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
 import {
   LEDGER_SCHEMA_SQL,
   type AttemptErrorCategory,
@@ -172,7 +173,7 @@ export class Ledger {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
       };
-      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category"]);
+      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
       addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
       this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
@@ -514,6 +515,7 @@ export class Ledger {
       /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
+      auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
       now?: number;
       repo?: string;
@@ -565,7 +567,7 @@ export class Ledger {
       }
 
       if (opts.auditTopic) {
-        this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
       }
       // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
       if (validated.kind === "needs_you") {
@@ -800,6 +802,22 @@ export class Ledger {
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
       .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+  }
+
+  /** Replay capture for a revise or rebase Attempt: the head it started from and its sanitized input (null when not capturable). */
+  recordAttemptInput(attemptId: number, fromSha: string, inputJson: string | null): void {
+    this.db.prepare(`UPDATE attempts SET from_sha = ?, input_json = ? WHERE id = ?`).run(fromSha, inputJson, attemptId);
+  }
+
+  /** Revise and rebase Attempts with a captured input, oldest first. */
+  listAttemptInputs(repo = this.repo): Array<{ attemptId: number; issueNumber: number; kind: "revise" | "rebase"; fromSha: string; input: AttemptInput }> {
+    const rows = this.db
+      .prepare(`SELECT id, issue_number, kind, from_sha, input_json FROM attempts WHERE repo = ? AND kind IN ('revise', 'rebase') AND from_sha IS NOT NULL AND input_json IS NOT NULL ORDER BY id`)
+      .all(repo) as Array<Record<string, unknown>>;
+    return rows.flatMap((r) => {
+      const input = parseAttemptInput(String(r.input_json));
+      return input && input.kind === r.kind ? [{ attemptId: Number(r.id), issueNumber: Number(r.issue_number), kind: input.kind, fromSha: String(r.from_sha), input }] : [];
+    });
   }
 
   finishAttempt(
@@ -1554,6 +1572,12 @@ export class Ledger {
       .prepare("SELECT account_id, until_ts, reason FROM account_cooldowns WHERE until_ts > ? ORDER BY account_id")
       .all(now) as Array<{ account_id: string; until_ts: number; reason: string }>;
     return rows.map((r) => ({ account: String(r.account_id), untilTs: Number(r.until_ts), reason: String(r.reason) }));
+  }
+
+  /** Every account's most recent limit error, including ended cooldowns: the last failover away from it. */
+  listAccountSwitches(): Array<{ account: string; at: number; reason: string }> {
+    const rows = this.db.prepare("SELECT account_id, updated_at, reason FROM account_cooldowns").all() as Array<{ account_id: string; updated_at: number; reason: string }>;
+    return rows.map((r) => ({ account: String(r.account_id), at: Number(r.updated_at), reason: String(r.reason) }));
   }
 
   /** The selector's view of this Ledger: cooldowns, usage counters, and the optional free Codex reading. */

@@ -338,7 +338,7 @@ pitchCmd
   .command("promote <repo> <issue>")
   .description("Turn a pitch into owner-authored class:feature issues with your gh (prints every body and asks to confirm)")
   .option("-c, --config <path>", "Path to archangel.yaml")
-  .option("--slice <n>", "Promote only slice N (default: every slice)")
+  .option("--slice <n>", "Promote only slice N, or several as a comma list such as 1,3 (default: every slice)")
   .option("--chain", "Make the created slices linear: each waits for the one before it to merge", false)
   .option("--yes", "Skip the confirmation prompt", false)
   .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; yes?: boolean }) => {
@@ -351,7 +351,7 @@ pitchCmd
         const created = await promotePitch(execRunner, ledger, {
           repo,
           issue: Number(issueArg),
-          slice: opts.slice === undefined ? undefined : Number(opts.slice),
+          slice: opts.slice,
           chain: Boolean(opts.chain),
           yes: Boolean(opts.yes),
           labels: cfg.labels,
@@ -740,7 +740,7 @@ function evalSources(ledger: Ledger, dataDir: string, only?: string) {
       console.error(`skipping ${repo}: no broker repo at ${bareRepoPath}`);
       return [];
     }
-    return [{ repo, bareRepoPath, seeds: ledger.listReplaySeeds(0, repo) }];
+    return [{ repo, bareRepoPath, seeds: ledger.listReplaySeeds(0, repo), attemptInputs: ledger.listAttemptInputs(repo) }];
   });
 }
 

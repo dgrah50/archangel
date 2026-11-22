@@ -138,15 +138,25 @@ describe("promoting slices one at a time", () => {
 
   it("--slice marks only that slice, leaves the pitch open for the rest, and closes it once every slice is promoted", async () => {
     const { ledger, runner, calls, base } = setup();
-    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 2 })).toEqual([100]);
+    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: "2" })).toEqual([100]);
     expect(ledger.getPitch(40)!.state).toEqual({ kind: "partially_promoted", promotedSlices: [1], totalSlices: 2 });
     expect(calls.some((c) => c[1] === "close")).toBe(false); // still open: slice 1 is promotable
     const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")!;
     expect(comment[comment.indexOf("--body") + 1]).toContain("Slice 2 promoted");
 
-    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 1 })).toEqual([101]);
+    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: "1" })).toEqual([101]);
     expect(ledger.getPitch(40)!.state).toEqual({ kind: "promoted", promotedSlices: [0, 1] });
     expect(calls.filter((c) => c[1] === "close")).toHaveLength(1);
+  });
+
+  it("--slice takes a comma list and rejects repeats, out-of-range and malformed entries before creating anything", async () => {
+    const { ledger, runner, calls, base } = setup();
+    for (const bad of ["1,1", "3", "0", "1,x", "1,,2", ""]) {
+      await expect(promotePitch(runner, ledger, { ...confirmed(base), slice: bad })).rejects.toThrow(/--slice/);
+    }
+    expect(calls.some((c) => c[1] === "create")).toBe(false);
+    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: "2,1" })).toEqual([100, 101]);
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "promoted", promotedSlices: [0, 1] });
   });
 
 });
