@@ -49,6 +49,7 @@ import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
+import { setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS } from "../core/telemetry.js";
 
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
@@ -149,6 +150,7 @@ program
     }
 
     recordDaemonFacts(rootLedger, { configPath: opts.config });
+    setTelemetrySink(rootLedger);
 
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
@@ -284,6 +286,11 @@ program
         }
       }
       try {
+        rootLedger.pruneTelemetry(Date.now() - TELEMETRY_RETENTION_MS, TELEMETRY_PRUNE_BATCH);
+      } catch (err) {
+        console.error("[archangel] Telemetry prune error:", err);
+      }
+      try {
         await sendDigestIfDue(rootLedger, notifier, {
           now: Date.now(),
           timeZone: first.dailyTimezone,
@@ -312,6 +319,7 @@ program
           await rec.waitForActiveTasks();
         }
         await inFlightTick;
+        setTelemetrySink(null);
         rootLedger.releaseDaemonLock(daemonOwnerId);
         rootLedger.close();
       })();
