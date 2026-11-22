@@ -245,6 +245,14 @@ function hasWorkspaceEdits(cloneDir: string): boolean {
   }
 }
 
+function headSha(cloneDir: string): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
 function captureWorkspaceContinuityContext(cloneDir: string): string {
   try {
     const status = execFileSync("git", ["status", "--short"], { cwd: cloneDir, encoding: "utf8" }).trim();
@@ -359,6 +367,7 @@ export class SubscriptionImplementer implements Implementer {
           `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, ts: Date.now() })}\n`,
         );
 
+        const headBefore = headSha(input.cloneDir);
         const res = await this.invoker({
           provider: entry.provider,
           model: entry.model,
@@ -412,7 +421,8 @@ export class SubscriptionImplementer implements Implementer {
         errors.push(`${entry.provider} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
 
         // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
-        if (hasWorkspaceEdits(input.cloneDir)) {
+        // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
+        if (hasWorkspaceEdits(input.cloneDir) || headSha(input.cloneDir) !== headBefore) {
           const vendor = providerToVendor(entry.provider);
           if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
         }
