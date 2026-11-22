@@ -1,15 +1,20 @@
-import { Badge, Box, Button, Code, Flex, Heading, Link, NativeSelect, Stack, Text } from "@chakra-ui/react";
-import { useCallback, useEffect, useState } from "react";
+import { Box, Button, Code, Flex, Link, NativeSelect, Text } from "@chakra-ui/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PlanResult, ApplyResult as OnboardApply } from "../../src/core/ui-onboard.js";
 import type { PreviewResult } from "../../src/core/ui-host-config.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
+import type { EvalsState } from "../../src/core/eval-reports.js";
+import type { DoctorCheck } from "../../src/core/doctor.js";
 import type { Feed } from "./AppView";
-import { CopyCommand, LadderView, tokenOf, useLadder, type Ladder } from "./HealthPage";
+import { age } from "./common";
+import { EvalsSection } from "./EvalsPage";
+import { FaultsSection, LadderList, ReadError, SmokeChecks, tokenOf, useLadder } from "./HealthPage";
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
-import { ONBOARD_BRANCH, currentStep, deriveSteps, isNotProtected, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
+import { CopyCommand, Owed, Page, PageHeadline, Section } from "./page";
+import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNotProtected, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
 interface GhRepo {
   nameWithOwner: string;
@@ -18,9 +23,10 @@ interface GhRepo {
   viewerPermission: string;
 }
 type Gh<T> = { state: "idle" } | { state: "loading" } | { state: "ok"; value: T } | { state: "error"; error: HostError };
+type Protection = { required_status_checks?: { contexts?: string[] } | null };
 
 /** One gh read. Failures stay in the state so the panel can render them; nothing falls back to a default. */
-function useGh<T>(what: "repos" | "user" | "pr" | "protection", query: Record<string, string> | null): [Gh<T>, () => void] {
+function useGh<T>(what: "repos" | "user" | "pr", query: Record<string, string> | null): [Gh<T>, () => void] {
   const [gh, setGh] = useState<Gh<T>>({ state: "idle" });
   const key = query === null ? null : JSON.stringify(query);
   const load = useCallback(() => {
@@ -32,38 +38,68 @@ function useGh<T>(what: "repos" | "user" | "pr" | "protection", query: Record<st
   return [gh, load];
 }
 
-function Alert({ tone = "red", title, children }: { tone?: "red" | "orange"; title: string; children?: React.ReactNode }) {
-  return (
-    <Box role="alert" borderWidth="1px" borderColor={`${tone}.solid`} rounded="md" p="3" mt="3" textStyle="sm">
-      <Text fontWeight="medium">{title}</Text>
-      {children}
-    </Box>
+/** Branch protection of every listed repo's default branch (the per-repo check the doctor does not make). */
+function useProtections(targets: Array<{ repo: string; branch: string }> | null): [Record<string, Gh<Protection>>, () => void] {
+  const [all, setAll] = useState<Record<string, Gh<Protection>>>({});
+  const [tick, setTick] = useState(0);
+  const key = targets === null ? null : JSON.stringify(targets);
+  useEffect(() => {
+    if (key === null) return setAll({});
+    const list = JSON.parse(key) as Array<{ repo: string; branch: string }>;
+    let live = true;
+    setAll(Object.fromEntries(list.map((t) => [t.repo, { state: "loading" } as Gh<Protection>])));
+    for (const t of list) {
+      void ghRead<Protection>("protection", { repo: t.repo, branch: t.branch }).then((r) => {
+        if (live) setAll((a) => ({ ...a, [t.repo]: r.ok ? { state: "ok", value: r.value } : { state: "error", error: r.error } }));
+      });
+    }
+    return () => { live = false; };
+  }, [key, tick]);
+  return [all, () => setTick((t) => t + 1)];
+}
+
+const short = (repo: string) => repo.split("/").pop() ?? repo;
+const safeUrl = (u: unknown): string | null => (typeof u === "string" && u.startsWith("https://") ? u : null);
+const outline = { variant: "outline", size: "sm", borderRadius: "12px" } as const;
+
+function Mark({ done }: { done: boolean }) {
+  return done ? (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-label="Done" role="img" style={{ flexShrink: 0, color: "var(--chakra-colors-fg)" }}>
+      <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <Box role="img" aria-label="Needs attention" w="14px" h="14px" m="1px" rounded="4px" bg="owner" flexShrink={0} />
   );
 }
+
+/** A problem in plain words: title, an amber tag, the explanation, and commands to copy. */
+function Problem({ title, tag, children }: { title: string; tag: string; children?: React.ReactNode }) {
+  return (
+    <Flex direction="column" gap="2.5" p="4" rounded="14px" bg="bg.subtle" role="alert">
+      <Flex gap="4" align="baseline">
+        <Text textStyle="label" fontWeight="600" color="fg" flex="1">{title}</Text>
+        <Text textStyle="meta" color="owner">{tag}</Text>
+      </Flex>
+      {children}
+    </Flex>
+  );
+}
+const Prose = ({ children }: { children: React.ReactNode }) => <Text textStyle="body13" color="fg.muted">{children}</Text>;
+const Line = ({ children }: { children: React.ReactNode }) => <Text textStyle="meta" color="fg.muted">{children}</Text>;
+const Sub = ({ children }: { children: React.ReactNode }) => <Text textStyle="label" color="fg" mt="2">{children}</Text>;
 
 function GhError({ error, what, onRetry }: { error: HostError; what: string; onRetry: () => void }) {
   return (
     <>
       <HostErrorNotice error={error} onReload={onRetry} />
-      <Text textStyle="sm" color="fg.muted" mt="1">Could not {what}. gh said the message above; nothing was assumed.</Text>
-      <Button size="xs" mt="2" onClick={onRetry}>Retry</Button>
+      <Line>Could not {what}. gh said the message above; nothing was assumed.</Line>
+      <Button {...outline} size="xs" mt="2" onClick={onRetry}>Retry</Button>
     </>
   );
 }
 
-function Cmd({ text }: { text: string }) {
-  return (
-    <Flex align="center" gap="2" mt="2" wrap="wrap">
-      <Code>{text}</Code>
-      <CopyCommand text={text} />
-    </Flex>
-  );
-}
-
-const safeUrl = (u: unknown): string | null => (typeof u === "string" && u.startsWith("https://") ? u : null);
-
 function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onRetry: () => void }) {
-  if (gh.state === "idle" || gh.state === "loading") return <Text color="fg.muted" mt="3">Looking for the onboarding PR...</Text>;
+  if (gh.state === "idle" || gh.state === "loading") return <Line>Looking for the onboarding PR...</Line>;
   if (gh.state === "error") return <GhError error={gh.error} what={`read the onboarding PR (${ONBOARD_BRANCH}) in ${repo}`} onRetry={onRetry} />;
   const pr = gh.value;
   const rows = pr.statusCheckRollup.map((c) => ({
@@ -73,26 +109,21 @@ function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onR
   }));
   const bad = rows.filter((r) => /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED)$/.test(r.result));
   return (
-    <Box borderWidth="1px" rounded="md" p="3" mt="3" aria-label="Onboarding PR">
-      <Flex gap="2" align="center" wrap="wrap">
-        <Badge colorPalette={pr.state === "MERGED" ? "green" : pr.state === "OPEN" ? "blue" : "gray"}>{pr.state.toLowerCase()}</Badge>
-        <Text fontWeight="medium">#{pr.number} {pr.title}</Text>
+    <Flex direction="column" gap="2" aria-label="Onboarding PR">
+      <Text textStyle="label" color="fg">#{pr.number} {pr.title} <Text as="span" color={pr.state === "MERGED" ? "passed" : "fg.muted"}>{pr.state === "MERGED" ? "Merged" : pr.state === "OPEN" ? "Open" : "Closed"}</Text></Text>
+      {rows.length === 0 ? <Line>No checks reported.</Line> : rows.map((r) => (
+        <Line key={r.name}>
+          <Text as="span" color={bad.includes(r) ? "owner" : r.result === "SUCCESS" ? "passed" : "fg.muted"} mr="2">{r.result.toLowerCase()}</Text>
+          {r.url ? <Link href={r.url} target="_blank" rel="noreferrer noopener">{r.name}</Link> : r.name}
+        </Line>
+      ))}
+      {bad.length > 0 ? <Text role="alert" textStyle="meta" color="owner">{bad.length} check(s) are failing on this PR.</Text> : null}
+      {pr.state === "CLOSED" ? <Text role="alert" textStyle="meta" color="owner">The PR was closed without merging. Plan and apply again above.</Text> : null}
+      <Flex align="center" gap="3">
+        <Link href={pr.url} target="_blank" rel="noreferrer noopener" textStyle="meta">Review and merge on GitHub</Link>
+        <Line>This page never merges anything.</Line>
       </Flex>
-      {rows.length === 0 ? <Text textStyle="sm" color="fg.muted" mt="2">No checks reported.</Text> : (
-        <Stack as="ul" listStyleType="none" gap="1" mt="2">
-          {rows.map((r) => (
-            <Text as="li" key={r.name} textStyle="sm">
-              <Badge colorPalette={bad.includes(r) ? "red" : r.result === "SUCCESS" ? "green" : "gray"} mr="2">{r.result.toLowerCase()}</Badge>
-              {r.url ? <Link href={r.url} target="_blank" rel="noreferrer noopener">{r.name}</Link> : r.name}
-            </Text>
-          ))}
-        </Stack>
-      )}
-      {bad.length > 0 ? <Alert title={`${bad.length} check(s) are failing on this PR.`} /> : null}
-      {pr.state === "CLOSED" ? <Alert tone="orange" title="The PR was closed without merging. Plan and apply again in step 3." /> : null}
-      <Flex mt="3"><Link href={pr.url} target="_blank" rel="noreferrer noopener">Review and merge on GitHub</Link></Flex>
-      <Text textStyle="xs" color="fg.muted">This page never merges anything.</Text>
-    </Box>
+    </Flex>
   );
 }
 
@@ -118,33 +149,29 @@ function OnboardPanel({ repo, onChanged }: { repo: string; onChanged: () => void
     if (r.ok) { setApplied(r.value); onChanged(); } else setError(r.error);
   };
   return (
-    <Box mt="4">
-      <Heading size="sm">Dry run, then apply</Heading>
-      <Text textStyle="sm" color="fg.muted">Apply creates labels, the {ONBOARD_BRANCH} branch and one PR with the owner's gh. It is safe to repeat.</Text>
-      <Button size="sm" mt="2" onClick={() => void runPlan()} disabled={busy}>{plan ? "Plan again" : "Plan onboarding"}</Button>
+    <Flex direction="column" gap="2">
+      <Sub>Dry run, then apply</Sub>
+      <Line>Apply creates labels, the {ONBOARD_BRANCH} branch and one PR with the owner's gh. It is safe to repeat.</Line>
+      <Box><Button {...outline} onClick={() => void runPlan()} disabled={busy}>{plan ? "Plan again" : "Plan onboarding"}</Button></Box>
       {error ? <HostErrorNotice error={error} onReload={() => void runPlan()} /> : null}
       {plan ? (
-        <Box mt="3" borderWidth="1px" rounded="md" p="3">
-          <Text textStyle="sm">Default branch <Code>{plan.plan.defaultBranch}</Code>, stack {plan.plan.stack ?? "unknown"}.</Text>
-          {plan.plan.stack === null ? <Alert tone="orange" title="Unknown stack: write .agents/archangel.json by hand (see templates/ in the Archangel repo)." /> : null}
-          <Text textStyle="sm" mt="2">Labels to create: {plan.plan.labelsToCreate.length === 0 ? "none" : plan.plan.labelsToCreate.join(", ")}</Text>
-          {plan.plan.skipped.length > 0 ? <Text textStyle="sm">Skipped (already there): {plan.plan.skipped.join(", ")}</Text> : null}
-          {plan.plan.notes.map((n) => <Text key={n} textStyle="sm" color="orange.fg">{n}</Text>)}
+        <Flex direction="column" gap="2" p="4" rounded="14px" bg="bg.subtle">
+          <Prose>Default branch <Code>{plan.plan.defaultBranch}</Code>, stack {plan.plan.stack ?? "unknown"}.</Prose>
+          {plan.plan.stack === null ? <Text role="alert" textStyle="meta" color="owner">Unknown stack: write .agents/archangel.json by hand (see templates/ in the Archangel repo).</Text> : null}
+          <Line>Labels to create: {plan.plan.labelsToCreate.length === 0 ? "none" : plan.plan.labelsToCreate.join(", ")}</Line>
+          {plan.plan.skipped.length > 0 ? <Line>Skipped (already there): {plan.plan.skipped.join(", ")}</Line> : null}
+          {plan.plan.notes.map((n) => <Text key={n} textStyle="meta" color="owner">{n}</Text>)}
           {plan.plan.files.map((f) => (
-            <Box key={f.path} mt="2">
-              <Text textStyle="sm" fontWeight="medium">Add {f.path}</Text>
+            <Box key={f.path}>
+              <Text textStyle="label" color="fg">Add {f.path}</Text>
               <Code as="pre" display="block" whiteSpace="pre-wrap" p="2" maxH="14rem" overflow="auto">{f.content}</Code>
             </Box>
           ))}
-          <Button size="sm" mt="3" colorPalette="blue" onClick={() => void runApply()} disabled={busy}>Apply this plan</Button>
-        </Box>
+          <Box><Button size="sm" borderRadius="12px" onClick={() => void runApply()} disabled={busy}>Apply this plan</Button></Box>
+        </Flex>
       ) : null}
-      {applied ? (
-        <Box role="status" borderWidth="1px" borderColor="green.solid" rounded="md" p="3" mt="3" textStyle="sm">
-          {applied.log.map((l) => <Text key={l}>{l}</Text>)}
-        </Box>
-      ) : null}
-    </Box>
+      {applied ? <Box role="status">{applied.log.map((l) => <Line key={l}>{l}</Line>)}</Box> : null}
+    </Flex>
   );
 }
 
@@ -161,7 +188,7 @@ function AddProject({ repo, onChanged }: { repo: string; onChanged: () => void }
     setBusy(true); setError(null); setDone(null);
     const read = await loadHostConfig();
     if (!read.ok) { setBusy(false); return fail(read.error); }
-    if (read.value.text === null) { setBusy(false); return fail({ kind: "validation", message: "There is no archangel.yaml yet. Create it in step 2 first." }); }
+    if (read.value.text === null) { setBusy(false); return fail({ kind: "validation", message: "There is no archangel.yaml yet. Create it under This machine's settings first." }); }
     let text: string;
     try { text = addProject(read.value.text, repo); } catch (e) { setBusy(false); return fail({ kind: "validation", message: e instanceof Error ? e.message : String(e) }); }
     const r = await previewHostConfig(read.value.sha256, text);
@@ -179,20 +206,20 @@ function AddProject({ repo, onChanged }: { repo: string; onChanged: () => void }
     onChanged();
   };
   return (
-    <Box mt="4">
-      <Heading size="sm">Add {repo} to archangel.yaml</Heading>
-      <Text textStyle="sm" color="fg.muted">Shadow mode on, Scouts off. Applies after the daemon restarts.</Text>
-      <Button size="sm" mt="2" onClick={() => void runPreview()} disabled={busy}>Preview the host change</Button>
+    <Flex direction="column" gap="2">
+      <Sub>Add {repo} to archangel.yaml</Sub>
+      <Line>Shadow mode on, Scouts off. Applies after the daemon restarts.</Line>
+      <Box><Button {...outline} onClick={() => void runPreview()} disabled={busy}>Preview the host change</Button></Box>
       {error ? <HostErrorNotice error={error} onReload={() => void runPreview()} /> : null}
       {preview ? <PreviewPanel preview={preview} confirm={confirm} onConfirm={setConfirm} onApply={() => void runApply()} busy={busy} blocked={null} /> : null}
-      {done ? <Box role="status" borderWidth="1px" borderColor="green.solid" rounded="md" p="3" mt="3" textStyle="sm">Written to <Code>{done}</Code>. Restart the daemon to apply.</Box> : null}
-    </Box>
+      {done ? <Text role="status" textStyle="meta" color="fg.muted">Written to <Code>{done}</Code>. Restart the daemon to apply.</Text> : null}
+    </Flex>
   );
 }
 
 function RepoPicker({ repo, gh, onRetry }: { repo: string | null; gh: Gh<GhRepo[]>; onRetry: () => void }) {
   if (gh.state === "error") return <GhError error={gh.error} what="list your repos" onRetry={onRetry} />;
-  if (gh.state !== "ok") return <Text color="fg.muted">Loading your repos...</Text>;
+  if (gh.state !== "ok") return <Line>Loading your repos...</Line>;
   return (
     <NativeSelect.Root size="sm" maxW="28rem">
       <NativeSelect.Field aria-label="Repo" value={repo ?? ""} onChange={(e) => { window.location.hash = e.target.value ? `#/setup/${e.target.value}` : "#/setup"; }}>
@@ -204,153 +231,246 @@ function RepoPicker({ repo, gh, onRetry }: { repo: string | null; gh: Gh<GhRepo[
   );
 }
 
-function Protection({ repo, branch }: { repo: string; branch: string }) {
-  const [gh, reload] = useGh<{ required_status_checks?: { contexts?: string[] } | null }>("protection", { repo, branch });
-  if (gh.state === "idle" || gh.state === "loading") return <Text color="fg.muted" mt="3">Reading branch protection...</Text>;
-  if (gh.state === "error") {
-    if (isNotProtected(gh.error.message)) {
-      return (
-        <Alert tone="orange" title={`${branch} is not protected (usable, but partial).`}>
-          <Text>Require the Gate check, plus your CI job, before merges. Add your CI job to contexts:</Text>
-          <Cmd text={`gh api -X PUT repos/${repo}/branches/${branch}/protection -F required_status_checks[strict]=true -f 'required_status_checks[contexts][]=Gate' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`} />
-        </Alert>
-      );
-    }
-    return <GhError error={gh.error} what="read branch protection" onRetry={reload} />;
-  }
-  const contexts = gh.value.required_status_checks?.contexts ?? [];
-  return <Text textStyle="sm" mt="3"><Badge colorPalette={contexts.includes("Gate") ? "green" : "orange"} mr="2">protected</Badge>Required checks: {contexts.length === 0 ? "none" : contexts.join(", ")}.{contexts.includes("Gate") ? "" : " Gate is not required."}</Text>;
+/** Is merging gated on the Gate? `null` while unread or unreadable (the table says so rather than guess). */
+function gated(p: Gh<Protection> | undefined): "yes" | "no" | "unknown" | null {
+  if (p === undefined || p.state === "idle" || p.state === "loading") return null;
+  if (p.state === "error") return isNotProtected(p.error.message) ? "no" : "unknown";
+  return (p.value.required_status_checks?.contexts ?? []).includes("Gate") ? "yes" : "no";
 }
 
-function FeedNotice({ feed, what, onRetry }: { feed: Feed<unknown>; what: string; onRetry: () => void }) {
-  if (feed.error === null) return null;
+const PROTECTION_ROW = "Merging requires the Gate and CI";
+const stripRepo = (name: string) => name.replace(/\s*\([^()]*\)$/, "");
+
+function Cell({ status, title }: { status: "pass" | "bad" | "none" | "pending"; title?: string }) {
+  if (status === "pass") return (
+    <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Passed" style={{ color: "var(--chakra-colors-fg)" }}>
+      <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+  if (status === "bad") return <Box role="img" aria-label={title ?? "Needs attention"} title={title} w="14px" h="14px" rounded="4px" bg="owner" />;
+  return <Text textStyle="meta" color="fg.subtle" title={status === "pending" ? "Not read yet" : "Not reported"}>{status === "pending" ? "..." : "-"}</Text>;
+}
+
+/** Rows are checks, columns are repos. */
+function CheckTable({ repos, checks, protections }: { repos: string[]; checks: DoctorCheck[]; protections: Record<string, Gh<Protection>> | null }) {
+  const rows: Array<{ id: string; label: string }> = [];
+  for (const c of checks) {
+    const id = c.id.split(":")[0]!;
+    if (!rows.some((r) => r.id === id)) rows.push({ id, label: stripRepo(c.name) });
+  }
+  const cols = `minmax(0,1fr) repeat(${repos.length}, minmax(80px, 110px))`;
+  const cell = (id: string, repo: string) => {
+    const c = checks.find((x) => x.id === `${id}:${repo}`);
+    return c === undefined ? <Cell status="none" /> : <Cell status={c.status === "pass" ? "pass" : "bad"} title={`${c.status}: ${c.detail}`} />;
+  };
   return (
-    <Alert title={`${what} ${feed.data ? "refresh failed; showing the last copy" : "unavailable"}.`}>
-      <Text>{feed.error}</Text>
-      <Button size="xs" mt="2" onClick={onRetry}>Retry</Button>
-    </Alert>
+    <Box role="table" aria-label="Checks per repo">
+      <Box role="row" display="grid" gridTemplateColumns={cols} gap="3" pb="2.5">
+        <Text role="columnheader" textStyle="meta" color="fg.subtle">Check</Text>
+        {repos.map((r) => <Text key={r} role="columnheader" textStyle="meta" color="fg.subtle" textAlign="center" title={r} truncate>{short(r)}</Text>)}
+      </Box>
+      {rows.map((r) => (
+        <Box role="row" key={r.id} display="grid" gridTemplateColumns={cols} gap="3" alignItems="center" minH="44px" borderTopWidth="1px" borderTopColor="border">
+          <Text role="rowheader" textStyle="body13" color="fg">{r.label}</Text>
+          {repos.map((repo) => <Flex role="cell" key={repo} justify="center">{cell(r.id, repo)}</Flex>)}
+        </Box>
+      ))}
+      {protections ? (
+        <Box role="row" display="grid" gridTemplateColumns={cols} gap="3" alignItems="center" minH="44px" borderTopWidth="1px" borderTopColor="border" borderBottomWidth="1px" borderBottomColor="border">
+          <Text role="rowheader" textStyle="body13" fontWeight="500" color="fg">{PROTECTION_ROW}</Text>
+          {repos.map((repo) => {
+            const g = gated(protections[repo]);
+            return <Flex role="cell" key={repo} justify="center"><Cell status={g === null ? "pending" : g === "yes" ? "pass" : g === "no" ? "bad" : "none"} title={g === "no" ? "Not protected, or the Gate is not required" : undefined} /></Flex>;
+          })}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
-export function SetupPage({ repo, state, settings, workflows, onRetry }: { repo: string | null; state: UiState; settings: Feed<SettingsState>; workflows: Feed<WorkflowsState>; onRetry: () => void }) {
+export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, now, onRetry }: { repo: string | null; state: UiState; settings: Feed<SettingsState>; workflows: Feed<WorkflowsState>; evals: Feed<EvalsState>; now: number; onRetry: () => void }) {
   const enabled = tokenOf() !== null;
+  const host = settings.data?.host;
+  const projects = host?.state === "ok" ? host.config.projects : [];
+  // The repo the per-repo steps look at: the one in the URL, else the first repo in archangel.yaml.
+  const repo = routeRepo ?? projects[0]?.repo ?? null;
   const [machine, runMachine] = useLadder("machine", false, true);
-  const [repoLadder, runRepo] = useLadder("repo", false, enabled && repo !== null);
+  const [repoLadder, runRepo] = useLadder("repo", false, enabled);
   const [repos, reloadRepos] = useGh<GhRepo[]>("repos", enabled ? {} : null);
   const [user, reloadUser] = useGh<{ id: number; login: string }>("user", enabled ? {} : null);
   const [pr, reloadPr] = useGh<OnboardingPr>("pr", enabled && repo ? { repo, branch: ONBOARD_BRANCH } : null);
+  const targets = useMemo(() => {
+    if (!enabled) return null;
+    const t = projects.filter((p) => p.defaultBranch).map((p) => ({ repo: p.repo, branch: p.defaultBranch }));
+    return t.length > 0 ? t : null;
+  }, [enabled, projects]);
+  const [protections, reloadProtections] = useProtections(targets);
   const [view, setView] = useState<number | null>(null);
-  useEffect(() => setView(null), [repo]);
+  useEffect(() => setView(null), [routeRepo]);
 
-  const checks = (l: Ladder) => (l.state === "done" ? l.payload : null);
+  const checks = (l: typeof machine) => (l.state === "done" ? l.payload : null);
   const steps = deriveSteps({ machine: checks(machine), settings: settings.data, repo, pr: pr.state === "ok" ? pr.value : null, repoChecks: checks(repoLadder), workflows: workflows.data, state });
-  const open = view ?? currentStep(steps);
-  const host = settings.data?.host;
-  const project = host?.state === "ok" && repo ? host.config.projects.find((p) => p.repo.toLowerCase() === repo.toLowerCase()) : undefined;
-  const reloadAll = () => { onRetry(); reloadPr(); runRepo(); };
-  const repoRepoLadder: Ladder = repoLadder.state === "done" ? { state: "done", payload: { ...repoLadder.payload, checks: repoLadder.payload.checks.filter((c) => c.id.endsWith(`:${repo}`)) } } : repoLadder;
+  const groups = groupSteps(steps);
+  const open = view ?? (groups.find((g) => !g.done) ?? groups[groups.length - 1]!).n;
+  const group = groups[open - 1]!;
+  const project = repo ? projects.find((p) => p.repo.toLowerCase() === repo.toLowerCase()) : undefined;
+  const reloadAll = () => { onRetry(); reloadPr(); runRepo(); reloadProtections(); };
+  const checkAgain = () => { runMachine(); reloadAll(); };
   const defaultBranch = project?.defaultBranch ?? (repos.state === "ok" ? repos.value.find((r) => r.nameWithOwner.toLowerCase() === repo?.toLowerCase())?.defaultBranchRef?.name : undefined);
 
+  const todo = groups.filter((g) => !g.done).length;
+  const first = host?.state !== "ok";
+  const repoSlugs = projects.map((p) => p.repo);
+  const repoChecks = repoLadder.state === "done" ? repoLadder.payload.checks : [];
+  const badChecks = repoChecks.filter((c) => c.status !== "pass");
+  const unprotected = projects.filter((p) => gated(protections[p.repo]) === "no");
+  const checkedAt = repoLadder.state === "done" ? Math.max(0, state.generatedAt - repoLadder.payload.generatedAt) : null;
+  const wf = repo ? workflows.data?.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase()) : undefined;
+  const feedErrors = [["Settings", settings], ["Pipeline", workflows]] as const;
+
   return (
-    <Box maxW="64rem" mx="auto" p="6">
-      <Heading size="xl">Setup</Heading>
-      <Text color="fg.muted" textStyle="sm">Progress is read from this machine and GitHub each time, never stored: a reload or a CLI shortcut resumes here.</Text>
-      {!enabled ? <Alert title="GitHub reads and writes are off for this dashboard (remote mode, or no token)."><Text>Start `archangel ui` without --allow-remote to use the repo steps.</Text></Alert> : null}
-      <FeedNotice feed={settings} what="Settings" onRetry={onRetry} />
-      <FeedNotice feed={workflows} what="Pipeline" onRetry={onRetry} />
-      <Flex gap="6" mt="6" direction={{ base: "column", md: "row" }}>
-        <Stack as="ol" listStyleType="none" gap="1" w={{ md: "15rem" }} flexShrink={0} aria-label="Setup steps">
-          {steps.map((s) => (
-            <Box as="li" key={s.n}>
-              <Button variant={open === s.n ? "subtle" : "ghost"} size="sm" justifyContent="flex-start" w="full" aria-current={open === s.n ? "step" : undefined} onClick={() => setView(s.n)}>
-                <Badge colorPalette={s.done ? "green" : "gray"}>{s.done ? "done" : s.n}</Badge>
-                {s.title}
-              </Button>
-            </Box>
+    <Page>
+      <Flex align="flex-end" justify="space-between" gap="6" wrap="wrap">
+        <PageHeadline sub={first ? "Work down the steps. Each one is read from this machine and GitHub, so it picks up wherever you left off." : "Every step is read from the machine, so it picks up wherever you left off."}>
+          {first ? "Archangel is not set up yet." : todo === 0 ? "Set up and running." : <>Set up and running. <Owed>{todo === 1 ? "1 thing" : `${todo} things`}</Owed> to look at.</>}
+        </PageHeadline>
+        <Flex align="center" gap="3" pb="6">
+          {checkedAt !== null ? <Text textStyle="meta" color="fg.muted">Checked {checkedAt < 90_000 ? `${Math.round(checkedAt / 1000)} s` : age(checkedAt)} ago</Text> : null}
+          <Button {...outline} onClick={checkAgain}>Check again</Button>
+          <Button size="sm" borderRadius="12px" onClick={() => setView(3)}>Add a repo</Button>
+        </Flex>
+      </Flex>
+      {!enabled ? <ReadError title="GitHub reads and writes are off for this dashboard (remote mode, or no token)."><Line>Start `archangel ui` without --allow-remote to use the repo steps.</Line></ReadError> : null}
+      {feedErrors.map(([what, feed]) => feed.error === null ? null : (
+        <ReadError key={what} title={`${what} ${feed.data ? "refresh failed; showing the last copy" : "unavailable"}.`}>
+          <Line>{feed.error}</Line>
+          <Button {...outline} size="xs" mt="2" onClick={onRetry}>Retry</Button>
+        </ReadError>
+      ))}
+      <Flex gap="56px" direction={{ base: "column", lg: "row" }} flexShrink={0}>
+        <Flex as="ol" direction="column" flex={{ lg: "0 0 38%" }} minW="0" listStyleType="none" aria-label="Setup steps" borderTopWidth="1px" borderTopColor="fg" borderBottomWidth="1px" borderBottomColor="border" alignSelf="flex-start" w="full" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+          {groups.map((g) => (
+            <li key={g.n}>
+              <Flex as="button" w="full" textAlign="left" gap="3.5" align="center" py="3.5" cursor="pointer" aria-current={open === g.n ? "step" : undefined} onClick={() => setView(g.n)}>
+                <Mark done={g.done} />
+                <Flex direction="column" gap="1px" flex="1" minW="0">
+                  <Text textStyle="rowTitle" color="fg">{g.title}</Text>
+                  <Text textStyle="meta" color={g.done ? "fg.muted" : "owner"}>{g.sentence}</Text>
+                </Flex>
+                {open === g.n ? <Text color="fg.muted" aria-hidden>›</Text> : null}
+              </Flex>
+            </li>
           ))}
-        </Stack>
-        <Box flex="1" minW="0" as="section" aria-label={`Step ${open}`}>
-          <Heading size="md">{open}. {steps[open - 1]!.title}</Heading>
-          <Text textStyle="sm" color="fg.muted">{steps[open - 1]!.detail}</Text>
+        </Flex>
+        <Section flex="1" minW="0" gap="4" aria-label={group.title}>
+          <Flex direction="column" gap="1">
+            <Text as="h2" textStyle="bigNumber" color="fg">{group.title}</Text>
+            <Text textStyle="body13" color="fg.muted">{group.sentence}</Text>
+          </Flex>
+
           {open === 1 ? (
             <>
-              <LadderView title="This machine" hint="Git, configuration, App key, CLIs, SQLite, Paseo, gh login. No network." ladder={machine} onRun={runMachine} runLabel="Recheck" />
-              <Text textStyle="sm" color="fg.muted" mt="3">Subscription CLI login checks run only when you press the button on the <Link href="#/health">Health</Link> page.</Text>
+              <LadderList ladder={machine} label="This machine" />
+              <SmokeChecks />
             </>
           ) : null}
+
           {open === 2 ? (
-            <Box mt="4">
-              {host === undefined ? <Text color="fg.muted">Loading archangel.yaml...</Text> : host.state === "ok" ? (
-                <Text>archangel.yaml is valid: owner id {host.config.ownerUserId}, {host.config.projects.length} project(s).</Text>
+            <Flex direction="column" gap="2">
+              {host === undefined ? <Line>Loading archangel.yaml...</Line> : host.state === "ok" ? (
+                <Prose>archangel.yaml is valid: owner id {host.config.ownerUserId}, {host.config.projects.length} project(s).</Prose>
               ) : (
-                <Alert title={host.state === "missing" ? "There is no archangel.yaml." : `archangel.yaml is ${host.state}.`}><Text>{host.error}</Text></Alert>
+                <Problem title={host.state === "missing" ? "There is no archangel.yaml." : `archangel.yaml is ${host.state}.`} tag="Needs you"><Prose>{host.error}</Prose></Problem>
               )}
               {user.state === "error" ? <GhError error={user.error} what="read your GitHub user id" onRetry={reloadUser} /> : user.state === "ok" ? (
-                <Text textStyle="sm" mt="2">Your GitHub user is {user.value.login} (id <Code>{user.value.id}</Code>).{host?.state === "ok" && host.config.ownerUserId !== user.value.id ? " This does not match ownerUserId in archangel.yaml." : ""}</Text>
+                <Line>Your GitHub user is {user.value.login} (id <Code>{user.value.id}</Code>).{host?.state === "ok" && host.config.ownerUserId !== user.value.id ? " This does not match ownerUserId in archangel.yaml." : ""}</Line>
               ) : null}
-              {host?.state === "ok" && user.state === "ok" && host.config.ownerUserId !== user.value.id ? <Alert tone="orange" title="ownerUserId differs from your GitHub id: issues you author will not count as owner-authored." /> : null}
-              <Flex mt="3"><Link href="#/settings">Open Settings to {host?.state === "ok" ? "edit" : "create"} archangel.yaml</Link></Flex>
-            </Box>
+              {host?.state === "ok" && user.state === "ok" && host.config.ownerUserId !== user.value.id ? <Text role="alert" textStyle="meta" color="owner">ownerUserId differs from your GitHub id: issues you author will not count as owner-authored.</Text> : null}
+              <Box><Button asChild {...outline}><a href="#/settings">Open Settings to {host?.state === "ok" ? "edit" : "create"} archangel.yaml</a></Button></Box>
+            </Flex>
           ) : null}
+
           {open === 3 ? (
-            <Box mt="4">
-              <RepoPicker repo={repo} gh={repos} onRetry={reloadRepos} />
-              {repo ? <><OnboardPanel repo={repo} onChanged={reloadAll} />{project === undefined && host?.state === "ok" ? <AddProject repo={repo} onChanged={reloadAll} /> : null}</> : null}
-              {repo && pr.state === "ok" ? <PrCard repo={repo} gh={pr} onRetry={reloadPr} /> : null}
-            </Box>
+            <Flex direction="column" gap="4">
+              <RepoPicker repo={routeRepo} gh={repos} onRetry={reloadRepos} />
+              {routeRepo ? <><OnboardPanel repo={routeRepo} onChanged={reloadAll} />{project === undefined && host?.state === "ok" ? <AddProject repo={routeRepo} onChanged={reloadAll} /> : null}</> : null}
+              {repo ? <PrCard repo={repo} gh={pr} onRetry={reloadPr} /> : <Line>Choose a repo to see its setup PR.</Line>}
+            </Flex>
           ) : null}
-          {open === 4 ? (repo ? <PrCard repo={repo} gh={pr} onRetry={reloadPr} /> : <Text mt="4">Choose a repo in step 3.</Text>) : null}
+
+          {open === 4 ? (
+            <>
+              {unprotected.map((p) => (
+                <Problem key={p.repo} title={`${short(p.repo)} does not require the Gate before merging`} tag="Works, but not protected">
+                  <Prose>Branch protection on <Code>{p.defaultBranch}</Code> is not set, or does not list the Gate as a required check. The factory still waits for the Gate, but nothing stops a merge without it. Archangel does not change branch protection for you. See what it is now:</Prose>
+                  <CopyCommand command={`gh api repos/${p.repo}/branches/${p.defaultBranch}/protection`} />
+                  <Prose>Require the Gate, plus your CI job in contexts, before merges. Run this once:</Prose>
+                  <CopyCommand command={`gh api -X PUT repos/${p.repo}/branches/${p.defaultBranch}/protection -F required_status_checks[strict]=true -f 'required_status_checks[contexts][]=Gate' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`} />
+                </Problem>
+              ))}
+              {projects.filter((p) => !p.defaultBranch).map((p) => <Problem key={p.repo} title={`${short(p.repo)}: branch protection was not read`} tag="Needs you"><Prose>The default branch is unknown.</Prose></Problem>)}
+              {projects.map((p) => {
+                const g = protections[p.repo];
+                return g?.state === "error" && !isNotProtected(g.error.message) ? <GhError key={p.repo} error={g.error} what={`read branch protection for ${p.repo}`} onRetry={reloadProtections} /> : null;
+              })}
+              {badChecks.map((c) => (
+                <Problem key={c.id} title={c.name} tag={c.status === "warn" ? "Warning" : "Failing"}>
+                  <Prose>{c.detail}</Prose>
+                  {c.remediation ? <Prose>{c.remediation}</Prose> : null}
+                  {c.id.startsWith("gate_pin:") ? <CopyCommand command={`archangel gate-bump --repo ${c.id.slice("gate_pin:".length)}`} /> : null}
+                </Problem>
+              ))}
+              {repoLadder.state === "done" || !enabled ? null : <LadderList ladder={repoLadder} label="GitHub wiring" />}
+              {!enabled ? <Line>Needs the local dashboard.</Line> : repoSlugs.length === 0 ? <Line>No repos are in archangel.yaml yet, so there is nothing to check.</Line> : (
+                <CheckTable repos={repoSlugs} checks={repoChecks} protections={targets ? protections : null} />
+              )}
+              <Line><Link href="https://github.com/settings/installations" target="_blank" rel="noreferrer noopener">Install the Archangel GitHub App on a repo</Link>. Pin drift: run <Code>archangel gate-bump</Code>.</Line>
+            </>
+          ) : null}
+
           {open === 5 ? (
-            repo ? (
-              <>
-                <LadderView title={`GitHub wiring for ${repo}`} hint="App permissions, Gate workflow and pin, labels. Calls the GitHub API." ladder={repoRepoLadder} onRun={runRepo} runLabel="Recheck" disabledReason={enabled ? undefined : "Needs the local dashboard."} />
-                <Text textStyle="sm" mt="3"><Link href="https://github.com/settings/installations" target="_blank" rel="noreferrer noopener">Install the Archangel GitHub App on {repo}</Link>. Pin drift: run <Code>archangel gate-bump</Code>.</Text>
-                {defaultBranch ? <Protection repo={repo} branch={defaultBranch} /> : <Alert tone="orange" title="The default branch is unknown, so branch protection was not read." />}
-              </>
-            ) : <Text mt="4">Choose a repo in step 3.</Text>
+            <Flex direction="column" gap="3">
+              {settings.data?.status.restartPending ? <Problem title="A saved change is waiting for a restart" tag="Needs you"><Prose>The daemon has not loaded the file on disk. Archangel never restarts the daemon for you; run this in a terminal:</Prose><CopyCommand command="archangel daemon restart" /></Problem> : null}
+              {settings.data && !settings.data.status.reported ? <Problem title="No daemon has reported its loaded config yet" tag="Needs you"><Prose>Start or restart the daemon.</Prose></Problem> : null}
+              {state.daemonHeartbeatAt === null ? <Problem title="Daemon offline" tag="Needs you"><Prose>No daemon lock is held. Start it:</Prose><CopyCommand command="archangel start" /></Problem> : null}
+              {repo ? (
+                wf === undefined ? <Line>The daemon has no cached workflow for <Code>{repo}</Code> yet.</Line>
+                  : wf.status === "ok" ? <Line>The workflow for <Code>{repo}</Code> is ok (<Link href="#/pipeline">open the Pipeline</Link>).</Line>
+                  : <Problem title={`Halted: the workflow for ${repo} is ${wf.status}`} tag="Needs you">{wf.error ? <Prose>{wf.error}</Prose> : null}</Problem>
+              ) : <Line>Add a repo first.</Line>}
+            </Flex>
           ) : null}
+
           {open === 6 ? (
-            <Box mt="4">
-              {settings.data?.status.restartPending ? <><Alert tone="orange" title="Restart pending: the daemon has not loaded the file on disk." /><Cmd text="archangel daemon restart" /></> : null}
-              {settings.data && !settings.data.status.reported ? <Alert tone="orange" title="No daemon has reported its loaded config yet. Start or restart the daemon." /> : null}
-              {state.daemonHeartbeatAt === null ? <Alert title="Daemon offline: no daemon lock is held. Run `archangel start`." /> : null}
-              {repo ? (() => {
-                const wf = workflows.data?.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase());
-                return wf === undefined ? <Text mt="3">The daemon has no cached workflow for {repo} yet.</Text>
-                  : wf.status === "ok" ? <Text mt="3">Workflow <Badge colorPalette="green">ok</Badge> (<Link href="#/pipeline">open the Pipeline</Link>).</Text>
-                  : <Alert title={`Halted: the workflow for ${repo} is ${wf.status}.`}>{wf.error ? <Text>{wf.error}</Text> : null}</Alert>;
-              })() : <Text mt="3">Choose a repo in step 3.</Text>}
-            </Box>
-          ) : null}
-          {open === 7 ? (
             repo ? (
-              <Box mt="4">
-                <Link href={smokeIssueUrl(repo)} target="_blank" rel="noreferrer noopener">Open a smoke issue on GitHub</Link>
-                <Text textStyle="sm" color="fg.muted">Prefilled and labelled ready-for-agent; submit it yourself so intake sees an owner-authored issue.</Text>
-                <Text textStyle="sm" mt="3">Or dry-run a Scout:</Text>
-                <Cmd text={`archangel scout run bug-hunt --repo ${repo} --dry-run`} />
-                <Text textStyle="sm" mt="3">Progress appears on the <Link href="#/threads">Threads</Link> page.</Text>
-              </Box>
-            ) : <Text mt="4">Choose a repo in step 3.</Text>
+              <Flex direction="column" gap="2">
+                <Line>Checking <Code>{repo}</Code>. Pick another repo under Repos added.</Line>
+                <Box><Button asChild {...outline}><a href={smokeIssueUrl(repo)} target="_blank" rel="noreferrer noopener">Open a smoke issue on GitHub</a></Button></Box>
+                <Line>Prefilled and labelled ready-for-agent; submit it yourself so intake sees an owner-authored issue.</Line>
+                <Sub>Or dry-run a Scout</Sub>
+                <CopyCommand command={`archangel scout run bug-hunt --repo ${repo} --dry-run`} />
+                <Line>Progress appears on the <Link href="#/threads">Threads</Link> page.</Line>
+                {steps[7]!.done && project ? (
+                  <>
+                    <Sub>You're set up</Sub>
+                    <Prose>{repo}: landing is {project.shadowMode ? "shadow (nothing lands on its own)" : "live"}; up to {project.maxConcurrentThreads} Threads at once and {project.maxAutoMergesPerDay} auto-merges per day; Scouts {project.scouts.enabled ? "on" : "off"}. Telegram notifications: {settings.data?.env.find((e) => e.name === "ARCHANGEL_TELEGRAM_BOT_TOKEN")?.set ? "configured" : "not configured"}.</Prose>
+                    <Link href="#/settings" textStyle="meta">Enable Scouts (This machine, Projects)</Link>
+                    <Link href="#/settings/repo" textStyle="meta">Let bugfixes land on their own (Repo, Landing: opens a PR)</Link>
+                    <Link href="#/settings" textStyle="meta">Connect Telegram (Settings, Environment)</Link>
+                  </>
+                ) : <Line>Finish the earlier steps: {steps.filter((s) => !s.done && s.n < 8).map((s) => s.title).join(", ") || "none"}.</Line>}
+              </Flex>
+            ) : <Line>Add a repo first.</Line>
           ) : null}
-          {open === 8 ? (
-            <Box mt="4">
-              {steps[7]!.done && project ? (
-                <>
-                  <Alert tone="orange" title="You're set up." />
-                  <Text textStyle="sm" mt="3">{repo}: landing is {project.shadowMode ? "shadow (nothing lands on its own)" : "live"}; up to {project.maxConcurrentThreads} Threads at once and {project.maxAutoMergesPerDay} auto-merges per day; Scouts {project.scouts.enabled ? "on" : "off"}.</Text>
-                  <Text textStyle="sm">Telegram notifications: {settings.data?.env.find((e) => e.name === "ARCHANGEL_TELEGRAM_BOT_TOKEN")?.set ? "configured" : "not configured"}.</Text>
-                  <Stack mt="3" gap="1">
-                    <Link href="#/settings">Enable Scouts (This machine, Projects)</Link>
-                    <Link href="#/settings/repo">Let bugfixes land on their own (Repo, Landing: opens a PR)</Link>
-                    <Link href="#/settings">Connect Telegram (Settings, Environment)</Link>
-                  </Stack>
-                </>
-              ) : <Text mt="4">Finish the earlier steps: {steps.filter((s) => !s.done && s.n < 8).map((s) => s.title).join(", ")}.</Text>}
-            </Box>
-          ) : null}
-        </Box>
+        </Section>
       </Flex>
-    </Box>
+      <Flex direction="column" gap="10" mt="12">
+        <FaultsSection faults={state.faults} now={now} />
+        <EvalsSection evals={evals} now={now} onRetry={onRetry} />
+      </Flex>
+      <Text textStyle="meta" color="fg.muted" mt="10" maxW="420px">
+        Checks that log in to a model provider only run when you press Run login checks, never in the background.
+      </Text>
+    </Page>
   );
 }

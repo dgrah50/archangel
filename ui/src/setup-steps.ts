@@ -48,7 +48,7 @@ export function deriveSteps(f: SetupFacts): Step[] {
   const beat = f.state?.daemonHeartbeatAt ?? null;
   const live = f.state !== null && beat !== null && f.state.generatedAt - beat <= DAEMON_OFFLINE_MS;
   const hasActivity = f.state !== null && (Object.values(f.state.groups).some((g) => g.some((i) => same(i.repo, f.repo))) || f.state.scouts.some((s) => same(s.repo, f.repo)));
-  const needRepo = "Choose a repo in step 3.";
+  const needRepo = "Choose a repo under Repos added.";
   const machineFails = failing(f.machine).length;
   const repoFails = failing(f.repoChecks, f.repo ?? undefined).length;
 
@@ -67,9 +67,6 @@ export function deriveSteps(f: SetupFacts): Step[] {
   return all;
 }
 
-/** The step the wizard opens at: the first one that is not satisfied (step 8 when all are). */
-export const currentStep = (steps: Step[]): number => (steps.find((s) => !s.done) ?? steps[steps.length - 1]!).n;
-
 /** A prefilled new-issue link: the owner submits it on GitHub, so intake sees an owner-authored, owner-labelled issue. */
 export function smokeIssueUrl(repo: string): string {
   const q = new URLSearchParams({
@@ -82,3 +79,31 @@ export function smokeIssueUrl(repo: string): string {
 
 /** `/api/gh/protection` answers 502 with gh's 404 message for an unprotected branch: that is a state, not a failure. */
 export const isNotProtected = (message: string): boolean => /404|not protected/i.test(message);
+
+export interface StepGroup {
+  n: number;
+  title: string;
+  /** Wizard step numbers (1-8) shown under this group. */
+  steps: number[];
+  done: boolean;
+  /** The first unmet step's sentence, or the last step's when all are met. */
+  sentence: string;
+}
+
+/** The design's six steps over the eight derived ones. Step 8 only adds the "what next" links to the last group. */
+const GROUPS: Array<{ title: string; steps: number[] }> = [
+  { title: "Tools on this machine", steps: [1] },
+  { title: "This machine's settings", steps: [2] },
+  { title: "Repos added", steps: [3, 4] },
+  { title: "GitHub wiring", steps: [5] },
+  { title: "Daemon has the latest settings", steps: [6] },
+  { title: "Proven end to end", steps: [7, 8] },
+];
+
+export function groupSteps(steps: Step[]): StepGroup[] {
+  return GROUPS.map((g, i) => {
+    const mine = g.steps.filter((n) => n !== 8).map((n) => steps[n - 1]!);
+    const next = mine.find((s) => !s.done);
+    return { n: i + 1, title: g.title, steps: g.steps, done: next === undefined, sentence: (next ?? mine[mine.length - 1]!).detail };
+  });
+}
