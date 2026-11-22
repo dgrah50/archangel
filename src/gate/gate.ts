@@ -200,6 +200,10 @@ function makeIsolatedEnv(runTempDir: string): NodeJS.ProcessEnv {
     GIT_TERMINAL_PROMPT: "0",
     GOCACHE: freshGoCache,
     ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
+    ...(process.env.CI ? { CI: process.env.CI } : {}),
+    ...(process.env.PLAYWRIGHT_BROWSERS_PATH
+      ? { PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH }
+      : {}),
   };
 }
 
@@ -263,6 +267,12 @@ async function extractCommitTree(
     ["-eu", "-c", 'git -C "$1" archive "$2" | tar -x -C "$3"', "--", repoDir, sha, destDir],
     { env, maxBuffer: 25 * 1024 * 1024 },
   );
+  // Share pre-installed node_modules from repoDir when present (e.g. CI npm ci after verifying lockfile untouched).
+  const srcNodeModules = path.join(repoDir, "node_modules");
+  const dstNodeModules = path.join(destDir, "node_modules");
+  if (fs.existsSync(srcNodeModules) && !fs.existsSync(dstNodeModules)) {
+    fs.symlinkSync(path.resolve(srcNodeModules), dstNodeModules, "dir");
+  }
 }
 
 export async function getDiffStats(
