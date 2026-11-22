@@ -8,8 +8,9 @@
     "archangel": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:gate-bundle",
+    "build": "tsc -p tsconfig.json && npm run build:gate-bundle && npm run build:ui",
     "build:gate-bundle": "esbuild src/gate/cli.ts --bundle --minify --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=bin/archangel-gate.mjs",
+    "build:ui": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "build:all": "npm run build",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
@@ -30,11 +31,23 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@chakra-ui/react": "^3.38.0",
+    "@emotion/react": "^11.14.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
     "esbuild": "^0.28.2",
+    "next-themes": "^0.4.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
+    "vite": "^8.3.8",
     "vitest": "^5.1.1"
   }
 }
