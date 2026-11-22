@@ -24,12 +24,12 @@ const REVIEW_JSON_SCHEMA = {
         type: "object",
         properties: {
           file: { type: "string" },
-          line: { type: "integer" },
+          line: { type: ["integer", "null"] },
           severity: { type: "string", enum: ["blocker", "major", "minor"] },
           summary: { type: "string" },
-          suggestion: { type: "string" },
+          suggestion: { type: ["string", "null"] },
         },
-        required: ["file", "severity", "summary"],
+        required: ["file", "line", "severity", "summary", "suggestion"],
         additionalProperties: false,
       },
     },
@@ -204,7 +204,7 @@ function defaultReviewerCliInvoker(input: {
       clearTimeout(timer);
       try {
         if (code !== 0) {
-          reject(new Error(`${input.provider} exited ${code}: ${(stderr || stdout).trim().slice(0, 400)}`));
+          reject(new Error(`${input.provider} exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
           return;
         }
         if (input.provider === "codex" && fs.existsSync(outFile)) {

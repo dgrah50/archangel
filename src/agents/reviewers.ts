@@ -11,10 +11,10 @@ import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt } from "./promp
 
 export const ReviewFindingSchema = z.object({
   file: z.string().min(1),
-  line: z.number().int().positive().optional(),
+  line: z.preprocess((v) => (v === null ? undefined : v), z.number().int().positive().optional()),
   severity: z.enum(["blocker", "major", "minor"]),
   summary: z.string().min(1),
-  suggestion: z.string().optional(),
+  suggestion: z.preprocess((v) => (v === null ? undefined : v), z.string().optional()),
 });
 
 export const ReviewVerdictSchema = z.object({
