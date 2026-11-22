@@ -254,6 +254,17 @@ async function defaultCliInvoker(input: {
   return { code: res.code, stdout: res.stdout, stderr: res.stderr, aborted: res.aborted, durationMs: res.durationMs, peakRssKb: res.peakRssKb };
 }
 
+/** Per-file cap on a run's kept CLI output, so a runaway CLI cannot fill the disk. */
+const MAX_RUN_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+/** Writes a run's full CLI output beside the Attempt transcript; over the cap it is cut with a marker. */
+function writeRunOutput(file: string, text: string): string {
+  const bytes = Buffer.from(text);
+  const kept = bytes.length > MAX_RUN_OUTPUT_BYTES ? `${bytes.subarray(0, MAX_RUN_OUTPUT_BYTES).toString()}\n[truncated: ${bytes.length - MAX_RUN_OUTPUT_BYTES} more bytes]\n` : text;
+  fs.writeFileSync(file, kept);
+  return file;
+}
+
 function extractErrorEnvelope(stdout: string): string {
   const lines = stdout.trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -384,6 +395,7 @@ export class SubscriptionImplementer implements Implementer {
       this.transcriptsDir,
       `issue-${input.issueNumber}-${Date.now()}.jsonl`,
     );
+    const runOutputBase = transcriptPath.replace(/\.jsonl$/, "");
     const attemptTemp = fs.mkdtempSync(path.join(os.tmpdir(), `archangel-sub-impl-${input.issueNumber}-`));
     const goCacheDir = path.join(attemptTemp, "gocache");
     fs.mkdirSync(goCacheDir, { recursive: true });
@@ -457,6 +469,9 @@ export class SubscriptionImplementer implements Implementer {
           durationMs += res.durationMs ?? 0;
           if (res.peakRssKb != null) peakRssKb = Math.max(peakRssKb ?? 0, res.peakRssKb);
           const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
+          const runOutputFile = `${runOutputBase}.${i}-${entry.provider}`;
+          const stdoutPath = writeRunOutput(`${runOutputFile}.stdout`, res.stdout);
+          const stderrPath = writeRunOutput(`${runOutputFile}.stderr`, res.stderr);
           fs.appendFileSync(
             transcriptPath,
             `${JSON.stringify({
@@ -467,6 +482,8 @@ export class SubscriptionImplementer implements Implementer {
               aborted: res.aborted,
               summary: extractedSummary.slice(0, 1000),
               stderr: res.stderr.slice(0, 4000),
+              stdoutPath,
+              stderrPath,
               ts: Date.now(),
             })}\n`,
           );

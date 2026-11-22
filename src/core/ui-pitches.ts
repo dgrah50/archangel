@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Ledger } from "../ledger/store.js";
 import { PITCH_DECLINE_WINDOW_DAYS, PITCH_MAX_OPEN, PITCH_PAUSE_AFTER_UNPROMOTED, type PitchItem } from "./pitch.js";
+import { pocPreviewUrl } from "./pitch-preview.js";
 import { PITCH_EXPIRY_DAYS } from "./pitch-expiry.js";
 import { scoutNextDueAt } from "./scout.js";
 import type { PocState } from "./poc-machine.js";
@@ -15,7 +16,7 @@ const DECIDED_SHOWN = 8;
 const AttachmentSchema = z
   .object({
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
-    kind: z.literal("repo"),
+    kind: z.enum(["repo", "capture"]),
     mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
     width: z.number().int().positive(),
     height: z.number().int().positive(),
@@ -26,12 +27,13 @@ const AttachmentSchema = z
   .transform(({ source, ...a }) => ({ ...a, path: source.slice(0, source.lastIndexOf("@")) }));
 export type PitchAttachment = z.output<typeof AttachmentSchema>;
 
-/** A pitch's proof of concept, for the "Try it" block. The preview URL is never here: nothing runs it yet, and it will live in daemon memory. */
+/** A pitch's proof of concept, for the "Try it" block. The preview URL is not stored anywhere: it is derived from the issue number, and only while the PoC is `running`. */
 export interface PitchPoc {
   state: PocState;
   builds: number;
   /** `git diff --stat` of the ref against the main tip it was built from; null until a build finishes. */
   diffStat: string | null;
+  previewUrl: string | null;
 }
 
 export interface PitchRow {
@@ -160,5 +162,5 @@ export function buildPitchesState(ledger: Ledger, now = Date.now()): PitchesStat
 
 /** A pitch nobody asked a build for has a queued `none` row at most: that is no PoC yet. */
 function pocRow(p: ReturnType<Ledger["listPocs"]>[number] | undefined): PitchPoc | null {
-  return p && (p.builds > 0 || p.state.kind !== "none") ? { state: p.state, builds: p.builds, diffStat: p.diffStat } : null;
+  return p && (p.builds > 0 || p.state.kind !== "none") ? { state: p.state, builds: p.builds, diffStat: p.diffStat, previewUrl: p.state.kind === "running" ? pocPreviewUrl(p.issueNumber) : null } : null;
 }

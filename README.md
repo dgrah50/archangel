@@ -87,7 +87,7 @@ Bugs can land end-to-end autonomously once you disable shadow mode. Features, ch
 | --- | --- |
 | **Host config (`archangel.yaml`)** | Owner GitHub ID, multi-account logins, provider chains, daily spend caps, autonomy caps, and per-repo shadow mode. |
 | **Repo policy (`.agents/archangel.json`)** | Diff bounds, test commands, required checks, protected paths, review rubric, factory retry toggle, and Scouts read strictly from `main`. |
-| **Thread** | One issue's validated state machine (`queued`, `working`, `awaiting_gate`, `reviewing`, `landing`, `shadow_ready`, `needs_you`, `done`) stored in SQLite. |
+| **Thread** | One issue's validated state machine (`queued`, `working`, `awaiting_plan`, `awaiting_gate`, `reviewing`, `landing`, `shadow_ready`, `needs_you`, `owner_driving`, `done`) stored in SQLite. |
 | **Mechanical Gate** | Ephemeral CI check that validates diff bounds, protected paths, test immutability, pre-commit hooks, and test proofs. |
 | **Rival Review** | Two independent vendors that never share a provider with the implementer. |
 

@@ -57,6 +57,8 @@ export interface CollectedResult {
 export interface ExposeSpec {
   /** The port the app listens on (given to it as PORT); 0 picks a random free loopback port. */
   port: number;
+  /** The loopback port the URL is served on; a random free one when absent. Lets a caller derive the URL without storing it. */
+  publicPort?: number;
   /** Hard lifetime from start. */
   ttlMs: number;
   /** Stop after this long without a connection; the provider's default when absent. */

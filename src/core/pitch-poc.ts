@@ -5,8 +5,11 @@ import type { ComputeProvider } from "../compute/provider.js";
 import { AttemptError } from "../ledger/schema.js";
 import type { ArchangelConfig, GatePolicy } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
+import fs from "node:fs";
+import path from "node:path";
 import { buildImplementPrompt } from "../agents/prompts.js";
 import { PitchOutputSchema, type PitchItem } from "./pitch.js";
+import { installPreviewDeps, type WebPreview } from "./pitch-preview.js";
 import type { POC_FAILURE_CATEGORIES } from "./poc-machine.js";
 
 type Category = (typeof POC_FAILURE_CATEGORIES)[number];
@@ -24,6 +27,8 @@ export interface PocBuildDeps {
   implementer: Implementer;
   cfg: Pick<ArchangelConfig, "maxDailyUsd" | "implementMaxTurns" | "implementTimeoutMs" | "setupTimeoutMs" | "githubOwner" | "githubRepo">;
   gate: GatePolicy;
+  /** The repo's web preview block; with it, a finished build installs its dependencies and keeps the workspace. */
+  preview?: { policy: WebPreview; workspaceDir: (issueNumber: number) => string } | null;
 }
 
 /** The brief is the pitch's smallest version plus slice 1's acceptance. The pitch is agent-written text, so the prompt frames it as data. */
@@ -114,6 +119,24 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     }
     await broker.savePocRef(issueNumber, validation.headSha);
     const diffStat = (await broker.diffStat(mainSha, validation.headSha)).slice(0, DIFF_STAT_MAX_CHARS);
+    if (deps.preview) {
+      // Outside any sandbox (Seatbelt cannot allow registry hosts for one step), scrubbed env, the repo setup's timeout. A failed
+      // install does not fail the build: the preview installs again when it starts.
+      // A preview is always served from a local checkout: a build that ran on a remote box is checked out here from the validated head.
+      const localCompute = deps.local ?? compute;
+      let previewWs = ranOn.compute.remote ? null : await ranOn.workspace();
+      try {
+        previewWs ??= await localCompute.prepare({ issueNumber, startSha: validation.headSha });
+        await installPreviewDeps(localCompute, previewWs, deps.preview.policy.install, cfg.setupTimeoutMs);
+        const dir = deps.preview.workspaceDir(issueNumber);
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(path.dirname(dir), { recursive: true });
+        fs.renameSync(previewWs.path, dir);
+      } catch (err) {
+        if (ranOn.compute.remote && previewWs) localCompute.destroy(previewWs);
+        ledger.appendAudit("poc/install_failed", issueNumber, "archangel", { detail: (err instanceof Error ? err.message : String(err)).slice(0, 300) }, Date.now());
+      }
+    }
     ledger.stepPocState(issueNumber, { t: "built", headSha: validation.headSha, at: Date.now() }, { diffStat, costUsd });
     ledger.appendAudit("poc/built", issueNumber, "archangel", { headSha: validation.headSha, files: validation.changedFiles.length }, Date.now());
   } catch (err) {
