@@ -25,6 +25,12 @@ export class FakeGitHub implements GitHubClient {
   async getInstallationToken(): Promise<string> {
     return "fake-install-token";
   }
+  reviewFeedback = new Map<number, Array<{ userId: number; createdAt: number; text: string }>>();
+  async listOwnerReviewFeedbackSince(n: number, ownerUserId: number, sinceMs: number): Promise<string[]> {
+    return (this.reviewFeedback.get(n) ?? [])
+      .filter((c) => c.userId === ownerUserId && c.createdAt > sinceMs)
+      .map((c) => c.text);
+  }
   async listOwnerCommentsSince(n: number, ownerUserId: number, sinceMs: number): Promise<string[]> {
     return (this.authoredComments.get(n) ?? [])
       .filter((c) => c.userId === ownerUserId && c.createdAt > sinceMs)

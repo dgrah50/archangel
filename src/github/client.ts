@@ -41,6 +41,7 @@ export interface InstallationTokenMeta {
 export interface GitHubClient {
   getInstallationToken(): Promise<string>;
   listOwnerCommentsSince(issueOrPrNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
+  listOwnerReviewFeedbackSince(prNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
   mintInstallationTokenWithMeta?(): Promise<InstallationTokenMeta>;
   getRemoteUrlWithToken(): Promise<string>;
   listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]>;
@@ -485,6 +486,43 @@ export class GitHubAppClient implements GitHubClient {
       .filter((c) => c.user?.id === ownerUserId && Date.parse(c.created_at ?? "") > sinceMs && (c.body ?? "").trim())
       .sort((a, b) => Date.parse(a.created_at ?? "") - Date.parse(b.created_at ?? ""))
       .map((c) => (c.body ?? "").trim());
+  }
+
+  /**
+   * The owner's PR review feedback after `sinceMs`, oldest first: inline diff comments as
+   * `path:line: body`, and non-empty review summaries with their state.
+   */
+  async listOwnerReviewFeedbackSince(prNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]> {
+    const base = `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}`;
+    const inline = await this.requestAllPages<{
+      body?: string;
+      path?: string;
+      line?: number | null;
+      original_line?: number | null;
+      created_at?: string;
+      user?: { id?: number } | null;
+    }>(`${base}/comments?per_page=100`, { useEtag: false });
+    const reviews = await this.requestAllPages<{
+      body?: string | null;
+      state?: string;
+      submitted_at?: string | null;
+      user?: { id?: number } | null;
+    }>(`${base}/reviews?per_page=100`, { useEtag: false });
+    const items: Array<{ at: number; text: string }> = [];
+    for (const c of inline) {
+      const at = Date.parse(c.created_at ?? "");
+      const body = (c.body ?? "").trim();
+      if (c.user?.id !== ownerUserId || !(at > sinceMs) || !body) continue;
+      const line = c.line ?? c.original_line;
+      items.push({ at, text: `${c.path ?? "?"}${line ? `:${line}` : ""}: ${body}` });
+    }
+    for (const r of reviews) {
+      const at = Date.parse(r.submitted_at ?? "");
+      const body = (r.body ?? "").trim();
+      if (r.user?.id !== ownerUserId || !(at > sinceMs) || !body) continue;
+      items.push({ at, text: `Review (${(r.state ?? "COMMENTED").toLowerCase().replace(/_/g, " ")}): ${body}` });
+    }
+    return items.sort((a, b) => a.at - b.at).map((i) => i.text);
   }
 
   async postComment(issueOrPrNumber: number, body: string): Promise<void> {
