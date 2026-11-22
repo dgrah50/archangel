@@ -6,7 +6,10 @@ export const COMMAND_LINE_RE = /^\s*\/archangel(\s|$)/i;
  * Only comments whose author id equals `ownerUserId` count.
  */
 export async function collectOwnerReply(input: {
-  github: { listOwnerCommentsSince(n: number, ownerUserId: number, sinceMs: number): Promise<string[]> };
+  github: {
+    listOwnerCommentsSince(n: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
+    listOwnerReviewFeedbackSince(prNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
+  };
   ownerUserId: number;
   issueNumber: number;
   prNumber: number | null;
@@ -21,6 +24,12 @@ export async function collectOwnerReply(input: {
   const parts = raw
     .map((body) => (COMMAND_LINE_RE.test(body.split("\n")[0]!) ? body.split("\n").slice(1).join("\n").trim() : body))
     .filter(Boolean);
+  if (input.prNumber) {
+    const review = await input.github.listOwnerReviewFeedbackSince(input.prNumber, input.ownerUserId, input.sinceMs);
+    if (review.length > 0) {
+      parts.push(["Review comments on the PR diff:", ...review.map((r) => `- ${r}`)].join("\n"));
+    }
+  }
   if (input.message && input.message.trim()) {
     parts.push(input.message.trim());
   }
