@@ -190,3 +190,30 @@ describe("promoting slices one at a time", () => {
     expect(ledger.isPitchScoutPaused("pitch", "h", 4)).toBe(false);
   });
 });
+
+describe("chained slices", () => {
+  it("--chain records slice N waiting on slice N-1 and applies ready-for-agent only after the order is recorded", async () => {
+    const { ledger, runner, calls, base } = setup();
+    const created = await promotePitch(runner, ledger, { ...base, yes: true, chain: true, confirm: async () => true });
+    expect(created).toEqual([100, 101]);
+    expect(ledger.getThreadDependency(100)).toBeNull();
+    expect(ledger.getThreadDependency(101)).toBe(100);
+    const creates = calls.filter((c) => c[1] === "create");
+    for (const c of creates) {
+      expect(c).toContain("class:feature");
+      expect(c).not.toContain("ready-for-agent"); // not yet: the daemon could start a slice before the order exists
+    }
+    const edits = calls.filter((c) => c[0] === "issue" && c[1] === "edit");
+    expect(edits.map((c) => c[2])).toEqual(["100", "101"]);
+    for (const e of edits) expect(e).toEqual(expect.arrayContaining(["--add-label", "ready-for-agent"]));
+    expect(calls.findIndex((c) => c[1] === "edit")).toBeGreaterThan(calls.findLastIndex((c) => c[1] === "create"));
+  });
+
+  it("without --chain nothing is recorded and the label is applied at creation, as before", async () => {
+    const { ledger, runner, calls, base } = setup();
+    await promotePitch(runner, ledger, { ...base, yes: true, confirm: async () => true });
+    expect(ledger.getThreadDependency(101)).toBeNull();
+    expect(calls.filter((c) => c[1] === "create").every((c) => c.includes("ready-for-agent"))).toBe(true);
+    expect(calls.some((c) => c[1] === "edit")).toBe(false);
+  });
+});

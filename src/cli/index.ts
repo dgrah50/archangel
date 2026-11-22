@@ -279,8 +279,9 @@ pitchCmd
   .description("Turn a pitch into owner-authored class:feature issues with your gh (prints every body and asks to confirm)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--slice <n>", "Promote only slice N (default: every slice)")
+  .option("--chain", "Make the created slices linear: each waits for the one before it to merge", false)
   .option("--yes", "Skip the confirmation prompt", false)
-  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; yes?: boolean }) => {
+  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; yes?: boolean }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
     const paths = resolvePaths(cfg);
     const ledger = new Ledger(paths.ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
@@ -291,6 +292,7 @@ pitchCmd
           repo,
           issue: Number(issueArg),
           slice: opts.slice === undefined ? undefined : Number(opts.slice),
+          chain: Boolean(opts.chain),
           yes: Boolean(opts.yes),
           labels: cfg.labels,
           confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),

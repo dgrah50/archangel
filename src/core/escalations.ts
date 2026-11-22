@@ -76,6 +76,11 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     recommendation:
       "The implementer could not produce a valid fix. Read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
   },
+  dependency_unmet: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "The slice this one was chained after ended without merging (closed or abandoned). Retry to run this slice on its own, or close it if it only made sense after that one.",
+  },
   max_attempts: {
     decisionClass: "spending",
     recommendation: "The Attempt cap is used up. Retry to grant a fresh budget, or close the issue if it is not worth more runs.",
