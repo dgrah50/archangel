@@ -1,28 +1,26 @@
 {
-  "requiredChecks": ["Gate", "Test"],
-  "gate": {
-    "maxNonTestLines": 150,
-    "maxTotalLines": 300,
-    "maxFiles": 5,
-    "extraProtectedPaths": [
-      "package.json",
-      "package-lock.json",
-      "tsconfig.json",
-      "tsconfig.test.json",
-      "vitest.config.ts",
-      "src/gate/**",
-      "src/broker/**",
-      "src/core/blockers.ts",
-      "src/core/thread-machine.ts",
-      "workflows/**",
-      "bin/**"
-    ],
-    "testFileGlobs": ["test/**/*.test.ts"],
-    "testDataGlobs": [],
-    "testBuildCmd": "npm run typecheck",
-    "baseTestCmd": "npx vitest run",
-    "testCmd": "npm run test:all",
-    "baseTestRuns": 1,
-    "headTestRuns": 1
-  }
+  "maxNonTestLines": 150,
+  "maxTotalLines": 300,
+  "maxFiles": 5,
+  "testFileGlobs": ["test/**/*.test.ts"],
+  "testDataGlobs": [],
+  "testBuildCmd": "npm run typecheck",
+  "baseTestCmd": "npx vitest run",
+  "testCmd": "npm run test:all",
+  "baseTestRuns": 1,
+  "headTestRuns": 1,
+  "extraProtectedPaths": [
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "tsconfig.test.json",
+    "vitest.config.ts",
+    "src/gate/**",
+    "src/broker/**",
+    "src/core/blockers.ts",
+    "src/core/thread-machine.ts",
+    "workflows/**",
+    "bin/**"
+  ],
+  "requiredChecks": ["Gate", "Test"]
 }
