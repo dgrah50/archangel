@@ -1,4 +1,6 @@
 import { Badge, Box, Button, Card, Code, Flex, Heading, Link, Stack, Table, Text } from "@chakra-ui/react";
+import { useState } from "react";
+import { HostConfigEditor } from "./HostConfigEditor";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { Feed } from "./AppView";
 
@@ -137,7 +139,10 @@ const SCOPES: Array<{ scope: SettingsScope; label: string; hash: string }> = [
   { scope: "kernel", label: "Kernel (read-only)", hash: "#/settings/kernel" },
 ];
 
+const MACHINE_VIEWS = [{ view: "view", label: "Overview" }, { view: "form", label: "Form" }, { view: "raw", label: "Raw" }] as const;
+
 export function SettingsPage({ scope, settings, onRetry, children }: { scope: SettingsScope; settings: Feed<SettingsState>; onRetry: () => void; children?: React.ReactNode }) {
+  const [machineView, setMachineView] = useState<"view" | "form" | "raw">("view");
   return (
     <Box maxW="64rem" mx="auto" p="6">
       <Heading size="xl">Settings</Heading>
@@ -148,7 +153,18 @@ export function SettingsPage({ scope, settings, onRetry, children }: { scope: Se
           </Link>
         ))}
       </Flex>
-      {scope === "repo" ? (
+      {scope === "machine" ? (
+        <Flex gap="2" mt="3" as="nav" aria-label="This machine view">
+          {MACHINE_VIEWS.map((x) => (
+            <Button key={x.view} size="xs" variant={x.view === machineView ? "solid" : "outline"} aria-pressed={x.view === machineView} onClick={() => setMachineView(x.view)}>
+              {x.label}
+            </Button>
+          ))}
+        </Flex>
+      ) : null}
+      {scope === "machine" && machineView !== "view" ? (
+        <HostConfigEditor view={machineView} onSaved={onRetry} />
+      ) : scope === "repo" ? (
         children
       ) : settings.data === null ? (
         settings.error ? (
