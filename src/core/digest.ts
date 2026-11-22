@@ -14,6 +14,8 @@ export interface DigestInput {
   pitches: Array<{ repo: string; issueNumber: number; scoutName: string; since: number }> | null;
   /** Subsystem error classes survived in the last 24h; null = could not be read. */
   faults: Array<{ repo: string; category: string; recent24h: number; lastError: string }> | null;
+  /** Merged correction-loop drafts whose targeted category did not drop within 30 days of the merge: candidates to revert; null = could not be read. */
+  draftReverts: Array<{ repo: string; category: string; url: string; before: number; after: number }> | null;
 }
 
 const UNAVAILABLE = "unavailable";
@@ -37,6 +39,7 @@ export function buildDigest(input: DigestInput): string | null {
     input.pitches?.length === 0 &&
     input.proposals?.length === 0 &&
     input.faults?.length === 0 &&
+    input.draftReverts?.length === 0 &&
     y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 &&
     y.spendUsd === 0
   ) {
@@ -79,6 +82,12 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.faults.length > 0) {
     lines.push("", `Errors survived in the last 24h (${input.faults.length} classes):`);
     for (const f of input.faults) lines.push(`  ${f.repo} ${f.category} x${f.recent24h}: ${f.lastError.slice(0, 100)}`);
+  }
+  if (input.draftReverts === null) {
+    lines.push("", `Correction drafts to review for revert: ${UNAVAILABLE}`);
+  } else if (input.draftReverts.length > 0) {
+    lines.push("", `Merged correction drafts that did not help (${input.draftReverts.length}); consider reverting:`);
+    for (const d of input.draftReverts) lines.push(`  ${d.repo} ${d.category}: ${d.before} corrections before, ${d.after} in the 30 days after the merge. ${d.url}`);
   }
   return lines.join("\n");
 }

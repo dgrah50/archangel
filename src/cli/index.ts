@@ -31,7 +31,8 @@ import { recordDaemonFacts } from "../core/host-facts.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
-import { runScoutsForProject } from "../core/scout.js";
+import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
+import { ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
@@ -208,6 +209,32 @@ program
         notifier,
         logger,
         workerId: daemonOwnerId,
+        // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
+        correctionDrafts:
+          cfg.authMode === "subscription"
+            ? {
+                invoker: defaultScoutCliInvoker,
+                cwd: ARCHANGEL_ROOT,
+                skills: listAllSkills(),
+                evaluate: async (patchFile, heldout) => {
+                  const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+                  try {
+                    return await runEval({
+                      ledger: rootLedger,
+                      sources: evalSources(rootLedger, sharedPaths.dataDir),
+                      suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
+                      baseline: baseline.prompts,
+                      candidate,
+                      heldout,
+                    });
+                  } finally {
+                    candidate.cleanup();
+                  }
+                },
+                openPr: (draft, body, ctx) => openDraftPr(execRunner, draft, body, ctx),
+                prStatus: (url) => ghPrStatus(execRunner, url),
+              }
+            : undefined,
       });
       const swept = rec.startupSweep();
       if (swept.length > 0) {

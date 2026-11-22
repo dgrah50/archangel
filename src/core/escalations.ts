@@ -113,6 +113,11 @@ export function formatDecisionClass(c: DecisionClass): string {
 
 /** Escalations raised by project-level monitors (autonomy cap, post-merge main) rather than by a Thread. */
 export const MAIN_ESCALATION_POLICY = {
+  correction_draft_unlanded: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "Archangel drafted a change for a repeated correction but its offline eval did not pass (or had too little data), so no PR was opened. Read the draft; apply it yourself, or ignore it. Nothing lands without you.",
+  },
   health_fault_repeated: {
     decisionClass: "live_infrastructure",
     recommendation:

@@ -54,6 +54,7 @@
       "src/core/command-machine.ts",
       "src/core/corrections.ts",
       "src/core/pitch-machine.ts",
+      "src/core/correction-draft.ts",
       "src/core/eval.ts",
       "src/core/eval-candidate.ts",
       "src/core/ui-thread.ts",
