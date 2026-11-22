@@ -122,10 +122,12 @@ export async function planWorkflowProposal(
 
   let changes: FieldChange[] = [];
   let classified = false;
+  let prevScouts = new Set<string>();
   if (current) {
     try {
       const prev = Workflow.parse(JSON.parse(current.content));
       changes = classifyChange(prev, proposed);
+      prevScouts = new Set(prev.scouts.map((s) => s.name));
       classified = true;
     } catch {
       // current file is not a valid workflow: nothing to compare against
@@ -140,6 +142,11 @@ export async function planWorkflowProposal(
     const body = prompts[s.name]!.trim() + "\n";
     const existing = await readRepoFile(runner, repo, defaultBranch, path);
     if (existing?.content !== body) files.push({ path, content: body, blobSha: existing?.blobSha ?? null });
+    // A Scout's prompt is part of its trust hash: editing it re-arms a revoked auto-promotion and changes what runs unattended.
+    // The workflow diff alone would hide that, so an edited prompt of an existing Scout is its own change (a loosening when it auto-promotes).
+    if (classified && prevScouts.has(s.name) && existing && existing.content.trim() !== body.trim()) {
+      changes.push({ field: `scouts.${s.name}.prompt`, direction: s.promotion === "auto" ? "loosen" : "changed" });
+    }
   }
   if (files.length === 0) throw new Error("The proposal is identical to the current workflow files; nothing to propose.");
 
