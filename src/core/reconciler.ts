@@ -160,6 +160,14 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+    if (!(await this.broker.hasCommit(mainSha))) {
+      // A commit landed between our fetch and the tip lookup. Fetch again; if it is still absent, skip this tick
+      // rather than reading the workflow from a commit we do not have (that would look like a missing file).
+      await this.broker.syncFromRemote(remoteUrl);
+      if (!(await this.broker.hasCommit(mainSha))) {
+        throw new Error(`main tip ${mainSha.slice(0, 10)} is not in the broker repo after a re-fetch; retrying next tick`);
+      }
+    }
     await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
