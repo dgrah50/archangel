@@ -47,7 +47,7 @@ function runnerFor(root: string, o: { wf?: string | null; openPr?: string; dirty
       if (line.startsWith("gh repo view")) return "main\n";
       if (line.includes("contents/.github/workflows/archangel-gate.yml?ref=")) {
         if (o.wf === null) throw new Error("404");
-        return `blobsha\t${Buffer.from(o.wf ?? "").toString("base64")}\n`;
+        return args.includes("--jq") ? "blobsha\n" : (o.wf ?? "");
       }
       if (line.startsWith("gh pr list")) return o.openPr ?? "";
       if (line.includes("/git/ref/heads/")) return "basesha\n";

@@ -38,7 +38,8 @@
       "ui/**",
       "src/core/workflow.ts",
       "src/core/workflow-load.ts",
-      "src/core/gate-pin.ts"
+      "src/core/gate-pin.ts",
+      "src/core/workflow-propose.ts"
     ]
   },
   "requiredChecks": [

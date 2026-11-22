@@ -15,6 +15,7 @@ import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
+import { proposeWorkflow } from "../core/workflow-propose.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { renderStages } from "../core/status-text.js";
@@ -538,6 +539,51 @@ program
       ? [opts.repo]
       : loadProjectConfigs({ configPath: opts.config }).map((c) => `${c.githubOwner}/${c.githubRepo}`);
     await gateBump(execRunner, repos, { dryRun: opts.dryRun });
+  });
+
+const workflowCmd = program.command("workflow").description("Propose changes to a repo's workflow file (.agents/archangel.json)");
+
+workflowCmd
+  .command("propose <repo>")
+  .description("Validate a workflow file and open ONE PR with it (labelled policy:loosens if it loosens a limit), with your gh CLI; never merged")
+  .requiredOption("--file <path>", "Proposed .agents/archangel.json")
+  .option("--prompts <dir>", "Directory with <scout>.md prompt bodies (default: <file dir>/scouts)")
+  .option("--base-sha <sha256>", "sha256 of the current file the draft was based on; refuses if main's file differs (use empty string for 'no file')")
+  .option("-c, --config <path>", "Path to archangel.yaml (adds the effective landing mode to the PR body)")
+  .option("--dry-run", "Print the plan and change nothing")
+  .action(async (repo: string, opts: { file: string; prompts?: string; baseSha?: string; config?: string; dryRun?: boolean }) => {
+    const proposedRaw = fs.readFileSync(opts.file, "utf8");
+    const promptsDir = path.resolve(opts.prompts ?? path.join(path.dirname(opts.file), "scouts"));
+    const scoutPrompts: Record<string, string> = {};
+    const names = (() => {
+      try {
+        const scouts = (JSON.parse(proposedRaw) as { scouts?: Array<{ name?: unknown }> }).scouts;
+        return Array.isArray(scouts) ? scouts.map((s) => s?.name) : [];
+      } catch {
+        return [];
+      }
+    })();
+    for (const name of names) {
+      if (typeof name !== "string" || !/^[a-z0-9][a-z0-9-]{0,48}$/.test(name)) continue;
+      const f = path.join(promptsDir, `${name}.md`);
+      if (fs.existsSync(f)) scoutPrompts[name] = fs.readFileSync(f, "utf8");
+    }
+    const cfg = opts.config
+      ? loadProjectConfigs({ configPath: opts.config }).find((c) => `${c.githubOwner}/${c.githubRepo}` === repo)
+      : undefined;
+    await proposeWorkflow(execRunner, repo, proposedRaw, {
+      baseFileSha256: opts.baseSha,
+      scoutPrompts,
+      dryRun: opts.dryRun,
+      host: cfg && {
+        shadowMode: cfg.shadowMode,
+        maxAutoMergesPerDay: cfg.maxAutoMergesPerDay,
+        maxAutoPromotionsPerDay: cfg.scouts.maxAutoPromotionsPerDay,
+        scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
+        maxConcurrentThreads: cfg.maxConcurrentThreads,
+        isRevoked: () => false,
+      },
+    });
   });
 
 program
