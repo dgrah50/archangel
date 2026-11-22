@@ -114,3 +114,46 @@ export function checkIndependence(f: Pick<HostForm, "chains" | "reviewerChain" |
   });
   return { problems, writers, reviewers };
 }
+
+export interface HostChange {
+  key: string;
+  label: string;
+  from: string;
+  to: string;
+  /** Only limits have a direction: a bigger cap gives the factory more room. */
+  direction: "looser" | "stricter" | null;
+}
+const LIMITS: Array<[keyof HostForm, string, (n: number) => string]> = [
+  ["maxDailyUsd", "Spend per day", (n) => `$${n}`],
+  ["maxAutonomousStepsWithoutOwner", "Steps without you", String],
+  ["maxImplementAttemptsPerThread", "Attempts per Thread", String],
+  ["maxRevisionsPerThread", "Revisions per Thread", String],
+  ["maxRebasesPerThread", "Rebases per Thread", String],
+];
+const CHAINS: Array<[string, string, (f: HostForm) => ChainEntry[]]> = [
+  ["implement", "Build models", (f) => f.chains.implement],
+  ["revise", "Revise models", (f) => f.chains.revise],
+  ["rebase", "Rebase models", (f) => f.chains.rebase],
+  ["review", "Review models", (f) => f.reviewerChain],
+];
+export const chainText = (c: ChainEntry[]) => c.map((e) => (e.model ? `${e.provider} ${e.model}` : e.provider)).join(", then ");
+
+/** What the unsaved text changes against the saved text, in the form's own terms. */
+export function hostChanges(baseText: string, text: string): HostChange[] {
+  const a = readForm(baseText);
+  const b = readForm(text);
+  if (!a || !b) return [];
+  const out: HostChange[] = [];
+  for (const [k, label, show] of LIMITS) {
+    const x = a[k] as number;
+    const y = b[k] as number;
+    if (x !== y) out.push({ key: k, label, from: show(x), to: show(y), direction: y > x ? "looser" : "stricter" });
+  }
+  for (const [k, label] of [["ownerUserId", "Owner user id"], ["digestHour", "Digest hour"], ["dailyTimezone", "Timezone"], ["authMode", "Sign-in"]] as const) {
+    if (a[k] !== b[k]) out.push({ key: k, label, from: String(a[k] ?? "none"), to: String(b[k] ?? "none"), direction: null });
+  }
+  for (const [k, label, get] of CHAINS) {
+    if (chainText(get(a)) !== chainText(get(b))) out.push({ key: k, label, from: chainText(get(a)), to: chainText(get(b)), direction: null });
+  }
+  return out;
+}

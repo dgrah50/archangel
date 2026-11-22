@@ -1,18 +1,37 @@
-import { Badge, Box, Button, Code, Table, Text } from "@chakra-ui/react";
+import { Button, Flex, Text } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
-import type { AccountsState } from "../../src/core/ui-accounts.js";
+import type { AccountRow, AccountsState } from "../../src/core/ui-accounts.js";
 import { POLL_MS } from "./AppView";
 import { tokenOf } from "./HealthPage";
+import { Problem } from "./HostConfigEditor";
 
 const when = (t: number) => new Date(t).toLocaleString();
+const back = (ms: number) => {
+  const m = Math.max(1, Math.ceil(ms / 60_000));
+  return m < 60 ? `${m} m` : `${Math.floor(m / 60)} h ${m % 60} m`;
+};
+const ROLE_WORD: Record<string, string> = { implement: "building", revise: "revising", rebase: "rebasing", review: "reviewing" };
 
-function Alert({ title, detail, onRetry }: { title: string; detail?: string; onRetry?: () => void }) {
+function Account({ a }: { a: AccountRow }) {
+  const cooling = a.cooldownUntil !== null && a.cooldownUntil > Date.now();
   return (
-    <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" p="3" mt="6">
-      <Text fontWeight="medium">{title}</Text>
-      {detail ? <Text textStyle="sm">{detail}</Text> : null}
-      {onRetry ? <Button size="sm" mt="2" onClick={onRetry}>Retry</Button> : null}
-    </Box>
+    <Flex gap="4" align="baseline" py="2.5" wrap="wrap">
+      <Text textStyle="command" fontSize="13px" w="120px" flexShrink={0}>{a.id}</Text>
+      <Flex direction="column" flex="1" minW="200px">
+        {cooling ? (
+          <Text textStyle="body13" color="owner">Hit its limit. Back in {back(a.cooldownUntil! - Date.now())}.</Text>
+        ) : (
+          <Text textStyle="body13">{a.roles.length > 0 ? `Ready. Used for ${a.roles.map((r) => ROLE_WORD[r] ?? r).join(", ")}.` : "Ready. Not in any chain."}</Text>
+        )}
+        <Text textStyle="meta" color="fg.subtle">
+          {a.vendor} via {a.provider}, {a.home ?? "CLI default home"}
+          {a.lastSwitch ? `. Last switched away ${when(a.lastSwitch.at)}: ${a.lastSwitch.reason}` : ""}
+        </Text>
+      </Flex>
+      <Text textStyle="body13" color="fg.muted" flexShrink={0}>
+        {a.maxAttemptsPerDay === null ? `${a.attemptsToday} attempts today, no cap` : `${a.attemptsToday} of ${a.maxAttemptsPerDay} today`}
+      </Text>
+    </Flex>
   );
 }
 
@@ -39,49 +58,18 @@ export function AccountsPanel() {
     return () => clearInterval(poll);
   }, [load]);
 
-  if (!token) return <Alert title="Accounts are off for this dashboard (remote mode, or no token)." detail="Start `archangel ui` without --allow-remote to see them." />;
-  if (!data) return error ? <Alert title="Accounts unavailable." detail={error} onRetry={load} /> : <Text color="fg.muted" mt="6">Loading accounts...</Text>;
-  if (data.state !== "ok") return <Alert title={data.state === "missing" ? "No archangel.yaml." : data.state === "invalid" ? "archangel.yaml is invalid." : "archangel.yaml could not be read."} detail={data.error} />;
+  const retry = (
+    <Button size="xs" variant="outline" borderRadius="10px" mt="2" onClick={load}>Retry</Button>
+  );
+  if (!token) return <Problem title="Accounts are off for this dashboard (remote mode, or no token)."><Text textStyle="meta" color="fg.muted">Start `archangel ui` without --allow-remote to see them.</Text></Problem>;
+  if (!data) return error ? <Problem title="Accounts unavailable."><Text textStyle="meta" color="fg.muted">{error}</Text>{retry}</Problem> : <Text textStyle="body13" color="fg.muted">Loading accounts...</Text>;
+  if (data.state !== "ok") return <Problem title={data.state === "missing" ? "No archangel.yaml." : data.state === "invalid" ? "archangel.yaml is invalid." : "archangel.yaml could not be read."}><Text textStyle="meta" color="fg.muted">{data.error}</Text></Problem>;
   return (
-    <Box mt="6">
-      {error ? <Alert title="Refresh failed; showing the last loaded copy." detail={error} onRetry={load} /> : null}
-      {data.warnings.map((w) => (
-        <Box key={w} role="alert" borderWidth="1px" borderColor="orange.solid" rounded="md" px="3" py="2" mb="3" textStyle="sm">{w}</Box>
-      ))}
-      {data.implicit ? <Text color="fg.muted" textStyle="sm" mb="3">Using one login per CLI (no accounts configured).</Text> : null}
-      <Table.Root size="sm">
-        <Table.Header>
-          <Table.Row>
-            {["Account", "Vendor", "Home", "Cooldown", "Attempts today", "Last switch", "Roles"].map((h) => (
-              <Table.ColumnHeader key={h}>{h}</Table.ColumnHeader>
-            ))}
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {data.accounts.map((a) => (
-            <Table.Row key={a.id}>
-              <Table.Cell><Code>{a.id}</Code><Text color="fg.muted" textStyle="xs">{a.provider}</Text></Table.Cell>
-              <Table.Cell>{a.vendor}</Table.Cell>
-              <Table.Cell>{a.home ? <Code>{a.home}</Code> : <Text color="fg.muted">CLI default</Text>}</Table.Cell>
-              <Table.Cell>
-                {a.cooldownUntil === null ? <Badge colorPalette="green">ready</Badge> : <Badge colorPalette="orange">cooling until {when(a.cooldownUntil)}</Badge>}
-              </Table.Cell>
-              <Table.Cell>{a.attemptsToday}{a.maxAttemptsPerDay === null ? " (no cap)" : ` / ${a.maxAttemptsPerDay}`}</Table.Cell>
-              <Table.Cell>
-                {a.lastSwitch ? (
-                  <>
-                    <Text>{when(a.lastSwitch.at)}</Text>
-                    <Text color="fg.muted" textStyle="xs">{a.lastSwitch.reason}</Text>
-                  </>
-                ) : (
-                  <Text color="fg.muted">none recorded</Text>
-                )}
-              </Table.Cell>
-              <Table.Cell>{a.roles.length > 0 ? a.roles.join(", ") : <Text color="fg.muted">no chain</Text>}</Table.Cell>
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table.Root>
-    </Box>
+    <Flex direction="column" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+      {error ? <Problem title="Refresh failed; showing the last loaded copy."><Text textStyle="meta" color="fg.muted">{error}</Text>{retry}</Problem> : null}
+      {data.warnings.map((w) => <Text key={w} role="alert" textStyle="body13" py="2.5">{w}</Text>)}
+      {data.implicit ? <Text textStyle="body13" color="fg.muted" py="2.5">Using one login per CLI (no accounts configured).</Text> : null}
+      {data.accounts.map((a) => <Account key={a.id} a={a} />)}
+    </Flex>
   );
 }

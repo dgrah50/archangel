@@ -141,7 +141,7 @@ export function AppView({
       {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
       {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
-        <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
+        <SettingsPage scope={route.scope} settings={settings} workflows={workflows} onRetry={onRetry}>
           <PipelinePage workflows={workflows} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
