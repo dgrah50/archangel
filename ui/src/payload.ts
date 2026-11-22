@@ -22,6 +22,7 @@ export function isUiState(v: unknown): v is UiState {
     obj(v.autonomySteps) &&
     Array.isArray(v.daily) &&
     Array.isArray(v.scouts) &&
+    Array.isArray(v.faults) &&
     (v.daemonHeartbeatAt === null || typeof v.daemonHeartbeatAt === "number")
   );
 }

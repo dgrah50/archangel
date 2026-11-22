@@ -1,5 +1,7 @@
-import { Badge, Box, Button, Code, Flex, Heading, Skeleton, Stack, Text } from "@chakra-ui/react";
+import { Badge, Box, Button, Code, Flex, Heading, Skeleton, Stack, Table, Text } from "@chakra-ui/react";
 import { useCallback, useEffect, useState } from "react";
+import type { UiState } from "../../src/core/ui-state.js";
+import { age } from "./common";
 import type { DoctorPayload } from "../../src/core/ui-doctor.js";
 import type { DoctorCheck } from "../../src/core/doctor.js";
 
@@ -99,8 +101,46 @@ function useLadder(scope: "machine" | "repo", smoke: boolean, auto: boolean): [L
   return [ladder, run];
 }
 
+/** Errors the daemon recorded in the last 24h, per repo and class. The error text is untrusted: rendered as text only. */
+export function FaultsPanel({ faults, now }: { faults: UiState["faults"]; now: number }) {
+  return (
+    <Box as="section" mt="8" aria-label="Faults">
+      <Heading size="md">Faults (last 24h)</Heading>
+      <Text color="fg.muted" textStyle="sm">Recorded by the daemon: per repo and error class, with when it first and last happened.</Text>
+      {faults.length === 0 ? (
+        <Box borderWidth="1px" borderStyle="dashed" rounded="xl" p="4" mt="3" color="fg.muted">
+          No errors survived in the last 24h.
+        </Box>
+      ) : (
+        <Table.Root size="sm" mt="3">
+          <Table.Header>
+            <Table.Row>
+              {["Repo", "Class", "24h", "Total", "First seen", "Last seen", "Last error"].map((h) => (
+                <Table.ColumnHeader key={h}>{h}</Table.ColumnHeader>
+              ))}
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {faults.map((f) => (
+              <Table.Row key={`${f.repo}/${f.category}`}>
+                <Table.Cell>{f.repo}</Table.Cell>
+                <Table.Cell><Badge colorPalette="red">{f.category}</Badge></Table.Cell>
+                <Table.Cell>{f.recent24h}</Table.Cell>
+                <Table.Cell>{f.count}</Table.Cell>
+                <Table.Cell whiteSpace="nowrap">{age(now - f.firstSeen)} ago</Table.Cell>
+                <Table.Cell whiteSpace="nowrap">{age(now - f.lastSeen)} ago</Table.Cell>
+                <Table.Cell><Code whiteSpace="pre-wrap">{f.lastError}</Code></Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table.Root>
+      )}
+    </Box>
+  );
+}
+
 /** Smoke and repo checks run only on a button press, never on a poll. */
-export function HealthPage() {
+export function HealthPage({ faults, now }: { faults: UiState["faults"]; now: number }) {
   const hasToken = tokenOf() !== null;
   const [machine, runMachine] = useLadder("machine", false, true);
   const [smoke, runSmoke] = useLadder("machine", true, false);
@@ -112,6 +152,7 @@ export function HealthPage() {
       <Text color="fg.muted" textStyle="sm">
         Read-only checks of this machine and its GitHub wiring. Nothing here changes anything; fix issues with the commands shown. These checks run in the dashboard process, so environment-variable checks reflect this shell, not the daemon: what the daemon actually has comes from the facts it records at start (Settings, Environment).
       </Text>
+      <FaultsPanel faults={faults} now={now} />
       <LadderView title="This machine" hint="Git, configuration, App key, CLIs, SQLite, Paseo, gh login. No network." ladder={machine} onRun={runMachine} runLabel="Recheck" />
       <LadderView title="Subscription CLIs (smoke)" hint="Runs each CLI's version and login-status command. Never calls a model." ladder={smoke} onRun={runSmoke} runLabel="Run smoke checks" disabledReason={noToken} />
       <LadderView title="GitHub wiring" hint="App permissions, Gate workflow and pin, labels. Calls the GitHub API." ladder={repo} onRun={runRepo} runLabel="Run GitHub checks" disabledReason={noToken} />

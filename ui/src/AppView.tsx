@@ -126,7 +126,7 @@ export function AppView({
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
-      {route.page === "health" ? <HealthPage /> : null}
+      {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
           <PipelinePage workflows={workflows} onRetry={onRetry} />
