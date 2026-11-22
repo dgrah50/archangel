@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WorkflowV2 } from "../src/core/workflow.js";
+import { Workflow } from "../src/core/workflow.js";
 import { buildPlan, detectStack, onboard, type OnboardRunner } from "../src/core/onboard.js";
 
 const SHA = "a".repeat(40);
@@ -50,7 +50,7 @@ describe("buildPlan", () => {
     const wf = JSON.parse(plan.files[1]!.content);
     expect(wf).toMatchObject({ version: 1, requiredChecks: ["Gate", "Test"] });
     expect(wf.scouts).toEqual([{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: ["general/bug-hunt", "general/input-validation", "go/*"] }]);
-    expect(WorkflowV2.safeParse(wf).success).toBe(true);
+    expect(Workflow.safeParse(wf).success).toBe(true);
     expect(plan.files[2]!.content.startsWith("---")).toBe(false); // body-only prompt, no frontmatter
     expect(plan.labelsToCreate).not.toContain("needs-you");
     expect(plan.labelsToCreate).toContain("ready-for-agent");
@@ -68,7 +68,7 @@ describe("buildPlan", () => {
     const { runner } = fake({ tree: ["package.json", "package-lock.json", "src/a.test.ts"], pkg: { scripts: { test: "vitest run" } } });
     const plan = await buildPlan(runner, "o/r");
     const policy = JSON.parse(plan.files.find((f) => f.path === ".agents/archangel.json")!.content);
-    expect(WorkflowV2.safeParse(policy).success).toBe(true);
+    expect(Workflow.safeParse(policy).success).toBe(true);
     expect(policy.gate.testFileGlobs).toEqual(["**/*.test.ts"]);
     expect(policy.gate.testCmd).toBe("npm test");
     expect(policy.gate.protectedPaths).toEqual(["package.json", "package-lock.json"]);

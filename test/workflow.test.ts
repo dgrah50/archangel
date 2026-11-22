@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  KERNEL, WorkflowV2, classifyChange, loosens, ownerMergesOnly, resolveWorkflow, trustHash,
+  KERNEL, Workflow, classifyChange, loosens, ownerMergesOnly, resolveWorkflow, trustHash,
   type HostWorkflowInput, type RepoWorkflowInput,
 } from "../src/core/workflow.js";
 
@@ -18,7 +18,7 @@ const repo = (file: unknown, o: Partial<RepoWorkflowInput> = {}): RepoWorkflowIn
   repo: "a/b", mainSha: "abc", fileRaw: file === null ? null : JSON.stringify(file),
   scoutPrompts: { "bug-hunt": "look hard" }, ...o,
 });
-const parse = (o: unknown) => WorkflowV2.parse(o);
+const parse = (o: unknown) => Workflow.parse(o);
 const withGate = (g: Record<string, unknown>) => ({ ...baseFile(), gate: { ...baseFile().gate, ...g } });
 
 describe("kernel bounds", () => {
@@ -101,7 +101,7 @@ describe("classifyChange", () => {
     scouts: [{ name: "bug-hunt" }],
   });
   const edit = (f: (o: any) => void) => { const o = structuredClone(prev) as any; f(o); return parse(o); };
-  const dir = (n: WorkflowV2, field: string) => classifyChange(prev, n).find((c) => c.field === field)?.direction;
+  const dir = (n: Workflow, field: string) => classifyChange(prev, n).find((c) => c.field === field)?.direction;
 
   it.each([
     ["maxFiles up", (o: any) => { o.gate.maxFiles = 5; }, "gate.maxFiles", "loosen"],
