@@ -23,6 +23,8 @@ const HARDENED_GIT_FLAGS = [
   "-c",
   "core.fsmonitor=false",
   "-c",
+  "gc.auto=0",
+  "-c",
   "transfer.fsckObjects=true",
   "-c",
   "fetch.fsckObjects=true",

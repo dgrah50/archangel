@@ -9,6 +9,14 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
+function cleanupDir(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {
+    // Best-effort temp cleanup on Linux CI when git helper processes exit slightly late.
+  }
+}
+
 function createFixtureRemote(): { root: string; remoteBare: string; baseSha: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-broker-test-"));
   const seed = path.join(root, "seed");
@@ -75,7 +83,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       const revertedContent = git(broker.bareRepoPath, ["show", `${rev.headSha}:app.go`]);
       expect(revertedContent).toContain("return 1");
     } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      cleanupDir(root);
     }
   });
 
@@ -97,7 +105,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       const val = await broker.fetchAndValidateFromClone(cloneDir, 9, baseSha);
       expect(val.protectedViolations.some((v) => v.includes("protected path modified"))).toBe(true);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      cleanupDir(root);
     }
   });
 
@@ -130,7 +138,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       expect(val.protectedViolations).toEqual([]);
       expect(val.changedFiles).toEqual(["app.go"]);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      cleanupDir(root);
     }
   });
 
@@ -171,7 +179,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       const val = await broker.fetchAndValidateFromClone(cloneDir, 12, mainSha);
       expect(val.protectedViolations.some((v) => v.includes("migrations/001.sql"))).toBe(true);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      cleanupDir(root);
     }
   });
 });
