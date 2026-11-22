@@ -15,6 +15,7 @@ function parseArgs(argv: string[]): {
   skipPreCommit: boolean;
   skipTests: boolean;
   workClass: "bugfix" | "feature";
+  proofHeadSha?: string;
 } {
   let repo = ".";
   let base = "";
@@ -25,6 +26,7 @@ function parseArgs(argv: string[]): {
   let skipPreCommit = false;
   let skipTests = false;
   let workClass: "bugfix" | "feature" = "bugfix";
+  let proofHeadSha: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -34,7 +36,10 @@ function parseArgs(argv: string[]): {
     else if (a === "--revert-of" && argv[i + 1]) revertOf = argv[++i]!;
     else if (a === "--base-runs" && argv[i + 1]) baseRuns = Number(argv[++i]!);
     else if (a === "--head-runs" && argv[i + 1]) headRuns = Number(argv[++i]!);
-    else if (a === "--skip-pre-commit") skipPreCommit = true;
+    else if (a === "--proof-head-sha" && argv[i + 1]) {
+      proofHeadSha = argv[++i]!;
+      if (!/^[0-9a-f]{40}$/.test(proofHeadSha)) throw new Error("--proof-head-sha must be a 40-character commit SHA");
+    } else if (a === "--skip-pre-commit") skipPreCommit = true;
     else if (a === "--skip-tests") skipTests = true;
     else if (a === "--work-class" && argv[i + 1]) {
       const v = argv[++i]!;
@@ -44,9 +49,9 @@ function parseArgs(argv: string[]): {
   }
 
   if (!base) {
-    throw new Error("Usage: archangel-gate --repo <dir> --base <ref> [--head <ref>] [--revert-of <sha>]");
+    throw new Error("Usage: archangel-gate --repo <dir> --base <ref> [--head <ref>] [--revert-of <sha>] [--proof-head-sha <sha>]");
   }
-  return { repo, base, head, revertOf, baseRuns, headRuns, skipPreCommit, skipTests, workClass };
+  return { repo, base, head, revertOf, baseRuns, headRuns, skipPreCommit, skipTests, workClass, proofHeadSha };
 }
 
 (async () => {
@@ -65,7 +70,7 @@ function parseArgs(argv: string[]): {
     };
     let report;
     if (process.env.GITHUB_ACTIONS === "true") {
-      report = await runGateForActions(runOpts, console.log);
+      report = await runGateForActions(runOpts, console.log, undefined, undefined, opts.proofHeadSha);
     } else {
       report = await runGate(runOpts);
       console.log(JSON.stringify(report, null, 2));

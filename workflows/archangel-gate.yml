@@ -118,4 +118,5 @@ jobs:
             --repo . \
             --base "$BASE_SHA" \
             --head HEAD \
+            --proof-head-sha "$HEAD_SHA" \
             "${EXTRA_ARGS[@]}"
