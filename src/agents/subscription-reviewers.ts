@@ -51,7 +51,28 @@ function parseJsonEnvelope(stdout: string): unknown {
     const line = lines[i]?.trim();
     if (!line?.startsWith("{")) continue;
     try {
-      const obj = JSON.parse(line) as { structured_output?: unknown; response?: string; result?: string };
+      const obj = JSON.parse(line) as {
+        status?: string;
+        is_error?: boolean;
+        error?: string;
+        denied_actions?: Array<{ action?: string; display_name?: string }>;
+        structured_output?: unknown;
+        response?: string;
+        result?: string;
+      };
+      if (obj.is_error === true || (typeof obj.status === "string" && obj.status.toUpperCase() === "ERROR")) {
+        throw new Error(obj.error ?? obj.result ?? obj.response ?? "CLI returned error envelope");
+      }
+      if (
+        Array.isArray(obj.denied_actions) &&
+        obj.denied_actions.length > 0 &&
+        !obj.structured_output &&
+        !obj.response
+      ) {
+        throw new Error(
+          `CLI attempted denied tool action(s): ${obj.denied_actions.map((d) => d.display_name ?? d.action).join(", ")}`,
+        );
+      }
       if (obj.structured_output && typeof obj.structured_output === "object") {
         return obj.structured_output;
       }
@@ -70,8 +91,11 @@ function parseJsonEnvelope(stdout: string): unknown {
         }
       }
       return obj;
-    } catch {
-      // keep scanning
+    } catch (err) {
+      if (err instanceof Error && !err.message.includes("JSON")) {
+        throw err;
+      }
+      // keep scanning non-JSON lines
     }
   }
   return undefined;
@@ -92,6 +116,8 @@ function defaultReviewerCliInvoker(input: {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
     HOME: os.homedir(),
+    USER: process.env.USER,
+    LOGNAME: process.env.LOGNAME,
     TMPDIR: tmpDir,
     LANG: process.env.LANG ?? "en_US.UTF-8",
     GIT_CONFIG_GLOBAL: "/dev/null",

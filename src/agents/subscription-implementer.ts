@@ -53,6 +53,8 @@ function defaultCliInvoker(input: {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
     HOME: realHome,
+    USER: process.env.USER,
+    LOGNAME: process.env.LOGNAME,
     TMPDIR: path.dirname(input.goCacheDir),
     LANG: process.env.LANG ?? "en_US.UTF-8",
     GIT_CONFIG_GLOBAL: "/dev/null",
@@ -274,6 +276,7 @@ export class SubscriptionImplementer implements Implementer {
           outputFile,
         });
 
+        const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
         fs.appendFileSync(
           transcriptPath,
           `${JSON.stringify({
@@ -281,6 +284,7 @@ export class SubscriptionImplementer implements Implementer {
             provider: entry.provider,
             code: res.code,
             aborted: res.aborted,
+            summary: extractedSummary.slice(0, 1000),
             stderr: res.stderr.slice(0, 4000),
             ts: Date.now(),
           })}\n`,

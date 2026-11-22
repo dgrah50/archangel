@@ -276,6 +276,19 @@ export class GitBroker {
     const testFileGlobs = bounds?.testFileGlobs ?? this.testFileGlobs;
     const testDataGlobs = bounds?.testDataGlobs ?? this.testDataGlobs;
 
+    // If a sandboxed agent (e.g. `codex --sandbox workspace-write` where `.git` is read-only)
+    // left clean working-tree edits uncommitted, stage and commit them safely with hooks disabled.
+    const dirty = (await this.runGit(cloneDir, ["status", "--porcelain"])).trim();
+    if (dirty.length > 0) {
+      await this.runGit(cloneDir, ["add", "-A"]);
+      await this.runGit(cloneDir, [
+        "commit",
+        "--no-verify",
+        "-m",
+        `fix(#${issueNumber}): archangel factory attempt`,
+      ]);
+    }
+
     const stagingRef = `refs/archangel/staging/${issueNumber}`;
     await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
     const headSha = await this.resolveRef(stagingRef);
