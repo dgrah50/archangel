@@ -94,12 +94,8 @@ export class GitBroker {
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
   }
 
-  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-    return (await this.runGitBytes(cwd, args, env)).toString("utf8");
-  }
-
-  private async runGitBytes(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Buffer> {
-    const cleanEnv: NodeJS.ProcessEnv = {
+  private gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -107,9 +103,21 @@ export class GitBroker {
       GIT_TERMINAL_PROMPT: "0",
       ...env,
     };
+  }
+
+  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
       cwd,
-      env: cleanEnv,
+      env: this.gitEnv(env),
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return stdout;
+  }
+
+  private async runGitBytes(cwd: string, args: string[]): Promise<Buffer> {
+    const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
+      cwd,
+      env: this.gitEnv(),
       maxBuffer: 20 * 1024 * 1024,
       encoding: "buffer",
     });
