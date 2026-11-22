@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { LandingJsonSchema, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
 
 const execFileAsync = promisify(execFile);
@@ -307,16 +307,43 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
-      const hasLandingJson = await gh.fileExistsAtRef(tip, ".agents/landing.json");
+      let landingStatus: DoctorCheck["status"] = "pass";
+      let landingDetail = ".agents/landing.json valid";
+      try {
+        const token = await gh.getInstallationToken();
+        const url = `${(opts.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "")}/repos/${encodeURIComponent(cfg.githubOwner)}/${encodeURIComponent(cfg.githubRepo)}/contents/.agents/landing.json?ref=${encodeURIComponent(tip)}`;
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
+        if (response.status === 404) {
+          landingStatus = "warn";
+          landingDetail = ".agents/landing.json missing";
+        } else if (!response.ok) {
+          throw new Error(`GitHub returned HTTP ${response.status}`);
+        } else {
+          const file = (await response.json()) as { content?: string; encoding?: string };
+          if (file.encoding !== "base64" || typeof file.content !== "string") throw new Error("GitHub returned no base64 file content");
+          LandingJsonSchema.parse(JSON.parse(Buffer.from(file.content, "base64").toString("utf8")));
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          landingStatus = "fail";
+          landingDetail = `Invalid .agents/landing.json JSON: ${err.message}`;
+        } else if (err && typeof err === "object" && "issues" in err && Array.isArray(err.issues)) {
+          landingStatus = "fail";
+          const issue = err.issues[0];
+          landingDetail = `Invalid .agents/landing.json at ${issue.path.join(".") || "<root>"}: ${issue.message}`;
+        } else {
+          landingStatus = "fail";
+          landingDetail = `Could not fetch .agents/landing.json: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
       checks.push({
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
-        status: hasPreCommit && hasLandingJson ? "pass" : "warn",
-        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${hasLandingJson ? "present" : "missing"}`,
-        remediation:
-          hasPreCommit && hasLandingJson
-            ? undefined
-            : "Commit .pre-commit-config.yaml and .agents/landing.json to the default branch (see templates/go/ or this repo's .agents/landing.json)",
+        status: landingStatus === "fail" ? "fail" : hasPreCommit && landingStatus === "pass" ? "pass" : "warn",
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, ${landingDetail}`,
+        remediation: landingStatus === "pass" && hasPreCommit
+          ? undefined
+          : "Commit a valid .agents/landing.json and .pre-commit-config.yaml to the default branch (see templates/go/ or this repo's .agents/landing.json)",
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());
