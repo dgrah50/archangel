@@ -34,25 +34,59 @@ export function PreviewView({ preview }: { preview: PreviewResult }) {
 
 const num = (v: string, fallback: number) => (Number.isFinite(Number(v)) && v.trim() !== "" ? Math.trunc(Number(v)) : fallback);
 
+/** The draft was started from one version of the workflow file; polling brought a different one. */
+export const isStale = (pinnedSha: string, currentSha: string) => pinnedSha !== currentSha;
+
+export function StaleNotice({ onReload }: { onReload: () => void }) {
+  return (
+    <Box role="alert" borderWidth="1px" borderColor="orange.solid" rounded="md" p="2" mt="2">
+      <Text textStyle="sm">The workflow changed upstream, so this draft is out of date and cannot be submitted.</Text>
+      <Button size="sm" mt="2" onClick={onReload}>
+        Workflow changed upstream: reload draft
+      </Button>
+    </Box>
+  );
+}
+
 export function WorkflowEditor({ repo, initial, baseFileSha256 }: { repo: string; initial: Workflow; baseFileSha256: string }) {
+  // The draft and its base sha are pinned together when editing starts; later polls never swap in a newer sha under an old form.
+  const [pinned, setPinned] = useState({ initial, sha: baseFileSha256 });
   const [form, setForm] = useState<DraftForm>(() => toForm(initial));
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const enabled = typeof document !== "undefined" && proposingEnabled();
+  const stale = isStale(pinned.sha, baseFileSha256);
+  const enabled = typeof document !== "undefined" && proposingEnabled() && !stale;
   const set = <K extends keyof DraftForm>(k: K, v: DraftForm[K]) => {
     setForm((f) => ({ ...f, [k]: v }));
     setPreview(null);
+    setMessage(null);
+    setUrl(null);
+  };
+  const reload = () => {
+    setPinned({ initial, sha: baseFileSha256 });
+    setForm(toForm(initial));
+    setPreview(null);
+    setMessage(null);
+    setUrl(null);
   };
   const run = async (dryRun: boolean) => {
     setBusy(true);
     setMessage(null);
-    const out = await propose(repo, fromForm(form, initial), baseFileSha256, dryRun);
-    setBusy(false);
-    if ("error" in out) setMessage(out.error);
-    else if ("preview" in out) setPreview(out.preview);
-    else setUrl(out.url);
+    try {
+      const out = await propose(repo, fromForm(form, pinned.initial), pinned.sha, dryRun);
+      if ("error" in out) setMessage(out.error);
+      else if ("preview" in out) setPreview(out.preview);
+      else {
+        setUrl(out.url);
+        setPreview(null);
+      }
+    } catch (e) {
+      setMessage(`unexpected error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const field = (label: string, node: React.ReactNode) => (
@@ -69,7 +103,8 @@ export function WorkflowEditor({ repo, initial, baseFileSha256 }: { repo: string
       <Text fontWeight="medium" mb="2">
         Edit workflow <Badge ml="1">repo-owned values only</Badge>
       </Text>
-      {!enabled ? (
+      {stale ? <StaleNotice onReload={reload} /> : null}
+      {!enabled && !stale ? (
         <Text textStyle="sm" color="fg.muted" mb="2">
           Editing is disabled on this page (remote mode, or the server has no gh runner).
         </Text>
@@ -110,7 +145,7 @@ export function WorkflowEditor({ repo, initial, baseFileSha256 }: { repo: string
         <Button size="sm" disabled={!enabled || busy} onClick={() => void run(true)}>
           Preview
         </Button>
-        <Button size="sm" colorPalette="blue" disabled={!enabled || busy || preview === null || preview.changes.length === 0} onClick={() => void run(false)}>
+        <Button size="sm" colorPalette="blue" disabled={!enabled || busy || url !== null || preview === null || preview.changes.length === 0} onClick={() => void run(false)}>
           Open PR
         </Button>
       </Stack>
