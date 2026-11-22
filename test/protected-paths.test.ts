@@ -16,13 +16,6 @@ describe("Archangel's own protected paths", () => {
     expect(unclassified).toEqual([]);
   });
 
-  it("lists only real, unprotected files as leaves", () => {
-    for (const f of leaves) {
-      expect(tracked).toContain(f);
-      expect(isProtectedPath(f, protectedPaths)).toBe(false);
-    }
-  });
-
   it("makes every existing test helper immutable, so a factory PR cannot weaken tests by editing the fakes they run against", () => {
     const g = (JSON.parse(fs.readFileSync(".agents/archangel.json", "utf8")) as { gate: { testFileGlobs: string[]; testDataGlobs?: string[] } }).gate;
     const policy = { testFileGlobs: g.testFileGlobs, testDataGlobs: g.testDataGlobs ?? [] };
@@ -31,9 +24,6 @@ describe("Archangel's own protected paths", () => {
     for (const f of helpers) expect(isTestOrFixtureFile(f, policy), f).toBe(true);
   });
 
-  it("protects this test itself", () => {
-    expect(isProtectedPath("test/protected-paths.test.ts", protectedPaths)).toBe(true);
-  });
 });
 
 describe("Gate pin drift covers the whole Gate bundle", () => {

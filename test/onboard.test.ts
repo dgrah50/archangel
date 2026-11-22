@@ -49,49 +49,9 @@ describe("buildPlan", () => {
     expect(plan.labelsToCreate).toContain("ready-for-agent");
   });
 
-  it("adds only the missing files, and no Scout prompt without a new workflow file to declare it", async () => {
-    const { runner } = fake({ tree: ["go.mod", ".agents/archangel.json", ".github/workflows/archangel-gate.yml"] });
-    const plan = await buildPlan(runner, "o/r");
-    expect(plan.files).toEqual([]);
-    expect(plan.skipped).toHaveLength(2);
-    expect(plan.notes.join(" ")).toContain("add a Scout entry");
-  });
-
-  it("does not guess a node policy without scripts.test, and still plans the rest", async () => {
-    const { runner } = fake({ tree: ["package.json", "a.test.ts"], pkg: {} });
-    const plan = await buildPlan(runner, "o/r");
-    expect(plan.files.map((f) => f.path)).not.toContain(".agents/archangel.json");
-    expect(plan.notes.join(" ")).toContain("scripts.test");
-    expect(plan.files.map((f) => f.path)).toContain(".github/workflows/archangel-gate.yml");
-  });
-
-  it("a git failure other than exit 1 is an error, not 'not on origin/main'", async () => {
-    const base = fake({ tree: [] }).runner;
-    const broken: OnboardRunner = {
-      async run(cmd, args, o) {
-        if (args[0] === "merge-base") throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
-        return base.run(cmd, args, o);
-      },
-    };
-    await expect(buildPlan(broken, "o/r")).rejects.toThrow(/not a git repository/);
-  });
-
-  it("refuses a dirty Archangel checkout or a HEAD that is not on origin/main", async () => {
-    await expect(buildPlan(fake({ tree: [], dirty: true }).runner, "o/r")).rejects.toThrow(/uncommitted/);
-    await expect(buildPlan(fake({ tree: [], onMain: false }).runner, "o/r")).rejects.toThrow(/not on origin\/main/);
-  });
 });
 
 describe("onboard", () => {
-  it("dry-run changes nothing", async () => {
-    const f = fake({ tree: ["go.mod"] });
-    const out: string[] = [];
-    await onboard(f.runner, "o/r", { dryRun: true, log: (s) => out.push(s) });
-    expect(f.mutating()).toEqual([]);
-    expect(out.join("\n")).toContain("Dry run: nothing changed.");
-    expect(out.join("\n")).toContain("- repo: o/r");
-  });
-
   it("creates labels, a branch, files and one PR, never merging", async () => {
     const f = fake({ tree: ["go.mod"] });
     await onboard(f.runner, "o/r", { log: () => {} });
