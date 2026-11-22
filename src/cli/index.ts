@@ -13,7 +13,7 @@ import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
-import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
+import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
@@ -188,6 +188,8 @@ program
     const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const sailProviders: SailProvider[] = [];
+    const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
+    let lastTranscriptPrune = 0;
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -316,6 +318,17 @@ program
           if (!opts.once) emit("tick_ms", Date.now() - t0, {}, repoSlug);
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
+        }
+      }
+      if (Date.now() - lastTranscriptPrune >= 3_600_000) {
+        lastTranscriptPrune = Date.now();
+        for (const dir of transcriptDirs) {
+          try {
+            const n = pruneTranscripts(dir, Date.now() - TRANSCRIPT_RETENTION_MS);
+            if (n > 0) console.log(`[archangel] Pruned ${n} old transcript file(s) in ${dir}`);
+          } catch (err) {
+            console.error("[archangel] Transcript prune error:", err);
+          }
         }
       }
       try {
@@ -590,11 +603,11 @@ program
         autoMergesToday,
         circuitBreakers: breakers,
         shadowModeStats: shadow,
-        needsYou: threads.flatMap((t) =>
-          t.phase.kind === "needs_you"
-            ? [{ ...t, decisionClass: describeEscalation(t.phase.code).decisionClass, recommendation: describeEscalation(t.phase.code).recommendation }]
-            : [],
-        ),
+        needsYou: threads.flatMap((t) => {
+          if (t.phase.kind !== "needs_you") return [];
+          const p = describeEscalation(t.phase.code, undefined, t.phase.cause);
+          return [{ ...t, decisionClass: p.decisionClass, recommendation: p.recommendation }];
+        }),
         threads,
         stages: grouped.stages,
       };
