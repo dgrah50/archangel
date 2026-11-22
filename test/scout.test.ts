@@ -310,7 +310,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
           }),
         },
         reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
-        notifier: { notifyNeedsYou: async () => {} },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
       });
 
       await rec.tick(Date.now(), { waitForAttempts: false });
@@ -342,7 +342,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
           run: async () => ({ ok: false, costUsd: 0, turns: 0, summary: "", transcriptPath: "", aborted: false }),
         },
         reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
-        notifier: { notifyNeedsYou: async () => {} },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
       });
       await rec2.tick(Date.now(), { waitForAttempts: false });
       expect(ledger2.getThread(105)).toBeNull();

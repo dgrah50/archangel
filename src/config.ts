@@ -104,6 +104,8 @@ export const ConfigSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
+  digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
   shadowMode: z.boolean().default(true),
   maxImplementAttemptsPerThread: z.number().int().min(1).default(3),
@@ -212,6 +214,8 @@ export const HostYamlSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
+  digestHour: z.number().int().min(0).max(23).default(9),
   authMode: AuthModeSchema.default("subscription"),
   implementerChain: z
     .array(ProviderEntrySchema)
@@ -396,6 +400,7 @@ export function loadProjectConfigs(opts: {
         pollIntervalMs: host.pollIntervalMs,
         maxDailyUsd: host.maxDailyUsd,
         dailyTimezone: host.dailyTimezone,
+        digestHour: host.digestHour,
         maxConcurrentThreads: proj.maxConcurrentThreads,
         maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
         shadowMode: proj.shadowMode,
