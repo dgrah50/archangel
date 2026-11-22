@@ -1,3 +1,4 @@
+import { CODEX_PLACEHOLDER_ENV } from "../compute/codex-broker-adapter.js";
 import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -124,6 +125,8 @@ export type CliInvoker = (input: {
   timeoutMs: number;
   goCacheDir: string;
   outputFile: string;
+  /** Remote codex on a broker-held ChatGPT login: the synthetic login the box gets is for this account. Absent means codex uses the API-key placeholder. */
+  brokerAccountId?: string;
 }) => Promise<CliExecResult>;
 
 export interface SubscriptionImplementerOptions {
@@ -132,6 +135,8 @@ export interface SubscriptionImplementerOptions {
   accounts?: Account[];
   /** Providers whose entries run on the remote box (they have a remote credential configured); every other entry runs locally. Placement is per entry, never a failover. */
   remoteProviders?: ReadonlySet<CliProvider>;
+  /** Set when remote codex runs on a broker-held ChatGPT login. Called before the box is prepared with the longest the Attempt may run; it throws to refuse the Attempt, else returns the (non-secret) account id. */
+  codexBrokerPreflight?: (attemptMs: number) => { accountId: string };
   transcriptsDir: string;
   invoker?: CliInvoker;
   /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
@@ -142,6 +147,19 @@ export interface SubscriptionImplementerOptions {
 }
 
 const REMOTE_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+/**
+ * The login a box's codex gets for a brokered ChatGPT account: the access token is only the placeholder (the egress policy swaps in
+ * the real one on chatgpt.com), the id_token is unsigned (its signature is never checked) with synthetic claims, the refresh token is a dummy and `last_refresh` is
+ * now, so codex neither refreshes nor can (auth.openai.com is unreachable). The JSON holds no single quote, so single quotes are safe.
+ */
+function syntheticCodexLogin(accountId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(accountId)) throw new Error("the broker's ChatGPT account id has an unexpected shape");
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const idToken = `${b64({ alg: "none", typ: "JWT" })}.${b64({ email: "broker@archangel.invalid", exp: Math.floor(Date.now() / 1000) + 365 * 86_400, "https://api.openai.com/auth": { chatgpt_plan_type: "plus", chatgpt_user_id: "user-broker", chatgpt_account_id: accountId } })}.c2ln`;
+  const json = `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"${idToken}","access_token":"'"$${CODEX_PLACEHOLDER_ENV}"'","refresh_token":"not-a-refresh-token","account_id":"${accountId}"},"last_refresh":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}`;
+  return `mkdir -p "$HOME/.codex" && printf '%s' '${json}' > "$HOME/.codex/auth.json"`;
+}
 
 /** agy only runs on an API key when its settings say so. The key itself is the placeholder GEMINI_API_KEY the egress policy provides. */
 const AGY_REMOTE_SETTINGS = '{"modelProvider":"gemini"}';
@@ -189,6 +207,7 @@ async function defaultCliInvoker(input: {
   timeoutMs: number;
   goCacheDir: string;
   outputFile: string;
+  brokerAccountId?: string;
 }): Promise<CliExecResult> {
   // A remote box gets no host env at all: its only login is the placeholder CLAUDE_CODE_OAUTH_TOKEN the egress policy provides.
   const env: NodeJS.ProcessEnv = input.compute.remote ? remoteEnv() : localEnv(input);
@@ -212,6 +231,7 @@ async function defaultCliInvoker(input: {
       cloneDir,
       // The last-message file is a path on this machine; a box has no way to hand it back.
       ...(input.compute.remote ? [] : ["-o", input.outputFile]),
+      ...(input.brokerAccountId ? ["-c", 'cli_auth_credentials_store="file"'] : []),
       ...(input.model ? ["-m", input.model] : []),
       "-",
     ];
@@ -248,7 +268,10 @@ async function defaultCliInvoker(input: {
   if (input.compute.remote) {
     // Inside the box the provider logs in with the placeholder key the egress policy minted, never a host login: codex reads it as
     // CODEX_API_KEY, agy needs its settings file. Both wrappers `exec` the CLI so stdin and exit codes pass through.
-    if (input.provider === "codex") [bin, args] = ["bash", ["-c", 'CODEX_API_KEY="$OPENAI_API_KEY" exec "$@"', "bash", bin, ...args]];
+    if (input.provider === "codex") {
+      const login = input.brokerAccountId ? syntheticCodexLogin(input.brokerAccountId) : 'export CODEX_API_KEY="$OPENAI_API_KEY"';
+      [bin, args] = ["bash", ["-c", `${login} && exec "$@"`, "bash", bin, ...args]];
+    }
     if (input.provider === "agy") [bin, args] = ["bash", ["-c", `mkdir -p "$HOME/.gemini/antigravity-cli" && printf %s '${AGY_REMOTE_SETTINGS}' > "$HOME/.gemini/antigravity-cli/settings.json" && exec "$@"`, "bash", bin, ...args]];
   }
 
@@ -381,6 +404,7 @@ export class SubscriptionImplementer implements Implementer {
   private readonly chains: Pick<Chains, WriterRole>;
   private readonly accounts: Account[];
   private readonly remoteProviders: ReadonlySet<CliProvider>;
+  private readonly codexBrokerPreflight: SubscriptionImplementerOptions["codexBrokerPreflight"];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly state: AccountLedger;
@@ -395,12 +419,21 @@ export class SubscriptionImplementer implements Implementer {
     this.chains = opts.chains;
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.remoteProviders = opts.remoteProviders ?? new Set();
+    this.codexBrokerPreflight = opts.codexBrokerPreflight;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.cooldownDurationMs = opts.cooldownDurationMs ?? ACCOUNT_COOLDOWN_MS;
     this.networkRetryWaitMs = opts.networkRetryWaitMs ?? NETWORK_RETRY_WAIT_MS;
     this.logger = opts.logger ?? NOOP_LOGGER;
+  }
+
+  private async brokerAccount(attemptMs: number): Promise<string> {
+    try {
+      return this.codexBrokerPreflight!(attemptMs).accountId;
+    } catch (err) {
+      throw new AttemptError("auth", err instanceof Error ? err.message : String(err));
+    }
   }
 
   async run(input: ImplementInput): Promise<ImplementResult> {
@@ -462,6 +495,8 @@ export class SubscriptionImplementer implements Implementer {
           // Placement is by configured credential, never failover: a provider with a remote credential (injected on the wire) runs on the remote box; the rest keep their local logins.
           const ranOn: "local" | "remote" = this.remoteProviders.has(entry.provider) && input.workspaces.remote ? "remote" : "local";
           const handle = input.workspaces[ranOn]!;
+          // A brokered login is checked before any box exists: a failed or soon-to-expire token refuses the Attempt, never falls back.
+          const brokerAccountId = ranOn === "remote" && entry.provider === "codex" && this.codexBrokerPreflight ? await this.brokerAccount(input.timeoutMs) : undefined;
           const placed = { compute: handle.compute, workspace: await handle.workspace() };
           const prompt = i === 0 ? input.prompt : `${await captureWorkspaceContinuityContext(placed)}\n\n${input.prompt}`;
           const headBefore = await headSha(placed);
@@ -475,6 +510,7 @@ export class SubscriptionImplementer implements Implementer {
             timeoutMs: input.timeoutMs,
             goCacheDir,
             outputFile,
+            brokerAccountId,
           }).catch((err: unknown) => {
             if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`);
             throw err;
@@ -546,6 +582,10 @@ export class SubscriptionImplementer implements Implementer {
             if (input.abortController.signal.aborted) return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ranOn, ...measured() };
             tried.delete(account.id);
             continue;
+          }
+          if (reason === "auth" && brokerAccountId) {
+            // A 401 on a brokered login is never retried by moving tokens around: the broker's token expired or was revoked.
+            throw new AttemptError("auth", `remote codex login rejected (the broker's token expired or was revoked; not retried): ${errors.join(" | ")}`);
           }
           if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "));
 

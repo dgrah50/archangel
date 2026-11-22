@@ -295,11 +295,14 @@ export const ComputeConfigSchema = z
         codexApiKeySecret: z.string().min(1).optional(),
         /** Name of the Sail secret holding a Gemini API key. Set: agy entries run on Sail with it (the box sees a placeholder in GEMINI_API_KEY); unset: agy runs on this machine with its own login. */
         geminiApiKeySecret: z.string().min(1).optional(),
+        /** A dedicated ChatGPT login (a CODEX_HOME with `cli_auth_credentials_store = "file"`, never your main account) that the daemon's token broker keeps fresh. Set: codex entries run on Sail with a broker-held access token; exclusive with codexApiKeySecret. */
+        codexBrokerHome: z.string().min(1).optional(),
       })
       .strict()
       .optional(),
   })
   .strict()
+  .refine((c) => !(c.sail?.codexApiKeySecret && c.sail.codexBrokerHome), { message: "compute.sail: codexApiKeySecret and codexBrokerHome are exclusive: codex has one remote credential", path: ["sail"] })
   .refine((c) => c.provider !== "sail" || c.sail !== undefined, { message: "compute.provider 'sail' needs a compute.sail block", path: ["sail"] })
   .default({ provider: "local" });
 export type ComputeConfig = z.infer<typeof ComputeConfigSchema>;

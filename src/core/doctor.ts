@@ -4,6 +4,8 @@ import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 import { ConfigError, REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
+import { CODEX_BROKER_ID } from "../compute/codex-broker-adapter.js";
+import { readBrokerState } from "../compute/token-broker.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
@@ -262,6 +264,22 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       status: steps >= cap ? "warn" : "pass",
       detail: `${steps}/${cap} autonomous steps since the owner was last heard from`,
       remediation: steps >= cap ? "Reply on any Thread or run `archangel retry` to continue." : undefined,
+    });
+  }
+
+  // 4b. The Sail token broker for a dedicated codex ChatGPT login: its state and the token lifetime it measured.
+  if (first.compute.provider === "sail" && first.compute.sail?.codexBrokerHome) {
+    const st = readBrokerState(paths.dataDir, CODEX_BROKER_ID);
+    checks.push({
+      id: "sail_broker",
+      name: "Sail token broker (codex)",
+      status: st?.status === "ok" ? "pass" : "fail",
+      detail: !st
+        ? "the broker has not refreshed yet"
+        : st.status === "failed"
+          ? `failed: ${st.lastError ?? "unknown error"}`
+          : `ok; measured access-token lifetime ${st.lifetimeSeconds !== null ? `${(st.lifetimeSeconds / 3600).toFixed(1)}h` : "unknown"}, expires ${new Date(st.expiresAt ?? 0).toISOString()}`,
+      remediation: st?.status === "ok" ? undefined : "Start the daemon; if it stays failed, log the dedicated account in again: CODEX_HOME=<codexBrokerHome> codex login",
     });
   }
 

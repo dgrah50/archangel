@@ -81,6 +81,7 @@ describe("placing chain entries on local and remote providers", () => {
   it("never lets a box reach an OAuth host, and names only the secrets, never their values", () => {
     const doc = sailPolicyDoc({ claudeTokenSecret: "C", codexApiKeySecret: "O", geminiApiKeySecret: "G" });
     expect(doc.allowlist).toEqual(["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "registry.npmjs.org"]);
+    expect(sailPolicyDoc({ claudeTokenSecret: "C", codexBrokerHome: "/h" }).allowlist).toEqual(["api.anthropic.com", "chatgpt.com", "registry.npmjs.org"]);
     expect(doc.rules["generativelanguage.googleapis.com"]![0]!.request.replace.headers).toEqual({ "x-goog-api-key": "G" });
   });
 });
