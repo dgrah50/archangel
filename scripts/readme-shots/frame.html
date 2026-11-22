@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1600" />
+<title>Archangel Screenshot Frame</title>
+<script>
+  (function () {
+    const p = new URLSearchParams(window.location.search);
+    const theme = p.get("theme") === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<style>
+  :root {
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+
+    --canvas-bg: #f3f3f7;
+    --mesh-1: rgba(119, 71, 255, 0.09);
+    --mesh-2: rgba(56, 138, 228, 0.08);
+    --mesh-3: rgba(232, 168, 118, 0.08);
+    --mesh-4: rgba(255, 255, 255, 0.65);
+
+    --title-color: #141418;
+    --caption-color: #545460;
+
+    --frame-bg: #ffffff;
+    --frame-border: rgba(18, 20, 32, 0.095);
+    --frame-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    --frame-shadow:
+      0 2px 5px rgba(18, 20, 32, 0.04),
+      0 14px 34px rgba(18, 20, 32, 0.085),
+      0 38px 86px -14px rgba(24, 24, 48, 0.14);
+
+    --titlebar-bg: linear-gradient(180deg, #ffffff 0%, #f8f8fb 100%);
+    --titlebar-border: rgba(18, 20, 32, 0.07);
+    --dot-fill: rgba(18, 20, 32, 0.13);
+    --dot-ring: rgba(18, 20, 32, 0.05);
+    --placeholder-bg: #fafafc;
+    --placeholder-fg: #757584;
+  }
+
+  html[data-theme="dark"] {
+    --canvas-bg: #0c0d12;
+    --mesh-1: rgba(138, 102, 255, 0.15);
+    --mesh-2: rgba(68, 134, 218, 0.11);
+    --mesh-3: rgba(48, 150, 146, 0.07);
+    --mesh-4: rgba(255, 255, 255, 0.02);
+
+    --title-color: #f3f4f8;
+    --caption-color: #9b9eaa;
+
+    --frame-bg: #141414;
+    --frame-border: rgba(255, 255, 255, 0.11);
+    --frame-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    --frame-shadow:
+      0 2px 6px rgba(0, 0, 0, 0.36),
+      0 20px 44px rgba(0, 0, 0, 0.52),
+      0 46px 104px -16px rgba(0, 0, 0, 0.72);
+
+    --titlebar-bg: linear-gradient(180deg, #1d1d22 0%, #17171b 100%);
+    --titlebar-border: rgba(255, 255, 255, 0.075);
+    --dot-fill: rgba(255, 255, 255, 0.18);
+    --dot-ring: rgba(255, 255, 255, 0.06);
+    --placeholder-bg: #16161a;
+    --placeholder-fg: #8c8f9e;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    width: 1600px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: var(--canvas-bg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  .canvas {
+    position: relative;
+    width: 1600px;
+    padding: 76px 159px 96px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: var(--canvas-bg);
+    background-image:
+      radial-gradient(960px 580px at 14% 4%, var(--mesh-1), transparent 64%),
+      radial-gradient(880px 540px at 88% 8%, var(--mesh-2), transparent 62%),
+      radial-gradient(920px 520px at 52% 102%, var(--mesh-3), transparent 65%),
+      linear-gradient(180deg, var(--mesh-4) 0%, transparent 45%);
+  }
+
+  .canvas.no-header {
+    padding-top: 92px;
+  }
+
+  .header {
+    width: 1282px;
+    margin: 0 0 42px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header[hidden],
+  .title[hidden],
+  .caption[hidden],
+  .placeholder[hidden],
+  .shot[hidden] {
+    display: none;
+  }
+
+  .title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 36px;
+    font-weight: 650;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    color: var(--title-color);
+  }
+
+  .caption {
+    margin: 0;
+    max-width: 920px;
+    font-size: 18px;
+    font-weight: 420;
+    letter-spacing: -0.01em;
+    line-height: 1.45;
+    color: var(--caption-color);
+  }
+
+  .window {
+    width: 1282px;
+    border-radius: 18px;
+    border: 1px solid var(--frame-border);
+    background: var(--frame-bg);
+    box-shadow: var(--frame-shadow), var(--frame-highlight);
+    overflow: hidden;
+  }
+
+  .titlebar {
+    height: 38px;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--titlebar-bg);
+    border-bottom: 1px solid var(--titlebar-border);
+  }
+
+  .dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 999px;
+    background: var(--dot-fill);
+    box-shadow: inset 0 0 0 1px var(--dot-ring);
+  }
+
+  .viewport {
+    width: 1280px;
+    background: var(--frame-bg);
+    line-height: 0;
+  }
+
+  .shot {
+    display: block;
+    width: 1280px;
+    height: auto;
+  }
+
+  .placeholder {
+    width: 1280px;
+    height: 720px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--placeholder-bg);
+    color: var(--placeholder-fg);
+    font-size: 16px;
+    line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+  <main class="canvas" id="canvas">
+    <header class="header" id="header">
+      <h1 class="title" id="title"></h1>
+      <p class="caption" id="caption"></p>
+    </header>
+
+    <div class="window">
+      <div class="titlebar" aria-hidden="true">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+      <div class="viewport">
+        <img class="shot" id="shot" alt="" loading="eager" decoding="sync" />
+        <div class="placeholder" id="placeholder" hidden>Pass ?img=&lt;url&gt; to render a screenshot</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      const p = new URLSearchParams(window.location.search);
+      const imgUrl = (p.get("img") || "").trim();
+      const titleText = (p.get("title") || "").trim();
+      const captionText = (p.get("caption") || "").trim();
+
+      const canvas = document.getElementById("canvas");
+      const header = document.getElementById("header");
+      const titleEl = document.getElementById("title");
+      const captionEl = document.getElementById("caption");
+      const shotEl = document.getElementById("shot");
+      const placeholderEl = document.getElementById("placeholder");
+
+      if (titleText) {
+        titleEl.textContent = titleText;
+      } else {
+        titleEl.hidden = true;
+      }
+
+      if (captionText) {
+        captionEl.textContent = captionText;
+      } else {
+        captionEl.hidden = true;
+      }
+
+      if (!titleText && !captionText) {
+        header.hidden = true;
+        canvas.classList.add("no-header");
+      }
+
+      if (imgUrl) {
+        shotEl.src = imgUrl;
+        shotEl.alt = titleText || "Archangel screenshot";
+      } else {
+        shotEl.hidden = true;
+        placeholderEl.hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>
