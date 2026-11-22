@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
-import { draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
+import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
@@ -2129,6 +2129,7 @@ export class Reconciler {
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
       shadowMode: ownerMergesOnlyNow,
       featureThread: isFeature,
+      agentDraft: pr.headRef.startsWith(AGENT_DRAFT_PREFIX),
     });
 
     // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
@@ -2191,6 +2192,9 @@ export class Reconciler {
     if (await this.autonomyCapReached(now)) {
       return;
     }
+
+    // Defence in depth behind the blocker: a machine-drafted PR is never merged by the daemon, whatever else happens above.
+    if (pr.headRef.startsWith(AGENT_DRAFT_PREFIX)) return;
 
     // All blockers empty -> squash merge pinned strictly to approved head SHA (B7 + Opus S10 recovery!).
     let squashSha: string;

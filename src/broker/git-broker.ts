@@ -34,6 +34,8 @@ const HARDENED_GIT_FLAGS = [
 ];
 
 const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-)?\d+$/;
+/** Machine-drafted owner-review PRs (correction loop): never `factory/*`, so the daemon's own Lander can never merge them. */
+const AGENT_DRAFT_BRANCH_RE = /^agent-draft\/[a-z0-9-]{1,60}-\d+$/;
 
 export interface BrokerFetchValidation {
   headSha: string;
@@ -409,6 +411,30 @@ export class GitBroker {
       `${headSha}:refs/heads/${branchName}`,
     ]);
     await this.runGit(this.bareRepoPath, ["update-ref", `refs/heads/${branchName}`, headSha]);
+  }
+
+  /**
+   * Commits one file's new content on top of `baseSha` and pushes it strictly to `agent-draft/<slug>-<n>`. Plumbing only: nothing is
+   * checked out, and the commit exists only in the broker's bare repo until pushed. Returns the commit sha.
+   */
+  async pushDraftBranch(branchName: string, baseSha: string, file: string, content: string, message: string, remoteUrl: string): Promise<string> {
+    if (!AGENT_DRAFT_BRANCH_RE.test(branchName)) throw new Error(`Broker refused push to non-draft branch: ${branchName}`);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-draft-blob-"));
+    try {
+      const blobFile = path.join(tmp, "blob");
+      fs.writeFileSync(blobFile, content);
+      const blob = (await this.runGit(this.bareRepoPath, ["hash-object", "-w", blobFile])).trim();
+      const env = { GIT_INDEX_FILE: path.join(tmp, "index"), GIT_AUTHOR_NAME: "Archangel", GIT_AUTHOR_EMAIL: "archangel@users.noreply.github.com", GIT_COMMITTER_NAME: "Archangel", GIT_COMMITTER_EMAIL: "archangel@users.noreply.github.com" };
+      await this.runGit(this.bareRepoPath, ["read-tree", baseSha], env);
+      await this.runGit(this.bareRepoPath, ["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`], env);
+      const tree = (await this.runGit(this.bareRepoPath, ["write-tree"], env)).trim();
+      const sha = (await this.runGit(this.bareRepoPath, ["commit-tree", tree, "-p", baseSha, "-m", message], env)).trim();
+      await this.runGit(this.bareRepoPath, ["push", "--force", remoteUrl, `${sha}:refs/heads/${branchName}`]);
+      await this.runGit(this.bareRepoPath, ["update-ref", `refs/heads/${branchName}`, sha]);
+      return sha;
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   }
 
   /**

@@ -9,9 +9,8 @@ import type { ProviderEntry } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
 import { CANDIDATE_ALLOWED, patchFiles } from "./eval-candidate.js";
 import { renderEval, type EvalReport } from "./eval.js";
-import { createOrResetBranch, type OnboardRunner } from "./onboard.js";
+import type { OnboardRunner } from "./onboard.js";
 import { scanForSecrets, selectScoutProvider, type ScoutCliInvoker } from "./scout.js";
-import { readRepoFile } from "./workflow-propose.js";
 
 const execFileP = promisify(execFile);
 
@@ -66,6 +65,8 @@ export interface DraftContext {
   category: string;
   count: number;
   windowDays: number;
+  /** Draft attempt number across all repos; makes the branch name unique. Set by draftCorrection. */
+  seq?: number;
 }
 
 /** Pure policy over the Scout's output: the diff must touch exactly the one allowed file, stay small, and carry no secret. */
@@ -137,7 +138,8 @@ export function prBody(draft: Draft, ctx: DraftContext, reports: Array<{ split: 
     "",
     reportBlock(reports),
     "",
-    `Archangel never merges this. If \`${ctx.category}\` has not dropped ${DRAFT_MEASURE_DAYS} days after you merge it, the daily digest flags it for revert.`,
+    "**Machine-drafted; owner review required.** Archangel's daemon refuses to merge `agent-draft/*` PRs: only you merge this, by hand.",
+    `If \`${ctx.category}\` has not dropped ${DRAFT_MEASURE_DAYS} days after you merge it, the daily digest flags it for revert.`,
   ].join("\n");
 }
 
@@ -151,6 +153,7 @@ export async function draftCorrection(deps: DraftDeps, ctx: DraftContext, now = 
   const choice = selectScoutProvider([...deps.chain]);
   if (!choice) return { kind: "skipped", why: "no_provider" };
   ledger.appendAudit("correction_draft/attempt", null, "archangel", { category: ctx.category, count: ctx.count }, now);
+  ctx = { ...ctx, seq: ledger.countAuditAllRepos("correction_draft/attempt", 0) };
 
   let raw: unknown;
   try {
@@ -208,7 +211,7 @@ export function unlandedText(outcome: Extract<DraftOutcome, { kind: "eval_failed
   ].join("\n");
 }
 
-// --- PR opening with the owner's gh (the Gate rejects bot-authored PRs on non-factory branches) ---
+// --- PR opening, as the GitHub App ---
 
 export const DRAFT_LABEL = "agent-proposed";
 
@@ -246,34 +249,59 @@ export function rubricOnlyChange(before: string, after: string): boolean {
   }
 }
 
-export async function openDraftPr(runner: OnboardRunner, draft: Draft, body: string, ctx: DraftContext): Promise<string> {
-  const repo = ARCHANGEL_REPO;
-  const defaultBranch = (await runner.run("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).trim();
-  const tip = (await runner.run("gh", ["api", `repos/${repo}/git/ref/heads/${defaultBranch}`, "--jq", ".object.sha"])).trim();
-  const current = await readRepoFile(runner, repo, tip, draft.file);
-  const content = await applyDraftPatch(draft.file, current?.content ?? null, draft.diff);
-  if (draft.target === "rubric" && !(current && rubricOnlyChange(current.content, content))) {
-    throw new Error("a rubric draft may only change review.rubric");
-  }
-  const slug = crypto.createHash("sha256").update(ctx.category).digest("hex").slice(0, 10);
-  const branch = `chore/correction-draft-${slug}`;
-  const labels = (await runner.run("gh", ["label", "list", "--repo", repo, "--limit", "200", "--json", "name", "-q", ".[].name"])).split("\n").map((l) => l.trim());
-  if (!labels.includes(DRAFT_LABEL)) await runner.run("gh", ["label", "create", DRAFT_LABEL, "--repo", repo, "--color", "5319e7", "--description", "Proposed by Archangel; the owner decides"]);
-  await createOrResetBranch(runner, repo, branch, tip);
-  await runner.run("gh", [
-    "api", "-X", "PUT", `repos/${repo}/contents/${draft.file}`,
-    "-f", `message=chore: correction-loop draft for ${ctx.category}`,
-    "-f", `content=${Buffer.from(content).toString("base64")}`,
-    ...(current?.blobSha ? ["-f", `sha=${current.blobSha}`] : []),
-    "-f", `branch=${branch}`,
-  ]);
-  return (
-    await runner.run("gh", [
-      "pr", "create", "--repo", repo, "--head", branch, "--base", defaultBranch,
-      "--title", `chore(${draft.target}): draft for owner corrections in ${ctx.category}`,
-      "--body", body, "--label", DRAFT_LABEL,
-    ])
-  ).trim();
+/** The only branch prefix draft PRs use. The Gate classifies it, and neither the Gate path nor the Lander ever merges it. */
+export const AGENT_DRAFT_PREFIX = "agent-draft/";
+
+/** `agent-draft/<category-slug>-<n>`: a branch name the broker and the Gate workflow both accept. */
+export function draftBranchName(category: string, seq: number): string {
+  const slug = category.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "") || "category";
+  return `${AGENT_DRAFT_PREFIX}${slug}-${seq}`;
+}
+
+export interface DraftPrClient {
+  getRemoteUrlWithToken(): Promise<string>;
+  getBranchTipSha(branch: string): Promise<string>;
+  createPr(input: { title: string; body: string; head: string; base: string }): Promise<{ number: number }>;
+  addLabels(issueNumber: number, labels: string[]): Promise<void>;
+}
+export interface DraftPrBroker {
+  ensureBareRepo(remoteUrl: string): Promise<void>;
+  syncFromRemote(remoteUrl: string): Promise<void>;
+  hasCommit(sha: string): Promise<boolean>;
+  readFileAtRef(ref: string, relPath: string): Promise<string | null>;
+  pushDraftBranch(branchName: string, baseSha: string, file: string, content: string, message: string, remoteUrl: string): Promise<string>;
+}
+
+/**
+ * Opens the draft PR as the GitHub App, never as the owner: a commit on `agent-draft/<category>-<n>` built from the default branch
+ * tip, a PR labelled `agent-proposed`, and nothing else. The Gate classifies the branch as a machine draft and passes it through; the
+ * daemon refuses to merge it, so only the owner can. Returns the PR URL.
+ */
+export async function openDraftPr(
+  client: { github: DraftPrClient; broker: DraftPrBroker; defaultBranch?: string },
+  draft: Draft,
+  body: string,
+  ctx: DraftContext,
+): Promise<string> {
+  const base = client.defaultBranch ?? "main";
+  const remoteUrl = await client.github.getRemoteUrlWithToken();
+  await client.broker.ensureBareRepo(remoteUrl);
+  await client.broker.syncFromRemote(remoteUrl);
+  const baseSha = await client.github.getBranchTipSha(base);
+  if (!(await client.broker.hasCommit(baseSha))) throw new Error(`${base} tip ${baseSha.slice(0, 10)} is not in the broker repo`);
+  const before = await client.broker.readFileAtRef(baseSha, draft.file);
+  const content = await applyDraftPatch(draft.file, before, draft.diff);
+  if (draft.target === "rubric" && !(before !== null && rubricOnlyChange(before, content))) throw new Error("a rubric draft may only change review.rubric");
+  const branch = draftBranchName(ctx.category, ctx.seq ?? 1);
+  await client.broker.pushDraftBranch(branch, baseSha, draft.file, content, `chore: correction-loop draft for ${ctx.category}`, remoteUrl);
+  const pr = await client.github.createPr({
+    title: `chore(${draft.target}): draft for owner corrections in ${ctx.category}`,
+    body,
+    head: branch,
+    base,
+  });
+  await client.github.addLabels(pr.number, [DRAFT_LABEL]);
+  return `https://github.com/${ARCHANGEL_REPO}/pull/${pr.number}`;
 }
 
 // --- Measurement: did the targeted category drop after the owner merged the draft? ---

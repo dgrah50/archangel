@@ -87,7 +87,8 @@ describe("draftCorrection", () => {
       expect(body).toContain("Eval, dev set");
       expect(body).toContain("Eval, held-out set");
       expect(body).toContain(CAT);
-      expect(body).toContain("never merges");
+      expect(body).toContain("Machine-drafted; owner review required");
+      expect(body).toContain("agent-draft/*");
       expect(invoker.mock.calls[0]![0]).toMatchObject({ provider: "claude", maxProposals: 0 });
     } finally {
       l.close();
