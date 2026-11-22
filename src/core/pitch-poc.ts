@@ -8,6 +8,7 @@ import type { Ledger } from "../ledger/store.js";
 import fs from "node:fs";
 import path from "node:path";
 import { buildImplementPrompt } from "../agents/prompts.js";
+import { loadRepoInstructions } from "./workflow-load.js";
 import { PitchOutputSchema, type PitchItem } from "./pitch.js";
 import { installPreviewDeps, type WebPreview } from "./pitch-preview.js";
 import type { POC_FAILURE_CATEGORIES } from "./poc-machine.js";
@@ -97,7 +98,7 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
       result = await deps.implementer.run({
         issueNumber,
         workspaces: compute.remote ? { local: localHandle, remote: configured } : { local: configured },
-        prompt: buildImplementPrompt({ issueNumber, title: brief.title, body: brief.body, repoName: `${cfg.githubOwner}/${cfg.githubRepo}`, gate: deps.gate, workClass: "feature" }),
+        prompt: buildImplementPrompt({ issueNumber, title: brief.title, body: brief.body, repoName: `${cfg.githubOwner}/${cfg.githubRepo}`, gate: deps.gate, workClass: "feature", repoInstructions: await loadRepoInstructions(broker, mainSha) }),
         abortController: abort,
         maxTurns: cfg.implementMaxTurns,
         timeoutMs: cfg.implementTimeoutMs,
