@@ -450,6 +450,11 @@ export class GitHubAppClient implements GitHubClient {
       const out: GateProof = {};
       if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
       if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
+      const j = parsed.junit as { base_failed?: unknown; head_passed?: unknown } | undefined;
+      if (j && Array.isArray(j.base_failed) && Array.isArray(j.head_passed)) {
+        const ids = (a: unknown[]) => a.filter((x): x is string => typeof x === "string").slice(0, 20).map((x) => x.slice(0, 160));
+        out.junit = { base_failed: ids(j.base_failed), head_passed: ids(j.head_passed) };
+      }
       return out;
     } catch {
       return null;

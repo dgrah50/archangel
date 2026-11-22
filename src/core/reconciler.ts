@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
-import { GatePolicySchema, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -83,14 +83,25 @@ export class Reconciler {
   readonly workerId: string;
 
   private isTicking = false;
-  private policyErrorNotifiedSha: string | null = null;
   private readonly runningTasks = new Map<number, RunningTask>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
-  private effectiveGate: GatePolicy = GatePolicySchema.parse({});
-  private effectiveRequiredChecks: string[] = ["Gate"];
-  private effectiveReviewRubric: string | undefined;
+
+  /** The resolved workflow, or an error when the repo is halted: nothing falls back to defaults. */
+  private requireWorkflow(): OkWorkflow {
+    if (!this.workflow) throw new Error("no valid workflow for this repo (halted)");
+    return this.workflow;
+  }
+  private get effectiveGate(): GatePolicy {
+    return this.requireWorkflow().gate;
+  }
+  private get effectiveRequiredChecks(): string[] {
+    return this.requireWorkflow().requiredChecks;
+  }
+  private get effectiveReviewRubric(): string | undefined {
+    return this.requireWorkflow().rubric;
+  }
 
   constructor(deps: ReconcilerDeps) {
     this.cfg = deps.config;
@@ -160,6 +171,14 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+    if (!(await this.broker.hasCommit(mainSha))) {
+      // A commit landed between our fetch and the tip lookup. Fetch again; if it is still absent, skip this tick
+      // rather than reading the workflow from a commit we do not have (that would look like a missing file).
+      await this.broker.syncFromRemote(remoteUrl);
+      if (!(await this.broker.hasCommit(mainSha))) {
+        throw new Error(`main tip ${mainSha.slice(0, 10)} is not in the broker repo after a re-fetch; retrying next tick`);
+      }
+    }
     await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
@@ -168,36 +187,39 @@ export class Reconciler {
     const resolved = await loadWorkflow(this.broker, this.cfg, this.ledger, mainSha);
     this.cacheWorkflow(resolved, now);
     const policyError = workflowError(resolved);
-    if (resolved.status === "ok") {
-      this.workflow = resolved;
-      this.effectiveGate = resolved.gate;
-      this.effectiveRequiredChecks = resolved.requiredChecks;
-      this.effectiveReviewRubric = resolved.rubric;
-    }
+    this.workflow = resolved.status === "ok" ? resolved : null;
 
     if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
 
+    const noticeKey = `policy_error_notified:${this.ledger.repo}`;
     if (policyError) {
-      if (this.policyErrorNotifiedSha !== mainSha) {
-        this.policyErrorNotifiedSha = mainSha;
-        this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", { mainSha, error: policyError }, now);
+      // One Needs You per broken main commit. The marker is persisted only after delivery succeeds, so a failed
+      // send is retried next tick and a restart does not repeat a delivered one.
+      if (this.ledger.getSystemState(noticeKey) !== mainSha) {
         this.logger.warn("config/repo_policy_invalid", `Halting new work: ${policyError}`, { repo: this.ledger.repo });
         const policy = MAIN_ESCALATION_POLICY.repo_policy_invalid;
-        await this.notifier
-          .notifyNeedsYou({
+        try {
+          await this.notifier.notifyNeedsYou({
             issueNumber: null,
             title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: repo policy unusable at ${mainSha.slice(0, 8)}`,
             reason: policyError.slice(0, 500),
             decisionClass: formatDecisionClass(policy.decisionClass),
             recommendation: policy.recommendation,
-          })
-          .catch(() => undefined);
+          });
+          this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", { mainSha, error: policyError }, now);
+          this.ledger.setSystemState(noticeKey, mainSha, now);
+        } catch (err) {
+          this.logger.warn("config/repo_policy_notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+        }
       }
+      // Halted: in-flight Attempts must not keep spending or pushing under a policy that is gone. Aborting with
+      // cause "control" returns each Thread to where it resumes once the workflow is valid again.
+      this.abortAllActive("control");
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
       return;
     }
-    this.policyErrorNotifiedSha = null;
+    if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
 
     // 1. Process pending CLI -> Daemon handoff commands (Opus Step 6 / R5).
     await this.processPendingCommands(mainSha, now);
@@ -407,8 +429,13 @@ export class Reconciler {
     const proposal = this.ledger.getScoutProposal(issueNumber);
     if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
     const scout = this.workflow?.scouts.find((s) => s.name === proposal.scoutName);
+    // Revocation is re-read live: it can land (red main, `archangel disagree`) after this tick's snapshot was resolved.
     return Boolean(
-      scout && scout.promotionEffective.value === "auto" && scout.trustHash === proposal.fileSha256 && !scout.revoked,
+      scout &&
+        scout.promotionEffective.value === "auto" &&
+        scout.trustHash === proposal.fileSha256 &&
+        !scout.revoked &&
+        !this.ledger.isScoutAutoPromoteRevoked(scout.name, scout.trustHash),
     );
   }
 
@@ -892,7 +919,7 @@ export class Reconciler {
     now: number,
     explicitStartSha?: string,
   ): Promise<boolean> {
-    if (this.runningTasks.has(thread.issueNumber)) {
+    if (this.runningTasks.has(thread.issueNumber) || !this.workflow) {
       return false;
     }
     if (thread.mode === "advisory") {
@@ -1065,8 +1092,9 @@ export class Reconciler {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
 
-      if (result.aborted) {
-        const cause = task.abortCause ?? "timeout";
+      // The repo may have been halted while the implementer ran: treat that like a control abort.
+      if (result.aborted || !this.workflow) {
+        const cause = task.abortCause ?? (this.workflow ? "timeout" : "control");
         this.ledger.finishAttempt(attemptId, {
           status: "aborted",
           costUsd: actualCostUsd,

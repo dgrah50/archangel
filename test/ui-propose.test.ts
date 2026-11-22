@@ -87,6 +87,7 @@ describe("POST /api/workflows/:repo/propose", () => {
         if (line.includes("contents/.agents/archangel.json?ref=")) return args.includes("--jq") ? "blob\n" : currentRaw;
         if (/contents\/\.agents\/scouts\/bug-hunt\.md\?ref=/.test(line)) return args.includes("--jq") ? "sb\n" : "SECRET-PROMPT\n";
         if (line.startsWith("pr list")) return "";
+        if (/git\/ref\/heads\/chore\//.test(line)) throw new Error("HTTP 404");
         if (line.includes("/git/ref/heads/")) return "tip\n";
         if (line.startsWith("pr create")) return "https://github.com/a/b/pull/7\n";
         return "";
