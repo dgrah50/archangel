@@ -19,6 +19,8 @@ export interface DoctorCheck {
   status: "pass" | "warn" | "fail";
   detail: string;
   remediation?: string;
+  /** `machine` checks need no network; `repo` checks call GitHub. */
+  scope?: "machine" | "repo";
 }
 
 export interface DoctorReport {
@@ -68,6 +70,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       detail: err instanceof Error ? err.message : String(err),
       remediation: "Copy .env.example -> .env and archangel.example.yaml -> archangel.yaml, then populate required fields.",
     });
+    for (const c of checks) c.scope = "machine";
     return { ok: false, checks };
   }
 
@@ -284,6 +287,21 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
+  // 8. The owner's `gh` login: onboarding and the dashboard's PR proposals use it (never the App identity).
+  try {
+    await execFileAsync("gh", ["auth", "status"]);
+    checks.push({ id: "gh_auth", name: "Owner gh login", status: "pass", detail: "gh is authenticated" });
+  } catch {
+    checks.push({
+      id: "gh_auth",
+      name: "Owner gh login",
+      status: "warn",
+      detail: "gh is not installed or not logged in (needed for onboarding and dashboard PR proposals)",
+      remediation: "Run `gh auth login`",
+    });
+  }
+
+  for (const c of checks) c.scope = "machine";
   if (opts.offline) {
     return { ok: checks.every((c) => c.status !== "fail"), checks };
   }
@@ -432,6 +450,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
+  for (const c of checks) c.scope ??= "repo";
   return { ok: checks.every((c) => c.status !== "fail"), checks };
 }
 
