@@ -21,7 +21,7 @@ function seeded() {
   const l = new Ledger(":memory:", { repo: "a/b" });
   const t = l.upsertThread({ issueNumber: 1, title: EVIL, bodySha256: "s", now: NOW - 5_000_000 });
   const a = l.startAttempt(1, "implement", NOW - 4_000_000);
-  l.finishAttempt(a.id, { status: "failed", errorMessage: "Aborted by owner", transcriptPath: "/tmp/t.jsonl" }, NOW - 3_900_000);
+  l.finishAttempt(a.id, { status: "failed", errorMessage: "Aborted by owner", errorCategory: "aborted", transcriptPath: "/tmp/t.jsonl" }, NOW - 3_900_000);
   l.recordReview({ issueNumber: 1, headSha: "abcdef123456", vendor: "openai", verdict: "veto", findings: [{ file: "x.ts", severity: "major", summary: EVIL }], costUsd: 0, now: NOW - 3_000_000 });
   l.transition(1, t.version, { kind: "done", outcome: "abandoned" }, { now: NOW - 1_000 });
   return l;
