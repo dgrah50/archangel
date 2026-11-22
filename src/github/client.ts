@@ -4,6 +4,8 @@ import { dedupeChecksByLatestId, type CheckStatus } from "../core/blockers.js";
 import { tryParseJson } from "../core/json.js";
 import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
 import { RECAP_MARKER } from "../core/recap.js";
+import { emit } from "../core/telemetry.js";
+import type { TelemetryTags } from "../core/telemetry-events.js";
 
 export interface GitHubIssue {
   number: number;
@@ -126,6 +128,21 @@ interface EtagEntry {
 
 const MAX_PAGES = 20;
 
+const ENDPOINT_CLASSES: Array<[RegExp, TelemetryTags<"github_call_ms">["endpoint"]]> = [
+  [/\/(issues|labels)(\/|\?|$)/, "issues"],
+  [/\/pulls(\/|\?|$)/, "pulls"],
+  [/\/(check-runs|commits)(\/|\?|$)/, "checks"],
+  [/\/git\//, "git"],
+  [/\/contents\//, "contents"],
+  [/\/(releases|dependabot)(\/|\?|$)/, "signals"],
+];
+function endpointClass(urlOrEndpoint: string): TelemetryTags<"github_call_ms">["endpoint"] {
+  return ENDPOINT_CLASSES.find(([re]) => re.test(urlOrEndpoint))?.[1] ?? "other";
+}
+function statusClass(status: number): TelemetryTags<"github_call_ms">["status"] {
+  return status === 429 ? "429" : status >= 500 ? "5xx" : status >= 400 ? "4xx" : "2xx";
+}
+
 export class GitHubAppClient implements GitHubClient {
   private readonly cfg: GitHubAppConfig;
   private readonly apiBase: string;
@@ -158,6 +175,7 @@ export class GitHubAppClient implements GitHubClient {
 
   async mintInstallationTokenWithMeta(): Promise<InstallationTokenMeta> {
     const jwt = this.signAppJwt();
+    const t0 = Date.now();
     const res = await fetch(
       `${this.apiBase}/app/installations/${this.cfg.installationId}/access_tokens`,
       {
@@ -171,6 +189,7 @@ export class GitHubAppClient implements GitHubClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       },
     );
+    emit("github_call_ms", Date.now() - t0, { endpoint: "auth", status: statusClass(res.status) }, `${this.cfg.owner}/${this.cfg.repo}`);
     if (!res.ok) {
       throw new GitHubHttpError(res.status, `GitHub App token mint failed (${res.status}): ${await res.text()}`);
     }
@@ -226,12 +245,22 @@ export class GitHubAppClient implements GitHubClient {
       }
     }
 
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const t0 = Date.now();
+    const repoSlug = `${this.cfg.owner}/${this.cfg.repo}`;
+    const endpoint = endpointClass(urlOrEndpoint);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      emit("github_call_ms", Date.now() - t0, { endpoint, status: "error" }, repoSlug);
+      throw err;
+    }
+    emit("github_call_ms", Date.now() - t0, { endpoint, status: statusClass(res.status) }, repoSlug);
 
     if (res.status === 304 && method === "GET" && opts.useEtag) {
       const cached = this.etagCache.get(url);

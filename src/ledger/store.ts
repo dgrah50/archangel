@@ -33,6 +33,8 @@ import {
   type ValidatedPhase,
 } from "../core/thread-machine.js";
 import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
+import { emit } from "../core/telemetry.js";
+import type { TelemetryTags } from "../core/telemetry-events.js";
 import {
   LEDGER_SCHEMA_SQL,
   type AttemptErrorCategory,
@@ -866,6 +868,9 @@ export class Ledger {
       this.addSpend(cost, now);
     }
     const attempt = this.getAttempt(attemptId)!;
+    const provider = (attempt.provider ?? "none") as TelemetryTags<"attempt_ms">["provider"];
+    emit("attempt_ms", attempt.durationMs ?? now - attempt.startedAt, { kind: attempt.kind, provider, outcome: result.status }, attempt.repo);
+    if (attempt.peakRssKb !== null) emit("attempt_rss_kb", attempt.peakRssKb, { kind: attempt.kind, provider }, attempt.repo);
     this.appendAudit(
       "attempt/finished",
       attempt.issueNumber,
@@ -1586,6 +1591,7 @@ export class Ledger {
          ON CONFLICT(account_id) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
       )
       .run(accountId, now + duration, reason.slice(0, 300), now);
+    emit("account_cooldown", 1, { account: accountId });
     this.appendAudit("account/cooldown", null, "archangel", { accountId, durationMs: duration }, now, null);
   }
 

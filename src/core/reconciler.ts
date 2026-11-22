@@ -35,6 +35,7 @@ import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
+import { emit } from "./telemetry.js";
 import { buildRecommendationPrompt, buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, vetRecommendation, RecommendationOnlySchema, RECOMMENDATION_ONLY_JSON_SCHEMA, RECOMMENDATION_TIMEOUT_MS, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
 import {
   classifyGate,
@@ -218,6 +219,11 @@ export class Reconciler {
   }
 
   private async runTickInternal(now: number): Promise<void> {
+    let phaseStart = Date.now();
+    const endPhase = (phase: "sync" | "threads" | "signals" | "scouts"): void => {
+      emit("tick_phase_ms", Date.now() - phaseStart, { phase }, this.ledger.repo);
+      phaseStart = Date.now();
+    };
     await this.flushOutbox();
 
     const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -278,6 +284,7 @@ export class Reconciler {
     await this.processPendingCommands(mainSha, now);
 
     await this.reconcilePostMergeMain(mainSha, now);
+    endPhase("sync");
 
     const readyIssues = await this.github.listOpenIssuesByLabel(this.cfg.labels.readyForAgent);
     const issueMap = new Map<number, GitHubIssue>();
@@ -310,6 +317,8 @@ export class Reconciler {
       if (issue === "skip") continue;
       await this.reconcileThread(thread, issue, mainSha, now);
     }
+
+    endPhase("threads");
 
     // 4b. Pitch housekeeping: record decisions and close pitches nobody decided in 14 days (only when any is open).
     if (this.ledger.countOpenPitches() > 0) {
@@ -370,6 +379,8 @@ export class Reconciler {
       }
     }
 
+    endPhase("signals");
+
     if (this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0) {
       try {
         await runScoutsForProject({
@@ -390,6 +401,8 @@ export class Reconciler {
         this.recordFault("scout", err, now);
       }
     }
+
+    endPhase("scouts");
 
     await this.raiseCorrectionSignals(now);
     await this.measureCorrectionDrafts(now);
