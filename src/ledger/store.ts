@@ -1,3 +1,5 @@
+import { EscalationCodeSchema } from "../core/thread-machine.js";
+import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
 import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
 import { categorizeAttemptError } from "../core/metrics-block.js";
@@ -1533,6 +1535,24 @@ export class Ledger {
       .run(now, JSON.stringify(merged), repo, issueNumber);
   }
 
+  addThreadDependency(issueNumber: number, dependsOn: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO thread_dependencies (repo, issue_number, depends_on, created_at) VALUES (?, ?, ?, ?)`)
+      .run(repo, issueNumber, dependsOn, now);
+  }
+
+  /** The issue this one waits for, or null. */
+  getThreadDependency(issueNumber: number, repo = this.repo): number | null {
+    const r = this.db.prepare(`SELECT depends_on FROM thread_dependencies WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as
+      | { depends_on: number }
+      | undefined;
+    return r ? r.depends_on : null;
+  }
+
+  clearThreadDependency(issueNumber: number, repo = this.repo): void {
+    this.db.prepare(`DELETE FROM thread_dependencies WHERE repo = ? AND issue_number = ?`).run(repo, issueNumber);
+  }
+
   countOpenPitches(repo = this.repo): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM pitches WHERE repo = ? AND status = 'open'`).get(repo) as { n: number }).n;
   }
@@ -1997,6 +2017,8 @@ export class Ledger {
     };
     shadow: { total: number; agreed: number; disagreed: number; agreementRate: number };
     outcomes: OutcomeMetrics;
+    /** Owner corrections counted in closed categories (see core/corrections.ts). */
+    corrections: CorrectionCounts;
     activeCooldowns: Array<{ provider: string; untilTs: number; reason: string }>;
   } {
     const now = opts.now ?? Date.now();
@@ -2126,7 +2148,81 @@ export class Ledger {
       },
       shadow: this.getShadowStats(repoFilter, since),
       outcomes: this.computeOutcomeMetrics(threads),
+      corrections: this.computeCorrections({ repo: repoFilter, sinceMs: since, now, excludedIssues }),
       activeCooldowns: this.listActiveCooldowns(now),
+    };
+  }
+
+  /**
+   * Counts owner corrections from structured Ledger data only (statuses, verdicts, enums, severities and path segments).
+   * `repo: null` covers every repo. Threads/events are windowed by their last change / timestamp.
+   */
+  computeCorrections(opts: { repo?: string | null; sinceMs?: number; now?: number; excludedIssues?: ReadonlySet<number> } = {}): CorrectionCounts {
+    const since = opts.sinceMs ?? 0;
+    const now = opts.now ?? Date.now();
+    const repo = opts.repo ?? null;
+    const skip = opts.excludedIssues ?? new Set<number>();
+    const repoClause = repo ? " AND repo = ?" : "";
+    const rp = repo ? [repo] : [];
+
+    // Vetoes overruled: an owner-merged Thread whose most recent review round (by head SHA) contained a veto.
+    let vetoOverruled = 0;
+    const threads = (repo ? this.listThreads(undefined, repo) : this.listAllThreads()).filter((t) => !skip.has(t.issueNumber));
+    const latestHead = this.db.prepare(`SELECT head_sha FROM reviews WHERE repo = ? AND issue_number = ? ORDER BY created_at DESC, id DESC LIMIT 1`);
+    const vetoAt = this.db.prepare(`SELECT 1 FROM reviews WHERE repo = ? AND issue_number = ? AND head_sha = ? AND verdict != 'approve' LIMIT 1`);
+    for (const t of threads) {
+      if (t.phase.kind !== "done" || t.phase.outcome !== "owner_merged" || t.updatedAt < since) continue;
+      const head = latestHead.get(t.repo, t.issueNumber) as { head_sha: string } | undefined;
+      if (head && vetoAt.get(t.repo, t.issueNumber, head.head_sha)) vetoOverruled++;
+    }
+
+    const merges = (
+      this.db.prepare(`SELECT * FROM merges WHERE created_at >= ?${repoClause}`).all(since, ...rp) as Record<string, unknown>[]
+    ).map(mapMerge).filter((m) => !skip.has(m.issueNumber));
+    const disagreements = merges.filter((m) => m.disagreed).length;
+    const reverts = new Set(merges.filter((m) => m.mainWatch.kind === "red").map((m) => `${m.repo}#${m.issueNumber}`)).size;
+
+    const ownerRetriesByCode: Record<string, number> = {};
+    for (const r of this.db
+      .prepare(`SELECT issue_number, payload_json FROM audit_log WHERE topic = 'thread/owner_retry' AND actor = 'owner' AND ts >= ?${repoClause}`)
+      .all(since, ...rp) as Array<{ issue_number: number | null; payload_json: string }>) {
+      if (r.issue_number !== null && skip.has(r.issue_number)) continue;
+      let code: unknown;
+      try {
+        code = (JSON.parse(r.payload_json) as { code?: unknown }).code;
+      } catch {
+        continue;
+      }
+      if (typeof code === "string" && (EscalationCodeSchema.options as readonly string[]).includes(code)) {
+        ownerRetriesByCode[code] = (ownerRetriesByCode[code] ?? 0) + 1;
+      }
+    }
+
+    const findings: Record<string, number> = {};
+    for (const r of this.db
+      .prepare(`SELECT issue_number, findings_json FROM reviews WHERE verdict != 'approve' AND created_at >= ?${repoClause}`)
+      .all(since, ...rp) as Array<{ issue_number: number; findings_json: string }>) {
+      if (skip.has(r.issue_number)) continue;
+      let list: unknown;
+      try {
+        list = JSON.parse(r.findings_json);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(list)) continue;
+      for (const f of list as ReviewFinding[]) {
+        const key = f && typeof f === "object" ? findingCategory(f) : null;
+        if (key) findings[key] = (findings[key] ?? 0) + 1;
+      }
+    }
+
+    return {
+      windowDays: since > 0 ? Math.max(1, Math.round((now - since) / 86_400_000)) : null,
+      vetoOverruled,
+      disagreements,
+      ownerRetriesByCode,
+      reverts,
+      findings,
     };
   }
 }

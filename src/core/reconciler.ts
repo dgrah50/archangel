@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { CORRECTION_WINDOW_DAYS, repeatedCategories } from "./corrections.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
@@ -298,8 +299,42 @@ export class Reconciler {
       }
     }
 
+    await this.raiseCorrectionSignals(now);
+
     // Flush any newly enqueued outbox effects immediately.
     await this.flushOutbox();
+  }
+
+  /**
+   * One Needs You per correction category per 30 days when the owner has corrected the factory in the same closed category
+   * `CORRECTION_REPEAT_THRESHOLD` or more times (counted by code in `computeCorrections`). Notify first, then record: a failed
+   * send is retried next tick and exactly one lands.
+   */
+  private async raiseCorrectionSignals(now: number): Promise<void> {
+    const windowStart = now - CORRECTION_WINDOW_DAYS * 86_400_000;
+    const counts = this.ledger.computeCorrections({ repo: this.ledger.repo, sinceMs: windowStart, now });
+    const already = new Set(
+      this.ledger
+        .listAudit({ topicPrefix: "corrections/needs_you", limit: 500 })
+        .filter((a) => a.ts >= windowStart)
+        .map((a) => (JSON.parse(a.payloadJson) as { category?: string }).category),
+    );
+    for (const { category, count } of repeatedCategories(counts)) {
+      if (already.has(category)) continue;
+      const policy = MAIN_ESCALATION_POLICY.correction_repeated;
+      try {
+        await this.notifier.notifyNeedsYou({
+          issueNumber: null,
+          title: `Owner corrections repeat on ${this.ledger.repo}: ${category}`,
+          reason: `${count} corrections in this category in the last ${CORRECTION_WINDOW_DAYS} days.`,
+          decisionClass: formatDecisionClass(policy.decisionClass),
+          recommendation: policy.recommendation,
+        });
+        this.ledger.appendAudit("corrections/needs_you", null, "archangel", { category, count }, now);
+      } catch (err) {
+        this.logger.warn("corrections/notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
+    }
   }
 
   /** One Needs You (project-level, no issue) when an auto-promoting Scout version is revoked for waste. */
@@ -641,7 +676,7 @@ export class Reconciler {
       });
       return null;
     }
-    this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via }, now);
+    this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via, code: thread.phase.kind === "needs_you" ? thread.phase.code : null }, now);
     return this.applyMachineEvent(
       thread,
       { t: "owner_retry" },
@@ -895,6 +930,21 @@ export class Reconciler {
 
       case "queued": {
         if (!issue || this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+        // A chained pitch slice waits, queued, until the slice before it has merged; if that one ended unmerged, ask the owner once.
+        const dependsOn = this.ledger.getThreadDependency(thread.issueNumber);
+        if (dependsOn !== null) {
+          const pred = this.ledger.getThread(dependsOn);
+          if (!pred || pred.phase.kind !== "done") return;
+          this.ledger.clearThreadDependency(thread.issueNumber); // consumed: a retry after the Needs You runs the slice on its own
+          if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
+            this.applyMachineEvent(
+              thread,
+              { t: "escalate", code: "dependency_unmet", reason: `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.` },
+              { auditTopic: "thread/needs_you", now },
+            );
+            return;
+          }
+        }
         await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
         return;
       }

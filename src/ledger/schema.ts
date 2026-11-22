@@ -295,6 +295,15 @@ CREATE TABLE IF NOT EXISTS provider_cooldowns (
   updated_at INTEGER NOT NULL
 );
 
+-- Owner-confirmed linear order between promoted pitch slices: the dependent Thread stays queued until its predecessor merges.
+CREATE TABLE IF NOT EXISTS thread_dependencies (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  depends_on INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number)
+);
+
 CREATE TABLE IF NOT EXISTS pitches (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,

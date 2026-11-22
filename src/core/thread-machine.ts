@@ -41,6 +41,7 @@ export const EscalationCodeSchema = z.enum([
   "attempt_timeout",
   "attempt_failed",
   "max_attempts",
+  "dependency_unmet",
 ]);
 export type EscalationCode = z.infer<typeof EscalationCodeSchema>;
 

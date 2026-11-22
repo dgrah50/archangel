@@ -1,4 +1,5 @@
 import { Badge, Box, Card, Heading, Link, SimpleGrid, Stack, Stat, Table, Text } from "@chakra-ui/react";
+import { correctionCategories } from "../../src/core/corrections.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
@@ -234,6 +235,17 @@ export function Dashboard({ state: s }: { state: UiState }) {
                   {v}: {a.rate === null ? "n/a" : `${Math.round(a.rate * 100)}%`} ({a.undisputed}/{a.approvedMerges})
                 </Text>
               ))}
+              <Text fontWeight="medium" mt="3">
+                Owner corrections (last {s.corrections.windowDays ?? 30} days)
+              </Text>
+              {correctionCategories(s.corrections).filter((c) => c.count > 0).length === 0 ? <Text>none</Text> : null}
+              {correctionCategories(s.corrections)
+                .filter((c) => c.count > 0)
+                .map((c) => (
+                  <Text key={c.category}>
+                    {c.category}: {c.count}
+                  </Text>
+                ))}
               <Text fontWeight="medium" mt="3">
                 Autonomy
               </Text>

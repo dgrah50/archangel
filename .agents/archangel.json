@@ -50,7 +50,8 @@
       "src/handoff/paseo.ts",
       "src/core/notifier.ts",
       "src/core/escalations.ts",
-      "src/core/pitch-expiry.ts"
+      "src/core/pitch-expiry.ts",
+      "src/core/corrections.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

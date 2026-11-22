@@ -41,6 +41,8 @@ export async function promotePitch(
     repo: string;
     issue: number;
     slice?: number; // 1-based
+    /** Make the slices created by this call linear: each waits (queued) for the one before it to merge. */
+    chain?: boolean;
     yes: boolean;
     labels: Pick<Labels, "readyForAgent" | "feature" | "agentPitch">;
     confirm: (question: string) => Promise<boolean>;
@@ -89,7 +91,8 @@ export async function promotePitch(
       const url = (
         await runner.run("gh", [
           "issue", "create", "--repo", input.repo, "--title", d.title, "--body", d.body,
-          "--label", input.labels.readyForAgent, "--label", input.labels.feature,
+          // Chained slices get ready-for-agent only after their order is recorded, so the daemon cannot start one early.
+          ...(input.chain ? [] : ["--label", input.labels.readyForAgent]), "--label", input.labels.feature,
         ])
       ).trim();
       const m = /\/issues\/(\d+)\s*$/.exec(url);
@@ -100,14 +103,16 @@ export async function promotePitch(
   } catch (err) {
     if (created.length === 0) throw err;
     // Some owner-authored issues already exist. Mark the pitch decided so a rerun cannot duplicate them, and say what is left.
+    await chainSlices(runner, ledger, input, created);
     ledger.markPitchSlicesPromoted(input.issue, indexes.slice(0, created.length), input.now);
     ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes.slice(0, created.length), partial: true }, input.now);
     throw new Error(
       `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Those slices are marked promoted and the pitch is left open; rerun to promote the remaining slices.`,
     );
   }
+  await chainSlices(runner, ledger, input, created);
   ledger.markPitchSlicesPromoted(input.issue, indexes, input.now);
-  ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes }, input.now);
+  ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes, chained: Boolean(input.chain) }, input.now);
   const done = ledger.getPitch(input.issue)!.promotedSlices.length === pitch.slices.length;
   const list = created.map((n) => `#${n}`).join(", ");
   if (done) {
@@ -117,4 +122,21 @@ export async function promotePitch(
     await runner.run("gh", ["issue", "comment", String(input.issue), "--repo", input.repo, "--body", `Slice ${indexes.map((i) => i + 1).join(", ")} promoted by the owner to ${list}. The other slices are still open for promotion.`]);
   }
   return created;
+}
+
+/**
+ * Slice N waits for slice N-1 (in the order they were created). The order is recorded in the Ledger the daemon reads first, and only then
+ * do the slices get `ready-for-agent` (applied with the owner's `gh`, so the owner is still the label actor).
+ */
+async function chainSlices(
+  runner: OnboardRunner,
+  ledger: Ledger,
+  input: { repo: string; chain?: boolean; labels: { readyForAgent: string }; now?: number },
+  created: number[],
+): Promise<void> {
+  if (!input.chain) return;
+  for (let i = 1; i < created.length; i++) ledger.addThreadDependency(created[i]!, created[i - 1]!, input.now);
+  for (const n of created) {
+    await runner.run("gh", ["issue", "edit", String(n), "--repo", input.repo, "--add-label", input.labels.readyForAgent]);
+  }
 }

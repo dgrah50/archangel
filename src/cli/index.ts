@@ -30,6 +30,7 @@ import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
+import { correctionCategories } from "../core/corrections.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
 import { collectOwnerReply } from "../core/owner-reply.js";
 import { listAllSkills } from "../core/skills.js";
@@ -279,8 +280,9 @@ pitchCmd
   .description("Turn a pitch into owner-authored class:feature issues with your gh (prints every body and asks to confirm)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--slice <n>", "Promote only slice N (default: every slice)")
+  .option("--chain", "Make the created slices linear: each waits for the one before it to merge", false)
   .option("--yes", "Skip the confirmation prompt", false)
-  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; yes?: boolean }) => {
+  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; yes?: boolean }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
     const paths = resolvePaths(cfg);
     const ledger = new Ledger(paths.ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
@@ -291,6 +293,7 @@ pitchCmd
           repo,
           issue: Number(issueArg),
           slice: opts.slice === undefined ? undefined : Number(opts.slice),
+          chain: Boolean(opts.chain),
           yes: Boolean(opts.yes),
           labels: cfg.labels,
           confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
@@ -509,6 +512,8 @@ program
       );
       console.log(`  Reverts/fix:  ${na(o.revertsPerFix)} (${o.reverts} reverted)`);
       console.log(`  Rework:       ${na(o.reworkAttemptsPerFix)} extra attempts/fix (${o.reworkAttemptsTotal} total)`);
+      const corrections = correctionCategories(m.corrections).filter((c) => c.count > 0);
+      console.log(`Owner corrections${m.corrections.windowDays ? ` (last ${m.corrections.windowDays}d)` : ""}: ${corrections.map((c) => `${c.category}=${c.count}`).join(", ") || "none"}`);
       console.log(
         `  Vendor agreement with owner: ${Object.entries(o.vendorAgreement).map(([v, s]) => `${v} ${s.rate === null ? "n/a" : `${Math.round(s.rate * 100)}%`} (${s.undisputed}/${s.approvedMerges})`).join(", ") || "n/a"}`,
       );
@@ -834,7 +839,7 @@ program
         bodySha256: sha256(issue.body),
         auditTopic: "thread/owner_retried",
       });
-      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", {});
+      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null });
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
       ledger.close();
