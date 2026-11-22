@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountEnv, firstAccount, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
+import { providerToVendor, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
@@ -50,8 +50,6 @@ export interface CliExecResult {
 export type CliInvoker = (input: {
   provider: CliProvider;
   model?: string;
-  /** The login this run uses (its home is passed to the CLI); absent means the CLI's default home. */
-  account?: Account;
   cloneDir: string;
   prompt: string;
   abortController: AbortController;
@@ -63,7 +61,6 @@ export type CliInvoker = (input: {
 export interface SubscriptionImplementerOptions {
   /** Provider chain per writing role; an Attempt uses the chain of its role. */
   chains: Pick<Chains, WriterRole>;
-  accounts?: Account[];
   transcriptsDir: string;
   invoker?: CliInvoker;
   cooldowns?: ProviderCooldownStore;
@@ -74,7 +71,6 @@ export interface SubscriptionImplementerOptions {
 function defaultCliInvoker(input: {
   provider: CliProvider;
   model?: string;
-  account?: Account;
   cloneDir: string;
   prompt: string;
   abortController: AbortController;
@@ -97,8 +93,6 @@ function defaultCliInvoker(input: {
     GIT_TERMINAL_PROMPT: "0",
     GOCACHE: input.goCacheDir,
     ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
-    // The one passthrough for a second login: this account's config dir (nothing else from the host env).
-    ...accountEnv(input.account),
   };
 
   let bin: string;
@@ -317,7 +311,6 @@ function extractSummary(provider: CliProvider, stdout: string, outputFile: strin
  */
 export class SubscriptionImplementer implements Implementer {
   private readonly chains: Pick<Chains, WriterRole>;
-  private readonly accounts: Account[];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly cooldowns?: ProviderCooldownStore;
@@ -329,7 +322,6 @@ export class SubscriptionImplementer implements Implementer {
       if (opts.chains[role].length === 0) throw new Error(`SubscriptionImplementer requires at least one provider in the ${role} chain`);
     }
     this.chains = opts.chains;
-    this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.cooldowns = opts.cooldowns;
@@ -389,7 +381,6 @@ export class SubscriptionImplementer implements Implementer {
         const res = await this.invoker({
           provider: entry.provider,
           model: entry.model,
-          account: firstAccount(this.accounts, entry),
           cloneDir: input.cloneDir,
           prompt,
           abortController: input.abortController,

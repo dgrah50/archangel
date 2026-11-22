@@ -6,7 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { GitBroker } from "../broker/git-broker.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
-import { DEFAULT_ACCOUNTS, accountEnv, firstAccount, providerToVendor, resolveRequiredReviewers, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
+import { providerToVendor, resolveRequiredReviewers, type ArchangelConfig, type ProviderEntry } from "../config.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
@@ -65,7 +65,6 @@ export type ScoutCliProvider = "claude" | "codex";
 export type ScoutCliInvoker = (input: {
   provider: ScoutCliProvider;
   model?: string;
-  account?: Account;
   cloneDir: string;
   prompt: string;
   maxProposals: number;
@@ -126,14 +125,13 @@ export function scanForSecrets(text: string): string | null {
 /**
  * Selects the first read-only-verified Scout provider (`claude` or `codex`; excludes `agy` per Opus H1).
  */
-export function selectScoutProvider(scoutChain: ProviderEntry[], accounts: Account[] = DEFAULT_ACCOUNTS): {
+export function selectScoutProvider(scoutChain: ProviderEntry[]): {
   provider: ScoutCliProvider;
   model?: string;
-  account?: Account;
 } | null {
   for (const entry of scoutChain) {
     if (entry.provider === "claude" || entry.provider === "codex") {
-      return { provider: entry.provider, model: entry.model, account: firstAccount(accounts, entry) };
+      return { provider: entry.provider, model: entry.model };
     }
   }
   return null;
@@ -245,7 +243,6 @@ export function parseEnvelope(stdout: string): unknown {
 export async function defaultScoutCliInvoker(input: {
   provider: ScoutCliProvider;
   model?: string;
-  account?: Account;
   cloneDir: string;
   prompt: string;
   maxProposals: number;
@@ -276,7 +273,6 @@ export async function defaultScoutCliInvoker(input: {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
-    ...accountEnv(input.account),
   };
 
   return new Promise<unknown>((resolve, reject) => {
@@ -388,7 +384,7 @@ export async function runScoutsForProject(opts: {
   }
 
   if (selected.length === 0) return [];
-  const providerChoice = selectScoutProvider(opts.config.chains.scout, opts.config.accounts);
+  const providerChoice = selectScoutProvider(opts.config.chains.scout);
   if (!providerChoice) {
     throw new Error("No claude or codex provider configured in chains.scout for Scout execution.");
   }
@@ -457,7 +453,6 @@ export async function runScoutsForProject(opts: {
       const raw = await invoker({
         provider: providerChoice.provider,
         model: providerChoice.model,
-        account: providerChoice.account,
         cloneDir,
         prompt: buildScoutPrompt(
           wf,
@@ -564,7 +559,7 @@ async function runPitchScout(opts: {
   logger?: Logger;
   now: number;
   wf: ScoutWorkflow;
-  providerChoice: { provider: ScoutCliProvider; model?: string; account?: Account };
+  providerChoice: { provider: ScoutCliProvider; model?: string };
   invoker: ScoutCliInvoker;
   includeMetricsFrom: ScoutWorkflow[];
   reviewers: ReviewerSuite;
@@ -602,7 +597,6 @@ async function runPitchScout(opts: {
     const raw = await opts.invoker({
       provider: opts.providerChoice.provider,
       model: opts.providerChoice.model,
-      account: opts.providerChoice.account,
       cloneDir,
       prompt: buildPitchPrompt({
         name: wf.name,

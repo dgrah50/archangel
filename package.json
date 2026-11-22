@@ -1,27 +1,8 @@
 {
   "name": "archangel",
   "version": "0.1.0",
-  "description": "Single-owner autonomous software factory for bugs, features, and chores with mechanical merge gates, independent cross-vendor review, and self-improving Scouts",
+  "description": "Autonomous software factory with mechanical merge gates, independent cross-vendor review, and Paseo handoff",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/dgrah50/archangel.git"
-  },
-  "homepage": "https://github.com/dgrah50/archangel#readme",
-  "bugs": {
-    "url": "https://github.com/dgrah50/archangel/issues"
-  },
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "keywords": [
-    "software-factory",
-    "autonomous-agents",
-    "github-actions",
-    "code-review",
-    "merge-gate",
-    "developer-tools"
-  ],
   "type": "module",
   "bin": {
     "archangel": "./dist/cli/index.js"
