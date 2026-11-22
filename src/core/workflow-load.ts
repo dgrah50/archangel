@@ -41,6 +41,7 @@ export async function loadWorkflow(
       maxAutoMergesPerDay: cfg.maxAutoMergesPerDay,
       maxAutoPromotionsPerDay: cfg.scouts.maxAutoPromotionsPerDay,
       scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
+      scoutsEnabled: cfg.scouts.enabled,
       maxConcurrentThreads: cfg.maxConcurrentThreads,
       isRevoked: (name, hash) => ledger.isScoutAutoPromoteRevoked(name, hash),
     },

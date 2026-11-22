@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Ledger, StageMetrics } from "../ledger/store.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
@@ -157,8 +158,8 @@ export interface PipelineStage {
 }
 export interface PipelineRepo {
   repo: string;
-  /** missing/invalid fail closed: the repo is halted until the file is fixed. `unresolved` = the daemon has not resolved it yet. */
-  status: "ok" | "missing" | "invalid" | "unresolved";
+  /** missing/invalid fail closed: the repo is halted until the file is fixed. `unresolved` = the daemon has not resolved it yet; `unreadable` = the cached copy is corrupt (the next tick rewrites it). */
+  status: "ok" | "missing" | "invalid" | "unresolved" | "unreadable";
   error?: string;
   mainSha?: string;
   fileSha256?: string;
@@ -205,10 +206,11 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
                 value: `${s.schedule}, max ${s.maxProposals}/run, skills: ${list(s.skills)}${s.includeMetrics ? ", metrics" : ""}`,
                 source: "repo" as const,
               })),
+              { label: "enabled on this host", value: ok.caps.scoutsEnabled ? "yes" : "no", source: "host" as const },
               { label: "runs/day", value: String(ok.caps.scoutRunsPerDay), source: "host" as const },
             ]
           : [],
-        clamps: [],
+        clamps: ok && !ok.caps.scoutsEnabled && ok.scouts.length > 0 ? ["Scouts are disabled on this host (scouts.enabled is false): the repo declares them but nothing runs"] : [],
         metrics: scoutEntries.length === 0
           ? ["no Scout activity"]
           : scoutEntries.map(([name, s]) => `${name}: ${s.runs} runs, ${s.filed} filed, ${s.becameThread} Threads, ${s.merged} merged, ${s.reverted} reverted, ${s.secretsBlocked} secrets blocked`),
@@ -315,14 +317,65 @@ function safeDraft(wf: OkWorkflow): Workflow | undefined {
   }
 }
 
+const Source = z.enum(["kernel", "host", "repo"]);
+const Eff = (v: z.ZodType) => z.object({ value: v, source: Source, declared: v.optional() }).passthrough();
+const CachedBase = { repo: z.string(), mainSha: z.string() };
+/** The cached workflow is untrusted JSON from system_state (it may be corrupt or from an older shape): only a value that fits is rendered. */
+const CachedWorkflow = z.union([
+  z.object({ ...CachedBase, status: z.literal("missing"), error: z.string() }).passthrough(),
+  z.object({ ...CachedBase, status: z.literal("invalid"), error: z.string(), fileSha256: z.string() }).passthrough(),
+  z
+    .object({
+      ...CachedBase,
+      status: z.literal("ok"),
+      fileSha256: z.string(),
+      gate: z
+        .object({
+          maxNonTestLines: z.number(),
+          maxTotalLines: z.number(),
+          maxFiles: z.number(),
+          baseTestRuns: z.number(),
+          headTestRuns: z.number(),
+          extraProtectedPaths: z.array(z.string()),
+        })
+        .passthrough(),
+      requiredChecks: z.array(z.string()),
+      rubric: z.string().optional(),
+      landingBugfix: Eff(z.enum(["owner", "autonomous"])),
+      scouts: z.array(
+        z
+          .object({
+            name: z.string(),
+            schedule: z.string(),
+            maxProposals: z.number(),
+            skills: z.array(z.string()),
+            includeMetrics: z.boolean(),
+            promotionEffective: Eff(z.enum(["owner", "auto"])),
+          })
+          .passthrough(),
+      ),
+      caps: z
+        .object({ autoMergesPerDay: z.number(), autoPromotionsPerDay: z.number(), scoutRunsPerDay: z.number(), scoutsEnabled: z.boolean(), concurrent: z.number() })
+        .passthrough(),
+    })
+    .passthrough(),
+]);
+
 /** `/api/workflows`: every repo the Ledger knows, with its cached workflow (no GitHub calls). */
 export function buildWorkflowsState(ledger: Ledger, now = Date.now()): WorkflowsState {
-  const cached = new Map(ledger.listCachedWorkflows().map((c) => [c.repo, c.workflow as EffectiveWorkflow]));
+  const cached = new Map(ledger.listCachedWorkflows().map((c) => [c.repo, CachedWorkflow.safeParse(c.workflow)]));
   const repos = [...new Set([...cached.keys(), ...ledger.listAllThreads().map((t) => t.repo)])].sort();
   const since = now - WINDOW_DAYS * DAY_MS;
   return {
     generatedAt: now,
     windowDays: WINDOW_DAYS,
-    repos: repos.map((repo) => describeWorkflow(repo, cached.get(repo) ?? null, ledger.computeStageMetrics(repo, since, now))),
+    repos: repos.map((repo) => {
+      const metrics = ledger.computeStageMetrics(repo, since, now);
+      const hit = cached.get(repo);
+      if (hit && !hit.success) {
+        return { ...describeWorkflow(repo, null, metrics), status: "unreadable" as const, error: "The cached workflow could not be read; the daemon rewrites it on its next tick." };
+      }
+      return describeWorkflow(repo, hit ? (hit.data as unknown as EffectiveWorkflow) : null, metrics);
+    }),
   };
 }
