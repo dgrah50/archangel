@@ -1315,9 +1315,9 @@ export class Reconciler {
         if (
           thread.mode === "autonomous" &&
           issue &&
-          thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants &&
-          this.runningTasks.size < this.cfg.maxConcurrentThreads
+          thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants
         ) {
+          if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
           await this.spawnAttempt(thread, issue, "revise", mainSha, failMsgs, [], now);
         } else {
           this.applyMachineEvent(
@@ -1461,11 +1461,8 @@ export class Reconciler {
         findings: JSON.parse(v.findingsJson) as ReviewFinding[],
       }));
 
-      if (
-        thread.mode === "autonomous" &&
-        thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants &&
-        this.runningTasks.size < this.cfg.maxConcurrentThreads
-      ) {
+      if (thread.mode === "autonomous" && thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants) {
+        if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
         await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
       } else {
         const escalated = this.applyMachineEvent(
@@ -1642,11 +1639,8 @@ export class Reconciler {
           return;
         }
       }
-      if (
-        issue &&
-        thread.rebaseCount < this.cfg.maxRebasesPerThread &&
-        this.runningTasks.size < this.cfg.maxConcurrentThreads
-      ) {
+      if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
+        if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
         await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
         return;
       }
