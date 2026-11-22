@@ -546,6 +546,7 @@ export class Reconciler {
           });
           return;
         }
+        this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via: "label_removed" }, now);
         const retried = this.applyMachineEvent(
           thread,
           { t: "owner_retry" },
@@ -638,6 +639,39 @@ export class Reconciler {
     }
   }
 
+  /**
+   * True when this project has taken `maxAutonomousStepsWithoutOwner` steps without owner input.
+   * Notifies once per cap hit; any owner action resets the count and re-arms the notification.
+   */
+  private async autonomyCapReached(now: number): Promise<boolean> {
+    const cap = this.cfg.maxAutonomousStepsWithoutOwner;
+    const steps = this.ledger.autonomousStepsSinceOwner();
+    const key = `autonomy_cap_notified:${this.ledger.repo}`;
+    const notified = this.ledger.getSystemState(key) === "1";
+    if (steps < cap) {
+      if (notified) this.ledger.setSystemState(key, "0", now);
+      return false;
+    }
+    if (!notified) {
+      try {
+        await this.notifier.notifyNeedsYou({
+          issueNumber: null,
+          title: `Autonomy cap reached for ${this.ledger.repo}`,
+          reason: `${steps} autonomous steps (cap ${cap}) since you were last heard from; no new Attempts or merges will start.`,
+          decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.autonomy_cap.decisionClass),
+          recommendation: MAIN_ESCALATION_POLICY.autonomy_cap.recommendation,
+        });
+        this.ledger.setSystemState(key, "1", now);
+        this.ledger.appendAudit("autonomy/cap_reached", null, "archangel", { steps, cap }, now);
+      } catch (err) {
+        this.logger.warn("autonomy/cap_notify_failed", err instanceof Error ? err.message : String(err), {
+          repo: this.ledger.repo,
+        });
+      }
+    }
+    return true;
+  }
+
   private async spawnAttempt(
     thread: ThreadRecord,
     issue: GitHubIssue,
@@ -653,6 +687,9 @@ export class Reconciler {
     }
     if (thread.mode === "advisory") {
       // Structurally forbidden in advisory mode (ADR-0006 / Opus R4).
+      return false;
+    }
+    if (await this.autonomyCapReached(now)) {
       return false;
     }
     if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread) {
@@ -1074,7 +1111,6 @@ export class Reconciler {
       requiredChecks: this.effectiveRequiredChecks,
       checks,
       since: thread.phase.since,
-      nudgedAt: thread.phase.nudgedAt,
       now,
       graceMs: this.cfg.gateStartGraceMs,
       timeoutMs: this.cfg.gateTimeoutMs,
@@ -1083,14 +1119,6 @@ export class Reconciler {
     switch (verdict.status) {
       case "missing_grace":
       case "pending":
-        return;
-
-      case "missing_nudge":
-        this.applyMachineEvent(
-          thread,
-          { t: "gate_nudged", now },
-          { auditTopic: "gate/grace_exceeded", auditPayload: { missing: verdict.missing }, now },
-        );
         return;
 
       case "timeout":
@@ -1486,6 +1514,10 @@ export class Reconciler {
 
     if (blockers.length > 0) {
       await this.postRecapSafe(thread, pr, blockers);
+      return;
+    }
+
+    if (await this.autonomyCapReached(now)) {
       return;
     }
 

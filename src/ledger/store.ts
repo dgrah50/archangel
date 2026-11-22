@@ -880,6 +880,21 @@ export class Ledger {
       .run(now, repo, topic, issueNumber, actor, JSON.stringify(payload));
   }
 
+  /**
+   * Autonomous steps (Attempt starts and autonomous merges) since the owner was last heard from,
+   * i.e. since the latest audit row whose actor is 'owner'.
+   */
+  autonomousStepsSinceOwner(repo = this.repo): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM audit_log
+         WHERE repo = ? AND topic IN ('attempt/started', 'thread/merged')
+           AND id > COALESCE((SELECT MAX(id) FROM audit_log WHERE repo = ? AND actor = 'owner'), 0)`,
+      )
+      .get(repo, repo) as { n: number };
+    return row.n;
+  }
+
   listAudit(
     opts: { repo?: string; topicPrefix?: string; issueNumber?: number; limit?: number } = {},
   ): AuditLogEntry[] {

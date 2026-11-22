@@ -5,6 +5,7 @@ import net from "node:net";
 import { promisify } from "node:util";
 import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
+import { Ledger } from "../ledger/store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -198,6 +199,29 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         detail: `dataDir not writable: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  }
+
+  // 4b. Autonomy cap: steps taken since the owner was last heard from (read-only; no ledger is created).
+  for (const cfg of projects) {
+    const slug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const dbPath = resolvePaths(cfg).ledgerDbPath;
+    let steps = 0;
+    if (fs.existsSync(dbPath)) {
+      const ledger = new Ledger(dbPath, { repo: slug, readonly: true });
+      try {
+        steps = ledger.autonomousStepsSinceOwner();
+      } finally {
+        ledger.close();
+      }
+    }
+    const cap = cfg.maxAutonomousStepsWithoutOwner;
+    checks.push({
+      id: `autonomy_cap:${slug}`,
+      name: `Autonomy Cap (${slug})`,
+      status: steps >= cap ? "warn" : "pass",
+      detail: `${steps}/${cap} autonomous steps since the owner was last heard from`,
+      remediation: steps >= cap ? "Reply on any Thread or run `archangel retry` to continue." : undefined,
+    });
   }
 
   // 5. git >= 2.38 (for git merge-tree --write-tree)

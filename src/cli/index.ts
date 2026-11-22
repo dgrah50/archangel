@@ -597,6 +597,7 @@ program
         github,
         paseo,
       });
+      ledger.appendAudit("thread/owner_resumed", Number(issueArg), "owner", {});
       console.log(
         `Resumed ${repoSlug}#${issueArg} at owner-authorized SHA ${res.headSha?.slice(0, 10) ?? "none"} (advisory mode).`,
       );
@@ -649,6 +650,7 @@ program
         bodySha256: sha256(issue.body),
         auditTopic: "thread/owner_retried",
       });
+      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", {});
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
       ledger.close();

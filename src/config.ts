@@ -105,6 +105,8 @@ export const ConfigSchema = z.object({
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
+  /** Autonomous steps (Attempt starts + auto-merges) allowed before the owner is next heard from. */
+  maxAutonomousStepsWithoutOwner: z.number().int().min(1).default(25),
   shadowMode: z.boolean().default(true),
   maxImplementAttemptsPerThread: z.number().int().min(1).default(3),
   maxRevisionsPerThread: z.number().int().min(0).default(1),
