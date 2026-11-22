@@ -29,6 +29,7 @@ function fake(opts: { current?: string | null; openPr?: string; labels?: string[
         return args.includes("--jq") ? "scoutblob\n" : p;
       }
       if (line.startsWith("pr list")) return opts.openPr ?? "";
+      if (/git\/ref\/heads\/chore\//.test(line)) throw new Error("HTTP 404");
       if (line.includes("/git/ref/heads/")) return "tipsha\n";
       if (line.startsWith("label list")) return (opts.labels ?? []).join("\n");
       if (line.startsWith("pr create")) return "https://github.com/o/r/pull/9\n";

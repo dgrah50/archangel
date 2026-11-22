@@ -203,12 +203,17 @@ export class GitBroker {
    * Returns null if the file does not exist at that ref.
    */
   async readFileAtRef(ref: string, relPath: string): Promise<string | null> {
-    try {
-      return await this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
-    } catch {
-      return null;
-    }
+    // A ref the repo does not have is an error (ls-tree fails), never "file missing": callers halt on null.
+    const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
+    if (listed.trim() === "") return null;
+    return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
   }
+
+  /** True when `sha` names a commit in the bare repo. */
+  async hasCommit(sha: string): Promise<boolean> {
+    return this.runGit(this.bareRepoPath, ["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
+  }
+
 
   /**
    * Lists tracked file paths under `dirPath` directly from the broker's bare repo at `ref`.

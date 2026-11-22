@@ -486,8 +486,10 @@ export async function runScoutsForProject(opts: {
           body,
           labels: [opts.config.labels.agentProposed],
         });
+        // Revocation is re-read live (the Scout CLI runs for minutes; the owner may disagree meanwhile).
         const autoPromote =
           wf.autoPromote &&
+          !opts.ledger.isScoutAutoPromoteRevoked(wf.name, wf.trustHash) &&
           opts.ledger.countRecentAutoPromotions(now) < opts.config.scouts.maxAutoPromotionsPerDay;
         opts.ledger.recordScoutProposal({
           issueNumber: created.number,
