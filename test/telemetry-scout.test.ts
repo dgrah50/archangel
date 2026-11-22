@@ -18,7 +18,7 @@ function seed(ledger: Ledger, ms: (day: number, i: number) => number) {
 const hourly = async (ledger: Ledger) => {
   const errors: unknown[] = [];
   for (let h = 0; h < 6; h++) {
-    await ingestSignals({ ledger, github: {} as never, defaultBranch: "main", wanted: new Set(), schedules: [], now: NOW + h * HOUR, onError: (_, e) => errors.push(e) });
+    await ingestSignals({ ledger, github: {} as never, defaultBranch: "main", wanted: new Set(), schedules: [], now: NOW + h * HOUR, onError: (_, e) => errors.push(e), introducedBy: async () => null });
   }
   expect(errors).toEqual([]);
   return ledger.listSignals(0).filter((s) => s.kind === "telemetry_anomaly");

@@ -114,6 +114,12 @@ reviewerChain:
 #       on: telemetry_anomaly
 #       do: { action: file_issue, class: chore, title: Investigate a telemetry anomaly }
 #       maxPerDay: 1
+#     # The regression watch groups outcomes by (workflow file, prompt) version. A version whose rework rate rose, or that has any
+#     # revert, appears in the daily digest with a revert hint and also becomes one mechanical policy_regression signal.
+#     - name: regression-chore
+#       on: policy_regression
+#       do: { action: file_issue, class: chore, title: Investigate a policy regression }
+#       maxPerDay: 1
 #     # or hand it to the meta-Scout for deeper analysis:
 #     # - name: telemetry-deep-dive
 #     #   on: telemetry_anomaly

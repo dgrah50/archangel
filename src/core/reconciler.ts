@@ -3,7 +3,7 @@ import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
-import { resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { REPO_POLICY_PATH, resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -35,6 +35,7 @@ import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type Sco
 import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
 import { capturePrShots, getPrShots, setPrShots } from "./pr-shots.js";
 import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
+import { archangelPromptCommit } from "./regression-watch.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { fetchResearch } from "./research.js";
@@ -438,6 +439,8 @@ export class Reconciler {
               : undefined,
           now,
           onError: (adapter, err) => this.recordFault(`signals:${adapter}`, err, now),
+          introducedBy: (kind, sha) =>
+            kind === "workflow" ? this.broker.commitIntroducingBlob(this.cfg.defaultBranch, REPO_POLICY_PATH, sha) : archangelPromptCommit(),
         });
         await convergeSignals({
           cfg: this.cfg.signals,
