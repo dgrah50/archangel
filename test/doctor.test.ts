@@ -22,6 +22,7 @@ describe("archangel doctor (Neon P3)", () => {
     );
 
     let grantForbidden = true;
+    let hasRepoPolicy = false;
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (req.method === "POST" && url.pathname.endsWith("/access_tokens")) {
@@ -45,6 +46,11 @@ describe("archangel doctor (Neon P3)", () => {
       if (url.pathname.includes("/contents/.github/workflows/archangel-gate.yml")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ name: "archangel-gate.yml" }));
+        return;
+      }
+      if (hasRepoPolicy && url.pathname.includes("/contents/.agents/archangel.json")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ name: "archangel.json" }));
         return;
       }
       if (url.pathname.endsWith("/labels")) {
@@ -79,8 +85,10 @@ describe("archangel doctor (Neon P3)", () => {
       const bad = await runDoctor({ configPath: yamlPath, env, apiBaseUrl: `http://127.0.0.1:${port}` });
       expect(bad.ok).toBe(false);
       expect(bad.checks.find((c) => c.id.startsWith("github_app_permissions"))?.status).toBe("fail");
+      expect(bad.checks.find((c) => c.id.startsWith("repo_verification"))?.status).toBe("fail");
 
       grantForbidden = false;
+      hasRepoPolicy = true;
       const good = await runDoctor({ configPath: yamlPath, env, apiBaseUrl: `http://127.0.0.1:${port}` });
       expect(good.ok).toBe(true);
       expect(good.checks.find((c) => c.id.startsWith("github_app_permissions"))?.status).toBe("pass");

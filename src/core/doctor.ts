@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
 
 const execFileAsync = promisify(execFile);
@@ -307,16 +307,16 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
-      const hasLandingJson = await gh.fileExistsAtRef(tip, ".agents/landing.json");
+      const hasRepoPolicy = await gh.fileExistsAtRef(tip, REPO_POLICY_PATH);
       checks.push({
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
-        status: hasPreCommit && hasLandingJson ? "pass" : "warn",
-        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${hasLandingJson ? "present" : "missing"}`,
+        status: !hasRepoPolicy ? "fail" : hasPreCommit ? "pass" : "warn",
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, ${REPO_POLICY_PATH}=${hasRepoPolicy ? "present" : "missing"}`,
         remediation:
-          hasPreCommit && hasLandingJson
+          hasPreCommit && hasRepoPolicy
             ? undefined
-            : "Commit .pre-commit-config.yaml and .agents/landing.json to the default branch (see templates/go/ or this repo's .agents/landing.json)",
+            : "Commit .pre-commit-config.yaml and .agents/archangel.json to the default branch (see templates/go/ or this repo's .agents/archangel.json)",
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());

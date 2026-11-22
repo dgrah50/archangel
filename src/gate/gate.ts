@@ -7,8 +7,9 @@ import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 import {
   GatePolicySchema,
-  LandingJsonSchema,
-  mergeLandingJson,
+  REPO_POLICY_PATH,
+  RepoPolicySchema,
+  mergeRepoPolicy,
   type GatePolicy,
 } from "../config.js";
 
@@ -30,7 +31,7 @@ const HARDENED_GIT_FLAGS = [
 /**
  * Universal, language-agnostic protected paths.
  * Language/repo-specific paths (e.g. go.mod, package-lock.json, Makefile) belong in
- * `.agents/landing.json` (`extraProtectedPaths`) or `archangel.yaml`.
+ * `.agents/archangel.json` (`extraProtectedPaths`) or `archangel.yaml`.
  */
 const UNIVERSAL_PROTECTED_PREFIXES = [".github/", ".agents/"];
 const UNIVERSAL_PROTECTED_EXACT = new Set([
@@ -490,7 +491,7 @@ async function runRepoPreCommit(
 /**
  * Language-agnostic Archangel Mechanical Gate (ADR-0003 + Opus review hardening):
  * - Throwaway per-run HOME and fresh per-run GOCACHE (no shared cache poisoning / real HOME exposure).
- * - Fail-closed under `--policy-from-base`: requires strict `.agents/landing.json`, non-empty `testFileGlobs`,
+ * - Fail-closed under `--policy-from-base`: requires strict `.agents/archangel.json`, non-empty `testFileGlobs`,
  *   non-empty `testCmd` (unless `skipTests`), and `.pre-commit-config.yaml` (unless `skipPreCommit`).
  * - Enforces diff bounds, protected paths, and pre-existing test-file AND test-fixture immutability.
  * - Executes repo-owned `.pre-commit-config.yaml` strictly from `base` (fail-closed on unsupported keys or file mutation).
@@ -520,19 +521,19 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
     let policy = GatePolicySchema.parse(opts.policy ?? {});
     if (opts.policyFromBase) {
-      const landingRaw = await readGitFileStrict(opts.repoDir, baseSha, ".agents/landing.json", env);
-      if (!landingRaw) {
-        report.violations.push("missing .agents/landing.json on base commit (failing closed)");
+      const repoPolicyRaw = await readGitFileStrict(opts.repoDir, baseSha, REPO_POLICY_PATH, env);
+      if (!repoPolicyRaw) {
+        report.violations.push("missing .agents/archangel.json on base commit (failing closed)");
         return report;
       }
       // Strict schema validation: typos like "testCommand" fail immediately instead of silently disabling tests.
-      LandingJsonSchema.parse(JSON.parse(landingRaw));
-      policy = mergeLandingJson(policy, [], undefined, landingRaw).gate;
+      RepoPolicySchema.parse(JSON.parse(repoPolicyRaw));
+      policy = mergeRepoPolicy(policy, [], undefined, repoPolicyRaw).gate;
       if (policy.testFileGlobs.length === 0) {
-        report.violations.push(".agents/landing.json on base must declare non-empty testFileGlobs");
+        report.violations.push(".agents/archangel.json on base must declare non-empty testFileGlobs");
       }
       if (!opts.skipTests && !policy.testCmd) {
-        report.violations.push(".agents/landing.json on base must declare non-empty testCmd");
+        report.violations.push(".agents/archangel.json on base must declare non-empty testCmd");
       }
       if (report.violations.length > 0) {
         return report;

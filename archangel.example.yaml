@@ -1,5 +1,5 @@
 # Archangel host configuration (no secrets here — secrets live in .env)
-# Language/repo-specific verification (.pre-commit-config.yaml + .agents/landing.json) lives in each repo's default branch.
+# Language/repo-specific verification (.pre-commit-config.yaml + .agents/archangel.json) lives in each repo's default branch.
 ownerUserId: 123456
 dataDir: .archangel
 pollIntervalMs: 30000

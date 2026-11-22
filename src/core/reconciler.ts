@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { mergeLandingJson, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { REPO_POLICY_PATH, mergeRepoPolicy, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -146,14 +146,14 @@ export class Reconciler {
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
 
-    // Load optional `.agents/landing.json` strictly from `main` tip — isolated in try/catch so bad JSON never freezes kill-switches (Opus S13).
+    // Load optional `.agents/archangel.json` strictly from `main` tip — isolated in try/catch so bad JSON never freezes kill-switches (Opus S13).
     try {
-      const landingRaw = await this.broker.readFileAtRef(mainSha, ".agents/landing.json");
-      const merged = mergeLandingJson(
+      const repoPolicyRaw = await this.broker.readFileAtRef(mainSha, REPO_POLICY_PATH);
+      const merged = mergeRepoPolicy(
         this.cfg.gate,
         this.cfg.requiredChecks,
         this.cfg.reviewRubric,
-        landingRaw,
+        repoPolicyRaw,
       );
       this.effectiveGate = merged.gate;
       this.effectiveRequiredChecks = merged.requiredChecks;
@@ -162,7 +162,7 @@ export class Reconciler {
       this.effectiveGate = this.cfg.gate;
       this.effectiveRequiredChecks = this.cfg.requiredChecks;
       this.effectiveReviewRubric = this.cfg.reviewRubric;
-      this.ledger.appendAudit("config/landing_json_invalid", null, "archangel", {
+      this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", {
         mainSha,
         error: err instanceof Error ? err.message : String(err),
       }, now);

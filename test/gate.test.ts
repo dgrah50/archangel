@@ -52,7 +52,7 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
   );
   writeFile(
     repoDir,
-    ".agents/landing.json",
+    ".agents/archangel.json",
     JSON.stringify(
       {
         maxNonTestLines: 20,
@@ -180,25 +180,25 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
     }
   });
 
-  it("fails closed on missing/typo'd landing.json, unsupported pre-commit keys, and mutating hooks (H3)", async () => {
+  it("fails closed on missing/typo'd archangel.json, unsupported pre-commit keys, and mutating hooks (H3)", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {
-      // Missing landing.json fails closed under policyFromBase
+      // Missing archangel.json fails closed under policyFromBase
       git(repoDir, ["checkout", "-b", "no-landing", baseSha]);
-      fs.rmSync(path.join(repoDir, ".agents/landing.json"));
+      fs.rmSync(path.join(repoDir, ".agents/archangel.json"));
       git(repoDir, ["add", "-A"]);
-      git(repoDir, ["commit", "-m", "drop landing.json"]);
+      git(repoDir, ["commit", "-m", "drop archangel.json"]);
       const noLandingBase = git(repoDir, ["rev-parse", "HEAD"]);
       writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix"]);
       const rMissing = await runGate({ repoDir, baseRef: noLandingBase, headRef: "HEAD", policyFromBase: true });
       expect(rMissing.passed).toBe(false);
-      expect(rMissing.violations.some((v) => v.includes("missing .agents/landing.json"))).toBe(true);
+      expect(rMissing.violations.some((v) => v.includes("missing .agents/archangel.json"))).toBe(true);
 
-      // Typo'd key ("testCommand") in landing.json throws strict Zod error instead of silently passing
+      // Typo'd key ("testCommand") in archangel.json throws strict Zod error instead of silently passing
       git(repoDir, ["checkout", "-b", "typo-landing", baseSha]);
-      writeFile(repoDir, ".agents/landing.json", JSON.stringify({ testCommand: "true", testFileGlobs: ["tests/*.test.mjs"] }));
+      writeFile(repoDir, ".agents/archangel.json", JSON.stringify({ testCommand: "true", testFileGlobs: ["tests/*.test.mjs"] }));
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "typo"]);
       const typoBase = git(repoDir, ["rev-parse", "HEAD"]);

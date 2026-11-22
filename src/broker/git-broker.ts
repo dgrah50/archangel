@@ -253,7 +253,7 @@ export class GitBroker {
 
   /**
    * Executes the language-agnostic Archangel Gate strictly against `this.bareRepoPath`
-   * (never against the implementer clone), reading `.agents/landing.json` and
+   * (never against the implementer clone), reading `.agents/archangel.json` and
    * `.pre-commit-config.yaml` strictly from `baseSha`.
    */
   async runLocalGate(
