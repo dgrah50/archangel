@@ -20,6 +20,7 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --no-audit
+      - run: npm run verify:formal
       - run: npm run test:all
       - run: npm run build
       # `npm run build` regenerates the Gate bundle that target repos run from a pinned SHA. If it differs from the committed file,

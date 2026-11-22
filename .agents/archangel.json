@@ -27,6 +27,7 @@
       "src/core/scout.ts",
       "templates/**",
       "workflows/**",
+      "formal/**",
       "bin/**",
       "skills/**",
       "src/core/work-class.ts",
