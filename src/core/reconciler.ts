@@ -1435,12 +1435,12 @@ export class Reconciler {
       explicitStartSha ??
       (kind === "implement" ? mainSha : (extractPrFromPhase(thread.phase)?.headSha ?? mainSha));
     this.ledger.recordAttemptProvenance(attempt.id, {
-      promptSha256: promptTemplateSha(kind === "revise" ? "revise" : kind === "rebase" ? "rebase" : "implement", workClassOfBranch(thread.branchName)),
+      promptSha256: promptTemplateSha(kind, workClassOfBranch(thread.branchName)),
       workflowSha256: this.workflow?.fileSha256 ?? null,
     });
     if (kind === "implement") {
       await this.pinEval(thread.issueNumber, fromSha);
-    } else {
+    } else if (kind !== "plan") {
       // Revise and rebase replay from the head they started on (and, for a rebase, the base it conflicted with): keep both fetchable.
       const input = captureAttemptInput(kind, { mainSha, gateViolations, structuredFindings });
       if (input === null) this.logger.warn("eval/input_not_captured", `${kind} input for #${thread.issueNumber} held a secret-like string; this Attempt is not replayable`, { repo: this.ledger.repo, issue: thread.issueNumber });
@@ -1575,7 +1575,7 @@ export class Reconciler {
         timeoutMs: this.cfg.implementTimeoutMs,
         maxBudgetUsd: reservedUsd,
         preferVendors: kind === "implement" ? undefined : workingThread.implementerVendors,
-        role: kind,
+        role: kind === "plan" ? "implement" : kind,
         })
         .catch((err: unknown) => {
           // The implementer (every provider in its chain) threw: that is a provider failure, whatever its prose says.

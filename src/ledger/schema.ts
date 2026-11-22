@@ -66,6 +66,7 @@ export const ATTEMPT_ERROR_CATEGORIES = [
   "implementer_failed",
   "static_rejection",
   "gate_or_policy",
+  "plan_invalid",
   "other",
 ] as const;
 export type AttemptErrorCategory = (typeof ATTEMPT_ERROR_CATEGORIES)[number];
@@ -363,6 +364,19 @@ CREATE TABLE IF NOT EXISTS account_cooldowns (
   until_ts INTEGER NOT NULL,
   reason TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+-- A feature's machine-written plans, one row per version. The approved row is the pin: later Attempts get exactly its text.
+CREATE TABLE IF NOT EXISTS thread_plans (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  plan_text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  approved_at INTEGER,
+  PRIMARY KEY (repo, issue_number, version),
+  FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
 -- Owner-confirmed linear order between promoted pitch slices: the dependent Thread stays queued until its predecessor merges.

@@ -77,7 +77,8 @@
       "src/core/ui-host-config.ts",
       "src/core/ui-onboard.ts",
       "src/core/ui-gh.ts",
-      "src/core/ui-accounts.ts"
+      "src/core/ui-accounts.ts",
+      "src/core/plan.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

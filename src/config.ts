@@ -194,6 +194,8 @@ export const LabelsSchema = z.object({
   feature: z.string().default("class:feature"),
   /** Owner-applied label that makes a Thread a chore (cleanup/hygiene; owner merges; no red-on-base proof). */
   chore: z.string().default("class:chore"),
+  /** Owner-applied label that approves a feature's posted plan (`features.planApproval`); only the owner's application counts. */
+  planApproved: z.string().default("plan:approved"),
 });
 
 export const ScoutsConfigSchema = z.object({
@@ -276,6 +278,7 @@ export const ConfigSchema = z.object({
     agentPitch: "agent-pitch",
     feature: "class:feature",
     chore: "class:chore",
+    planApproved: "plan:approved",
   }),
   scouts: ScoutsConfigSchema.default({
     enabled: false,
