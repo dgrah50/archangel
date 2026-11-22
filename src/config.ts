@@ -272,6 +272,29 @@ const TimeoutFields = {
   reviewerOutageMaxMs: z.number().int().min(60_000).default(6 * 60 * 60_000),
 };
 
+/** Where Scouts run: `local` (default) or a Sail Sailbox. Strict: an unknown key or provider is a config error, never a silent local run. */
+export const ComputeConfigSchema = z
+  .object({
+    provider: z.enum(["local", "sail"]).default("local"),
+    sail: z
+      .object({
+        app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, "lowercase letters, digits and hyphens"),
+        image: z.object({ arch: z.enum(["amd64", "arm64"]).default("amd64") }).strict().default({ arch: "amd64" }),
+        maxLifetimeSeconds: z.number().int().min(60).max(3600).default(600),
+        maxDailyComputeUsd: z.number().positive().default(2),
+        /** Name of the Sail secret holding the Claude token; the egress policy swaps it in on the wire (the box sees a placeholder in CLAUDE_CODE_OAUTH_TOKEN). It must exist before the first box. */
+        claudeTokenSecret: z.string().min(1).default("CLAUDE_CODE_OAUTH_TOKEN"),
+        /** Off by default: Claude-chain implement, revise and review Attempts stay on this machine. */
+        remoteClaudeAttempts: z.boolean().default(false),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((c) => c.provider !== "sail" || c.sail !== undefined, { message: "compute.provider 'sail' needs a compute.sail block", path: ["sail"] })
+  .default({ provider: "local" });
+export type ComputeConfig = z.infer<typeof ComputeConfigSchema>;
+
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
@@ -298,6 +321,7 @@ export const ConfigSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  compute: ComputeConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
@@ -402,6 +426,7 @@ export const HostYamlSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  compute: ComputeConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   factoryRetry: z.boolean().default(true),
@@ -564,6 +589,7 @@ export function loadProjectConfigs(opts: {
       pollIntervalMs: host.pollIntervalMs,
       maxDailyUsd: host.maxDailyUsd,
       dailyTimezone: host.dailyTimezone,
+      compute: host.compute,
       digestHour: host.digestHour,
       maxConcurrentThreads: proj.maxConcurrentThreads,
       maxAutoMergesPerDay: proj.maxAutoMergesPerDay,

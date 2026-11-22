@@ -35,6 +35,9 @@ const HARDENED_GIT_FLAGS = [
   "protocol.file.allow=always",
 ];
 
+/** A remote provider's result bundle larger than this is refused before it is fetched. */
+export const MAX_RESULT_BUNDLE_BYTES = 50 * 1024 * 1024;
+
 const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-|chore-)?\d+$/;
 /** Machine-drafted owner-review PRs (correction loop): never `factory/*`, so the daemon's own Lander can never merge them. */
 const AGENT_DRAFT_BRANCH_RE = /^agent-draft\/[a-z0-9-]{1,60}-\d+$/;
@@ -224,6 +227,52 @@ export class GitBroker {
     await this.runGit(cloneDir, ["config", "user.name", "Archangel Worker"]);
     await this.runGit(cloneDir, ["config", "user.email", "archangel-worker@users.noreply.github.com"]);
     return cloneDir;
+  }
+
+  /** A bundle holding `startSha` and its history, for a remote provider to start from; the box never needs a Git credential. */
+  async createStartBundle(issueNumber: number, startSha: string): Promise<string> {
+    fs.mkdirSync(this.clonesDir, { recursive: true });
+    const file = path.join(this.clonesDir, `start-${issueNumber}-${Date.now()}.bundle`);
+    const ref = `refs/archangel/start/${issueNumber}`;
+    await this.runGit(this.bareRepoPath, ["update-ref", ref, startSha]);
+    try {
+      await this.runGit(this.bareRepoPath, ["bundle", "create", file, ref]);
+    } finally {
+      await this.runGit(this.bareRepoPath, ["update-ref", "-d", ref]);
+    }
+    return file;
+  }
+
+  /** Refuses a result bundle over the size cap or one `git bundle verify` rejects (against this repo, so its prerequisites must exist here). */
+  async verifyBundle(bundlePath: string): Promise<void> {
+    const size = fs.statSync(bundlePath).size;
+    if (size > MAX_RESULT_BUNDLE_BYTES) throw new Error(`result bundle is ${size} bytes, over the ${MAX_RESULT_BUNDLE_BYTES} byte cap`);
+    await this.runGit(this.bareRepoPath, ["bundle", "verify", bundlePath]);
+  }
+
+  /**
+   * `fetchAndValidateFromClone` for whatever a provider collected. A bundle is unpacked into a scratch clone with the same
+   * hardened flags (fsck on fetch), then validated exactly like a clone; the scratch clone is always removed.
+   */
+  async fetchAndValidateCollected(
+    collected: { kind: "clone" | "bundle"; path: string },
+    issueNumber: number,
+    baseSha: string,
+    bounds: GatePolicy,
+    workClass?: WorkClass,
+  ): Promise<BrokerFetchValidation> {
+    if (collected.kind === "clone") return this.fetchAndValidateFromClone(collected.path, issueNumber, baseSha, bounds, workClass);
+    await this.verifyBundle(collected.path);
+    const scratch = path.join(this.clonesDir, `bundle-${issueNumber}-${Date.now()}`);
+    try {
+      await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, scratch]);
+      await this.runGit(scratch, ["fetch", collected.path, "+HEAD:refs/archangel/result"]);
+      await this.runGit(scratch, ["checkout", "-B", `factory/${issueNumber}`, "refs/archangel/result"]);
+      await this.runGit(scratch, ["remote", "remove", "origin"]);
+      return await this.fetchAndValidateFromClone(scratch, issueNumber, baseSha, bounds, workClass);
+    } finally {
+      this.removeClone(scratch);
+    }
   }
 
   /**

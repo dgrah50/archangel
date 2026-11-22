@@ -69,6 +69,8 @@ export interface ReconcilerDeps {
   correctionDrafts?: CorrectionDraftDeps;
   /** Runs the read-only triage CLI; defaults to the Scout sandbox invoker. Tests pass a fake. */
   triageInvoker?: ScoutCliInvoker;
+  /** Where Scouts run when the host config says so; absent means this machine. Implement, revise and review always stay local. */
+  scoutCompute?: ComputeProvider;
 }
 
 /** What the drafting half needs from outside: the Scout CLI, the eval, the PR opener and a PR status lookup. */
@@ -124,6 +126,7 @@ export class Reconciler {
   private readonly github: GitHubClient;
   private readonly broker: GitBroker;
   private readonly compute: ComputeProvider;
+  private readonly scoutCompute: ComputeProvider | undefined;
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
@@ -163,6 +166,7 @@ export class Reconciler {
     this.github = deps.github;
     this.broker = deps.broker;
     this.compute = new LocalProvider(deps.broker);
+    this.scoutCompute = deps.scoutCompute;
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
@@ -413,6 +417,7 @@ export class Reconciler {
                 notifier: this.notifier,
                 mainSha,
                 filterName: scout,
+                compute: this.scoutCompute,
                 logger: this.logger,
                 now,
               });
@@ -440,6 +445,7 @@ export class Reconciler {
           notifier: this.notifier,
           mainSha,
           onlyScheduled: true,
+          compute: this.scoutCompute,
           logger: this.logger,
           now,
         });

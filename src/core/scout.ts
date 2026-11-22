@@ -1,4 +1,5 @@
 import { execInGroup, LocalProvider } from "../compute/local.js";
+import type { ComputeProvider, ExecResult, ExecSpec } from "../compute/provider.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { tryParseJson } from "./json.js";
@@ -78,6 +79,8 @@ export type ScoutCliInvoker = (input: {
   timeoutMs: number;
   /** JSON schema the CLI must answer in; defaults to the bug-finding schema. */
   outputSchema?: Record<string, unknown>;
+  /** Set when the workspace is on a remote provider: the CLI runs there, with no host env and no account home. */
+  exec?: (spec: ExecSpec) => Promise<ExecResult>;
 }) => Promise<unknown>;
 
 export function scoutContentHash(title: string, body: string): string {
@@ -251,6 +254,24 @@ export function parseEnvelope(stdout: string): unknown {
   return undefined;
 }
 
+/** A Scout on a remote box: the claude CLI only (codex writes its answer to a local file), and the env is just PATH and the model's own variables. */
+async function remoteScout(input: {
+  provider: ScoutCliProvider;
+  model?: string;
+  prompt: string;
+  maxProposals: number;
+  timeoutMs: number;
+  outputSchema?: Record<string, unknown>;
+  exec: (spec: ExecSpec) => Promise<ExecResult>;
+}): Promise<unknown> {
+  if (input.provider !== "claude") throw new Error(`remote Scouts run claude only, not ${input.provider}`);
+  const schemaStr = JSON.stringify(input.outputSchema ?? buildScoutJsonSchema(input.maxProposals));
+  const args = buildScoutCliArgs("claude", { cloneDir: "", schemaStr, schemaFile: "", outFile: "", model: input.model });
+  const res = await input.exec({ cmd: "claude", args, env: { PATH: "/usr/local/bin:/usr/bin:/bin", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }, stdin: input.prompt, timeoutMs: input.timeoutMs });
+  if (res.code !== 0) throw new Error(`claude scout exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-600)}`);
+  return parseEnvelope(res.stdout);
+}
+
 export async function defaultScoutCliInvoker(input: {
   provider: ScoutCliProvider;
   model?: string;
@@ -260,7 +281,9 @@ export async function defaultScoutCliInvoker(input: {
   maxProposals: number;
   timeoutMs: number;
   outputSchema?: Record<string, unknown>;
+  exec?: (spec: ExecSpec) => Promise<ExecResult>;
 }): Promise<unknown> {
+  if (input.exec) return remoteScout({ ...input, exec: input.exec });
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `archangel-scout-${input.provider}-`));
   const schemaFile = path.join(tmpDir, "schema.json");
   const outFile = path.join(tmpDir, "out.json");
@@ -344,6 +367,8 @@ export async function runScoutsForProject(opts: {
   filterName?: string;
   dryRun?: boolean;
   invoker?: ScoutCliInvoker;
+  /** Where Scouts run; absent means a throwaway clone on this machine. */
+  compute?: ComputeProvider;
   logger?: Logger;
   now?: number;
 }): Promise<ScoutRunSummary[]> {
@@ -383,13 +408,13 @@ export async function runScoutsForProject(opts: {
     (iss) => opts.ledger.getScoutProposal(iss.number) !== null,
   ).length;
 
-  const compute = new LocalProvider(opts.broker);
+  const compute = opts.compute ?? new LocalProvider(opts.broker);
   const invoker = opts.invoker ?? defaultScoutCliInvoker;
   const results: ScoutRunSummary[] = [];
 
   for (const wf of selected) {
     if (wf.kind === "pitch") {
-      results.push(await runPitchScout({ ...opts, now, wf, providerChoice, invoker, includeMetricsFrom: workflows }));
+      results.push(await runPitchScout({ ...opts, compute, now, wf, providerChoice, invoker, includeMetricsFrom: workflows }));
       continue;
     }
     if (openTrackedCount >= opts.config.scouts.maxOpenProposals) {
@@ -442,6 +467,7 @@ export async function runScoutsForProject(opts: {
         model: providerChoice.model,
         account: providerChoice.account,
         cloneDir,
+        exec: opts.compute ? (spec) => compute.exec(workspace, spec) : undefined,
         prompt: buildScoutPrompt(
           wf,
           wf.includeMetrics
@@ -552,6 +578,7 @@ async function runPitchScout(opts: {
   wf: ScoutWorkflow;
   providerChoice: { provider: ScoutCliProvider; model?: string; account?: Account };
   invoker: ScoutCliInvoker;
+  compute?: ComputeProvider;
   includeMetricsFrom: ScoutWorkflow[];
   reviewers: ReviewerSuite;
   notifier: Notifier;
@@ -589,7 +616,7 @@ async function runPitchScout(opts: {
   const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
   const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
   const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
-  const compute = new LocalProvider(opts.broker);
+  const compute = opts.compute ?? new LocalProvider(opts.broker);
   const workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
   const cloneDir = workspace.path;
   try {
@@ -599,6 +626,7 @@ async function runPitchScout(opts: {
       model: opts.providerChoice.model,
       account: opts.providerChoice.account,
       cloneDir,
+      exec: opts.compute ? (spec) => compute.exec(workspace, spec) : undefined,
       prompt: buildPitchPrompt({
         name: wf.name,
         skills: wf.skills,

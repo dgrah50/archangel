@@ -89,7 +89,7 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     if (result.aborted) return fail("aborted", "aborted", costUsd);
     if (result.failure) return fail("implementer_failed", result.failure, costUsd);
 
-    const validation = await broker.fetchAndValidateFromClone((await compute.collect(workspace)).path, issueNumber, mainSha, deps.gate, "feature");
+    const validation = await broker.fetchAndValidateCollected(await compute.collect(workspace), issueNumber, mainSha, deps.gate, "feature");
     if (validation.protectedViolations.length > 0) {
       return fail(validation.changedFiles.length === 0 ? "empty" : "out_of_bounds", validation.protectedViolations.join("; "), costUsd);
     }
