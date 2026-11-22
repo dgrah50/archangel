@@ -37,7 +37,8 @@ export function draftFromEffective(wf: OkWorkflow): Workflow {
     requiredChecks: wf.requiredChecks,
     review: wf.rubric === undefined ? {} : { rubric: wf.rubric },
     landing: { bugfix: wf.landingBugfix.declared ?? wf.landingBugfix.value },
-    scouts: wf.scouts.map((s) => ({
+    fleetScouts: { optOut: wf.fleetOptOut },
+    scouts: wf.scouts.filter((s) => !s.fleet).map((s) => ({
       name: s.name,
       kind: s.kind,
       schedule: s.schedule,

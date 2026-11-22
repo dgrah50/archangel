@@ -38,6 +38,7 @@
       "src/core/owner-reply.ts",
       "src/core/metrics-block.ts",
       "src/core/skills.ts",
+      "src/core/fleet-scouts.ts",
       "src/core/ui-server.ts",
       "src/core/ui-pitches.ts",
       "ui/**",

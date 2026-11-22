@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { FLEET_SCOUT_NAMES } from "./core/fleet-scouts.js";
 import type { ReviewerVendor } from "./ledger/schema.js";
 
 export const CliProviderSchema = z.enum(["codex", "agy", "claude"]);
@@ -257,6 +258,8 @@ export const ConfigSchema = z.object({
   shadowMode: z.boolean().default(true),
   /** Host kill switch: false stops factory retries on every repo, whatever its workflow file says. */
   factoryRetry: z.boolean().default(true),
+  /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
+  fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -351,6 +354,8 @@ export const HostYamlSchema = z.object({
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   factoryRetry: z.boolean().default(true),
+  /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
+  fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -515,6 +520,7 @@ export function loadProjectConfigs(opts: {
       reviewerOutageMaxMs: host.reviewerOutageMaxMs,
       shadowMode: proj.shadowMode,
       factoryRetry: host.factoryRetry,
+      fleetScouts: host.fleetScouts,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

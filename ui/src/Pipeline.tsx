@@ -73,8 +73,10 @@ function sentence(id: string, r: PipelineRepo, settings: SettingsState | null, d
     }
     default: {
       if (!draft) return "Scouts are unavailable until the workflow file is fixed.";
-      if (draft.scouts.length === 0) return "No Scouts are declared.";
-      return draft.scouts.map((s) => (s.kind === "bug" ? `${s.name} looks ${s.schedule === "manual" ? "when you run it" : s.schedule} and files up to ${s.maxProposals} bug${s.maxProposals === 1 ? "" : "s"}.` : `${s.name} pitches ${SCHEDULE[s.schedule]}.`)).join(" ");
+      const fleet = r.fleetScouts ?? [];
+      const fleetText = fleet.length > 0 ? ` Fleet Scouts set on this machine: ${fleet.join(", ")} (a repo opts out in its workflow file).` : "";
+      if (draft.scouts.length === 0) return `No Scouts are declared.${fleetText}`;
+      return draft.scouts.map((s) => (s.kind === "bug" ? `${s.name} looks ${s.schedule === "manual" ? "when you run it" : s.schedule} and files up to ${s.maxProposals} bug${s.maxProposals === 1 ? "" : "s"}.` : `${s.name} pitches ${SCHEDULE[s.schedule]}.`)).join(" ") + fleetText;
     }
   }
 }
