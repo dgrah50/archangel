@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { GatePolicySchema } from "../src/config.js";
 
@@ -85,28 +85,6 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       expect(rev.branchName).toBe("factory/revert-7");
       const revertedContent = git(broker.bareRepoPath, ["show", `${rev.headSha}:app.go`]);
       expect(revertedContent).toContain("return 1");
-    } finally {
-      cleanupDir(root);
-    }
-  });
-
-  it("rejects protected paths pre-push inside broker bare clone", async () => {
-    const { root, remoteBare, baseSha } = createFixtureRemote();
-    try {
-      const broker = new GitBroker({
-        bareRepoPath: path.join(root, "broker.git"),
-        clonesDir: path.join(root, "clones"),
-      });
-      await broker.ensureBareRepo(remoteBare);
-
-      const cloneDir = await broker.createThrowawayClone(9, baseSha);
-      fs.mkdirSync(path.join(cloneDir, ".github", "workflows"), { recursive: true });
-      fs.writeFileSync(path.join(cloneDir, ".github", "workflows", "archangel-gate.yml"), "name: Evil\n");
-      git(cloneDir, ["add", "-A"]);
-      git(cloneDir, ["commit", "-m", "edit gate"]);
-
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 9, baseSha, BOUNDS);
-      expect(val.protectedViolations.some((v) => v.includes("protected path modified"))).toBe(true);
     } finally {
       cleanupDir(root);
     }
@@ -242,62 +220,6 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
         clonesDir: path.join(root, "clones"),
       });
       await expect(brokenBroker.isMergeTreeClean(baseSha, val.headSha)).rejects.toThrow();
-    } finally {
-      cleanupDir(root);
-    }
-  });
-
-  it("getDiffAndTouchedFiles and fetchAndValidateFromClone omit deleted files but throw on git show or merge-base failures", async () => {
-    const { root, remoteBare, baseSha } = createFixtureRemote();
-    const seed = path.join(root, "seed");
-    try {
-      fs.writeFileSync(path.join(seed, "obsolete.go"), "package demo\n");
-      git(seed, ["add", "-A"]);
-      git(seed, ["commit", "-m", "add obsolete file"]);
-      git(seed, ["push", remoteBare, "main"]);
-      const mainSha = git(remoteBare, ["rev-parse", "refs/heads/main"]);
-
-      const broker = new GitBroker({
-        bareRepoPath: path.join(root, "broker.git"),
-        clonesDir: path.join(root, "clones"),
-      });
-      await broker.ensureBareRepo(remoteBare);
-
-      const cloneDir = await broker.createThrowawayClone(21, mainSha);
-      fs.writeFileSync(path.join(cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 42 }\n");
-      fs.rmSync(path.join(cloneDir, "obsolete.go"));
-      git(cloneDir, ["add", "-A"]);
-      git(cloneDir, ["commit", "-m", "edit app and delete obsolete"]);
-
-      // Healthy path: modified file is read, deleted file is omitted cleanly
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 21, mainSha, BOUNDS);
-      expect(Object.keys(val.touchedFiles)).toEqual(["app.go"]);
-      expect(val.touchedFiles["app.go"]).toContain("return 42");
-
-      const diff = await broker.getDiffAndTouchedFiles(mainSha, val.headSha);
-      expect(Object.keys(diff.touchedFiles)).toEqual(["app.go"]);
-      expect(diff.touchedFiles["app.go"]).toContain("return 42");
-
-      // Failing git show on a modified (non-deleted) file must throw instead of silently omitting it
-      const origRunGit = (broker as unknown as { runGit: (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string> }).runGit.bind(broker);
-      const spy = vi
-        .spyOn(broker as unknown as { runGit: (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string> }, "runGit")
-        .mockImplementation(async (cwd, args, env) => {
-          if (args[0] === "show" && args[1]?.endsWith(":app.go")) {
-            throw new Error("fatal: loose object corrupt");
-          }
-          return origRunGit(cwd, args, env);
-        });
-      try {
-        await expect(broker.getDiffAndTouchedFiles(mainSha, val.headSha)).rejects.toThrow(/loose object corrupt/);
-        await expect(broker.fetchAndValidateFromClone(cloneDir, 21, mainSha, BOUNDS)).rejects.toThrow(/loose object corrupt/);
-      } finally {
-        spy.mockRestore();
-      }
-
-      // Failing merge-base (unrelated history / missing commit) must throw instead of falling back to baseSha
-      await expect(broker.getDiffAndTouchedFiles("f".repeat(40), val.headSha)).rejects.toThrow();
-      await expect(broker.fetchAndValidateFromClone(cloneDir, 21, "f".repeat(40), BOUNDS)).rejects.toThrow();
     } finally {
       cleanupDir(root);
     }

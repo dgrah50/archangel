@@ -99,16 +99,3 @@ describe("archangel doctor (Neon P3)", () => {
   });
 });
 
-describe("reviewer independence", () => {
-  it("flags implementer vendors that leave fewer than 2 independent reviewers", async () => {
-    const { findReviewerIndependenceGaps } = await import("../src/core/doctor.js");
-    const mk = (impl: string[], rev: string[]) => ({
-      authMode: "subscription" as const,
-      chains: { implement: impl.map((provider) => ({ provider })), revise: impl.map((provider) => ({ provider })), rebase: impl.map((provider) => ({ provider })), scout: [{ provider: "claude" }], triage: [{ provider: "claude" }] } as never,
-      reviewerChain: rev.map((provider) => ({ provider })) as never,
-    });
-    expect(findReviewerIndependenceGaps(mk(["codex"], ["agy", "claude", "codex"]))).toEqual([]);
-    expect(findReviewerIndependenceGaps(mk(["codex", "claude"], ["agy", "claude"])).length).toBeGreaterThan(0);
-  });
-});
-

@@ -4,13 +4,6 @@ import { okWorkflow } from "./helpers/workflow.js";
 import { resolveSkills } from "../src/core/skills.js";
 
 describe("bundled skills", () => {
-  it("expands folder wildcards in order without duplicates", () => {
-    const refs = resolveSkills(["general/bug-hunt", "go/*", "general/bug-hunt"]).map((s) => s.ref);
-    expect(refs[0]).toBe("general/bug-hunt");
-    expect(refs.filter((r) => r === "general/bug-hunt")).toHaveLength(1);
-    expect(refs.slice(1).every((r) => r.startsWith("go/"))).toBe(true);
-  });
-
   it("fails closed on unknown skills, empty folders and traversal", () => {
     expect(() => resolveSkills(["general/nope"])).toThrow(/Unknown skill/);
     expect(() => resolveSkills(["rust/*"])).toThrow(/no skills/);

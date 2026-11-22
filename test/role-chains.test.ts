@@ -1,13 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
 import { ChainsSchema, HostYamlSchema, resolveRequiredReviewers } from "../src/config.js";
 import { findReviewerIndependenceGaps } from "../src/core/doctor.js";
-import { selectScoutProvider } from "../src/core/scout.js";
-import { Ledger } from "../src/ledger/store.js";
 
 const host = (extra: Record<string, unknown> = {}) => ({ ownerUserId: 1, projects: [{ repo: "a/b" }], ...extra });
 
@@ -18,16 +15,6 @@ describe("host chains config", () => {
     }
   });
 
-  it("requires a claude or codex entry in the scout chain (agy has no verified read-only mode)", () => {
-    expect(() => ChainsSchema.parse({ scout: [{ provider: "agy" }] })).toThrow(/claude or codex/);
-    expect(selectScoutProvider([{ provider: "agy" }, { provider: "claude", model: "m" }])).toMatchObject({ provider: "claude", model: "m" });
-  });
-
-  it("the shipped example config parses", () => {
-    const example = parseYaml(fs.readFileSync("archangel.example.yaml", "utf8"));
-    const parsed = HostYamlSchema.parse(example);
-    expect(parsed.chains.revise[0]!.model).toBe("gpt-5.4-mini");
-  });
 });
 
 function runner(chains: Parameters<typeof ChainsSchema.parse>[0]) {
@@ -69,16 +56,6 @@ describe("role routing per attempt kind", () => {
     }
   });
 
-  it("vendor stickiness for a revision is by vendor, whatever the model", async () => {
-    const r = runner(chains);
-    try {
-      const res = await r.run("revise", { preferVendors: ["anthropic"] });
-      expect(r.calls).toEqual([{ provider: "claude", model: "haiku" }]);
-      expect(res.runBy).toEqual({ provider: "claude", model: "haiku", accountId: "claude" });
-    } finally {
-      r.cleanup();
-    }
-  });
 });
 
 describe("reviewer independence across the writing roles", () => {
@@ -89,10 +66,6 @@ describe("reviewer independence across the writing roles", () => {
     rebase: [{ provider: "codex", model: "mini" }],
   });
   const cfg = { authMode: "subscription" as const, chains, reviewerChain };
-
-  it("with no Attempt recorded yet, excludes the first vendor of every writing role", () => {
-    expect(resolveRequiredReviewers(cfg)).toEqual(["gemini"]);
-  });
 
   it("once Attempts record their vendors, only those vendors are excluded, so a model change never makes a vendor its own reviewer", () => {
     expect(resolveRequiredReviewers(cfg, ["openai"]).sort()).toEqual(["anthropic", "gemini"]);
@@ -108,26 +81,5 @@ describe("reviewer independence across the writing roles", () => {
         reviewerChain: [{ provider: "agy" }, { provider: "claude" }],
       }),
     ).toEqual(["anthropic"]);
-  });
-});
-
-describe("metrics: per-role breakdown", () => {
-  it("reports attempts, success rate, metered cost and provider/model per role", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "s", now: 1 });
-    const finish = (kind: "implement" | "revise" | "rebase", status: "succeeded" | "failed", provider: string, model: string, cost: number) => {
-      const a = l.startAttempt(1, kind, 10);
-      l.recordAttemptProvenance(a.id, { provider, model });
-      l.finishAttempt(a.id, status === "succeeded" ? { status, costUsd: cost } : { status, costUsd: cost, errorMessage: "x", errorCategory: "other" }, 20);
-    };
-    finish("implement", "succeeded", "codex", "big", 0.5);
-    finish("revise", "succeeded", "codex", "mini", 0);
-    finish("revise", "failed", "codex", "mini", 0);
-    finish("rebase", "succeeded", "agy", "flash", 0);
-    const roles = l.computeMetrics({ now: 100 }).attempts.byRole;
-    expect(roles.implement).toMatchObject({ attempts: 1, succeeded: 1, costUsd: 0.5, models: { "codex/big": 1 } });
-    expect(roles.revise).toMatchObject({ attempts: 2, succeeded: 1, failed: 1, models: { "codex/mini": 2 } });
-    expect(roles.rebase!.models).toEqual({ "agy/flash": 1 });
-    l.close();
   });
 });

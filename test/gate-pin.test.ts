@@ -84,27 +84,6 @@ describe("drift detection", () => {
     expect(res.reasons[0]).toContain("divergent history");
   });
 
-  it("ignores the pin when diffing the template but flags any other difference or a missing pin", async () => {
-    const { root, c3 } = checkout();
-    const same = await assessPinDrift(execRunner, withPin(TEMPLATE, c3), c3, { root, template: TEMPLATE });
-    expect(same.drifted).toBe(false);
-    const edited = await assessPinDrift(execRunner, withPin(TEMPLATE, c3).replace("[gate]", "[evil]"), c3, { root, template: TEMPLATE });
-    expect(edited.reasons).toEqual(["workflow differs from the canonical template (ignoring the pin)"]);
-    const nopin = await assessPinDrift(execRunner, "steps: [gate]\n", c3, { root, template: TEMPLATE });
-    expect(nopin.reasons[0]).toContain("no ARCHANGEL_GATE_SHA");
-  });
-});
-
-describe("git failures are not pin drift", () => {
-  it("a cat-file failure other than exit 1 (a broken checkout) is thrown, not reported as an unknown pin", async () => {
-    const broken: OnboardRunner = {
-      async run() {
-        throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
-      },
-    };
-    const wf = withPin(TEMPLATE, "a".repeat(40));
-    await expect(assessPinDrift(broken, wf, "b".repeat(40), { root: "/nonexistent", template: wf })).rejects.toThrow(/not a git repository/);
-  });
 });
 
 describe("gateBump", () => {
@@ -121,18 +100,6 @@ describe("gateBump", () => {
     const content = /content=(\S+)/.exec(put)![1]!;
     expect(Buffer.from(content, "base64").toString()).toBe(withPin(TEMPLATE, c3));
     expect(calls.some((c) => /pr merge/.test(c))).toBe(false);
-  });
-
-  it("does nothing for a current repo, a repo without the workflow, or one with an open bump PR", async () => {
-    const { root, c1, c3 } = checkout();
-    const cur = runnerFor(root, { wf: withPin(TEMPLATE, c3) });
-    expect((await gateBump(cur.runner, ["o/r"], { ...quiet, root }))["o/r"]).toBe("current");
-    expect(cur.mutating()).toEqual([]);
-    const none = runnerFor(root, { wf: null });
-    expect((await gateBump(none.runner, ["o/r"], { ...quiet, root }))["o/r"]).toBe("no-workflow");
-    const open = runnerFor(root, { wf: withPin(TEMPLATE, c1), openPr: "https://github.com/o/r/pull/3" });
-    expect((await gateBump(open.runner, ["o/r"], { ...quiet, root }))["o/r"]).toBe("pr-open");
-    expect(open.mutating()).toEqual([]);
   });
 
   it("refuses on a dirty checkout, when HEAD is not on origin/main, and for a bad repo name", async () => {

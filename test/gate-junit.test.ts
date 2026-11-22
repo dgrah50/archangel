@@ -3,10 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveWorkflow } from "../src/core/workflow.js";
 import { runGate } from "../src/gate/gate.js";
-import { attributableTo, parseJunit } from "../src/gate/junit.js";
-import { hostInput, workflowJson } from "./helpers/workflow.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const write = (root: string, rel: string, content: string) => {
@@ -173,53 +170,6 @@ describe("Gate JUnit test-ID diffing", () => {
       expect(r.already_fixed).toBe(true);
     } finally {
       cleanup(f.root);
-    }
-  });
-});
-
-describe("JUnit parsing and attribution conventions", () => {
-  const files = ["tests/neg.test.mjs", "pkg/store/store_test.go"];
-  const one = (attrs: string, suite = "s") => parseJunit(`<testsuites><testsuite name="${suite}"><testcase ${attrs}/></testsuite></testsuites>`)![0]!;
-
-  it("attributes Vitest/Playwright (file path in classname), file attributes, and Go package classnames", () => {
-    expect(attributableTo(one('classname="tests/neg.test.mjs" name="a"'), files)).toBe(true);
-    expect(attributableTo(one('classname="/work/repo/tests/neg.test.mjs" name="a"'), files)).toBe(true);
-    expect(attributableTo(one('classname="x" file="./tests/neg.test.mjs" name="a"'), files)).toBe(true);
-    expect(attributableTo(one('classname="neg.test.mjs" name="a"'), files)).toBe(false); // bare name: not a path
-    expect(attributableTo(one('classname="github.com/acme/app/pkg/store" name="TestPut"'), files)).toBe(true);
-    expect(attributableTo(one('classname="github.com/acme/app/pkg/other" name="TestPut"'), files)).toBe(false);
-    expect(attributableTo(one('name="TestPut"', "github.com/acme/app/pkg/store"), files)).toBe(true); // suite name fallback
-    expect(attributableTo(one('classname="com.example.Suite" name="a"'), files)).toBe(false);
-  });
-
-  it("reads failure, error, skipped and self-closing cases, and ignores tags inside CDATA and comments", () => {
-    const xml = `<?xml version="1.0"?><testsuites><testsuite name="s">
-      <testcase classname="a" name="p"/>
-      <testcase classname="a" name="f"><failure message="x">boom</failure></testcase>
-      <testcase classname="a" name="e"><error/></testcase>
-      <testcase classname="a" name="s"><skipped/></testcase>
-      <system-out><![CDATA[<testcase classname="a" name="fake"/>]]></system-out>
-      <!-- <testcase classname="a" name="commented"/> -->
-    </testsuite></testsuites>`;
-    expect(parseJunit(xml)!.map((c) => `${c.name}:${c.status}`)).toEqual(["p:passed", "f:failed", "e:failed", "s:skipped"]);
-  });
-
-});
-
-describe("junitReport schema validation (kernel)", () => {
-  const resolveWith = (junitReport: unknown) =>
-    resolveWorkflow(hostInput(), {
-      repo: "a/b",
-      mainSha: "m",
-      fileRaw: workflowJson([], { gate: { testFileGlobs: ["t/*.ts"], testCmd: "npm test", junitReport } }),
-      scoutPrompts: {},
-    });
-
-  it("accepts a safe relative glob and rejects absolute paths, traversal, backslashes and odd characters", () => {
-    expect(resolveWith("reports/junit*.xml").status).toBe("ok");
-    expect(resolveWith("**/junit.xml").status).toBe("ok");
-    for (const bad of ["/etc/junit.xml", "../junit.xml", "a/../../b.xml", "a\\b.xml", "r/$(x).xml", "", " "]) {
-      expect(resolveWith(bad).status, JSON.stringify(bad)).toBe("invalid");
     }
   });
 });

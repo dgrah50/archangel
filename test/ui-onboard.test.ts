@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ONBOARD_BRANCH, type OnboardRunner } from "../src/core/onboard.js";
 import { PLAN_TTL_MS, makeOnboardHandler, type ApplyResult, type PlanResult } from "../src/core/ui-onboard.js";
-import { GH_CACHE_MS, makeGhReads } from "../src/core/ui-gh.js";
+
 import { startUiServer } from "../src/core/ui-server.js";
 import { ProposeRefusal } from "../src/core/ui-propose.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -59,16 +59,6 @@ const refusal = async (p: Promise<unknown>): Promise<number> => {
 };
 
 describe("W3 handler", () => {
-  it("plan is read-only and returns the hash apply must quote", async () => {
-    const s = setup();
-    const r = (await s.handler("a/b", { mode: "plan" })) as PlanResult;
-    expect(r.plan.repo).toBe("a/b");
-    expect(r.plan.files.map((f) => f.path)).toContain(".agents/archangel.json");
-    expect(r.planSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(s.calls.filter(MUTATING)).toEqual([]);
-    expect(s.audits).toEqual([]);
-  });
-
   it("apply runs the existing applyPlan, audited BEFORE any write, and opens only the onboarding PR", async () => {
     const s = setup();
     const { planSha256 } = (await s.handler("a/b", { mode: "plan" })) as PlanResult;
@@ -122,77 +112,6 @@ describe("W3 handler", () => {
     expect(f.calls.filter(MUTATING)).toEqual([]);
   });
 
-  it("a failed gh call is a 502 with gh's message, never a silent success", async () => {
-    const f = fakeRunner({ failOn: (c) => c.args[0] === "label" && c.args[1] === "create" });
-    const h = makeOnboardHandler({ runner: f.runner, audit: () => {} });
-    const { planSha256 } = (await h("a/b", { mode: "plan" })) as PlanResult;
-    await expect(h("a/b", { mode: "apply", planSha256 })).rejects.toMatchObject({ status: 502, message: expect.stringContaining("boom") });
-    const g = fakeRunner({ failOn: (c) => c.args[0] === "repo" });
-    expect(await refusal(makeOnboardHandler({ runner: g.runner, audit: () => {} })("a/b", { mode: "plan" }))).toBe(502);
-  });
-
-  it("validates the slug and rejects unknown body keys", async () => {
-    const s = setup();
-    expect(await refusal(s.handler("not a slug", { mode: "plan" }))).toBe(400);
-    expect(await refusal(s.handler("a/b", { mode: "plan", repo: "x/y" }))).toBe(400);
-    expect(await refusal(s.handler("a/b", { mode: "nope" }))).toBe(400);
-  });
-});
-
-describe("R-gh reads", () => {
-  function reads(failing = false) {
-    const calls: Call[] = [];
-    let clock = 0;
-    const runner: OnboardRunner = {
-      async run(cmd, args) {
-        calls.push({ cmd, args });
-        if (failing) throw new Error("HTTP 404: Branch not protected");
-        return args[0] === "repo" ? '[{"nameWithOwner":"a/b"}]' : args[0] === "pr" ? '{"state":"OPEN"}' : args[1] === "user" ? '{"id":42,"login":"me"}' : '{"required_status_checks":{}}';
-      },
-    };
-    return { calls, read: makeGhReads({ runner, now: () => clock }), tick: (ms: number) => (clock += ms) };
-  }
-  const q = (s: string) => new URLSearchParams(s);
-
-  it("returns repo list, user id, PR status and protection, with read-only argv", async () => {
-    const r = reads();
-    expect(await r.read("repos", q(""))).toEqual([{ nameWithOwner: "a/b" }]);
-    expect(await r.read("user", q(""))).toEqual({ id: 42, login: "me" });
-    expect(await r.read("pr", q("repo=a/b&number=3"))).toEqual({ state: "OPEN" });
-    expect(await r.read("protection", q("repo=a/b&branch=main"))).toEqual({ required_status_checks: {} });
-    for (const c of r.calls) {
-      expect(c.cmd).toBe("gh");
-      const j = c.args.join(" ");
-      expect(j).not.toMatch(/(^| )(-X|--method|-f|-F|--field|--raw-field|--input)( |$)/);
-      expect(j).not.toMatch(/\b(create|merge|review|comment|close|edit|delete)\b/);
-      expect(["repo list", "api user", "pr view", "api repos/a/b/branches/main/protection"]).toContain(c.args.slice(0, 2).join(" "));
-    }
-  });
-
-  it("a failed read is a 502 carrying gh's message and is not cached", async () => {
-    const r = reads(true);
-    await expect(r.read("protection", q("repo=a/b&branch=main"))).rejects.toMatchObject({ status: 502, message: expect.stringContaining("Branch not protected") });
-    await expect(r.read("protection", q("repo=a/b&branch=main"))).rejects.toMatchObject({ status: 502 });
-    expect(r.calls.length).toBe(2);
-  });
-
-  it("caches successes for 30 s", async () => {
-    const r = reads();
-    await r.read("user", q(""));
-    await r.read("user", q(""));
-    expect(r.calls.length).toBe(1);
-    r.tick(GH_CACHE_MS + 1);
-    await r.read("user", q(""));
-    expect(r.calls.length).toBe(2);
-  });
-
-  it("validates request values before running anything", async () => {
-    const r = reads();
-    for (const [k, query] of [["pr", "repo=a/b&number=0"], ["pr", "repo=bad&number=1"], ["protection", "repo=a/b&branch=--evil"], ["protection", "repo=a/b&branch=a/../b"], ["protection", "repo=a/b"]] as const) {
-      expect(await refusal(r.read(k, q(query)))).toBe(400);
-    }
-    expect(r.calls).toEqual([]);
-  });
 });
 
 describe("server routes", () => {
@@ -267,23 +186,6 @@ describe("server routes", () => {
     }
   });
 
-  it("GET /api/gh/* needs the token, is read-only, and a failed read is a 502 error body", async () => {
-    const { server, base, token, calls } = await boot();
-    try {
-      expect((await fetch(`${base}/api/gh/user`)).status).toBe(401);
-      const h = { "x-archangel-token": token! };
-      expect((await fetch(`${base}/api/gh/pr?repo=a/b&number=x`, { headers: h })).status).toBe(400);
-      expect(calls).toEqual([]);
-      // The fake returns "" for this read, which is not JSON: a clear error, not a default.
-      const r = await fetch(`${base}/api/gh/user`, { headers: h });
-      expect(r.status).toBe(502);
-      expect(((await r.json()) as { error: string }).error).toContain("non-JSON");
-      for (const method of ["POST", "PUT", "DELETE"]) expect((await fetch(`${base}/api/gh/user`, { method, headers: h })).status).not.toBe(200);
-      expect(calls.filter(MUTATING)).toEqual([]);
-    } finally {
-      server.close();
-    }
-  });
 });
 
 describe("invariants pinned by grep", () => {

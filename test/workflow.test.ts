@@ -3,6 +3,7 @@ import {
   KERNEL, Workflow, classifyChange, loosens, ownerMergesOnly, resolveWorkflow, trustHash,
   type HostWorkflowInput, type RepoWorkflowInput,
 } from "../src/core/workflow.js";
+import { hostInput, workflowFile } from "./helpers/workflow.js";
 
 const baseFile = () => ({
   version: 1,
@@ -127,14 +128,6 @@ describe("trustHash", () => {
   const spec = (f: unknown) => parse(f).scouts[0]!;
   const hashOf = (file: unknown, prompt = "p") => trustHash(spec(file), prompt);
 
-  it("is stable across unrelated edits, key order and defaults", () => {
-    const h = hashOf(baseFile());
-    const other = { ...baseFile(), gate: { ...baseFile().gate, maxFiles: 2 }, requiredChecks: ["Gate", "X"], review: { rubric: "r" },
-      scouts: [{ name: "other" }, ...baseFile().scouts] };
-    expect(trustHash(parse(other).scouts[1]!, "p")).toBe(h);
-    expect(hashOf({ ...baseFile(), scouts: [{ skills: ["general/bug-hunt"], name: "bug-hunt", schedule: "manual", promotion: "owner" }] })).toBe(h);
-  });
-
   it("changes with the Scout's own entry or prompt", () => {
     const h = hashOf(baseFile());
     expect(hashOf(baseFile(), "p2")).not.toBe(h);
@@ -142,4 +135,37 @@ describe("trustHash", () => {
       expect(hashOf({ ...baseFile(), scouts: [{ ...baseFile().scouts[0], ...patch }] })).not.toBe(h);
     }
   });
+});
+
+const resolve = (extra: Record<string, unknown> = {}, scouts: Array<{ name: string } & Record<string, unknown>> = [], prompts: Record<string, string> = {}, gate: Record<string, unknown> = {}) =>
+  resolveWorkflow(hostInput(), {
+    repo: "a/b",
+    mainSha: "m",
+    fileRaw: JSON.stringify(workflowFile(scouts, { ...extra, gate: { testFileGlobs: ["t/*.ts"], testCmd: "npm test", ...gate } })),
+    scoutPrompts: prompts,
+  });
+
+describe("workflow schema holes", () => {
+  it("rejects globs that can never match a git path: leading slash, ./, .., blank", () => {
+    for (const bad of ["/src/config.ts", "./", ".", "../x", "a/../b", "  "]) {
+      expect(resolve({}, [], {}, { protectedPaths: [bad] }).status, JSON.stringify(bad)).toBe("invalid");
+      expect(resolve({}, [], {}, { testFileGlobs: [bad] }).status, JSON.stringify(bad)).toBe("invalid");
+    }
+    expect(resolve({}, [], {}, { protectedPaths: ["src/config.ts", "lock/**"] }).status).toBe("ok");
+
+  });
+
+  it("rejects a Scout with an empty prompt and no skills, but accepts either one", () => {
+    const scout = { name: "s", schedule: "manual" };
+    expect(resolve({}, [scout], { s: "   " }).status).toBe("invalid");
+    expect(resolve({}, [scout], { s: "Find bugs." }).status).toBe("ok");
+    expect(resolve({}, [{ ...scout, skills: ["general/bug-hunt"] }], { s: "" }).status).toBe("ok");
+  });
+
+  it("does not treat Object.prototype members as a Scout's prompt file", () => {
+    const r = resolve({}, [{ name: "constructor", schedule: "manual", skills: ["general/bug-hunt"] }], {});
+    expect(r.status).toBe("invalid");
+    expect(r.status === "invalid" && r.error).toContain("has no .agents/scouts/constructor.md");
+  });
+
 });

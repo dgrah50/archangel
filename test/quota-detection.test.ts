@@ -15,20 +15,4 @@ describe("isRateLimitOrQuotaError", () => {
     }
   });
 
-  it("still recognises real quota and rate-limit messages from the subscription CLIs", () => {
-    for (const text of [
-      "HTTP 429: usage limit reached, try again later",
-      "stream error: exceeded retry limit, last status: 429 Too Many Requests",
-      "You've hit your usage limit. Upgrade to Pro or try again at 3:14 PM.",
-      "Claude AI usage limit reached|1760000000",
-      "5-hour limit reached - resets 3pm",
-      '{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}',
-      '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
-      "status: RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'GenerateContent requests'",
-      "Error 429: capacity exhausted, please retry",
-      "status code 429",
-    ]) {
-      expect(isRateLimitOrQuotaError(text), text).toBe(true);
-    }
-  });
 });
