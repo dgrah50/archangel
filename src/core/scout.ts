@@ -507,8 +507,20 @@ export async function runScoutsForProject(opts: {
           now,
         });
         if (autoPromote) {
-          await opts.github.addLabels(created.number, [opts.config.labels.readyForAgent]);
-          opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { fileSha256: wf.fileSha256.slice(0, 12) }, now);
+          // A failed label must not drop the rest of the run. The proposal stays recorded; without the label intake
+          // fails closed (the Thread is not created) and the owner can label it by hand.
+          try {
+            await opts.github.addLabels(created.number, [opts.config.labels.readyForAgent]);
+            opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { fileSha256: wf.fileSha256.slice(0, 12) }, now);
+          } catch (err) {
+            opts.ledger.appendAudit(
+              "scout/auto_promote_label_failed",
+              created.number,
+              wf.name,
+              { error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) },
+              now,
+            );
+          }
         }
         filedIssues.push(created.number);
         openTrackedCount++;
