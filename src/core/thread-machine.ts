@@ -140,7 +140,7 @@ export type MainWatch = z.infer<typeof MainWatchSchema>;
 export type OutboxEffect =
   | { kind: "add_label"; issueNumber: number; label: string }
   | { kind: "remove_label"; issueNumber: number; label: string }
-  | { kind: "notify_needs_you"; issueNumber: number | null; title: string; reason: string };
+  | { kind: "notify_needs_you"; issueNumber: number | null; title: string; reason: string; code: EscalationCode };
 
 export type MachineEvent =
   | { t: "start_working"; attemptId: number; attempt: AttemptKind; fromSha: string; prNumber?: number | null }
@@ -326,6 +326,7 @@ export function stepPhase(
           issueNumber: meta.issueNumber,
           title: meta.title,
           reason: ev.reason,
+          code: ev.code,
         },
       ],
     };
@@ -388,6 +389,7 @@ export function stepPhase(
                 issueNumber: meta.issueNumber,
                 title: meta.title,
                 reason: `Attempt (${phase.attempt}) timed out`,
+                code: "attempt_timeout",
               },
             ],
           };
@@ -427,6 +429,7 @@ export function stepPhase(
               issueNumber: meta.issueNumber,
               title: meta.title,
               reason: ev.reason,
+              code: ev.code,
             },
           ],
         };

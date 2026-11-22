@@ -18,6 +18,8 @@ import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
+import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
+import { collectOwnerReply } from "../core/owner-reply.js";
 import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
@@ -372,7 +374,11 @@ program
         autoMergesToday,
         circuitBreakers: breakers,
         shadowModeStats: shadow,
-        needsYou: threads.filter((t) => t.phase.kind === "needs_you"),
+        needsYou: threads.flatMap((t) =>
+          t.phase.kind === "needs_you"
+            ? [{ ...t, decisionClass: describeEscalation(t.phase.code).decisionClass, recommendation: describeEscalation(t.phase.code).recommendation }]
+            : [],
+        ),
         threads,
       };
 
@@ -390,6 +396,14 @@ program
         if (b.tripped) console.log(`Circuit breaker:  ${r} TRIPPED (${b.reason})`);
       }
       console.log("");
+      if (payload.needsYou.length > 0) {
+        console.log(`Needs You (${payload.needsYou.length}):`);
+        for (const n of payload.needsYou) {
+          console.log(`  ${n.repo}#${n.issueNumber}  [${formatDecisionClass(n.decisionClass)}]  ${n.title}`);
+          console.log(`    Recommended: ${n.recommendation}`);
+        }
+        console.log("");
+      }
       if (threads.length === 0) {
         console.log("No threads recorded in Ledger yet.");
         return;
@@ -596,7 +610,8 @@ program
   .description("Clear needs_you on a Thread, re-snapshot its issue body, and return it to its resume target")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--repo <owner/name>", "Target repository")
-  .action(async (issueArg: string, opts: { config?: string; repo?: string }) => {
+  .option("-m, --message <text>", "Guidance for the next Attempt (added to the prompt as owner text)")
+  .action(async (issueArg: string, opts: { config?: string; repo?: string; message?: string }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
     const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
     const paths = resolvePaths(cfg);
@@ -620,6 +635,15 @@ program
         { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
       );
       if (!stepped.ok) throw new Error(stepped.reject);
+      const reply = await collectOwnerReply({
+        github,
+        ownerUserId: cfg.ownerUserId,
+        issueNumber,
+        prNumber: extractPrFromPhase(thread.phase)?.prNumber ?? null,
+        sinceMs: thread.updatedAt,
+        message: opts.message,
+      });
+      if (reply) ledger.setOwnerReply(issueNumber, reply);
       await github.removeLabel(issueNumber, cfg.labels.needsYou);
       ledger.transition(issueNumber, thread.version, stepped.next, {
         bodySha256: sha256(issue.body),
