@@ -284,9 +284,9 @@ describe("invariants pinned by grep", () => {
       expect(src, f).not.toMatch(/pr merge|pr review|pr comment|issue comment|issue close|\.mergePullRequest|\.addLabel|\.closeIssue/);
     }
   });
-  it("the browser POSTs from one module only (workflow-draft: the propose route); U8 adds the host-config client here", () => {
+  it("the browser POSTs from two modules only (workflow-draft: the propose route; host-config-client: W2)", () => {
     const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
     const posts = walk("ui/src").filter((f) => /\.tsx?$/.test(f) && /method:\s*"(POST|PUT|PATCH|DELETE)"/.test(read(f)));
-    expect(posts.map((f) => path.basename(f)).sort()).toEqual(["workflow-draft.ts"]);
+    expect(posts.map((f) => path.basename(f)).sort()).toEqual(["host-config-client.ts", "workflow-draft.ts"]);
   });
 });
