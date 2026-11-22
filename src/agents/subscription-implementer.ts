@@ -130,6 +130,8 @@ export interface SubscriptionImplementerOptions {
   /** Provider chain per writing role; an Attempt uses the chain of its role. */
   chains: Pick<Chains, WriterRole>;
   accounts?: Account[];
+  /** Providers whose entries run on the remote box (they have a remote credential configured); every other entry runs locally. Placement is per entry, never a failover. */
+  remoteProviders?: ReadonlySet<CliProvider>;
   transcriptsDir: string;
   invoker?: CliInvoker;
   /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
@@ -140,6 +142,9 @@ export interface SubscriptionImplementerOptions {
 }
 
 const REMOTE_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+/** agy only runs on an API key when its settings say so. The key itself is the placeholder GEMINI_API_KEY the egress policy provides. */
+const AGY_REMOTE_SETTINGS = '{"modelProvider":"gemini"}';
 
 function remoteEnv(): NodeJS.ProcessEnv {
   return {
@@ -205,8 +210,8 @@ async function defaultCliInvoker(input: {
       "--json",
       "-C",
       cloneDir,
-      "-o",
-      input.outputFile,
+      // The last-message file is a path on this machine; a box has no way to hand it back.
+      ...(input.compute.remote ? [] : ["-o", input.outputFile]),
       ...(input.model ? ["-m", input.model] : []),
       "-",
     ];
@@ -238,6 +243,13 @@ async function defaultCliInvoker(input: {
       ...(input.model ? ["--model", input.model] : []),
     ];
     stdinPrompt = input.prompt;
+  }
+
+  if (input.compute.remote) {
+    // Inside the box the provider logs in with the placeholder key the egress policy minted, never a host login: codex reads it as
+    // CODEX_API_KEY, agy needs its settings file. Both wrappers `exec` the CLI so stdin and exit codes pass through.
+    if (input.provider === "codex") [bin, args] = ["bash", ["-c", 'CODEX_API_KEY="$OPENAI_API_KEY" exec "$@"', "bash", bin, ...args]];
+    if (input.provider === "agy") [bin, args] = ["bash", ["-c", `mkdir -p "$HOME/.gemini/antigravity-cli" && printf %s '${AGY_REMOTE_SETTINGS}' > "$HOME/.gemini/antigravity-cli/settings.json" && exec "$@"`, "bash", bin, ...args]];
   }
 
   const { abortController, provider, timeoutMs } = input;
@@ -368,6 +380,7 @@ function extractSummary(provider: CliProvider, stdout: string, outputFile: strin
 export class SubscriptionImplementer implements Implementer {
   private readonly chains: Pick<Chains, WriterRole>;
   private readonly accounts: Account[];
+  private readonly remoteProviders: ReadonlySet<CliProvider>;
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly state: AccountLedger;
@@ -381,6 +394,7 @@ export class SubscriptionImplementer implements Implementer {
     }
     this.chains = opts.chains;
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
+    this.remoteProviders = opts.remoteProviders ?? new Set();
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
@@ -445,8 +459,8 @@ export class SubscriptionImplementer implements Implementer {
             `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, account: account.id, ts: Date.now() })}\n`,
           );
 
-          // Placement is by capability, never failover: only claude can run on a remote box (its token is injected there); codex and agy keep their local logins.
-          const ranOn: "local" | "remote" = entry.provider === "claude" && input.workspaces.remote ? "remote" : "local";
+          // Placement is by configured credential, never failover: a provider with a remote credential (injected on the wire) runs on the remote box; the rest keep their local logins.
+          const ranOn: "local" | "remote" = this.remoteProviders.has(entry.provider) && input.workspaces.remote ? "remote" : "local";
           const handle = input.workspaces[ranOn]!;
           const placed = { compute: handle.compute, workspace: await handle.workspace() };
           const prompt = i === 0 ? input.prompt : `${await captureWorkspaceContinuityContext(placed)}\n\n${input.prompt}`;

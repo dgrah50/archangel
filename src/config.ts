@@ -291,6 +291,10 @@ export const ComputeConfigSchema = z
         claudeTokenSecret: z.string().min(1).default("CLAUDE_CODE_OAUTH_TOKEN"),
         /** Off by default: Claude-chain implement, revise and review Attempts stay on this machine. */
         remoteClaudeAttempts: z.boolean().default(false),
+        /** Name of the Sail secret holding an OpenAI API key. Set: codex entries run on Sail with it (the box sees a placeholder in OPENAI_API_KEY); unset: codex runs on this machine with its own login. */
+        codexApiKeySecret: z.string().min(1).optional(),
+        /** Name of the Sail secret holding a Gemini API key. Set: agy entries run on Sail with it (the box sees a placeholder in GEMINI_API_KEY); unset: agy runs on this machine with its own login. */
+        geminiApiKeySecret: z.string().min(1).optional(),
       })
       .strict()
       .optional(),

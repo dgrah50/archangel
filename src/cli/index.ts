@@ -39,7 +39,7 @@ import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { LocalProvider } from "../compute/local.js";
 import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
-import { createSailProvider, remoteAttemptProvider } from "../compute/sail-sdk.js";
+import { createSailProvider, remoteAttemptProvider, remoteProviders } from "../compute/sail-sdk.js";
 import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -220,6 +220,7 @@ program
           ? new SubscriptionImplementer({
               chains: cfg.chains,
               accounts: cfg.accounts,
+              remoteProviders: remoteProviders(cfg.compute),
               transcriptsDir: paths.transcriptsDir,
               accountState,
               logger,

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
 import type { ComputeProvider, ExecResult, ExecSpec } from "../src/compute/provider.js";
-import { remoteAttemptProvider } from "../src/compute/sail-sdk.js";
+import { remoteAttemptProvider, sailPolicyDoc } from "../src/compute/sail-sdk.js";
 
 function fakeCompute(remote: boolean, respond: (spec: ExecSpec) => Partial<ExecResult>) {
   const calls: ExecSpec[] = [];
@@ -29,19 +29,20 @@ function fakeCompute(remote: boolean, respond: (spec: ExecSpec) => Partial<ExecR
 }
 
 describe("placing chain entries on local and remote providers", () => {
-  it("runs codex locally and claude on the remote box, and no host credential env reaches the remote exec", async () => {
-    const local = fakeCompute(false, (s) => (s.cmd === "codex" ? { code: 1, stderr: "HTTP 429: usage limit reached" } : {}));
-    const remote = fakeCompute(true, (s) => (s.cmd === "claude" ? { stdout: JSON.stringify({ result: "done" }) } : {}));
+  it("runs a provider on the remote box only when it has a remote credential, and no host login reaches the remote exec", async () => {
+    const local = fakeCompute(false, (s) => (s.cmd === "agy" ? { code: 1, stderr: "HTTP 429: usage limit reached" } : {}));
+    const remote = fakeCompute(true, () => ({}));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-place-"));
     try {
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = "host-secret";
-      const chain = [{ provider: "codex" as const }, { provider: "claude" as const }];
+      process.env.OPENAI_API_KEY = "host-secret";
+      const chain = [{ provider: "agy" as const }, { provider: "codex" as const }];
       const impl = new SubscriptionImplementer({
         chains: { implement: chain, revise: chain, rebase: chain },
         accounts: [
+          { id: "agy", provider: "agy", home: "/host/agy-home" },
           { id: "codex", provider: "codex", home: "/host/codex-home" },
-          { id: "claude", provider: "claude", home: "/host/claude-home" },
         ],
+        remoteProviders: new Set(["codex"]),
         transcriptsDir: dir,
       });
       const res = await impl.run({
@@ -57,25 +58,29 @@ describe("placing chain entries on local and remote providers", () => {
         maxBudgetUsd: 1,
         role: "implement",
       });
-      expect(local.calls.some((c) => c.cmd === "codex")).toBe(true);
-      expect(local.calls.some((c) => c.cmd === "claude")).toBe(false);
-      expect(remote.calls.some((c) => c.cmd === "codex")).toBe(false);
+      expect(local.calls.some((c) => c.cmd === "agy")).toBe(true);
+      expect(remote.calls.some((c) => c.cmd === "agy" || c.args.includes("agy"))).toBe(false);
       expect(res.ranOn).toBe("remote");
-      const remoteEnvs = remote.calls.map((c) => c.env);
-      expect(remote.calls.some((c) => c.cmd === "claude")).toBe(true);
-      for (const env of remoteEnvs) {
-        expect(Object.keys(env).filter((k) => /CLAUDE_CONFIG_DIR|CODEX_HOME|TOKEN|HOME|KEY/.test(k))).toEqual([]);
+      expect(remote.calls.some((c) => c.args.includes("codex"))).toBe(true);
+      for (const c of remote.calls) {
+        expect(Object.keys(c.env).filter((k) => /CLAUDE_CONFIG_DIR|CODEX_HOME|TOKEN|HOME|KEY/.test(k))).toEqual([]);
       }
     } finally {
-      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.OPENAI_API_KEY;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("keeps implement Attempts local when provider is sail but remoteClaudeAttempts is false", () => {
-    const base = { authMode: "subscription", compute: { provider: "sail", sail: { app: "arch", remoteClaudeAttempts: false } } };
+  it("keeps Attempts local unless a provider has a remote credential", () => {
     const sail = {};
-    expect(remoteAttemptProvider(base as never, sail)).toBeUndefined();
-    expect(remoteAttemptProvider({ ...base, compute: { provider: "sail", sail: { app: "arch", remoteClaudeAttempts: true } } } as never, sail)).toBe(sail);
+    const cfg = (extra: object) => ({ authMode: "subscription", compute: { provider: "sail", sail: { app: "arch", remoteClaudeAttempts: false, ...extra } } }) as never;
+    expect(remoteAttemptProvider(cfg({}), sail)).toBeUndefined();
+    expect(remoteAttemptProvider(cfg({ codexApiKeySecret: "K" }), sail)).toBe(sail);
+  });
+
+  it("never lets a box reach an OAuth host, and names only the secrets, never their values", () => {
+    const doc = sailPolicyDoc({ claudeTokenSecret: "C", codexApiKeySecret: "O", geminiApiKeySecret: "G" });
+    expect(doc.allowlist).toEqual(["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "registry.npmjs.org"]);
+    expect(doc.rules["generativelanguage.googleapis.com"]![0]!.request.replace.headers).toEqual({ "x-goog-api-key": "G" });
   });
 });
