@@ -36,6 +36,7 @@ const pitch = (over: Record<string, unknown> = {}) => ({
   optionsConsidered: ["Do nothing: it is harmless but costs reading time", "Delete it"],
   slices: [{ title: "Delete legacy parser", acceptance: "No imports remain; tests pass." }],
   measurement: "",
+  figures: [],
   recommendation: "do",
   size: "S",
   ...over,
@@ -142,6 +143,20 @@ describe("pitch Scout runs", () => {
       }
       expect(f.created).toEqual([]);
       expect(f.ledger.listAudit({ topicPrefix: "pitch/dropped" })).toHaveLength(3);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it("drops a pitch whose figure is a missing file, a traversal, an absolute path or not a png/jpg/webp", async () => {
+    const f = await fixture();
+    try {
+      for (const [k, path] of ["ghost.png", "../../etc/passwd.png", "/etc/shot.png", "app.ts"].entries()) {
+        const { res } = await f.run(out(pitch({ figures: [{ path, caption: "A shot" }] })), { now: NOW + 8 * DAY * k });
+        expect(res[0]!.filedIssues).toEqual([]);
+      }
+      expect(f.created).toEqual([]);
+      expect(f.ledger.listAudit({ topicPrefix: "pitch/dropped" })).toHaveLength(4);
     } finally {
       f.cleanup();
     }
@@ -376,7 +391,7 @@ describe("archangel pitch promote", () => {
       ],
     })],
   }).pitches[0]!;
-  const BODY = renderPitchBody(PROMOTE_PITCH);
+  const BODY = renderPitchBody(PROMOTE_PITCH, { repo: "acme/app", mainSha: "m" });
 
   function setup(over: { liveBody?: string; state?: string } = {}) {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });

@@ -1965,6 +1965,24 @@ export class Ledger {
       .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, JSON.stringify({ kind: "open" }), now, input.pitchJson);
   }
 
+  recordPitchAttachment(input: { issueNumber: number; sha256: string; kind: "repo"; mime: string; width: number; height: number; bytes: number; caption: string; source: string; now?: number; repo?: string }): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO pitch_attachments (repo, issue_number, sha256, kind, mime, width, height, bytes, caption, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.repo ?? this.repo, input.issueNumber, input.sha256, input.kind, input.mime, input.width, input.height, input.bytes, input.caption, input.source, input.now ?? Date.now());
+  }
+
+  listPitchAttachments(): Array<{ repo: string; issueNumber: number; sha256: string; kind: string; mime: string; width: number; height: number; caption: string; source: string }> {
+    return (
+      this.db.prepare(`SELECT repo, issue_number, sha256, kind, mime, width, height, caption, source FROM pitch_attachments ORDER BY created_at, rowid`).all() as Array<{ repo: string; issue_number: number; sha256: string; kind: string; mime: string; width: number; height: number; caption: string; source: string }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, sha256: r.sha256, kind: r.kind, mime: r.mime, width: r.width, height: r.height, caption: r.caption, source: r.source }));
+  }
+
+  /** The stored image type for a content hash, or null when no pitch has it. The asset route serves nothing else. */
+  pitchAssetMime(sha256: string): string | null {
+    const r = this.db.prepare(`SELECT mime FROM pitch_attachments WHERE sha256 = ? LIMIT 1`).get(sha256) as { mime: string } | undefined;
+    return r?.mime ?? null;
+  }
+
   /**
    * The only way a pitch changes state: read, `stepPitch`, compare-and-set on `version`. An illegal move changes nothing and writes a
    * `pitch/illegal_transition` audit row. Returns the new state, or the reason it was refused.
