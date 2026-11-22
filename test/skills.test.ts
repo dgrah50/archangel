@@ -27,3 +27,12 @@ describe("bundled skills", () => {
     expect(() => parseScoutMarkdown("---\nname: bad\nskills: [general/missing]\n---\nBody\n", "b.md")).toThrow(/Unknown skill/);
   });
 });
+
+describe("owner-opinion skills", () => {
+  it("resolves and demands failing, measured evidence", () => {
+    const [sm, rw] = resolveSkills(["general/implicit-state-machines", "general/repeated-work"]);
+    expect(sm!.content).toContain("fails today");
+    expect(rw!.content).toMatch(/measurement or concrete count/);
+    expect(rw!.content).toContain("fails on `main` today");
+  });
+});
