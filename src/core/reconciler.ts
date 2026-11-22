@@ -494,6 +494,8 @@ export class Reconciler {
     const cmds = this.ledger.listPendingCommands();
     for (const cmd of cmds) {
       if (cmd.kind !== "handoff") continue;
+      // Claim first: if the CLI already cancelled (timed out), this fails and the Thread is left alone.
+      if (!this.ledger.claimCommand(cmd.id, now)) continue;
       try {
         const res = await this.prepareDaemonHandoff(cmd.issueNumber, mainSha, now);
         this.ledger.completeCommand(cmd.id, res, now);

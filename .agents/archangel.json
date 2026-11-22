@@ -51,6 +51,7 @@
       "src/core/notifier.ts",
       "src/core/escalations.ts",
       "src/core/pitch-expiry.ts",
+      "src/core/command-machine.ts",
       "src/core/corrections.ts",
       "src/core/pitch-machine.ts",
       "src/core/triage.ts",
@@ -59,7 +60,8 @@
       "src/core/eval-candidate.ts",
       "src/core/ui-thread.ts",
       "src/core/host-facts.ts",
-      "src/core/ui-doctor.ts"
+      "src/core/ui-doctor.ts",
+      "src/core/ui-settings.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

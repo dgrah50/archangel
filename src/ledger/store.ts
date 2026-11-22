@@ -8,6 +8,7 @@ import {
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
 import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type FactoryRetryOutcome } from "../core/factory-retry.js";
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
+import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
 import { categorizeAttemptError } from "../core/metrics-block.js";
@@ -142,6 +143,7 @@ export class Ledger {
     if (!opts.readonly) {
       this.migratePitchesToStateMachine();
       migrateOutbox(this.db);
+      this.dropLegacyDaemonCommands();
       this.db.exec(LEDGER_SCHEMA_SQL);
       const cols = this.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === "implementer_vendors_json")) {
@@ -702,46 +704,71 @@ export class Ledger {
     this.appendAudit("outbox/dead_letter", null, "archangel", { id, error });
   }
 
+  /** Commands are transient (a CLI waits seconds for the daemon): an old-shape table is dropped, not migrated. */
+  private dropLegacyDaemonCommands(): void {
+    const cols = (this.db.prepare("PRAGMA table_info(daemon_commands)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.includes("status")) this.db.exec("DROP TABLE daemon_commands");
+  }
+
   // --- Daemon Commands Queue (Handoff across CLI <-> Daemon, Opus Step 6 / R5) ---
 
   enqueueCommand(issueNumber: number, kind: "handoff", now = Date.now(), repo = this.repo): number {
     const info = this.db
-      .prepare(
-        `INSERT INTO daemon_commands (repo, issue_number, kind, status, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?)`,
-      )
-      .run(repo, issueNumber, kind, now, now);
+      .prepare(`INSERT INTO daemon_commands (repo, issue_number, kind, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(repo, issueNumber, kind, JSON.stringify({ kind: "pending" }), now, now);
     return Number(info.lastInsertRowid);
   }
 
   listPendingCommands(repo = this.repo): DaemonCommandRecord[] {
     const rows = this.db
-      .prepare(`SELECT * FROM daemon_commands WHERE repo = ? AND status = 'pending' ORDER BY id ASC`)
+      .prepare(`SELECT * FROM daemon_commands WHERE repo = ? AND state = 'pending' ORDER BY id ASC`)
       .all(repo) as Record<string, unknown>[];
     return rows.map(mapCommand);
   }
 
   getCommand(id: number): DaemonCommandRecord | null {
-    const row = this.db.prepare(`SELECT * FROM daemon_commands WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const row = this.db.prepare(`SELECT * FROM daemon_commands WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     return row ? mapCommand(row) : null;
   }
 
-  completeCommand(id: number, result: unknown, now = Date.now()): void {
-    this.db
-      .prepare(
-        `UPDATE daemon_commands SET status = 'completed', result_json = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(JSON.stringify(result), now, id);
+  /**
+   * The only way a command changes state: read, `stepCommand`, compare-and-set on `version`. Returns false (and audits an illegal
+   * move) when the transition is not allowed or lost a race, so a CLI timeout and the daemon cannot both win.
+   */
+  stepCommandState(id: number, ev: CommandEvent, now = Date.now()): boolean {
+    const row = this.db.prepare(`SELECT repo, issue_number, state_json, version FROM daemon_commands WHERE id = ?`).get(id) as
+      | { repo: string; issue_number: number; state_json: string; version: number }
+      | undefined;
+    if (!row) return false;
+    const state = CommandStateSchema.parse(JSON.parse(row.state_json));
+    const step = stepCommand(state, ev);
+    if (!step.ok) {
+      this.appendAudit("command/illegal_transition", row.issue_number, "archangel", { id, from: state.kind, event: ev.t }, now, row.repo);
+      return false;
+    }
+    return (
+      this.db
+        .prepare(`UPDATE daemon_commands SET state_json = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?`)
+        .run(JSON.stringify(step.next), now, id, row.version).changes === 1
+    );
   }
 
-  failCommand(id: number, errorMessage: string, now = Date.now()): void {
-    this.db
-      .prepare(
-        `UPDATE daemon_commands SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(errorMessage, now, id);
+  /** The daemon takes a pending command. False when the CLI already cancelled it (or another claim won). */
+  claimCommand(id: number, now = Date.now()): boolean {
+    return this.stepCommandState(id, { t: "claim", at: now }, now);
+  }
+
+  completeCommand(id: number, result: unknown, now = Date.now()): boolean {
+    return this.stepCommandState(id, { t: "complete", result }, now);
+  }
+
+  failCommand(id: number, errorMessage: string, now = Date.now()): boolean {
+    return this.stepCommandState(id, { t: "fail", error: errorMessage }, now);
+  }
+
+  /** The CLI gives up. Only a command the daemon has not claimed can be cancelled: false means the daemon is already working on it. */
+  cancelCommand(id: number, reason: string, now = Date.now()): boolean {
+    return this.stepCommandState(id, { t: "cancel", reason }, now);
   }
 
   // --- Attempts ---
@@ -2759,9 +2786,7 @@ function mapCommand(r: Record<string, unknown>): DaemonCommandRecord {
     repo: String(r.repo),
     issueNumber: Number(r.issue_number),
     kind: String(r.kind) as "handoff",
-    status: String(r.status) as DaemonCommandRecord["status"],
-    resultJson: r.result_json === null ? null : String(r.result_json),
-    errorMessage: r.error_message === null ? null : String(r.error_message),
+    state: CommandStateSchema.parse(JSON.parse(String(r.state_json))),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };

@@ -4,6 +4,8 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
+import { SettingsPage } from "./SettingsPage";
+import type { SettingsState } from "../../src/core/ui-settings.js";
 import { HealthPage } from "./HealthPage";
 import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
@@ -80,6 +82,7 @@ export function AppView({
   route,
   state,
   workflows,
+  settings,
   host,
   thread,
   logs,
@@ -89,6 +92,7 @@ export function AppView({
   route: Route;
   state: Feed<UiState>;
   workflows: Feed<WorkflowsState>;
+  settings: Feed<SettingsState>;
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
   logs: Feed<LogsPayload>;
@@ -123,6 +127,11 @@ export function AppView({
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
       {route.page === "health" ? <HealthPage /> : null}
+      {route.page === "settings" ? (
+        <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
+          <PipelinePage workflows={workflows} onRetry={onRetry} />
+        </SettingsPage>
+      ) : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">

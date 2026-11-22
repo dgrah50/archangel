@@ -474,3 +474,26 @@ describe("Gate policyRef", () => {
     }
   });
 });
+
+describe("Gate red-on-base proof", () => {
+  it("does not accept a base test run that timed out as a reproduction (only a real failing exit is red)", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      // On base (buggy add) this test hangs forever; on head it passes at once.
+      writeFile(
+        repoDir,
+        "tests/hang.test.mjs",
+        'import { add } from "../calc.mjs";\nif (add(2, -5) !== -3) setInterval(() => {}, 1000);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix with a test that hangs on base"]);
+      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", commandTimeoutMs: 2500 });
+      expect(rep.passed).toBe(false);
+      expect(rep.violations.join(" ")).toContain("timed out");
+      expect(rep.already_fixed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }, 60_000);
+});

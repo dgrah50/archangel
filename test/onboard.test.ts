@@ -15,7 +15,7 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
       if (line.startsWith("git fetch")) return "";
       if (line === "git rev-parse HEAD") return `${SHA}\n`;
       if (line.startsWith("git merge-base")) {
-        if (opts.onMain === false) throw new Error("not ancestor");
+        if (opts.onMain === false) throw Object.assign(new Error("not ancestor"), { code: 1 });
         return "";
       }
       if (line.startsWith("gh repo view")) return "main\n";
@@ -90,6 +90,17 @@ describe("buildPlan", () => {
     expect(plan.stack).toBeNull();
     expect(plan.notes.join(" ")).toContain("by hand");
     expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
+  });
+
+  it("a git failure other than exit 1 is an error, not 'not on origin/main'", async () => {
+    const base = fake({ tree: [] }).runner;
+    const broken: OnboardRunner = {
+      async run(cmd, args, o) {
+        if (args[0] === "merge-base") throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
+        return base.run(cmd, args, o);
+      },
+    };
+    await expect(buildPlan(broken, "o/r")).rejects.toThrow(/not a git repository/);
   });
 
   it("refuses a dirty Archangel checkout or a HEAD that is not on origin/main", async () => {
