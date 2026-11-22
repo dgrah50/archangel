@@ -24,7 +24,7 @@ const pitchJson = JSON.stringify({
   optionsConsidered: ["Do nothing", "Watch"],
   slices: [{ title: "Watch mode", acceptance: "Edits re-run the filter." }],
   measurement: "",
-  figures: [],
+  figures: [], changeDiagram: null, estimates: [],
   recommendation: "do",
   size: "M",
 });
