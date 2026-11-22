@@ -1,4 +1,5 @@
 import type { Blocker } from "./blockers.js";
+import { describeEscalation, formatDecisionClass } from "./escalations.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord } from "../ledger/schema.js";
 
@@ -41,7 +42,12 @@ export function renderRecapComment(input: {
     );
   }
   if (thread.phase.kind === "needs_you") {
-    lines.push("", `> **Needs You (${thread.phase.code}):** ${thread.phase.reason}`);
+    const policy = describeEscalation(thread.phase.code);
+    lines.push(
+      "",
+      `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${thread.phase.reason}`,
+      `> **Recommended:** ${policy.recommendation}`,
+    );
   }
   const summaryText = input.summary ?? thread.lastSummary;
   if (summaryText) {

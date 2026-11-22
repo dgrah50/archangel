@@ -39,6 +39,7 @@ export interface InstallationTokenMeta {
 
 export interface GitHubClient {
   getInstallationToken(): Promise<string>;
+  listOwnerCommentsSince(issueOrPrNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
   mintInstallationTokenWithMeta?(): Promise<InstallationTokenMeta>;
   getRemoteUrlWithToken(): Promise<string>;
   listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]>;
@@ -448,6 +449,18 @@ export class GitHubAppClient implements GitHubClient {
       return;
     }
     await this.postComment(issueOrPrNumber, body);
+  }
+
+  /** Bodies of comments written by `ownerUserId` strictly after `sinceMs`, oldest first. */
+  async listOwnerCommentsSince(issueOrPrNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]> {
+    const comments = await this.requestAllPages<{ body?: string; created_at?: string; user?: { id?: number } | null }>(
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueOrPrNumber}/comments?per_page=100`,
+      { useEtag: false },
+    );
+    return comments
+      .filter((c) => c.user?.id === ownerUserId && Date.parse(c.created_at ?? "") > sinceMs && (c.body ?? "").trim())
+      .sort((a, b) => Date.parse(a.created_at ?? "") - Date.parse(b.created_at ?? ""))
+      .map((c) => (c.body ?? "").trim());
   }
 
   async postComment(issueOrPrNumber: number, body: string): Promise<void> {

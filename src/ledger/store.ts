@@ -39,6 +39,9 @@ export function formatDayKey(ts: number, timeZone: string): string {
   return `${y}-${m}-${d}`;
 }
 
+
+export const OWNER_REPLY_MAX_CHARS = 4000;
+
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
@@ -60,9 +63,21 @@ export class Ledger {
       if (!cols.some((c) => c.name === "implementer_vendors_json")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN implementer_vendors_json TEXT NOT NULL DEFAULT '[]'");
       }
+      if (!cols.some((c) => c.name === "owner_reply")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
+      }
     } else {
       this.db.pragma("busy_timeout = 5000");
     }
+  }
+
+  /** Stores the owner's reply to the latest escalation (capped) so the next Attempt sees it. */
+  setOwnerReply(issueNumber: number, reply: string | null, now = Date.now()): void {
+    const text = reply && reply.trim() ? reply.trim().slice(0, OWNER_REPLY_MAX_CHARS) : null;
+    this.db
+      .prepare("UPDATE threads SET owner_reply = ?, updated_at = ? WHERE repo = ? AND issue_number = ?")
+      .run(text, now, this.repo, issueNumber);
+    this.appendAudit("thread/owner_reply", issueNumber, "owner", { chars: text?.length ?? 0 }, now);
   }
 
   forRepo(repo: string): Ledger {
@@ -1220,6 +1235,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
     implementerVendors: r.implementer_vendors_json
       ? (JSON.parse(String(r.implementer_vendors_json)) as ReviewerVendor[])
       : [],
+    ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };

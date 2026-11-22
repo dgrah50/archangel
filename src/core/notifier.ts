@@ -3,6 +3,8 @@ export interface Notifier {
     issueNumber: number | null;
     title: string;
     reason: string;
+    decisionClass: string;
+    recommendation: string;
     url?: string;
   }): Promise<void>;
 }
@@ -24,10 +26,20 @@ export class TelegramNotifier implements Notifier {
     issueNumber: number | null;
     title: string;
     reason: string;
+    decisionClass: string;
+    recommendation: string;
     url?: string;
   }): Promise<void> {
     const prefix = input.issueNumber ? `Archangel Needs You (#${input.issueNumber})` : "Archangel Needs You";
-    const text = [prefix, input.title, "", `Reason: ${input.reason}`, input.url ? `Link: ${input.url}` : ""]
+    const text = [
+      prefix,
+      input.title,
+      "",
+      `Decision: ${input.decisionClass}`,
+      `Reason: ${input.reason}`,
+      `Recommended: ${input.recommendation}`,
+      input.url ? `Link: ${input.url}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
 

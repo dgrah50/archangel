@@ -37,6 +37,8 @@ export interface ThreadRecord {
   revisionCount: number;
   rebaseCount: number;
   implementerVendors: ReviewerVendor[];
+  /** Latest owner reply to a Needs You escalation, fed to the next Attempt as owner-labelled data. */
+  ownerReply: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -142,6 +144,7 @@ CREATE TABLE IF NOT EXISTS threads (
   revision_count INTEGER NOT NULL DEFAULT 0,
   rebase_count INTEGER NOT NULL DEFAULT 0,
   implementer_vendors_json TEXT NOT NULL DEFAULT '[]',
+  owner_reply TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)

@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { collectOwnerReply } from "./owner-reply.js";
+import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
 import { REPO_POLICY_PATH, mergeRepoPolicy, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -255,10 +257,13 @@ export class Reconciler {
         } else if (eff.kind === "remove_label") {
           await this.github.removeLabel(eff.issueNumber, eff.label);
         } else if (eff.kind === "notify_needs_you") {
+          const policy = describeEscalation(eff.code);
           await this.notifier.notifyNeedsYou({
             issueNumber: eff.issueNumber,
             title: eff.title,
             reason: eff.reason,
+            decisionClass: formatDecisionClass(policy.decisionClass),
+            recommendation: policy.recommendation,
           });
         }
         this.ledger.completeOutbox(item.id);
@@ -522,6 +527,25 @@ export class Reconciler {
     // 5. `needs_you`: if owner cleared the `needs-you` label on GitHub, resume cleanly & re-snapshot bodySha (fixes S4, S15!).
     if (thread.phase.kind === "needs_you") {
       if (issue && !combinedLabels.includes(this.cfg.labels.needsYou)) {
+        try {
+          const reply = await collectOwnerReply({
+            github: this.github,
+            ownerUserId: this.cfg.ownerUserId,
+            issueNumber: thread.issueNumber,
+            prNumber: thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null,
+            sinceMs: thread.updatedAt,
+          });
+          if (reply) {
+            this.ledger.setOwnerReply(thread.issueNumber, reply, now);
+          }
+        } catch (err) {
+          // Never resume without the owner's reply: retry on the next tick.
+          this.logger.warn("thread/owner_reply_fetch_failed", err instanceof Error ? err.message : String(err), {
+            repo: this.ledger.repo,
+            issue: thread.issueNumber,
+          });
+          return;
+        }
         const retried = this.applyMachineEvent(
           thread,
           { t: "owner_retry" },
@@ -749,6 +773,7 @@ export class Reconciler {
               body: issue.body,
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               gate: this.effectiveGate,
+              ownerReply: workingThread.ownerReply,
             })
           : kind === "revise"
             ? buildRevisionPrompt({
@@ -758,12 +783,14 @@ export class Reconciler {
                 gateViolations,
                 structuredFindings,
                 gate: this.effectiveGate,
+                ownerReply: workingThread.ownerReply,
               })
             : buildRebasePrompt({
                 issueNumber: issue.number,
                 title: issue.title,
                 baseBranch: this.cfg.defaultBranch,
                 gate: this.effectiveGate,
+                ownerReply: workingThread.ownerReply,
               });
 
       const result: ImplementResult = await this.implementer.run({
@@ -1612,6 +1639,8 @@ export class Reconciler {
           issueNumber: m.issueNumber,
           title: `Red main after merge of PR #${m.prNumber}`,
           reason: `Circuit breaker tripped and exact-inverse revert PR #${revertPr.number} opened.`,
+          decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.red_main_reverted.decisionClass),
+          recommendation: MAIN_ESCALATION_POLICY.red_main_reverted.recommendation,
         });
       } else {
         this.ledger.updateMergeMainWatch(m.id, {
@@ -1623,6 +1652,8 @@ export class Reconciler {
           issueNumber: m.issueNumber,
           title: `Red main on ${m.squashSha.slice(0, 8)} (multiple merges interleaved)`,
           reason: "Circuit breaker tripped; manual revert needed because main has moved.",
+          decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.red_main_manual.decisionClass),
+          recommendation: MAIN_ESCALATION_POLICY.red_main_manual.recommendation,
         });
       }
     }

@@ -1,0 +1,105 @@
+import type { EscalationCode } from "./thread-machine.js";
+
+/**
+ * The only kinds of decision Archangel may put in front of the owner.
+ * Anything else the factory must decide (or fail) on its own.
+ */
+export const DECISION_CLASSES = [
+  "credentials",
+  "spending",
+  "live_infrastructure",
+  "irreversible",
+  "product_decision",
+  "owner_signoff",
+] as const;
+export type DecisionClass = (typeof DECISION_CLASSES)[number];
+
+export interface EscalationPolicy {
+  decisionClass: DecisionClass;
+  recommendation: string;
+}
+
+/**
+ * Exhaustive by construction: adding an EscalationCode without a class fails typecheck.
+ */
+export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
+  body_changed: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "Review the edited issue body. If it is what you want built, remove `needs-you` (or `archangel retry`); otherwise revert the edit.",
+  },
+  already_fixed: {
+    decisionClass: "product_decision",
+    recommendation:
+      "Confirm the bug no longer reproduces on main and close the issue; if it still does, comment with a reproduction and retry.",
+  },
+  broker_policy_failed: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "The fix needs protected paths or exceeds diff bounds. Narrow the issue, or take it over with `archangel handoff`.",
+  },
+  gate_failed: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Read the Gate output on the PR. Comment guidance and retry, or close the PR; do not merge without a passing Gate.",
+  },
+  gate_timeout: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Required checks never finished. Check the workflow run on the PR, fix or re-run CI, then retry.",
+  },
+  gate_untrusted: {
+    decisionClass: "credentials",
+    recommendation:
+      "A required check came from an unexpected app. Verify the repo's Gate workflow and app installation before retrying.",
+  },
+  review_vetoed: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Read the reviewer findings in the Recap. Comment guidance and retry, merge yourself if the veto is wrong, or close the PR.",
+  },
+  review_outage: {
+    decisionClass: "credentials",
+    recommendation: "Reviewer CLIs are unavailable. Run `archangel doctor --smoke`, re-login where needed, then retry.",
+  },
+  merge_conflict: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "The branch conflicts with main and the automatic rebase failed. Retry for a fresh Attempt, or resolve it with `archangel handoff`.",
+  },
+  attempt_timeout: {
+    decisionClass: "spending",
+    recommendation: "The Attempt used its whole time budget. Narrow the issue or comment a hint, then retry.",
+  },
+  attempt_failed: {
+    decisionClass: "product_decision",
+    recommendation:
+      "The implementer could not produce a valid fix. Read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
+  },
+  max_attempts: {
+    decisionClass: "spending",
+    recommendation: "The Attempt cap is used up. Retry to grant a fresh budget, or close the issue if it is not worth more runs.",
+  },
+};
+
+export function describeEscalation(code: EscalationCode): EscalationPolicy {
+  return ESCALATION_POLICY[code];
+}
+
+export function formatDecisionClass(c: DecisionClass): string {
+  return c.replace(/_/g, " ");
+}
+
+/** Escalations raised by post-merge main monitoring rather than by a Thread. */
+export const MAIN_ESCALATION_POLICY = {
+  red_main_reverted: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Review and merge the revert PR to turn main green, then clear the circuit breaker; the original issue can be retried afterwards.",
+  },
+  red_main_manual: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Main moved after the bad merge, so no exact revert exists. Revert or fix-forward by hand, then clear the circuit breaker.",
+  },
+} as const satisfies Record<string, EscalationPolicy>;
