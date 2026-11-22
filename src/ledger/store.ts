@@ -688,26 +688,40 @@ export class Ledger {
     }
   }
 
-  getShadowStats(repo: string | null = null): {
+  getShadowStats(repo: string | null = null, sinceMs = 0): {
     total: number;
     agreed: number;
     disagreed: number;
     agreementRate: number;
   } {
     const row = (
-      repo === null
+      repo === null && sinceMs <= 0
         ? this.db
             .prepare(
               `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
                FROM merges WHERE shadow_only = 1`,
             )
             .get()
-        : this.db
+        : repo === null
+          ? this.db
+              .prepare(
+                `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
+                 FROM merges WHERE shadow_only = 1 AND created_at >= ?`,
+              )
+              .get(sinceMs)
+          : sinceMs <= 0
+        ? this.db
             .prepare(
               `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
                FROM merges WHERE repo = ? AND shadow_only = 1`,
             )
             .get(repo)
+        : this.db
+            .prepare(
+              `SELECT COUNT(*) AS total, SUM(CASE WHEN disagreed = 1 THEN 1 ELSE 0 END) AS disagreed
+               FROM merges WHERE repo = ? AND shadow_only = 1 AND created_at >= ?`,
+            )
+            .get(repo, sinceMs)
     ) as { total: number; disagreed: number | null };
     const total = row.total;
     const disagreed = row.disagreed ?? 0;
@@ -1014,7 +1028,7 @@ export class Ledger {
     durationsSec.sort((x, y) => x - y);
     const percentile = (arr: number[], p: number): number | null => {
       if (arr.length === 0) return null;
-      const idx = Math.min(arr.length - 1, Math.floor((arr.length - 1) * p));
+      const idx = Math.min(arr.length - 1, Math.max(0, Math.ceil(arr.length * p) - 1));
       return Number(arr[idx]!.toFixed(1));
     };
 
@@ -1071,7 +1085,7 @@ export class Ledger {
         byVendor,
         outageEvents: Number(outageRow.cnt),
       },
-      shadow: this.getShadowStats(repoFilter),
+      shadow: this.getShadowStats(repoFilter, since),
       activeCooldowns: this.listActiveCooldowns(now),
     };
   }
