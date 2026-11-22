@@ -2,6 +2,7 @@ import { REPO_SLUG_RE, type LabelsSchema } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
 import type { OnboardRunner } from "./onboard.js";
 import { PitchOutputSchema, type PitchItem } from "./pitch.js";
+import { isUndecided, promotedSlicesOf } from "./pitch-machine.js";
 import { scoutContentHash } from "./scout.js";
 import type { z } from "zod";
 
@@ -53,8 +54,9 @@ export async function promotePitch(
   if (!REPO_SLUG_RE.test(input.repo)) throw new Error(`Expected owner/name, got '${input.repo}'`);
   const row = ledger.getPitch(input.issue);
   if (!row) throw new Error(`#${input.issue} is not a pitch recorded by this Ledger`);
-  // `promoted` is allowed: a pitch with some slices promoted can still have its remaining slices promoted later.
-  if (row.status !== "open" && row.status !== "promoted") throw new Error(`Pitch #${input.issue} is already ${row.status}`);
+  // A pitch with some slices promoted is still undecided: its remaining slices can be promoted later.
+  if (!isUndecided(row.state)) throw new Error(`Pitch #${input.issue} is already ${row.state.kind}`);
+  const promotedSoFar = promotedSlicesOf(row.state);
 
   // The pitch the owner reads on GitHub must be exactly what was filed: re-check the pinned content hash first.
   const live = JSON.parse(await runner.run("gh", ["issue", "view", String(input.issue), "--repo", input.repo, "--json", "title,body,state,labels"])) as {
@@ -70,10 +72,10 @@ export async function promotePitch(
   }
 
   const pitch = PitchOutputSchema.shape.pitches.element.parse(JSON.parse(row.pitchJson));
-  const remaining = pitch.slices.map((_, i) => i).filter((i) => !row.promotedSlices.includes(i));
+  const remaining = pitch.slices.map((_, i) => i).filter((i) => !promotedSoFar.includes(i));
   const indexes = input.slice === undefined ? remaining : [input.slice - 1];
   if (indexes.some((i) => i < 0 || i >= pitch.slices.length)) throw new Error(`--slice must be between 1 and ${pitch.slices.length}`);
-  const again = indexes.filter((i) => row.promotedSlices.includes(i));
+  const again = indexes.filter((i) => promotedSoFar.includes(i));
   if (again.length > 0) throw new Error(`Slice ${again.map((i) => i + 1).join(", ")} of pitch #${input.issue} is already promoted`);
   if (indexes.length === 0) throw new Error(`Every slice of pitch #${input.issue} is already promoted`);
   const drafts = indexes.map((i) => sliceIssueBody(input.issue, pitch, i));
@@ -104,16 +106,16 @@ export async function promotePitch(
     if (created.length === 0) throw err;
     // Some owner-authored issues already exist. Mark the pitch decided so a rerun cannot duplicate them, and say what is left.
     await chainSlices(runner, ledger, input, created);
-    ledger.markPitchSlicesPromoted(input.issue, indexes.slice(0, created.length), input.now);
+    markSlices(ledger, input.issue, indexes.slice(0, created.length), pitch.slices.length, input.now);
     ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes.slice(0, created.length), partial: true }, input.now);
     throw new Error(
       `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Those slices are marked promoted and the pitch is left open; rerun to promote the remaining slices.`,
     );
   }
   await chainSlices(runner, ledger, input, created);
-  ledger.markPitchSlicesPromoted(input.issue, indexes, input.now);
+  markSlices(ledger, input.issue, indexes, pitch.slices.length, input.now);
   ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes, chained: Boolean(input.chain) }, input.now);
-  const done = ledger.getPitch(input.issue)!.promotedSlices.length === pitch.slices.length;
+  const done = ledger.getPitch(input.issue)!.state.kind === "promoted";
   const list = created.map((n) => `#${n}`).join(", ");
   if (done) {
     await runner.run("gh", ["issue", "close", String(input.issue), "--repo", input.repo, "--comment", `Promoted by the owner to ${list}.`]);
@@ -138,5 +140,12 @@ async function chainSlices(
   for (let i = 1; i < created.length; i++) ledger.addThreadDependency(created[i]!, created[i - 1]!, input.now);
   for (const n of created) {
     await runner.run("gh", ["issue", "edit", String(n), "--repo", input.repo, "--add-label", input.labels.readyForAgent]);
+  }
+}
+
+/** The state machine is the authority: a refusal here means the pitch moved under us, and the issues already created must be reported. */
+function markSlices(ledger: Ledger, issue: number, slices: number[], total: number, now?: number): void {
+  if (!ledger.markPitchSlicesPromoted(issue, slices, total, now)) {
+    throw new Error(`Pitch #${issue} could not record slices ${slices.map((i) => i + 1).join(", ")} (see the pitch/illegal_transition audit row); the issues already opened are listed above.`);
   }
 }

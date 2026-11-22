@@ -315,12 +315,12 @@ CREATE TABLE IF NOT EXISTS pitches (
   title_fp TEXT NOT NULL,
   content_sha256 TEXT NOT NULL,
   filed_at INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'declined', 'promoted')),
-  status_at INTEGER NOT NULL,
-  decline_reason TEXT,
-  pitch_json TEXT NOT NULL DEFAULT '',
-  promoted_slices TEXT NOT NULL DEFAULT '[]',
-  expired_at INTEGER,
+  pitch_json TEXT NOT NULL,
+  -- Lifecycle: a PitchState (core/pitch-machine.ts). Changed only through Ledger.stepPitchState (compare-and-set on version).
+  state_json TEXT NOT NULL,
+  state TEXT GENERATED ALWAYS AS (json_extract(state_json, '$.kind')) STORED,
+  state_at INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, issue_number)
 );
 

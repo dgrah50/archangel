@@ -75,7 +75,7 @@ describe("archangel pitch promote", () => {
     expect(logs.join("\n")).toContain("Delete legacy parser");
     expect(logs.join("\n")).toContain("Drop its tests");
     expect(logs.join("\n")).toContain(sliceIssueBody(40, PITCH, 0).body); // printed in full
-    expect(ledger.getPitch(40)!.status).toBe("promoted");
+    expect(ledger.getPitch(40)!.state.kind).toBe("promoted");
     const close = calls.find((c) => c[1] === "close")!;
     expect(close[close.indexOf("--comment") + 1]).toContain("#100, #101");
     expect(ledger.listAudit({ topicPrefix: "pitch/promoted" })[0]!.actor).toBe("owner");
@@ -85,7 +85,7 @@ describe("archangel pitch promote", () => {
     const { ledger, runner, calls, base } = setup();
     await expect(promotePitch(runner, ledger, { ...base, yes: false, confirm: async () => false })).rejects.toThrow(/Not confirmed/);
     expect(calls.some((c) => c[1] === "create" || c[1] === "close")).toBe(false);
-    expect(ledger.getPitch(40)!.status).toBe("open");
+    expect(ledger.getPitch(40)!.state.kind).toBe("open");
     const ok = await promotePitch(runner, ledger, { ...base, yes: false, confirm: async () => true });
     expect(ok).toHaveLength(2);
   });
@@ -130,14 +130,13 @@ describe("archangel pitch promote", () => {
       },
     };
     await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/#100.*network down|network down.*#100/s);
-    expect(ledger.getPitch(40)!.status).toBe("promoted");
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "partially_promoted", promotedSlices: [0], totalSlices: 2 });
     expect(ledger.listAudit({ topicPrefix: "pitch/promoted" })).toHaveLength(1);
-    expect(ledger.getPitch(40)!.promotedSlices).toEqual([0]);
     // a rerun promotes only the remaining slice instead of creating #100 again
     const rerun = await promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true });
     expect(rerun).toHaveLength(1);
     expect(calls.filter((c) => c[1] === "create").map((c) => c[c.indexOf("--title") + 1])).toEqual(["Delete legacy parser", "Drop its tests", "Drop its tests"]);
-    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/Every slice .* already promoted/);
+    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/already promoted/);
   });
 
   it("a promoted pitch counts toward the pause rule (the Scout does not pause after it)", async () => {
@@ -163,13 +162,13 @@ describe("promoting slices one at a time", () => {
   it("--slice marks only that slice, leaves the pitch open for the rest, and closes it once every slice is promoted", async () => {
     const { ledger, runner, calls, base } = setup();
     expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 2 })).toEqual([100]);
-    expect(ledger.getPitch(40)).toMatchObject({ status: "promoted", promotedSlices: [1] });
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "partially_promoted", promotedSlices: [1], totalSlices: 2 });
     expect(calls.some((c) => c[1] === "close")).toBe(false); // still open: slice 1 is promotable
     const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")!;
     expect(comment[comment.indexOf("--body") + 1]).toContain("Slice 2 promoted");
 
     expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 1 })).toEqual([101]);
-    expect(ledger.getPitch(40)!.promotedSlices).toEqual([0, 1]);
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "promoted", promotedSlices: [0, 1] });
     expect(calls.filter((c) => c[1] === "close")).toHaveLength(1);
   });
 
