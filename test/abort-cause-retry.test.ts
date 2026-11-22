@@ -88,3 +88,33 @@ describe("owner commands do not report success for a lost compare-and-set", () =
     expect(requireTransition(t, "a/b", 7)).toBe(t);
   });
 });
+
+describe("a handoff whose push fails is an explicit state, not a silent drop", () => {
+  it("records handoff/push_failed and tells the owner on the issue", async () => {
+    const w = await world(async (input) => {
+      fs.writeFileSync(path.join((input as unknown as { cloneDir: string }).cloneDir, "work.go"), "package demo\n");
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 4000);
+        input.abortController.signal.addEventListener("abort", () => (clearTimeout(t), resolve()));
+      });
+      return { summary: "", costUsd: 0, transcriptPath: null, aborted: input.abortController.signal.aborted } as never;
+    });
+    try {
+      await w.rec.tick(Date.now(), { waitForAttempts: false });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(w.ledger.getThread(4)!.phase.kind).toBe("working");
+      const broker = (w.rec as unknown as { broker: GitBroker }).broker;
+      vi.spyOn(broker, "pushFactoryBranch").mockRejectedValue(new Error("remote rejected the push"));
+      const mainSha = git(path.join(w.root, "remote.git"), ["rev-parse", "main"]);
+      await w.rec.prepareDaemonHandoff(4, mainSha);
+      await w.rec.tick(Date.now(), { waitForAttempts: true }).catch(() => undefined);
+      const rows = w.ledger.listAudit({ topicPrefix: "handoff/push_failed" });
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0])).toContain("remote rejected the push");
+      const said = (w.github.comments.get(4) ?? []).join("\n");
+      expect(said).toContain("could not be pushed");
+    } finally {
+      cleanup(w);
+    }
+  });
+});

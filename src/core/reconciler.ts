@@ -1254,6 +1254,7 @@ export class Reconciler {
 
         // If handoff aborted us, try to push any valid unpushed factory commits before releasing!
         if (cause === "handoff") {
+          let unpushed: string | null = null;
           try {
             const val = await this.broker.fetchAndValidateFromClone(
               cloneDir,
@@ -1262,13 +1263,30 @@ export class Reconciler {
               this.effectiveGate,
               workClassOfBranch(workingThread.branchName),
             );
-            if (val.protectedViolations.length === 0) {
+            if (val.changedFiles.length === 0) {
+              // The agent had committed nothing: there is nothing to push.
+            } else if (val.protectedViolations.length > 0) {
+              unpushed = `the commits touch protected paths (${val.protectedViolations.join("; ")})`;
+            } else {
               const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
               await this.broker.pushFactoryBranch(workingThread.branchName, val.headSha, freshRemoteUrl);
               this.ledger.recordPushedSha(val.headSha, workingThread.issueNumber, "broker");
             }
-          } catch {
-            // Non-fatal during handoff abort if clone had no commits.
+          } catch (err) {
+            unpushed = err instanceof Error ? err.message : String(err);
+          }
+          if (unpushed !== null) {
+            // The owner's workspace is missing the agent's last commits: an explicit audited state plus a note where they will see it.
+            this.ledger.appendAudit("handoff/push_failed", workingThread.issueNumber, "archangel", { reason: unpushed, branch: workingThread.branchName }, Date.now());
+            this.logger.warn("handoff/push_failed", unpushed, { repo: this.ledger.repo, issue: workingThread.issueNumber });
+            try {
+              await this.github.postComment(
+                workingThread.issueNumber,
+                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${unpushed.slice(0, 300)}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
+              );
+            } catch (err) {
+              this.logger.warn("handoff/push_failed_comment_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: workingThread.issueNumber });
+            }
           }
         }
 
