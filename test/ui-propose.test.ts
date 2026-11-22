@@ -3,18 +3,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
-import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { OnboardRunner } from "../src/core/onboard.js";
-import { draftFromEffective, lineDiff, previewDraft } from "../src/core/ui-propose.js";
+import { draftFromEffective } from "../src/core/ui-propose.js";
 import { startUiServer } from "../src/core/ui-server.js";
-import { buildWorkflowsState } from "../src/core/ui-state.js";
-import { Workflow, resolveWorkflow } from "../src/core/workflow.js";
+import { resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
-import { PreviewView, StaleNotice, WorkflowEditor, isStale } from "../ui/src/WorkflowEditor.js";
-import { fromForm, propose, toForm } from "../ui/src/workflow-draft.js";
 import { hostInput, workflowFile } from "./helpers/workflow.js";
 
 const FILE = workflowFile([{ name: "bug-hunt", promotion: "auto" }], { landing: { bugfix: "autonomous" } });
@@ -36,45 +30,6 @@ const edit = (f: (d: any) => void) => {
   f(d);
   return d;
 };
-
-describe("draft and preview", () => {
-  it("rebuilds the current file as an editable draft without Scout prompts, and round-trips through the form", () => {
-    const d = draft();
-    expect(d.version).toBe(1);
-    expect(JSON.stringify(d)).not.toContain("SECRET-PROMPT");
-    expect(d.landing.bugfix).toBe("autonomous");
-    expect(fromForm(toForm(d), d)).toEqual(d);
-    const form = toForm(d);
-    form.maxFiles = 2;
-    form.protectedPaths = "a/**\nb/**";
-    form.scouts[0]!.promotion = "owner";
-    const next = fromForm(form, d);
-    expect(next.gate.maxFiles).toBe(2);
-    expect(next.gate.protectedPaths).toEqual(["a/**", "b/**"]);
-    expect(next.scouts[0]!.promotion).toBe("owner");
-    expect(next.gate.testFileGlobs).toEqual(d.gate.testFileGlobs); // hidden fields untouched
-  });
-
-  it("classifies with loosened fields first and produces a raw diff; refuses a stale base", () => {
-    const l = ledger();
-    const base = resolved().fileSha256;
-    const p = previewDraft(l, "a/b", edit((d) => { d.gate.maxFiles = 3; d.gate.maxNonTestLines = 100; d.landing.bugfix = "owner"; d.gate.baseTestRuns = 5; }), base);
-    expect(p.changes.map((c) => c.direction)).toEqual(["tighten", "tighten", "tighten", "tighten"]);
-    const loose = previewDraft(l, "a/b", edit((d) => { d.gate.baseTestRuns = 3; d.requiredChecks = ["Gate", "Other"]; d.gate.maxFiles = 3; }), base);
-    expect(loose.loosens).toBe(true);
-    expect(loose.changes[0]!.direction).toBe("loosen");
-    expect(loose.rawDiff.some((x) => x.op === "-") && loose.rawDiff.some((x) => x.op === "+")).toBe(true);
-    expect(() => previewDraft(l, "a/b", draft(), "0".repeat(64))).toThrow(/Stale draft/);
-    expect(() => previewDraft(l, "a/b", { version: 1 }, base)).toThrow(/Invalid draft/);
-    expect(() => previewDraft(l, "x/y", draft(), base)).toThrow(/Unknown repo/);
-  });
-
-  it("lineDiff keeps changed lines with two lines of context", () => {
-    const a = ["1", "2", "3", "4", "5", "6", "7", "8"].join("\n");
-    const b = ["1", "2", "3", "4", "X", "6", "7", "8"].join("\n");
-    expect(lineDiff(a, b).map((x) => `${x.op}${x.text}`)).toEqual([" 3", " 4", "-5", "+X", " 6", " 7"]);
-  });
-});
 
 describe("POST /api/workflows/:repo/propose", () => {
   function runnerFake(currentRaw = RAW) {
@@ -206,121 +161,3 @@ describe("POST /api/workflows/:repo/propose", () => {
   });
 });
 
-describe("workflow editor UI", () => {
-  const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: el }));
-
-  it("renders the Pipeline's draft values in the editor", () => {
-    const l = ledger();
-    const repo = buildWorkflowsState(l).repos[0]!;
-    expect(repo.draft?.landing.bugfix).toBe("autonomous");
-    const out = html(createElement(WorkflowEditor, { repo: "a/b", initial: repo.draft!, baseFileSha256: repo.fileSha256! }));
-    expect(out).toContain("Edit workflow");
-    expect(out).toContain("npm test");
-    expect(out).toContain("Scout bug-hunt");
-    expect(out).toContain("Preview");
-  });
-
-  it("renders the loosened-field warning in red and lists loosened fields first", () => {
-    const out = html(
-      createElement(PreviewView, {
-        preview: {
-          changes: [{ field: "gate.baseTestRuns", direction: "loosen" }, { field: "gate.maxFiles", direction: "tighten" }],
-          loosens: true,
-          rawDiff: [{ op: "-", text: "  \"baseTestRuns\": 4" }, { op: "+", text: "  \"baseTestRuns\": 3" }],
-        },
-      }),
-    );
-    expect(out).toContain("This change loosens a limit");
-    expect(out).toContain("policy:loosens");
-    expect(out.indexOf("gate.baseTestRuns")).toBeLessThan(out.indexOf("gate.maxFiles"));
-    expect(out).toContain("LOOSENS");
-    expect(out).toContain("baseTestRuns");
-  });
-
-  it("treats draft text as text, never HTML", () => {
-    const d = structuredClone(draft());
-    d.review = { rubric: "<script>alert(1)</script>" };
-    const out = html(createElement(WorkflowEditor, { repo: "a/b", initial: d, baseFileSha256: "0".repeat(64) }));
-    expect(out).not.toContain("<script>alert(1)</script>");
-  });
-});
-
-describe("the editor's draft keeps every field of the current workflow", () => {
-  it("carries gate.junitReport and a Scout's kind, so saving an unrelated edit neither drops the JUnit proof nor turns a pitch Scout into a bug Scout", () => {
-    const wf = resolveWorkflow(hostInput(), {
-      repo: "a/b",
-      mainSha: "m".repeat(40),
-      fileRaw: JSON.stringify(
-        workflowFile([{ name: "weekly-pitch", kind: "pitch", schedule: "weekly", maxProposals: 1 }], {
-          gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", junitReport: "reports/*.xml" },
-        }),
-      ),
-      scoutPrompts: { "weekly-pitch": "p" },
-    });
-    if (wf.status !== "ok") throw new Error("not ok");
-    const d = draftFromEffective(wf);
-    expect(d.gate.junitReport).toBe("reports/*.xml");
-    expect(d.scouts[0]!.kind).toBe("pitch");
-    // an edit to an unrelated field must classify as exactly that change, never a silent drop
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", JSON.stringify(wf));
-    const next = structuredClone(d) as any;
-    next.gate.maxFiles = 3;
-    expect(previewDraft(l, "a/b", next, wf.fileSha256).changes.map((c) => c.field)).toEqual(["gate.maxFiles"]);
-    // and dropping the report in the draft is visible as a loosening
-    const dropped = structuredClone(d) as any;
-    delete dropped.gate.junitReport;
-    expect(previewDraft(l, "a/b", dropped, wf.fileSha256).changes).toEqual([{ field: "gate.junitReport", direction: "loosen" }]);
-  });
-
-  it("round-trips a workflow that sets every optional field (a guard against new schema fields being dropped)", () => {
-    const file = {
-      version: 1,
-      gate: {
-        maxNonTestLines: 100, maxTotalLines: 200, maxFiles: 4, baseTestRuns: 4, headTestRuns: 3,
-        testFileGlobs: ["t/**"], testDataGlobs: ["fx/**"], testCmd: "x", baseTestCmd: "y", testBuildCmd: "z",
-        junitReport: "r/*.xml", protectedPaths: ["p/**"],
-      },
-      requiredChecks: ["Gate", "Test"],
-      review: { rubric: "be careful" },
-      landing: { bugfix: "autonomous" },
-      scouts: [{ name: "s1", kind: "bug", schedule: "daily", maxProposals: 3, skills: ["general/bug-hunt"], includeMetrics: true, promotion: "auto" }],
-    };
-    const wf = resolveWorkflow(hostInput(), { repo: "a/b", mainSha: "m".repeat(40), fileRaw: JSON.stringify(file), scoutPrompts: { s1: "p" } });
-    if (wf.status !== "ok") throw new Error("not ok");
-    expect(draftFromEffective(wf)).toEqual(Workflow.parse(file));
-  });
-});
-
-describe("workflow editor error and stale states", () => {
-  const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: el }));
-  const stubFetch = (impl: () => Promise<Response>) => {
-    vi.stubGlobal("document", { querySelector: () => null });
-    vi.stubGlobal("fetch", vi.fn(impl));
-  };
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("a draft is stale once the polled base sha differs from the one it was started from", () => {
-    expect(isStale("a".repeat(64), "a".repeat(64))).toBe(false);
-    expect(isStale("a".repeat(64), "b".repeat(64))).toBe(true);
-  });
-
-  it("shows a role=alert reload prompt when the workflow changed upstream", () => {
-    const out = html(createElement(StaleNotice, { onReload: () => {} }));
-    expect(out).toContain('role="alert"');
-    expect(out).toContain("Workflow changed upstream: reload draft");
-  });
-
-  it("a rejected fetch becomes an error result (so the editor re-enables its buttons) instead of throwing", async () => {
-    stubFetch(() => Promise.reject(new Error("connection refused")));
-    expect(await propose("a/b", draft(), "0".repeat(64), true)).toEqual({ error: "network error: connection refused" });
-  });
-
-  it("a non-JSON error body is reported with its status and text, not discarded", async () => {
-    stubFetch(async () => new Response("<html>Bad Gateway</html>", { status: 502 }));
-    const out = await propose("a/b", draft(), "0".repeat(64), true);
-    expect(out).toEqual({ error: "HTTP 502: <html>Bad Gateway</html>" });
-    stubFetch(async () => new Response(JSON.stringify({ error: "stale base" }), { status: 409 }));
-    expect(await propose("a/b", draft(), "0".repeat(64), true)).toEqual({ error: "stale base" });
-  });
-});

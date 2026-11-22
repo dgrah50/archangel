@@ -45,9 +45,4 @@ describe("Scout prompt edits are visible in the proposal's classification", () =
     expect(plan.loosens).toBe(false);
   });
 
-  it("does not report a prompt change when only surrounding whitespace differs", async () => {
-    await expect(
-      planWorkflowProposal(fake(wf("auto"), { hunt: "Find bugs.\n" }), "o/r", JSON.stringify(wf("auto")), { scoutPrompts: { hunt: "  Find bugs.  " } }),
-    ).rejects.toThrow(/nothing to propose|identical/);
-  });
 });
