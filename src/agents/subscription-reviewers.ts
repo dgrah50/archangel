@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { providerToVendor, type CliProvider, type ProviderEntry } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
-import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt } from "./prompts.js";
+import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt, promptTemplateSha } from "./prompts.js";
 import {
   parseStrictVerdict,
   type ReviewBatchOutcome,
@@ -297,6 +297,9 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
         verdict: parsed.verdict,
         findings: parsed.findings,
         costUsd: 0,
+        provider: item.entry.provider,
+        model: item.entry.model ?? null,
+        promptSha256: promptTemplateSha(slotIndex === 0 ? "review_contract" : "review_adversarial"),
       };
     };
 

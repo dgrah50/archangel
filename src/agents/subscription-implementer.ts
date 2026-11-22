@@ -412,6 +412,7 @@ export class SubscriptionImplementer implements Implementer {
             transcriptPath,
             aborted: false,
             providersUsed,
+            runBy: { provider: entry.provider, model: entry.model ?? null },
           };
         }
 

@@ -7,7 +7,7 @@ import { Mastra } from "@mastra/core/mastra";
 import { LibSQLStore } from "@mastra/libsql";
 import { z } from "zod";
 import type { ReviewFinding, ReviewerVendor, ReviewVerdict } from "../ledger/schema.js";
-import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt } from "./prompts.js";
+import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt, promptTemplateSha } from "./prompts.js";
 
 export const ReviewFindingSchema = z.object({
   file: z.string().min(1),
@@ -41,6 +41,10 @@ export interface VendorReviewResult {
   verdict: ReviewVerdict;
   findings: ReviewFinding[];
   costUsd: number;
+  /** Replay provenance: who actually reviewed, and with which prompt template. */
+  provider?: string;
+  model?: string | null;
+  promptSha256?: string;
 }
 
 export interface ReviewBatchOutcome {
@@ -143,8 +147,10 @@ export function createArchangelMastra(opts: MastraReviewerOptions): {
 export class MastraReviewerSuite implements ReviewerSuite {
   private readonly openaiAgent: Agent;
   private readonly geminiAgent: Agent;
+  private readonly models: Record<"openai" | "gemini", string>;
 
   constructor(opts: MastraReviewerOptions) {
+    this.models = { openai: opts.openaiModel, gemini: opts.geminiModel };
     const { openaiAgent, geminiAgent } = createArchangelMastra(opts);
     this.openaiAgent = openaiAgent;
     this.geminiAgent = geminiAgent;
@@ -157,13 +163,13 @@ export class MastraReviewerSuite implements ReviewerSuite {
     if (!skip.has("openai")) {
       entries.push({
         vendor: "openai",
-        promise: this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req)),
+        promise: this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req), "review_contract"),
       });
     }
     if (!skip.has("gemini")) {
       entries.push({
         vendor: "gemini",
-        promise: this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req)),
+        promise: this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req), "review_adversarial"),
       });
     }
 
@@ -191,6 +197,7 @@ export class MastraReviewerSuite implements ReviewerSuite {
     vendor: ReviewerVendor,
     agent: Agent,
     prompt: string,
+    kind: "review_contract" | "review_adversarial",
   ): Promise<VendorReviewResult> {
     const response = await agent.generate(prompt, {
       structuredOutput: {
@@ -207,6 +214,9 @@ export class MastraReviewerSuite implements ReviewerSuite {
       verdict: parsed.verdict,
       findings: parsed.findings,
       costUsd: estimateReviewCostUsd(vendor, usage),
+      provider: vendor,
+      model: this.models[vendor as "openai" | "gemini"] ?? null,
+      promptSha256: promptTemplateSha(kind),
     };
   }
 }

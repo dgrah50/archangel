@@ -143,6 +143,29 @@ export class GitBroker {
     ]);
   }
 
+  /**
+   * Keeps `sha` alive under `refs/archangel/eval/<repo>/<issue>/<n>` in the bare repo, so pruning a merged
+   * `factory/*` branch on GitHub (the fetch above uses --prune) never loses a commit replay may need.
+   * Idempotent: a sha that already has a ref for this Thread is not pinned again. Returns the ref name, or
+   * null when the commit is not in the bare repo (nothing to pin).
+   */
+  async pinEvalRef(repo: string, issueNumber: number, sha: string): Promise<string | null> {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`pinEvalRef: bad repo or sha (${repo}, ${sha})`);
+    const has = await this.runGit(this.bareRepoPath, ["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
+    if (!has) return null;
+    const prefix = `refs/archangel/eval/${repo}/${issueNumber}/`;
+    const existing = (await this.runGit(this.bareRepoPath, ["for-each-ref", "--format=%(refname) %(objectname)", prefix]))
+      .split("\n")
+      .map((l) => l.trim().split(" "))
+      .filter((p) => p.length === 2);
+    const found = existing.find(([, oid]) => oid === sha);
+    if (found) return found[0]!;
+    const next = existing.reduce((m, [name]) => Math.max(m, Number(name!.slice(prefix.length)) || 0), 0) + 1;
+    const ref = `${prefix}${next}`;
+    await this.runGit(this.bareRepoPath, ["update-ref", ref, sha]);
+    return ref;
+  }
+
   async resolveRef(ref: string): Promise<string> {
     return (await this.runGit(this.bareRepoPath, ["rev-parse", ref])).trim();
   }

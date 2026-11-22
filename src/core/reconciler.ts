@@ -7,6 +7,8 @@ import {
   buildImplementPrompt,
   buildRebasePrompt,
   buildRevisionPrompt,
+  promptTemplateSha,
+  rubricSha,
 } from "../agents/prompts.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
@@ -158,6 +160,7 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+    await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
     // Missing or invalid halts new work for this repo (fail closed); owner commands and post-merge main
@@ -270,6 +273,26 @@ export class Reconciler {
     } catch {
       return undefined;
     }
+  }
+
+  /** Best-effort: pinning is bookkeeping for replay and must never block or fail a tick. */
+  private async pinEval(issueNumber: number, ...shas: Array<string | null | undefined>): Promise<void> {
+    for (const sha of new Set(shas)) {
+      if (!sha) continue;
+      try {
+        await this.broker.pinEvalRef(this.ledger.repo, issueNumber, sha);
+      } catch (err) {
+        this.logger.warn("eval/pin_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
+    }
+  }
+
+  /** One-shot per repo: pin every reviewed, Attempt and merged head still fetchable, so history from before capture is kept. */
+  private async backfillEvalRefs(): Promise<void> {
+    const key = `eval_refs_backfilled:${this.ledger.repo}`;
+    if (this.ledger.getSystemState(key)) return;
+    for (const { issueNumber, sha } of this.ledger.listEvalShas()) await this.pinEval(issueNumber, sha);
+    this.ledger.setSystemState(key, "1");
   }
 
   private async flushOutbox(): Promise<void> {
@@ -887,6 +910,11 @@ export class Reconciler {
     const fromSha =
       explicitStartSha ??
       (kind === "implement" ? mainSha : (extractPrFromPhase(thread.phase)?.headSha ?? mainSha));
+    this.ledger.recordAttemptProvenance(attempt.id, {
+      promptSha256: promptTemplateSha(kind === "revise" ? "revise" : kind === "rebase" ? "rebase" : "implement", workClassOfBranch(thread.branchName)),
+      workflowSha256: this.workflow?.fileSha256 ?? null,
+    });
+    if (kind === "implement") await this.pinEval(thread.issueNumber, fromSha);
 
     const workingThread = this.applyMachineEvent(
       thread,
@@ -1009,6 +1037,7 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
@@ -1062,6 +1091,8 @@ export class Reconciler {
         this.effectiveGate,
         workClassOfBranch(workingThread.branchName),
       );
+
+      await this.pinEval(workingThread.issueNumber, validation.headSha);
 
       if (validation.protectedViolations.length > 0) {
         this.ledger.finishAttempt(attemptId, {
@@ -1452,9 +1483,15 @@ export class Reconciler {
             verdict: r.verdict,
             findings: r.findings,
             costUsd: 0, // Settled via reserveBudget/settleBudget below to avoid double-counting.
+            provider: r.provider ?? null,
+            model: r.model ?? null,
+            promptSha256: r.promptSha256 ?? null,
+            rubricSha256: rubricSha(this.effectiveReviewRubric),
+            workflowSha256: this.workflow?.fileSha256 ?? null,
             now,
           });
         }
+        await this.pinEval(thread.issueNumber, headSha, pr.baseSha);
         this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
 
         if (batch.errors.length > 0) {
@@ -1704,6 +1741,7 @@ export class Reconciler {
 
     // Shadow Mode: ready except for shadow_mode_active (and optional branch_behind_main with clean merge-tree).
     if (isShadowReady(blockers) || shadowReadyWithBehind) {
+      await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
       const verdict = this.ledger.recordMerge({
         issueNumber: thread.issueNumber,
         prNumber: pr.number,
@@ -1752,6 +1790,7 @@ export class Reconciler {
       squashSha = after.mergeCommitSha;
     }
 
+    await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
     const mergeRow = this.ledger.recordMerge({
       issueNumber: thread.issueNumber,
       prNumber: pr.number,
