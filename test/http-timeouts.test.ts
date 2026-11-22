@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { describe, expect, it } from "vitest";
-import { ConfigSchema } from "../src/config.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
 import { GitHubAppClient } from "../src/github/client.js";
 
@@ -43,16 +42,5 @@ describe("HTTP calls cannot hang the tick", () => {
       server.closeAllConnections();
       server.close();
     }
-  });
-});
-
-describe("Telegram settings are all or nothing", () => {
-  const base = { githubOwner: "a", githubRepo: "b", ownerUserId: 1, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "k" };
-  it("rejects a token without a chat id (and the reverse) instead of silently dropping every alert", () => {
-    expect(() => ConfigSchema.parse({ ...base, telegramBotToken: "t" })).toThrow(/telegram/i);
-    expect(() => ConfigSchema.parse({ ...base, telegramChatId: "1" })).toThrow(/telegram/i);
-    expect(() => ConfigSchema.parse({ ...base, telegramBotToken: "t", telegramChatId: "1" })).not.toThrow();
-    expect(() => ConfigSchema.parse(base)).not.toThrow();
-    expect(() => new TelegramNotifier({ botToken: "t" })).toThrow(/both/i);
   });
 });

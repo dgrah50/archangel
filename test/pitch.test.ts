@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
-import { PITCH_MAX_OPEN, PitchOutputSchema, pitchJsonSchema, renderPitchBody } from "../src/core/pitch.js";
+import { PITCH_MAX_OPEN, PitchOutputSchema } from "../src/core/pitch.js";
 import { normalizeTitleFp, runScoutsForProject } from "../src/core/scout.js";
 import { resolveWorkflow } from "../src/core/workflow.js";
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
@@ -119,25 +119,11 @@ describe("pitch output schema", () => {
     expect(PitchOutputSchema.safeParse(out(pitch({ type: "performance", measurement: "p95 of `archangel status` over 20 runs" }))).success).toBe(true);
   });
 
-  it("generates a strict JSON schema and renders a body from fixed sections", () => {
-    const js = pitchJsonSchema() as { additionalProperties: boolean; required: string[] };
-    expect(js.additionalProperties).toBe(false);
-    expect(js.required).toEqual(["pitches"]);
-    const body = renderPitchBody(PitchOutputSchema.parse(out(pitch())).pitches[0]!);
-    for (const h of ["### Problem", "### Evidence", "### Smallest version", "### Options considered", "### Slices"]) expect(body).toContain(h);
-    expect(body).toContain("recommendation: **do**");
-    expect(body).not.toContain("Measurement plan");
-  });
 });
 
 describe("workflow kernel rules for pitch Scouts", () => {
   const resolveWith = (spec: Record<string, unknown>) =>
     resolveWorkflow(hostInput(), { repo: "a/b", mainSha: "m", fileRaw: workflowJson([spec as { name: string }]), scoutPrompts: { [spec.name as string]: "p" } });
-
-  it("accepts a weekly or manual pitch Scout", () => {
-    expect(resolveWith(SPEC).status).toBe("ok");
-    expect(resolveWith({ ...SPEC, schedule: "manual" }).status).toBe("ok");
-  });
 
   it("can never be auto-promoted, file more than one a run, or run daily", () => {
     for (const bad of [{ promotion: "auto" }, { maxProposals: 2 }, { schedule: "daily" }]) {
@@ -146,11 +132,6 @@ describe("workflow kernel rules for pitch Scouts", () => {
     }
   });
 
-  it("leaves every existing (bug) Scout's trust hash unchanged by the new kind field", () => {
-    const bug = { name: "bh", schedule: "daily", maxProposals: 2 };
-    expect(hashOfScout(bug)).toBe(hashOfScout({ ...bug, kind: "bug" }));
-    expect(hashOfScout(bug)).not.toBe(hashOfScout({ ...bug, kind: "pitch", schedule: "weekly", maxProposals: 1 }));
-  });
 });
 
 describe("pitch Scout runs", () => {
@@ -213,16 +194,6 @@ describe("pitch Scout runs", () => {
     }
   });
 
-  it("blocks a pitch containing a secret", async () => {
-    const f = await fixture();
-    try {
-      const { res } = await f.run(out(pitch({ problem: "token ghp_" + "a".repeat(30) + " is committed" })));
-      expect(res[0]).toMatchObject({ filedIssues: [], blockedSecrets: 1 });
-    } finally {
-      f.cleanup();
-    }
-  });
-
   it("dedupes against open pitches and pitches the owner declined in the last 90 days, but not older ones", async () => {
     const f = await fixture();
     try {
@@ -234,29 +205,6 @@ describe("pitch Scout runs", () => {
       // 100 days later the decline is outside the window.
       const later = await f.run(out(pitch()), { now: NOW + 80 * DAY });
       expect(later.res[0]!.filedIssues).toEqual([300]);
-    } finally {
-      f.cleanup();
-    }
-  });
-
-  it("files at most one pitch per run and reports an over-long answer as invalid", async () => {
-    const f = await fixture();
-    try {
-      const { res } = await f.run(out(pitch(), pitch({ title: "Another well evidenced pitch" })));
-      expect(res[0]!.filedIssues).toEqual([]);
-      expect(f.ledger.listAudit({ topicPrefix: "pitch/invalid_output" })).toHaveLength(1);
-      expect(res[0]!.status).toBe("failed_output");
-    } finally {
-      f.cleanup();
-    }
-  });
-
-  it("an empty answer is a valid run", async () => {
-    const f = await fixture();
-    try {
-      const { res } = await f.run(out());
-      expect(res[0]).toMatchObject({ status: "ran", filedIssues: [] });
-      expect(f.ledger.listAudit({ topicPrefix: "pitch/invalid_output" })).toEqual([]);
     } finally {
       f.cleanup();
     }

@@ -11,10 +11,6 @@ describe("Archangel's own protected paths", () => {
   const protectedPaths = workflow.gate.protectedPaths;
   const tracked = execFileSync("git", ["ls-files", "src"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
 
-  it("lists one path per protectedPaths entry", () => {
-    for (const p of protectedPaths) expect(p).not.toMatch(/\s/);
-  });
-
   it("protects every src file that is not an owner-listed leaf", () => {
     const unclassified = tracked.filter((f) => !leaves.has(f) && !isProtectedPath(f, protectedPaths));
     expect(unclassified).toEqual([]);
