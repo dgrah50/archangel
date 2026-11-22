@@ -79,11 +79,11 @@ async function fixture(spec: Record<string, unknown> & { name: string } = SPEC) 
     scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
   });
   let prompts: string[] = [];
-  const run = (answer: unknown, extra: { spec?: Record<string, unknown> & { name: string }; onlyScheduled?: boolean; now?: number; reviewers?: ReviewerSuite; notifier?: Notifier } = {}) => {
+  const run = (answer: unknown, extra: { spec?: Record<string, unknown> & { name: string }; onlyScheduled?: boolean; now?: number; reviewers?: ReviewerSuite; notifier?: Notifier; config?: ReturnType<typeof ConfigSchema.parse> } = {}) => {
     const s = extra.spec ?? spec;
     let called = false;
     return runScoutsForProject({ ...scoutDeps, ...(extra.reviewers ? { reviewers: extra.reviewers } : {}), ...(extra.notifier ? { notifier: extra.notifier } : {}),
-      config, ledger, github: gh, broker, mainSha, now: extra.now ?? NOW, onlyScheduled: extra.onlyScheduled,
+      config: extra.config ?? config, ledger, github: gh, broker, mainSha, now: extra.now ?? NOW, onlyScheduled: extra.onlyScheduled,
       workflow: okWorkflow([s], { prompts: { [s.name]: PROMPT } }),
       invoker: async (i) => {
         called = true;
@@ -96,7 +96,7 @@ async function fixture(spec: Record<string, unknown> & { name: string } = SPEC) 
     ledger.close();
     fs.rmSync(root, { recursive: true, force: true });
   };
-  return { run, ledger, created, labelCalls, open, comments, prompts: () => prompts, cleanup };
+  return { run, config, ledger, created, labelCalls, open, comments, prompts: () => prompts, cleanup };
 }
 
 describe("pitch output schema", () => {
@@ -321,6 +321,32 @@ describe("pitch cross-vendor veto", () => {
       expect(requests[0]!.excludeVendors).toEqual(["anthropic"]); // the Scout runs on claude, so its vendor is excluded
       expect(Object.keys(requests[0]!.touchedFiles as object).sort()).toEqual(["app.ts", "util.ts"]);
       expect(String(requests[0]!.reviewRubric)).toContain("PITCH");
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it("in api mode never lets the Scout's own vendor review its pitch (the Mastra suite ignores excludeVendors, so skipVendors must)", async () => {
+    const f = await fixture();
+    try {
+      const ran: string[] = [];
+      // Behaves like MastraReviewerSuite: runs every API vendor that is not in skipVendors, whatever excludeVendors says.
+      const mastraLike: ReviewerSuite = {
+        async reviewAll(req) {
+          const results = (["openai", "gemini"] as const)
+            .filter((v) => !(req.skipVendors ?? []).includes(v))
+            .map((vendor) => {
+              ran.push(vendor);
+              return { vendor, verdict: "approve" as const, findings: [], costUsd: 0 };
+            });
+          return { results, errors: [] };
+        },
+      };
+      // The pitch Scout runs on codex (OpenAI) here, so OpenAI must not critique it.
+      const config = ConfigSchema.parse({ ...f.config, authMode: "api", reviewerChain: [{ provider: "codex" }, { provider: "claude" }] });
+      const { res } = await f.run(out(pitch()), { reviewers: mastraLike, config });
+      expect(ran).toEqual(["gemini"]);
+      expect(res[0]!.filedIssues).toEqual([300]);
     } finally {
       f.cleanup();
     }
