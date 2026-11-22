@@ -4,7 +4,7 @@ import { ARCHANGEL_ROOT, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } fro
 import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
-export const GATE_RELEVANT_PATHS = ["src/gate", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
+export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/skills.ts", "src/config.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
 export const BUMP_BRANCH = "chore/archangel-gate-bump";
 
 const PIN_LINE = /^(\s*ARCHANGEL_GATE_SHA:)[ \t]*(\S*)[ \t]*$/m;
