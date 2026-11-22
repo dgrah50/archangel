@@ -15,6 +15,7 @@ import { describeEscalation } from "../core/escalations.js";
 import { planSha256 } from "../core/plan.js";
 import { workClassOfBranch, type WorkClass } from "../core/work-class.js";
 import type { DigestInput } from "../core/digest.js";
+import type { PolicyGroup } from "../core/regression-watch.js";
 import { readCodexUsage, type AccountLedger } from "../core/accounts.js";
 import type { Account } from "../config.js";
 import fs from "node:fs";
@@ -1913,6 +1914,36 @@ export class Ledger {
     return rows.map((r) => ({ repo: r.repo, payload: JSON.parse(r.payload_json) as Record<string, unknown>, observedAt: r.observed_at }));
   }
 
+  /**
+   * This repo's Threads grouped by the (workflow file, implement prompt) of their first implement Attempt, oldest group first.
+   * Rework is a Thread that needed a revision; a revert is a `reverted` outcome or a red main-watch on one of its merges.
+   */
+  policyGroups(repo = this.repo): PolicyGroup[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.workflow_sha256 AS w, a.prompt_sha256 AS p, MIN(a.started_at) AS first_at, COUNT(*) AS threads,
+                SUM(t.revision_count > 0) AS rework,
+                SUM(COALESCE(json_extract(t.phase_json, '$.outcome') = 'reverted', 0)
+                    OR EXISTS (SELECT 1 FROM merges m WHERE m.repo = t.repo AND m.issue_number = t.issue_number AND m.shadow_only = 0
+                               AND json_extract(m.main_watch_json, '$.kind') = 'red')) AS reverts
+         FROM (SELECT MIN(id) AS id FROM attempts WHERE repo = ? AND kind = 'implement' AND prompt_sha256 IS NOT NULL AND workflow_sha256 IS NOT NULL GROUP BY issue_number) f
+         JOIN attempts a ON a.id = f.id
+         JOIN threads t ON t.repo = a.repo AND t.issue_number = a.issue_number
+         GROUP BY a.workflow_sha256, a.prompt_sha256
+         ORDER BY first_at ASC`,
+      )
+      .all(repo) as Array<{ w: string; p: string; first_at: number; threads: number; rework: number; reverts: number }>;
+    return rows.map((r) => ({ workflowSha: r.w, promptSha: r.p, firstAt: r.first_at, threads: r.threads, rework: r.rework, reverts: r.reverts }));
+  }
+
+  /** `policy_regression` signals observed since `sinceMs`, across repos, oldest first. */
+  listPolicyRegressions(sinceMs: number): Array<{ repo: string; payload: Record<string, unknown> }> {
+    const rows = this.db
+      .prepare(`SELECT repo, payload_json FROM signals WHERE kind = 'policy_regression' AND observed_at >= ? ORDER BY id ASC`)
+      .all(sinceMs) as Array<{ repo: string; payload_json: string }>;
+    return rows.map((r) => ({ repo: r.repo, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
+  }
+
   signalCounts(sinceMs: number, repo = this.repo): Record<string, number> {
     const rows = this.db
       .prepare(`SELECT kind, COUNT(*) AS n FROM signals WHERE repo = ? AND observed_at >= ? GROUP BY kind`)
@@ -2515,6 +2546,19 @@ export class Ledger {
         return { repo: r.repo, category: p.category, url: p.url, before: p.before, after: p.after };
       }),
     );
+    const regressions = attempt(() =>
+      this.listPolicyRegressions(now - 86_400_000).map(({ repo, payload: p }) => ({
+        repo,
+        workflowSha: String(p.workflowSha),
+        promptSha: String(p.promptSha),
+        threads: Number(p.threads),
+        reworkRate: Number(p.reworkRate),
+        prevReworkRate: Number(p.prevReworkRate),
+        reverts: Number(p.reverts),
+        workflowCommit: p.workflowCommit === null ? null : String(p.workflowCommit),
+        promptCommit: p.promptCommit === null ? null : String(p.promptCommit),
+      })),
+    );
     return {
       now,
       needsYou,
@@ -2528,6 +2572,7 @@ export class Ledger {
       pitches,
       faults,
       draftReverts,
+      regressions,
     };
   }
 
