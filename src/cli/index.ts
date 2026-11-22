@@ -30,6 +30,7 @@ import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
+import { correctionCategories } from "../core/corrections.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
 import { collectOwnerReply } from "../core/owner-reply.js";
 import { listAllSkills } from "../core/skills.js";
@@ -509,6 +510,8 @@ program
       );
       console.log(`  Reverts/fix:  ${na(o.revertsPerFix)} (${o.reverts} reverted)`);
       console.log(`  Rework:       ${na(o.reworkAttemptsPerFix)} extra attempts/fix (${o.reworkAttemptsTotal} total)`);
+      const corrections = correctionCategories(m.corrections).filter((c) => c.count > 0);
+      console.log(`Owner corrections${m.corrections.windowDays ? ` (last ${m.corrections.windowDays}d)` : ""}: ${corrections.map((c) => `${c.category}=${c.count}`).join(", ") || "none"}`);
       console.log(
         `  Vendor agreement with owner: ${Object.entries(o.vendorAgreement).map(([v, s]) => `${v} ${s.rate === null ? "n/a" : `${Math.round(s.rate * 100)}%`} (${s.undisputed}/${s.approvedMerges})`).join(", ") || "n/a"}`,
       );
@@ -834,7 +837,7 @@ program
         bodySha256: sha256(issue.body),
         auditTopic: "thread/owner_retried",
       });
-      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", {});
+      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null });
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
       ledger.close();
