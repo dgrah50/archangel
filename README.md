@@ -321,6 +321,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 | `archangel scout run [name] [--repo <owner/name>] [--dry-run]` | Run read-only Scouts against `main`, or list declared Scouts with `--dry-run`. |
 | `archangel scout skills` | List bundled Scout skills (`general/`, `go/`, `typescript/`). |
 | `archangel pitch promote <repo> <issue> [--slice <n>] [--chain] [--yes]` | Turn pitch slice(s) (single number or comma list like `1,2`) into owner-authored `class:feature` issues. |
+| `archangel pitch promote <repo> <issue> --slice <n> --build [--yes]` | Owner-run self-build for a slice touching protected paths: implements it locally, shows the diff, then opens an owner-authored PR from `selfbuild/<issue>-<n>`. You merge it; the daemon never does. |
 | `archangel workflow propose <repo> --file <path> [--prompts <dir>] [--base-sha <sha256>] [--dry-run]` | Validate a `.agents/archangel.json` draft and open one unmerged PR. |
 | `archangel gate --base <ref> [--head <ref>] [--repo <dir>] [--skip-tests]` | Run the mechanical Gate locally against a repository ref. |
 | `archangel gate-bump <--repo <owner/name>\|--all> [--dry-run]` | Open PRs to re-pin `ARCHANGEL_GATE_SHA` on repositories with Gate pin drift. |
