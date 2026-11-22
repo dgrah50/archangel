@@ -31,6 +31,7 @@ import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scanForSecrets, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
+import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
@@ -318,6 +319,54 @@ export class Reconciler {
         await expireStalePitches(this.ledger, this.github, this.cfg, now, log);
       } catch (err) {
         this.recordFault("pitch_housekeeping", err, now);
+      }
+    }
+
+    if (this.cfg.signals.enabled) {
+      try {
+        await ingestSignals({
+          ledger: this.ledger,
+          github: this.github,
+          defaultBranch: this.cfg.defaultBranch,
+          wanted: wantedKinds(this.cfg.signals, this.ledger.repo),
+          schedules: this.cfg.signals.schedules,
+          now,
+          onError: (adapter, err) => this.recordFault(`signals:${adapter}`, err, now),
+        });
+        await convergeSignals({
+          cfg: this.cfg.signals,
+          ledger: this.ledger,
+          canRunScouts: this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0,
+          now,
+          actions: {
+            fileIssue: async (input) => {
+              if (!this.github.createIssue) throw new Error("GitHubClient does not support createIssue.");
+              return (await this.github.createIssue({ ...input, labels: [this.cfg.labels.agentProposed] })).number;
+            },
+            runScout: async ({ scout, pitchOnly }) => {
+              const wf = this.workflow!;
+              const spec = wf.scouts.find((s) => s.name === scout);
+              if (!spec || (pitchOnly && spec.kind !== "pitch")) return "rejected";
+              const [res] = await runScoutsForProject({
+                config: this.cfg,
+                ledger: this.ledger,
+                github: this.github,
+                broker: this.broker,
+                workflow: wf,
+                reviewers: this.reviewers,
+                notifier: this.notifier,
+                mainSha,
+                filterName: scout,
+                logger: this.logger,
+                now,
+              });
+              if (res?.status === "skipped_cap" || res?.status === "skipped_open_limit") return "deferred";
+              return res?.status === "paused" ? "rejected" : "ran";
+            },
+          },
+        });
+      } catch (err) {
+        this.recordFault("signals", err, now);
       }
     }
 

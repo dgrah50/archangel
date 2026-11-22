@@ -71,6 +71,29 @@ reviewerChain:
 # fleetScouts: [fleet-pr-miner]
 # fleetMinerSeeds: [/Users/me/notes/review-report.md]
 
+# Signal layer (off by default): adapters record merged PRs, releases, Dependabot advisories and your schedules as durable
+# signals; the rules below (yours, host-wide) turn them into actions, each at most once, within the caps. Advisories are
+# untrusted: a rule on them may only start a pitch (run_pitch), and any other action fails config load. Filed issues carry
+# agent-proposed and never start work until you apply ready-for-agent. Run/pitch actions need scouts.enabled on the project.
+# signals:
+#   enabled: true
+#   maxActionsPerDay: 5
+#   schedules:
+#     - { name: weekly-review, every: weekly }
+#   rules:
+#     - name: advisory-pitch
+#       on: advisory
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+#       maxPerDay: 1
+#     - name: release-chore
+#       on: release
+#       repo: owner/my-repo
+#       do: { action: file_issue, class: chore, title: Check the release for follow-ups }
+#     - name: weekly-sweep
+#       on: schedule
+#       schedule: weekly-review
+#       do: { action: run_scout, scout: self-audit }
+
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767
 
