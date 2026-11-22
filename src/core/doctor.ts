@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type ArchangelConfig } from "../config.js";
+import { REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
@@ -98,30 +98,38 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
   // 3. Model authentication (subscription CLIs vs metered API keys)
   if (first.authMode === "subscription") {
-    // Every provider any role chain names: implement, revise, rebase, scout, triage, review.
-    const rolesByProvider = new Map<string, string[]>();
+    // Every account any role chain can use: implement, revise, rebase, scout, triage, review.
+    const rolesByAccount = new Map<string, { account: Account; roles: string[] }>();
     for (const [role, chain] of [...Object.entries(first.chains), ["review", first.reviewerChain] as const]) {
-      for (const e of chain) rolesByProvider.set(e.provider, [...new Set([...(rolesByProvider.get(e.provider) ?? []), role])]);
+      for (const e of chain) {
+        for (const account of accountsFor(first.accounts, e)) {
+          const cur = rolesByAccount.get(account.id) ?? { account, roles: [] };
+          rolesByAccount.set(account.id, { account, roles: [...new Set([...cur.roles, role])] });
+        }
+      }
     }
-    const neededProviders = [...rolesByProvider.keys()];
+    const neededAccounts = [...rolesByAccount.values()];
     const missingBins: string[] = [];
     const verified: string[] = [];
-    for (const p of neededProviders) {
+    for (const { account } of neededAccounts) {
+      const p = account.provider;
+      const label = account.id === p ? p : `${account.id} [${p}]`;
+      const env = { ...process.env, ...accountEnv(account) };
       try {
         if (p === "codex") {
-          const { stdout, stderr } = await execFileAsync("codex", ["login", "status"]);
+          const { stdout, stderr } = await execFileAsync("codex", ["login", "status"], { env });
           const combined = `${stdout}\n${stderr}`.trim();
           if (/not\s+logged\s+in/i.test(combined) || !/logged in/i.test(combined)) {
-            missingBins.push("codex (not logged in — run `codex login`)");
+            missingBins.push(`${label} (not logged in — run \`codex login\`${account.home ? ` with CODEX_HOME=${account.home}` : ""})`);
           } else {
-            verified.push(`codex (${combined})`);
+            verified.push(`${label} (${combined})`);
           }
         } else {
-          const { stdout } = await execFileAsync(p, ["--version"]);
-          verified.push(`${p} (${stdout.trim().split("\n")[0]})`);
+          const { stdout } = await execFileAsync(p, ["--version"], { env });
+          verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
         }
       } catch {
-        missingBins.push(`${p} (not found in PATH)`);
+        missingBins.push(`${label} (not found in PATH)`);
       }
     }
     if (missingBins.length > 0) {
@@ -151,8 +159,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       });
     }
     if (opts.smoke) {
-      for (const p of neededProviders) {
-        checks.push(await smokeProvider(p, rolesByProvider.get(p) ?? []));
+      for (const { account, roles } of neededAccounts) {
+        checks.push(await smokeAccount(account, roles));
       }
     }
   } else {
@@ -456,22 +464,26 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
 // Version + login-status commands only; none of these spend model quota.
 // agy has no login-status command, so for it only installation is verified.
-async function smokeProvider(provider: string, roles: string[]): Promise<DoctorCheck> {
-  const id = `smoke_provider:${provider}`;
-  const name = `Smoke Check (${provider}${roles.length > 0 ? `, used by: ${roles.join(", ")}` : ""})`;
+async function smokeAccount(account: Account, roles: string[]): Promise<DoctorCheck> {
+  const provider = account.provider;
+  const id = `smoke_provider:${account.id}`;
+  const label = account.id === provider ? provider : `${account.id} [${provider}]`;
+  const name = `Smoke Check (${label}${roles.length > 0 ? `, used by: ${roles.join(", ")}` : ""})`;
+  const env = { ...process.env, ...accountEnv(account) };
   const login = provider === "codex" ? `${provider} login` : `${provider} auth login`;
+  const homeHint = account.home ? ` with ${provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"}=${account.home}` : "";
   try {
-    const { stdout: v } = await execFileAsync(provider, ["--version"]);
+    const { stdout: v } = await execFileAsync(provider, ["--version"], { env });
     const version = v.trim().split("\n")[0];
     if (provider === "agy") {
       return { id, name, status: "pass", detail: `${version} (installed; auth not verifiable without a model call)` };
     }
     const args = provider === "codex" ? ["login", "status"] : ["auth", "status"];
-    const { stdout, stderr } = await execFileAsync(provider, args);
+    const { stdout, stderr } = await execFileAsync(provider, args, { env });
     const out = `${stdout}\n${stderr}`.trim();
     const ok = provider === "claude" ? /"loggedIn"\s*:\s*true/.test(out) : /logged in/i.test(out) && !/not\s+logged\s+in/i.test(out);
     if (!ok) {
-      return { id, name, status: "fail", detail: `${provider} not logged in (${out || "no status output"})`, remediation: `Run \`${login}\`, then retry \`archangel doctor --smoke\`.` };
+      return { id, name, status: "fail", detail: `${label} not logged in (${out || "no status output"})`, remediation: `Run \`${login}\`${homeHint}, then retry \`archangel doctor --smoke\`.` };
     }
     return { id, name, status: "pass", detail: `${version}; logged in` };
   } catch (err) {
@@ -480,8 +492,8 @@ async function smokeProvider(provider: string, roles: string[]): Promise<DoctorC
       id,
       name,
       status: "fail",
-      detail: missing ? `${provider} not found in PATH` : `${provider} check failed: ${err instanceof Error ? err.message : String(err)}`,
-      remediation: `Install the ${provider} CLI and run \`${login}\`, then retry \`archangel doctor --smoke\`.`,
+      detail: missing ? `${provider} not found in PATH` : `${label} check failed: ${err instanceof Error ? err.message : String(err)}`,
+      remediation: `Install the ${provider} CLI and run \`${login}\`${homeHint}, then retry \`archangel doctor --smoke\`.`,
     };
   }
 }
