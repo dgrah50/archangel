@@ -2,6 +2,7 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import type { EvalsState } from "../../src/core/eval-reports.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
+import type { PitchesState } from "../../src/core/ui-pitches.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
 const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -39,6 +40,10 @@ export function isThreadDetail(v: unknown): v is ThreadDetail {
   return obj(v) && typeof v.repo === "string" && typeof v.issueNumber === "number" && typeof v.title === "string" && Array.isArray(v.events) && v.events.every((e) => obj(e) && typeof e.ts === "number" && typeof e.title === "string" && Array.isArray(e.details));
 }
 
+export function isPitchesState(v: unknown): v is PitchesState {
+  return obj(v) && typeof v.expiryDays === "number" && typeof v.declineWindowDays === "number" && Array.isArray(v.open) && Array.isArray(v.decided);
+}
+
 export function isHostStatus(v: unknown): v is HostStatus {
   return obj(v) && typeof v.reported === "boolean" && typeof v.restartPending === "boolean" && typeof v.disk === "string";
 }
@@ -67,7 +72,8 @@ export class FeedError extends Error {
 
 /** One feed polled independently of the others, validated before it is trusted. */
 export async function fetchFeed<T>(url: string, valid: (v: unknown) => v is T): Promise<T> {
-  const res = await fetch(url);
+  const token = typeof document === "undefined" ? null : document.querySelector('meta[name="archangel-token"]')?.getAttribute("content");
+  const res = await fetch(url, token ? { headers: { "x-archangel-token": token } } : undefined);
   const text = await res.text();
   let body: unknown;
   try {

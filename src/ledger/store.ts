@@ -1911,6 +1911,22 @@ export class Ledger {
     this.stepPitchState(issueNumber, { t: "expired", at: now }, now, repo);
   }
 
+  /** Every pitch row across repos with its stored JSON and state, newest first, for the dashboard's Pitches page. */
+  listPitchRows(): Array<{ repo: string; issueNumber: number; scoutName: string; title: string; filedAt: number; stateAt: number; stateJson: string; pitchJson: string }> {
+    return (
+      this.db.prepare(`SELECT repo, issue_number, scout_name, title, filed_at, state_at, state_json, pitch_json FROM pitches ORDER BY filed_at DESC`).all() as Array<{
+        repo: string;
+        issue_number: number;
+        scout_name: string;
+        title: string;
+        filed_at: number;
+        state_at: number;
+        state_json: string;
+        pitch_json: string;
+      }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, title: r.title, filedAt: r.filed_at, stateAt: r.state_at, stateJson: r.state_json, pitchJson: r.pitch_json }));
+  }
+
   /** Undecided pitches across every repo, oldest first, for the daily digest. */
   listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; title: string; filedAt: number }> {
     return (
