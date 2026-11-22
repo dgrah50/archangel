@@ -81,6 +81,13 @@ export class Ledger {
       if (!cols.some((c) => c.name === "owner_reply")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
       }
+      const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
+      if (!spCols.some((c) => c.name === "file_sha256")) {
+        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
+      }
+      if (!spCols.some((c) => c.name === "auto_promoted")) {
+        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN auto_promoted INTEGER NOT NULL DEFAULT 0");
+      }
     } else {
       this.db.pragma("busy_timeout = 5000");
     }
@@ -1003,6 +1010,8 @@ export class Ledger {
     scoutName: string;
     contentSha256: string;
     titleFp: string;
+    fileSha256?: string | null;
+    autoPromoted?: boolean;
     now?: number;
     repo?: string;
   }): void {
@@ -1010,10 +1019,19 @@ export class Ledger {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO scout_proposals (repo, issue_number, scout_name, content_sha256, title_fp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO scout_proposals (repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(repo, input.issueNumber, input.scoutName, input.contentSha256, input.titleFp, now);
+      .run(
+        repo,
+        input.issueNumber,
+        input.scoutName,
+        input.contentSha256,
+        input.titleFp,
+        input.fileSha256 ?? null,
+        input.autoPromoted ? 1 : 0,
+        now,
+      );
     this.appendAudit(
       "scout/proposal_filed",
       input.issueNumber,
@@ -1028,7 +1046,7 @@ export class Ledger {
     try {
       const row = this.db
         .prepare(
-          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, created_at
+          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at
            FROM scout_proposals WHERE repo = ? AND issue_number = ?`,
         )
         .get(repo, issueNumber) as Record<string, unknown> | undefined;
@@ -1039,6 +1057,8 @@ export class Ledger {
         scoutName: String(row.scout_name),
         contentSha256: String(row.content_sha256),
         titleFp: String(row.title_fp),
+        fileSha256: row.file_sha256 === null || row.file_sha256 === undefined ? null : String(row.file_sha256),
+        autoPromoted: Number(row.auto_promoted) === 1,
         createdAt: Number(row.created_at),
       };
     } catch {
@@ -1055,6 +1075,35 @@ export class Ledger {
     } catch {
       return false;
     }
+  }
+
+  /** Auto-promoted Scout proposals filed in the last 24 hours (host daily cap). */
+  countRecentAutoPromotions(now = Date.now(), repo = this.repo): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM scout_proposals WHERE repo = ? AND auto_promoted = 1 AND created_at > ?`)
+      .get(repo, now - 24 * 3600_000) as { n: number };
+    return Number(row.n);
+  }
+
+  /**
+   * Auto-promotion trust for one exact version of a Scout file is revoked once any fix it
+   * auto-promoted was disagreed with, reverted, or turned main red. Editing the Scout file
+   * (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
+   */
+  isScoutAutoPromoteRevoked(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM scout_proposals p
+         LEFT JOIN merges m ON m.repo = p.repo AND m.issue_number = p.issue_number
+         LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+         WHERE p.repo = ? AND p.scout_name = ? AND p.file_sha256 = ? AND p.auto_promoted = 1
+           AND (m.disagreed = 1
+                OR json_extract(m.main_watch_json, '$.kind') = 'red'
+                OR json_extract(t.phase_json, '$.outcome') = 'reverted')
+         LIMIT 1`,
+      )
+      .get(repo, scoutName, fileSha256);
+    return Boolean(row);
   }
 
   /**
