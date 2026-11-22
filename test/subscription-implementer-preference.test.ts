@@ -13,8 +13,10 @@ describe("subscription implementer vendor preference", () => {
     const impl = new SubscriptionImplementer({
       chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
       transcriptsDir: path.join(tmp, "transcripts"),
-      cooldowns: {
-        isCoolingDown: (provider) => cooling.has(provider),
+      accountState: {
+        cooldownUntil: (id) => (cooling.has(id) ? Date.now() + 60_000 : null),
+        attemptsToday: () => 0,
+        lastUsedAt: () => null,
         recordCooldown: () => undefined,
       },
       invoker: async ({ provider }) => {

@@ -50,11 +50,12 @@ import { Ledger } from "../ledger/store.js";
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
 
-function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): ReviewerSuite {
+function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string, ledger: Ledger): ReviewerSuite {
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
         accounts: cfg.accounts,
+        accountState: ledger.accountState(cfg.accounts),
         defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
@@ -143,7 +144,7 @@ program
       void cleanup().finally(() => process.exit(1));
     }, 30_000);
 
-    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath);
+    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath, rootLedger);
     const notifier = new TelegramNotifier({
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
@@ -152,11 +153,7 @@ program
       logFilePath: path.join(sharedPaths.dataDir, "archangel.log.jsonl"),
       consoleOutput: true,
     });
-    const cooldowns = {
-      isCoolingDown: (provider: string, now?: number) => rootLedger.getProviderCooldown(provider, now) !== null,
-      recordCooldown: (provider: string, durationMs: number, reason: string, now?: number) =>
-        rootLedger.setProviderCooldown(provider, durationMs, reason, now),
-    };
+    const accountState = rootLedger.accountState(first.accounts);
 
     logger.info(
       "daemon/started",
@@ -193,7 +190,7 @@ program
               chains: cfg.chains,
               accounts: cfg.accounts,
               transcriptsDir: paths.transcriptsDir,
-              cooldowns,
+              accountState,
               logger,
             })
           : new ClaudeSdkImplementer({
@@ -604,10 +601,10 @@ program
         }
       }
       if (m.activeCooldowns.length > 0) {
-        console.log("Active provider cooldowns:");
+        console.log("Active account cooldowns:");
         for (const c of m.activeCooldowns) {
           const remMin = Math.max(1, Math.ceil((c.untilTs - now) / 60_000));
-          console.log(`  - ${c.provider}: ${remMin}m left (${c.reason})`);
+          console.log(`  - ${c.account}: ${remMin}m left (${c.reason})`);
         }
       }
       const signals: string[] = [];
@@ -877,7 +874,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
@@ -1317,7 +1314,7 @@ scoutCmd
         github,
         broker,
         workflow,
-        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath),
+        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath, ledger),
         notifier: new TelegramNotifier({ botToken: cfg.telegramBotToken, chatId: cfg.telegramChatId }),
         mainSha,
         filterName: name,
