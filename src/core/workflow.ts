@@ -43,7 +43,15 @@ export const KERNEL = {
   maxScouts: 5,
 } as const;
 
-const Glob = z.string().min(1).max(200);
+const NonBlank = z.string().refine((s) => s.trim().length > 0, "must not be blank");
+/** A git-relative glob: git emits paths without a leading `/` or `./`, so such a glob could never match (and would silently protect nothing). */
+const Glob = z
+  .string()
+  .max(200)
+  .refine(
+    (g) => g.trim() === g && g.length > 0 && !g.startsWith("/") && !g.startsWith("./") && g !== "." && !g.split("/").includes(".."),
+    "must be a repo-relative glob (no leading '/' or './', no '..', not blank)",
+  );
 /** A repo-relative glob for the JUnit report: no absolute paths, no `..`, no backslashes, only path-ish characters. */
 const SafeRelativeGlob = Glob.refine(
   (g) => /^[\w@+./*?-]+$/.test(g) && !g.startsWith("/") && !g.split("/").includes(".."),
@@ -77,15 +85,15 @@ export const Workflow = z
         headTestRuns: z.number().int().min(KERNEL.minHeadTestRuns).max(10).default(KERNEL.minHeadTestRuns),
         testFileGlobs: z.array(Glob).min(1),
         testDataGlobs: z.array(Glob).default([]),
-        testCmd: z.string().min(1),
-        baseTestCmd: z.string().min(1).optional(),
-        testBuildCmd: z.string().min(1).optional(),
+        testCmd: NonBlank,
+        baseTestCmd: NonBlank.optional(),
+        testBuildCmd: NonBlank.optional(),
         junitReport: SafeRelativeGlob.optional(),
         protectedPaths: z.array(Glob).default([]),
       })
       .strict(),
     /** Must name `Gate` and at least one other CI check, or landing could never see main green. */
-    requiredChecks: z.array(z.string().min(1)),
+    requiredChecks: z.array(NonBlank),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
     landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
@@ -234,9 +242,15 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
   } catch (err) {
     return { ...base, status: "invalid", error: `not valid JSON: ${err instanceof Error ? err.message : String(err)}`, fileSha256 };
   }
-  const missingPrompt = wf.scouts.find((s) => repoIn.scoutPrompts[s.name] === undefined);
+  // Own properties only: a Scout named "constructor" must not find Object.prototype.constructor as its prompt.
+  const missingPrompt = wf.scouts.find((s) => !Object.hasOwn(repoIn.scoutPrompts, s.name));
   if (missingPrompt) {
     return { ...base, status: "invalid", error: `scout '${missingPrompt.name}' has no .agents/scouts/${missingPrompt.name}.md`, fileSha256 };
+  }
+  // A Scout with no prompt text and no skills would run with no instructions at all.
+  const blank = wf.scouts.find((s) => s.skills.length === 0 && repoIn.scoutPrompts[s.name]!.trim() === "");
+  if (blank) {
+    return { ...base, status: "invalid", error: `scout '${blank.name}' has an empty prompt file and no skills`, fileSha256 };
   }
 
   const gate = toGatePolicy(wf.gate);
@@ -248,7 +262,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
       : { value: declaredLanding, source: "repo" };
 
   const scouts: EffectiveScout[] = wf.scouts.map((spec) => {
-    const prompt = repoIn.scoutPrompts[spec.name]!;
+    const prompt = repoIn.scoutPrompts[spec.name]!.trim();
     const hash = trustHash(spec, prompt);
     const revoked = host.isRevoked(spec.name, hash);
     let promotionEffective: Effective<"owner" | "auto"> = { value: spec.promotion, source: "repo" };
@@ -307,12 +321,16 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   for (const k of ["baseTestRuns", "headTestRuns"] as const) {
     if (next.gate[k] !== prev.gate[k]) add(`gate.${k}`, next.gate[k] < prev.gate[k] ? "loosen" : "tighten");
   }
-  for (const k of ["testFileGlobs", "testDataGlobs", "testCmd", "baseTestCmd", "testBuildCmd"] as const) {
+  for (const k of ["testFileGlobs", "testDataGlobs", "testCmd", "baseTestCmd"] as const) {
     if (!eq(prev.gate[k], next.gate[k])) add(`gate.${k}`, "changed");
   }
   // Setting a report path adds a stricter red-on-base proof; removing it falls back to exit codes only.
   if (prev.gate.junitReport !== next.gate.junitReport) {
     add("gate.junitReport", !prev.gate.junitReport ? "tighten" : !next.gate.junitReport ? "loosen" : "changed");
+  }
+  // The build command verifies a new test compiles against base: dropping it loosens red-on-base, adding it tightens.
+  if (prev.gate.testBuildCmd !== next.gate.testBuildCmd) {
+    add("gate.testBuildCmd", !prev.gate.testBuildCmd ? "tighten" : !next.gate.testBuildCmd ? "loosen" : "changed");
   }
   setChange("gate.protectedPaths", prev.gate.protectedPaths, next.gate.protectedPaths, add);
   setChange("requiredChecks", prev.requiredChecks, next.requiredChecks, add);
