@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema, type ArchangelConfig } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -243,6 +243,68 @@ describe("Scout autoPromote label failure", () => {
       expect(failures).toHaveLength(1);
       expect(failures[0]?.issueNumber).toBe(60);
       ledger.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("re-checks revocation live: a revocation that lands after the tick-start snapshot still blocks intake and filing", async () => {
+    const { root, remoteBare, mainSha, broker } = await fixture(AUTO_SCOUT);
+    try {
+      // Intake: the snapshot (first call, at tick start) says not revoked; every later call says revoked.
+      const ledger = new Ledger(":memory:", { repo: "acme/app" });
+      let calls = 0;
+      const spy = vi.spyOn(Ledger.prototype, "isScoutAutoPromoteRevoked").mockImplementation(() => ++calls > 1);
+      const issue: GitHubIssue = {
+        number: 80, title: "late revoke", body: "body 80", state: "open", authorId: 777, authorLogin: "archangel[bot]",
+        authorAssociation: "NONE", labels: ["agent-proposed", "ready-for-agent"], updatedAt: "2026-11-21T00:00:00Z",
+      };
+      ledger.recordScoutProposal({
+        issueNumber: 80, scoutName: "auto-hunt", contentSha256: scoutContentHash(issue.title, issue.body),
+        titleFp: normalizeTitleFp(issue.title), fileSha256: hashOfScout(AUTO_SCOUT), autoPromoted: true,
+      });
+      const gh = {
+        getRemoteUrlWithToken: async () => remoteBare,
+        getBranchTipSha: async () => mainSha,
+        listOpenIssuesByLabel: async () => [issue],
+        verifyLabelActor: async () => false,
+        getIssue: async () => issue,
+        getCheckRunsForRef: async () => [],
+      } as unknown as GitHubClient;
+      const rec = new Reconciler({
+        config: makeConfig({ scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 }, maxConcurrentThreads: 1 }),
+        ledger, github: gh, broker,
+        implementer: { run: async () => ({ ok: false, costUsd: 0, turns: 0, summary: "", transcriptPath: "", aborted: false }) },
+        reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
+      });
+      await rec.tick(Date.now(), { waitForAttempts: false });
+      rec.abortAllActive("control");
+      await rec.waitForActiveTasks();
+      expect(ledger.getThread(80)).toBeNull();
+      expect(calls).toBeGreaterThan(1);
+      spy.mockRestore();
+      ledger.close();
+
+      // Filing: the workflow snapshot says auto, but the owner disagreed with an earlier fix while the Scout CLI ran.
+      const ledger2 = new Ledger(":memory:", { repo: "acme/app" });
+      const { gh: gh2, labelsAdded } = fakeScoutGitHub();
+      ledger2.upsertThread({ issueNumber: 60, title: "t", themeLabel: null, bodySha256: "b", phase: { kind: "done", outcome: "merged" }, mode: "autonomous", now: 1 });
+      ledger2.recordScoutProposal({ issueNumber: 60, scoutName: "auto-hunt", contentSha256: "c", titleFp: "f", fileSha256: hashOfScout(AUTO_SCOUT), autoPromoted: true });
+      (ledger2 as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
+        .prepare(
+          `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, disagreed, day_key, main_watch_json, created_at)
+           VALUES ('acme/app', 60, 7, 'h', 's', 0, 1, '2026-11-21', '{"kind":"green"}', 1)`,
+        )
+        .run();
+      const stale = okWorkflow([AUTO_SCOUT]); // resolved with isRevoked: () => false
+      expect(stale.scouts[0]!.promotionEffective.value).toBe("auto");
+      await runScoutsForProject({
+        ...scoutDeps, config: makeConfig(), ledger: ledger2, github: gh2, broker, workflow: stale, mainSha,
+        invoker: async () => ({ findings: [{ title: "app.ts: another real bug", body: "Failing test for x=2." }] }),
+      });
+      expect(labelsAdded).toEqual([]);
+      ledger2.close();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
