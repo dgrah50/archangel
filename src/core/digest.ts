@@ -29,7 +29,7 @@ function age(ms: number): string {
  */
 export function buildDigest(input: DigestInput): string | null {
   const y = input.yesterday;
-  if (input.needsYou?.length === 0 && !input.pitches?.length && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
+  if (input.needsYou?.length === 0 && input.pitches?.length === 0 && input.proposals?.length === 0 && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
     return null;
   }
   const n = (v: number | null) => (v === null ? UNAVAILABLE : String(v));
