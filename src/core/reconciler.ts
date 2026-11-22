@@ -83,7 +83,6 @@ export class Reconciler {
   readonly workerId: string;
 
   private isTicking = false;
-  private policyErrorNotifiedSha: string | null = null;
   private readonly runningTasks = new Map<number, RunningTask>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
@@ -177,27 +176,32 @@ export class Reconciler {
 
     if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
 
+    const noticeKey = `policy_error_notified:${this.ledger.repo}`;
     if (policyError) {
-      if (this.policyErrorNotifiedSha !== mainSha) {
-        this.policyErrorNotifiedSha = mainSha;
-        this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", { mainSha, error: policyError }, now);
+      // One Needs You per broken main commit. The marker is persisted only after delivery succeeds, so a failed
+      // send is retried next tick and a restart does not repeat a delivered one.
+      if (this.ledger.getSystemState(noticeKey) !== mainSha) {
         this.logger.warn("config/repo_policy_invalid", `Halting new work: ${policyError}`, { repo: this.ledger.repo });
         const policy = MAIN_ESCALATION_POLICY.repo_policy_invalid;
-        await this.notifier
-          .notifyNeedsYou({
+        try {
+          await this.notifier.notifyNeedsYou({
             issueNumber: null,
             title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: repo policy unusable at ${mainSha.slice(0, 8)}`,
             reason: policyError.slice(0, 500),
             decisionClass: formatDecisionClass(policy.decisionClass),
             recommendation: policy.recommendation,
-          })
-          .catch(() => undefined);
+          });
+          this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", { mainSha, error: policyError }, now);
+          this.ledger.setSystemState(noticeKey, mainSha, now);
+        } catch (err) {
+          this.logger.warn("config/repo_policy_notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+        }
       }
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
       return;
     }
-    this.policyErrorNotifiedSha = null;
+    if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
 
     // 1. Process pending CLI -> Daemon handoff commands (Opus Step 6 / R5).
     await this.processPendingCommands(mainSha, now);
