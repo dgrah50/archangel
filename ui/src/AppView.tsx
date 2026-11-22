@@ -58,19 +58,24 @@ export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "re
   return out;
 }
 
-function PipelinePage({ workflows, onRetry }: { workflows: Feed<WorkflowsState>; onRetry: () => void }) {
-  return (
-    <Box maxW="64rem" mx="auto" p="6">
-      {workflows.data ? (
-        <>
-          {workflows.error ? (
+function PipelinePage({ workflows, settings, onRetry }: { workflows: Feed<WorkflowsState>; settings: SettingsState | null; onRetry: () => void }) {
+  if (workflows.data) {
+    return (
+      <>
+        {workflows.error ? (
+          <Box pt="4" px={{ base: "6", md: "56px" }}>
             <Notice tone="red">
               <Text textStyle="sm">Pipeline refresh failed ({workflows.error}); showing the last loaded copy.</Text>
             </Notice>
-          ) : null}
-          <Pipeline data={workflows.data} />
-        </>
-      ) : workflows.error ? (
+          </Box>
+        ) : null}
+        <Pipeline data={workflows.data} settings={settings} />
+      </>
+    );
+  }
+  return (
+    <Page>
+      {workflows.error ? (
         <Notice tone="red">
           <Text fontWeight="medium">Pipeline unavailable.</Text>
           <Text textStyle="sm">{workflows.error}</Text>
@@ -81,7 +86,7 @@ function PipelinePage({ workflows, onRetry }: { workflows: Feed<WorkflowsState>;
       ) : (
         <Text color="fg.muted">Loading pipeline...</Text>
       )}
-    </Box>
+    </Page>
   );
 }
 
@@ -138,11 +143,11 @@ export function AppView({
       {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
-          <PipelinePage workflows={workflows} onRetry={onRetry} />
+          <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
       {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} evals={evals} now={now} onRetry={onRetry} /> : null}
-      {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
+      {route.page === "pipeline" ? <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} /> : null}
       {route.page === "pitches" ? <PitchesPage pitches={pitches} now={now} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
