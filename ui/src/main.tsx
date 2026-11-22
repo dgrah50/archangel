@@ -18,10 +18,11 @@ function App() {
   const [evals, loadEvals] = useFeed("/api/evals", isEvalsState, route.page === "evals");
   const [settings, loadSettings] = useFeed("/api/settings", isSettingsState, (route.page === "settings" && route.scope !== "repo") || route.page === "setup");
   const [host, loadHost] = useFeed("/api/host", isHostStatus);
-  const t = route.page === "thread" ? route.item : null;
+  const first = state.data?.needsYou[0];
+  const t = route.page === "thread" ? route.item : route.page === "needs-you" ? (route.item ?? (first ? { repo: first.repo, issue: first.issueNumber } : null)) : null;
   const key = t ? `${encodeURI(t.repo)}/${t.issue}` : "";
   const [thread, loadThread] = useFeed(`/api/threads/${key}`, isThreadDetail, t !== null);
-  const [logs, loadLogs] = useFeed(t ? `/api/logs?repo=${encodeURIComponent(t.repo)}&issue=${t.issue}&limit=100` : "/api/logs", isLogs, t !== null);
+  const [logs, loadLogs] = useFeed(t ? `/api/logs?repo=${encodeURIComponent(t.repo)}&issue=${t.issue}&limit=100` : "/api/logs", isLogs, route.page === "thread");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 5_000);

@@ -135,7 +135,7 @@ export function AppView({
         </Box>
       ) : null}
       {route.page === "overview" ? <Dashboard state={state.data} host={host.data} /> : null}
-      {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
+      {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} thread={thread} onRetry={onRetry} /> : null}
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
       {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
