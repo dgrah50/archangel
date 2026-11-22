@@ -19,9 +19,14 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
     execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
     try {
       const seenPrompts: Array<{ provider: string; prompt: string }> = [];
+      const cooledDown = new Set<string>();
       const impl = new SubscriptionImplementer({
         chain: [{ provider: "codex" }, { provider: "agy" }],
         transcriptsDir: path.join(tmp, "transcripts"),
+        cooldowns: {
+          isCoolingDown: (p) => cooledDown.has(p),
+          recordCooldown: (p) => cooledDown.add(p),
+        },
         invoker: async (input) => {
           seenPrompts.push({ provider: input.provider, prompt: input.prompt });
           if (input.provider === "codex") {
@@ -53,6 +58,20 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       expect(seenPrompts.map((p) => p.provider)).toEqual(["codex", "agy"]);
       expect(seenPrompts[1]?.prompt).toContain("CONTINUITY HANDOFF CONTEXT");
       expect(seenPrompts[1]?.prompt).toContain("a.go");
+      expect(cooledDown.has("codex")).toBe(true);
+
+      // Next attempt immediately skips cooling-down codex and routes straight to agy!
+      seenPrompts.length = 0;
+      await impl.run({
+        issueNumber: 15,
+        cloneDir: repo,
+        prompt: "Fix next bug",
+        abortController: new AbortController(),
+        maxTurns: 10,
+        timeoutMs: 10_000,
+        maxBudgetUsd: 5,
+      });
+      expect(seenPrompts.map((p) => p.provider)).toEqual(["agy"]);
 
       // Non-quota crash fails immediately without silently hopping providers
       const failFast = new SubscriptionImplementer({

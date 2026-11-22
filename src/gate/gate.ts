@@ -655,10 +655,11 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
     // 4. Language-agnostic Pristine-Base-Green -> Overlaid-Base-Red -> Head-Green verification.
     if (!opts.skipTests && policy.testCmd) {
+      const baseCmd = policy.baseTestCmd ?? policy.testCmd;
       await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
 
       // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
-      const pristineRes = await runShellCmd(baseDir, policy.testCmd, timeoutMs, env);
+      const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, env);
       if (!pristineRes.ok) {
         report.violations.push(
           `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
@@ -691,7 +692,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       }
 
       for (let i = 1; i <= baseRuns; i++) {
-        const baseTestRes = await runShellCmd(baseDir, policy.testCmd, timeoutMs, env);
+        const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, env);
         if (baseTestRes.ok) {
           report.already_fixed = true;
           report.violations.push(

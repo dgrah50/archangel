@@ -12,6 +12,7 @@ import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
+import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
 import {
@@ -38,6 +39,7 @@ export interface ReconcilerDeps {
   implementer: Implementer;
   reviewers: ReviewerSuite;
   notifier: Notifier;
+  logger?: Logger;
   workerId?: string;
 }
 
@@ -68,6 +70,7 @@ export class Reconciler {
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
+  private readonly logger: Logger;
   readonly workerId: string;
 
   private isTicking = false;
@@ -86,6 +89,7 @@ export class Reconciler {
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
+    this.logger = deps.logger ?? NOOP_LOGGER;
     this.workerId = deps.workerId ?? `archangel-${process.pid}`;
     this.effectiveGate = deps.config.gate;
     this.effectiveRequiredChecks = deps.config.requiredChecks;
@@ -367,11 +371,26 @@ export class Reconciler {
     if (!stepped.ok) {
       return null;
     }
-    return this.ledger.transition(thread.issueNumber, thread.version, stepped.next, {
+    const updated = this.ledger.transition(thread.issueNumber, thread.version, stepped.next, {
       nextMode: stepped.nextMode,
       effects: stepped.effects,
       ...extra,
     });
+    if (updated && updated.phase.kind !== thread.phase.kind) {
+      const detail =
+        updated.phase.kind === "needs_you"
+          ? ` (${updated.phase.code}: ${updated.phase.reason})`
+          : updated.phase.kind === "done"
+            ? ` (${updated.phase.outcome})`
+            : "";
+      const lvl = updated.phase.kind === "needs_you" ? "warn" : "info";
+      this.logger[lvl](
+        extra.auditTopic ?? `phase/${updated.phase.kind}`,
+        `${thread.phase.kind} -> ${updated.phase.kind}${detail}`,
+        { repo: this.ledger.repo, issue: thread.issueNumber },
+      );
+    }
+    return updated;
   }
 
   private async reconcileThread(
@@ -833,6 +852,31 @@ export class Reconciler {
         return;
       }
 
+      // Detect no-op revisions so we escalate instead of re-pushing an identical SHA back into awaiting_gate.
+      if (kind === "revise" && validation.headSha === fromSha) {
+        this.ledger.finishAttempt(attemptId, {
+          status: "failed",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorMessage: "Revision attempt produced no new changes (identical SHA)",
+        });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            {
+              t: "attempt_failed",
+              code: "review_vetoed",
+              reason: "Revision attempt produced no new changes (identical SHA) — needs owner review",
+            },
+            { auditTopic: "thread/needs_you" },
+          );
+        }
+        return;
+      }
+
       // Re-check live GitHub kill-switch & CAS version right before pushing (Opus R6!).
       const liveIssue = await this.github.getIssue(issue.number);
       if (deriveControl(liveIssue.labels, this.cfg.labels) !== "run") {
@@ -865,6 +909,11 @@ export class Reconciler {
         head: workingThread.branchName,
         base: this.cfg.defaultBranch,
       });
+      this.logger.info(
+        "thread/pr_pushed",
+        `Pushed ${workingThread.branchName} @ ${validation.headSha.slice(0, 8)} -> PR #${pr.number}`,
+        { repo: this.ledger.repo, issue: issue.number },
+      );
 
       this.ledger.finishAttempt(attemptId, {
         status: "succeeded",

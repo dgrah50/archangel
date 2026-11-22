@@ -30,6 +30,7 @@ export const GatePolicySchema = z.object({
   testFileGlobs: z.array(z.string().min(1)).default([]),
   testDataGlobs: z.array(z.string().min(1)).default([]),
   testBuildCmd: z.string().min(1).optional(),
+  baseTestCmd: z.string().min(1).optional(),
   testCmd: z.string().min(1).optional(),
   baseTestRuns: z.number().int().min(1).default(3),
   headTestRuns: z.number().int().min(1).default(2),
@@ -46,6 +47,7 @@ export const LandingJsonSchema = z
     testFileGlobs: z.array(z.string().min(1)).optional(),
     testDataGlobs: z.array(z.string().min(1)).optional(),
     testBuildCmd: z.string().min(1).optional(),
+    baseTestCmd: z.string().min(1).optional(),
     testCmd: z.string().min(1).optional(),
     baseTestRuns: z.number().int().min(1).optional(),
     headTestRuns: z.number().int().min(1).optional(),
@@ -304,6 +306,7 @@ export function mergeLandingJson(
         ? parsed.testDataGlobs
         : hostGate.testDataGlobs,
     testBuildCmd: parsed.testBuildCmd ?? hostGate.testBuildCmd,
+    baseTestCmd: parsed.baseTestCmd ?? hostGate.baseTestCmd,
     testCmd: parsed.testCmd ?? hostGate.testCmd,
     baseTestRuns:
       parsed.baseTestRuns !== undefined

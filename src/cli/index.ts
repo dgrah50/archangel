@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import path from "node:path";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
@@ -9,6 +10,7 @@ import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
+import { ArchangelLogger } from "../core/logger.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { launchStudio } from "../core/studio.js";
@@ -123,11 +125,21 @@ program
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
     });
+    const logger = new ArchangelLogger({
+      logFilePath: path.join(sharedPaths.dataDir, "archangel.log.jsonl"),
+      consoleOutput: true,
+    });
+    const cooldowns = {
+      isCoolingDown: (provider: string, now?: number) => rootLedger.getProviderCooldown(provider, now) !== null,
+      recordCooldown: (provider: string, durationMs: number, reason: string, now?: number) =>
+        rootLedger.setProviderCooldown(provider, durationMs, reason, now),
+    };
 
-    console.log(
+    logger.info(
+      "daemon/started",
       first.authMode === "subscription"
-        ? `[archangel] Auth mode: subscription (impl=${first.implementerChain.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
-        : "[archangel] Auth mode: api (metered keys)",
+        ? `Auth mode: subscription (impl=${first.implementerChain.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
+        : "Auth mode: api (metered keys)",
     );
 
     const reconcilers = projects.map((cfg) => {
@@ -162,6 +174,8 @@ program
           ? new SubscriptionImplementer({
               chain: cfg.implementerChain,
               transcriptsDir: paths.transcriptsDir,
+              cooldowns,
+              logger,
             })
           : new ClaudeSdkImplementer({
               apiKey: first.anthropicApiKey!,
@@ -177,6 +191,7 @@ program
         implementer,
         reviewers,
         notifier,
+        logger,
         workerId: daemonOwnerId,
       });
       const swept = rec.startupSweep();
@@ -380,6 +395,70 @@ program
         const prStr = pr ? `PR #${pr.prNumber}` : "no PR";
         const note = t.phase.kind === "needs_you" ? ` — [${t.phase.code}] ${t.phase.reason}` : "";
         console.log(`${t.repo}#${t.issueNumber}  [${t.phase.kind}/${t.mode}]  ${prStr}  ${t.title}${note}`);
+      }
+    } finally {
+      ledger.close();
+    }
+  });
+
+program
+  .command("metrics")
+  .description("Show factory funnel, latency percentiles, review outcomes, escalation breakdown, and active provider cooldowns")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--repo <owner/name>", "Filter by repository")
+  .option("--days <n>", "Lookback window in days (default: all time)")
+  .option("--json", "Output JSON")
+  .action((opts: { config?: string; dataDir?: string; repo?: string; days?: string; json?: boolean }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const paths = resolvePaths({ dataDir });
+    if (!fs.existsSync(paths.ledgerDbPath)) {
+      const empty = { message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
+      console.log(opts.json ? JSON.stringify(empty, null, 2) : empty.message);
+      return;
+    }
+    const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
+    try {
+      const now = Date.now();
+      const days = opts.days ? Number(opts.days) : null;
+      const sinceMs = days && Number.isFinite(days) && days > 0 ? now - days * 86_400_000 : 0;
+      const m = ledger.computeMetrics({ repo: opts.repo ?? null, sinceMs, now });
+      if (opts.json) {
+        console.log(JSON.stringify(m, null, 2));
+        return;
+      }
+      console.log(`=== Archangel Metrics (${m.windowDays ? `last ${m.windowDays}d` : "all time"}${opts.repo ? `, ${opts.repo}` : ""}) ===`);
+      console.log(`Threads:     ${m.threads.total} (${Object.entries(m.threads.byPhase).map(([k, v]) => `${k}=${v}`).join(", ") || "none"})`);
+      console.log(`Lead time:   ${m.threads.avgLeadTimeSec !== null ? `${m.threads.avgLeadTimeSec}s avg` : "n/a"}`);
+      console.log(
+        `Attempts:    ${m.attempts.total} total (${m.attempts.succeeded} ok, ${m.attempts.failed} fail, ${m.attempts.aborted} abort; ${Math.round(m.attempts.successRate * 100)}% success)`,
+      );
+      console.log(
+        `Duration:    p50=${m.attempts.p50DurationSec ?? "n/a"}s, p95=${m.attempts.p95DurationSec ?? "n/a"}s`,
+      );
+      console.log(
+        `Shadow:      ${m.shadow.agreed}/${m.shadow.total} agreed (${Math.round(m.shadow.agreementRate * 100)}%)`,
+      );
+      console.log(
+        `Reviews:     ${Object.entries(m.reviews.byVendor).map(([v, s]) => `${v}(+${s.approve}/-${s.veto})`).join(", ") || "none"} | outages=${m.reviews.outageEvents}`,
+      );
+      if (Object.keys(m.threads.escalationsByCode).length > 0) {
+        console.log(
+          `Escalations: ${Object.entries(m.threads.escalationsByCode).map(([k, v]) => `${k}=${v}`).join(", ")}`,
+        );
+      }
+      if (m.attempts.topErrors.length > 0) {
+        console.log("Top attempt errors:");
+        for (const e of m.attempts.topErrors) {
+          console.log(`  - (${e.count}x) ${e.error}`);
+        }
+      }
+      if (m.activeCooldowns.length > 0) {
+        console.log("Active provider cooldowns:");
+        for (const c of m.activeCooldowns) {
+          const remMin = Math.max(1, Math.ceil((c.untilTs - now) / 60_000));
+          console.log(`  - ${c.provider}: ${remMin}m left (${c.reason})`);
+        }
       }
     } finally {
       ledger.close();

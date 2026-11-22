@@ -240,4 +240,11 @@ CREATE TABLE IF NOT EXISTS system_state (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS provider_cooldowns (
+  provider TEXT PRIMARY KEY,
+  until_ts INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;

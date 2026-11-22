@@ -879,6 +879,185 @@ export class Ledger {
       payloadJson: String(r.payload_json),
     }));
   }
+
+  // ---- Provider Rate-Limit Cooldowns (Continuity Optimization) ----
+
+  setProviderCooldown(provider: string, durationMs: number, reason: string, now = Date.now()): void {
+    const untilTs = now + Math.max(1000, durationMs);
+    this.db
+      .prepare(
+        `INSERT INTO provider_cooldowns(provider, until_ts, reason, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(provider) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
+      )
+      .run(provider, untilTs, reason.slice(0, 300), now);
+  }
+
+  getProviderCooldown(provider: string, now = Date.now()): { untilTs: number; reason: string } | null {
+    const row = this.db
+      .prepare("SELECT until_ts, reason FROM provider_cooldowns WHERE provider = ? AND until_ts > ?")
+      .get(provider, now) as { until_ts: number; reason: string } | undefined;
+    return row ? { untilTs: Number(row.until_ts), reason: String(row.reason) } : null;
+  }
+
+  listActiveCooldowns(now = Date.now()): Array<{ provider: string; untilTs: number; reason: string }> {
+    try {
+      const rows = this.db
+        .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
+        .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
+      return rows.map((r) => ({
+        provider: String(r.provider),
+        untilTs: Number(r.until_ts),
+        reason: String(r.reason),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  // ---- Operational Metrics & Self-Improvement Telemetry ----
+
+  computeMetrics(opts: { repo?: string | null; sinceMs?: number; now?: number } = {}): {
+    windowDays: number | null;
+    threads: {
+      total: number;
+      byPhase: Record<string, number>;
+      escalationsByCode: Record<string, number>;
+      avgLeadTimeSec: number | null;
+    };
+    attempts: {
+      total: number;
+      succeeded: number;
+      failed: number;
+      aborted: number;
+      successRate: number;
+      p50DurationSec: number | null;
+      p95DurationSec: number | null;
+      topErrors: Array<{ error: string; count: number }>;
+    };
+    reviews: {
+      byVendor: Record<string, { approve: number; veto: number }>;
+      outageEvents: number;
+    };
+    shadow: { total: number; agreed: number; disagreed: number; agreementRate: number };
+    activeCooldowns: Array<{ provider: string; untilTs: number; reason: string }>;
+  } {
+    const now = opts.now ?? Date.now();
+    const since = opts.sinceMs ?? 0;
+    const repoFilter = opts.repo ?? null;
+
+    const allThreads = repoFilter ? this.listThreads(undefined, repoFilter) : this.listAllThreads();
+    const threads = since > 0 ? allThreads.filter((t) => t.createdAt >= since) : allThreads;
+
+    const byPhase: Record<string, number> = {};
+    const escalationsByCode: Record<string, number> = {};
+    const leadTimesSec: number[] = [];
+
+    for (const t of threads) {
+      byPhase[t.phase.kind] = (byPhase[t.phase.kind] ?? 0) + 1;
+      if (t.phase.kind === "needs_you") {
+        escalationsByCode[t.phase.code] = (escalationsByCode[t.phase.code] ?? 0) + 1;
+      }
+      if (t.phase.kind === "shadow_ready" || (t.phase.kind === "done" && (t.phase.outcome === "merged" || t.phase.outcome === "owner_merged"))) {
+        leadTimesSec.push(Math.max(0, (t.updatedAt - t.createdAt) / 1000));
+      }
+    }
+
+    const attParams: unknown[] = [since];
+    const attWhere = repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?";
+    if (repoFilter) attParams.push(repoFilter);
+    const attemptRows = this.db
+      .prepare(`SELECT status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
+      .all(...attParams) as Array<{
+      status: string;
+      started_at: number;
+      finished_at: number | null;
+      error_message: string | null;
+    }>;
+
+    let succeeded = 0;
+    let failed = 0;
+    let aborted = 0;
+    const durationsSec: number[] = [];
+    const errorCounts = new Map<string, number>();
+
+    for (const a of attemptRows) {
+      if (a.status === "succeeded") succeeded++;
+      else if (a.status === "failed") failed++;
+      else if (a.status === "aborted") aborted++;
+      if (a.finished_at !== null && a.finished_at >= a.started_at) {
+        durationsSec.push((a.finished_at - a.started_at) / 1000);
+      }
+      if (a.status === "failed" && a.error_message) {
+        const key = a.error_message.slice(0, 120);
+        errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
+      }
+    }
+
+    durationsSec.sort((x, y) => x - y);
+    const percentile = (arr: number[], p: number): number | null => {
+      if (arr.length === 0) return null;
+      const idx = Math.min(arr.length - 1, Math.floor((arr.length - 1) * p));
+      return Number(arr[idx]!.toFixed(1));
+    };
+
+    const revParams: unknown[] = [since];
+    const revWhere = repoFilter ? "WHERE created_at >= ? AND repo = ?" : "WHERE created_at >= ?";
+    if (repoFilter) revParams.push(repoFilter);
+    const reviewRows = this.db
+      .prepare(`SELECT vendor, verdict FROM reviews ${revWhere}`)
+      .all(...revParams) as Array<{ vendor: string; verdict: string }>;
+
+    const byVendor: Record<string, { approve: number; veto: number }> = {};
+    for (const r of reviewRows) {
+      const bucket = byVendor[r.vendor] ?? { approve: 0, veto: 0 };
+      if (r.verdict === "approve") bucket.approve++;
+      else bucket.veto++;
+      byVendor[r.vendor] = bucket;
+    }
+
+    const outParams: unknown[] = ["review/outage_started", since];
+    const outWhere = repoFilter ? "WHERE topic = ? AND ts >= ? AND repo = ?" : "WHERE topic = ? AND ts >= ?";
+    if (repoFilter) outParams.push(repoFilter);
+    const outageRow = this.db
+      .prepare(`SELECT COUNT(*) AS cnt FROM audit_log ${outWhere}`)
+      .get(...outParams) as { cnt: number };
+
+    const topErrors = [...errorCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([error, count]) => ({ error, count }));
+
+    const finished = succeeded + failed + aborted;
+    return {
+      windowDays: since > 0 ? Math.round((now - since) / 86_400_000) : null,
+      threads: {
+        total: threads.length,
+        byPhase,
+        escalationsByCode,
+        avgLeadTimeSec:
+          leadTimesSec.length > 0
+            ? Number((leadTimesSec.reduce((a, b) => a + b, 0) / leadTimesSec.length).toFixed(1))
+            : null,
+      },
+      attempts: {
+        total: attemptRows.length,
+        succeeded,
+        failed,
+        aborted,
+        successRate: finished > 0 ? Number((succeeded / finished).toFixed(3)) : 1,
+        p50DurationSec: percentile(durationsSec, 0.5),
+        p95DurationSec: percentile(durationsSec, 0.95),
+        topErrors,
+      },
+      reviews: {
+        byVendor,
+        outageEvents: Number(outageRow.cnt),
+      },
+      shadow: this.getShadowStats(repoFilter),
+      activeCooldowns: this.listActiveCooldowns(now),
+    };
+  }
 }
 
 function mapThread(r: Record<string, unknown>): ThreadRecord {

@@ -3,8 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { providerToVendor, type CliProvider, type ProviderEntry } from "../config.js";
+import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
+
+const DEFAULT_COOLDOWN_MS = 15 * 60_000;
+
+export interface ProviderCooldownStore {
+  isCoolingDown(provider: CliProvider, now?: number): boolean;
+  recordCooldown(provider: CliProvider, durationMs: number, reason: string, now?: number): void;
+}
 
 const RATE_LIMIT_RE =
   /rate.?limit|quota|usage.?limit|limit.?reached|too many requests|429|capacity|overloaded|try again later|exhausted/i;
@@ -35,6 +43,9 @@ export interface SubscriptionImplementerOptions {
   chain: ProviderEntry[];
   transcriptsDir: string;
   invoker?: CliInvoker;
+  cooldowns?: ProviderCooldownStore;
+  cooldownDurationMs?: number;
+  logger?: Logger;
 }
 
 function defaultCliInvoker(input: {
@@ -228,6 +239,9 @@ export class SubscriptionImplementer implements Implementer {
   private readonly chain: ProviderEntry[];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
+  private readonly cooldowns?: ProviderCooldownStore;
+  private readonly cooldownDurationMs: number;
+  private readonly logger: Logger;
 
   constructor(opts: SubscriptionImplementerOptions) {
     if (opts.chain.length === 0) {
@@ -236,6 +250,9 @@ export class SubscriptionImplementer implements Implementer {
     this.chain = opts.chain;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
+    this.cooldowns = opts.cooldowns;
+    this.cooldownDurationMs = opts.cooldownDurationMs ?? DEFAULT_COOLDOWN_MS;
+    this.logger = opts.logger ?? NOOP_LOGGER;
   }
 
   async run(input: ImplementInput): Promise<ImplementResult> {
@@ -251,14 +268,26 @@ export class SubscriptionImplementer implements Implementer {
     const providersUsed: ReviewerVendor[] = [];
     const errors: string[] = [];
 
+    // Reorder chain so providers currently in rate-limit cooldown are tried last (Continuity cooldown memory).
+    const now = Date.now();
+    const healthy = this.chain.filter((e) => !this.cooldowns?.isCoolingDown(e.provider, now));
+    const cooling = this.chain.filter((e) => this.cooldowns?.isCoolingDown(e.provider, now));
+    const orderedChain = healthy.length > 0 ? [...healthy, ...cooling] : this.chain;
+
     try {
-      for (let i = 0; i < this.chain.length; i++) {
-        const entry = this.chain[i]!;
+      for (let i = 0; i < orderedChain.length; i++) {
+        const entry = orderedChain[i]!;
         const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
         const prompt =
           i === 0
             ? input.prompt
             : `${captureWorkspaceContinuityContext(input.cloneDir)}\n\n${input.prompt}`;
+
+        this.logger.info(
+          "implementer/provider_start",
+          `Running ${entry.provider}${entry.model ? ` (${entry.model})` : ""}${i > 0 ? " [Continuity failover]" : ""}`,
+          { issue: input.issueNumber },
+        );
 
         fs.appendFileSync(
           transcriptPath,
@@ -304,7 +333,7 @@ export class SubscriptionImplementer implements Implementer {
           const vendor = providerToVendor(entry.provider);
           if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
           return {
-            summary: `[${entry.provider}] ${extractSummary(entry.provider, res.stdout, outputFile)}`,
+            summary: `[${entry.provider}] ${extractedSummary}`,
             costUsd: 0,
             transcriptPath,
             aborted: false,
@@ -316,19 +345,27 @@ export class SubscriptionImplementer implements Implementer {
         const isQuota = isRateLimitOrQuotaError(combinedErr);
         errors.push(`${entry.provider} (exit ${res.code}): ${combinedErr.slice(0, 300)}`);
 
-        // Continuity failover: move to the next configured subscription provider on rate-limit/quota errors!
-        if (isQuota && i + 1 < this.chain.length) {
-          fs.appendFileSync(
-            transcriptPath,
-            `${JSON.stringify({
-              event: "continuity_failover",
-              from: entry.provider,
-              to: this.chain[i + 1]!.provider,
-              reason: "rate_limit_or_quota",
-              ts: Date.now(),
-            })}\n`,
-          );
-          continue;
+        // Continuity failover: record cooldown + move to the next configured subscription provider!
+        if (isQuota) {
+          this.cooldowns?.recordCooldown(entry.provider, this.cooldownDurationMs, combinedErr.slice(0, 200));
+          if (i + 1 < orderedChain.length) {
+            this.logger.warn(
+              "implementer/continuity_failover",
+              `${entry.provider} hit rate/quota limit (cooling down ${Math.round(this.cooldownDurationMs / 60_000)}m) -> failing over to ${orderedChain[i + 1]!.provider}`,
+              { issue: input.issueNumber },
+            );
+            fs.appendFileSync(
+              transcriptPath,
+              `${JSON.stringify({
+                event: "continuity_failover",
+                from: entry.provider,
+                to: orderedChain[i + 1]!.provider,
+                reason: "rate_limit_or_quota",
+                ts: Date.now(),
+              })}\n`,
+            );
+            continue;
+          }
         }
 
         throw new Error(errors.join(" | "));
