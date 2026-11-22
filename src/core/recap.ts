@@ -88,7 +88,7 @@ export function renderRecapComment(input: {
     "",
     "**On base (expected to fail):**",
     ...(workClassOfBranch(thread.branchName) === "feature"
-      ? ["_not applicable: feature Threads add tests for new behaviour, with no red-on-base proof_"]
+      ? ["_not applicable: feature Threads need no new test, so there is no red-on-base proof_"]
       : proofBlock(input.gateProof?.base_output)),
     "",
     "**On head (expected to pass):**",

@@ -349,6 +349,22 @@ describe("Gate work classes", () => {
   const passingTest =
     'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(1, 1), 2);\n';
 
+  it("feature with no new test file passes the Gate", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\nexport const VERSION = 2;\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "feature without test"]);
+
+      const feature = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", workClass: "feature" });
+      expect(feature.violations).toEqual([]);
+      expect(feature.passed).toBe(true);
+
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("feature skips the red-on-base proof; bugfix (default) still rejects a test that passes on base", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {

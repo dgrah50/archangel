@@ -16,7 +16,7 @@ function formatGateRules(gate?: Partial<GatePolicy>, workClass: "bugfix" | "feat
 
   return [
     workClass === "feature"
-      ? `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that covers the new behaviour and passes with your implementation.`
+      ? `1. A new test file (matching ${testGlobs}) is optional: add one only if it locks down behaviour someone relies on (see AGENTS.md: few tests, no UI tests).`
       : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
     "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
     `3. Keep changes tightly scoped: <= ${maxNonTest} non-test changed lines, <= ${maxTotal} total changed lines, <= ${maxFiles} files, zero binary files.`,
@@ -67,9 +67,9 @@ export function buildImplementPrompt(input: {
     "",
     ...(feature
       ? [
-          "THIS IS A FEATURE, NOT A BUG FIX: there is no bug to reproduce. Instead of a reproduction test, add a NEW test file that covers the new behaviour (it need not fail on the old code, but it must pass on yours).",
+          "THIS IS A FEATURE, NOT A BUG FIX: there is no bug to reproduce. Do not write a reproduction test. Add a test only if it locks down behaviour someone relies on; follow AGENTS.md (few tests, no UI tests). The existing test suite must stay green.",
           "",
-          "Finish with a concise plain-text summary of the feature, the new test file/name, and the implementation.",
+          "Finish with a concise plain-text summary of the feature, any test you added, and the implementation.",
         ]
       : ["Finish with a concise plain-text summary of the root cause, the new reproduction test file/name, and the fix."]),
     ASSUMPTIONS_RULE,
@@ -226,7 +226,7 @@ export function buildOpenAiReviewerPrompt(input: {
     "--- END UNIFIED DIFF DATA ---",
     "",
     "Check strictly:",
-    "1. Does the new reproduction test actually assert the exact input -> expected output contract described in the issue?",
+    "1. For a bug fix: does the new reproduction test actually assert the exact input -> expected output contract described in the issue? For a feature, no new test is required: you may flag one that clearly needs a test, but do not veto solely because no test was added.",
     "2. Does the fix genuinely solve the root cause without hacks, regressions, or edge-case breakage?",
     "3. Are any tests weakened, skipped, mocked out, or misleading?",
     "Veto for: an added fallback, compatibility shim, or dual old/new code path; an abstraction, option, or file with a single caller; a new boolean or nullable that allows an impossible flag combination.",

@@ -30,7 +30,7 @@ export function sliceIssueBody(pitchIssue: number, pitch: PitchItem, sliceIndex:
       "",
       `**Smallest version:** ${pitch.smallestVersion}`,
       "",
-      "Add tests for the new behaviour (this is a feature: no reproduction test is needed).",
+      "This is a feature: no reproduction test is needed. Add a test only if it locks down behaviour someone relies on.",
     ].join("\n"),
   };
 }

@@ -188,7 +188,7 @@ export interface GateRunOptions {
   skipPreCommit?: boolean;
   skipTests?: boolean;
   commandTimeoutMs?: number;
-  /** `feature` skips the red-on-base requirement only. Defaults to `bugfix` (full reproduction proof). */
+  /** `feature` skips the red-on-base and new-test-file requirements only. Defaults to `bugfix` (full reproduction proof). */
   workClass?: "bugfix" | "feature";
   /**
    * Commit to read `.agents/archangel.json` and the pre-commit config from (default: `baseRef`). The daemon passes the current main tip
@@ -696,7 +696,8 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     if (totalLines > policy.maxTotalLines) {
       report.violations.push(`total changed lines ${totalLines} exceeds limit ${policy.maxTotalLines}`);
     }
-    if (policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
+    // Bugfixes must prove the bug with a new test; features need none (the full suite must still be green on head).
+    if (opts.workClass !== "feature" && policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
       report.violations.push(`no new test file added matching ${policy.testFileGlobs.join(", ")}`);
     }
     if (report.violations.length > 0) {
@@ -736,8 +737,8 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       const junitRe = policy.junitReport ? globToRegExp(policy.junitReport) : null;
       /** Test IDs of the new test files' cases from the red base run: every one must pass on head. */
       let expectedIds: string[] | null = null;
-      // Feature work has no bug to reproduce: skip the red-on-base proof. Everything else (new test file,
-      // bounds, protected paths, hooks, head tests) is enforced above and below exactly as for bugfixes.
+      // Feature work has no bug to reproduce: skip the red-on-base proof and the new-test requirement. Everything else
+      // (bounds, protected paths, hooks, full head suite) is enforced above and below exactly as for bugfixes.
       if (opts.workClass !== "feature") {
         const baseCmd = policy.baseTestCmd ?? policy.testCmd;
         await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
@@ -836,7 +837,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
           );
           return report;
         }
-        if (junitRe) {
+        if (junitRe && !(opts.workClass === "feature" && newTestFiles.length === 0)) {
           const jr = readReports(headDir, junitRe);
           if ("error" in jr) {
             report.violations.push(`head JUnit report unusable (failing closed): ${jr.error}`);
