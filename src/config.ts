@@ -82,6 +82,26 @@ export const ScoutsConfigSchema = z.object({
 
 export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
 
+/** Per-thread attempt/step limits: host-level defaults, overridable per project. */
+const AttemptLimitFields = {
+  /** Autonomous steps (Attempt starts + auto-merges) allowed before the owner is next heard from. */
+  maxAutonomousStepsWithoutOwner: z.number().int().min(1).default(25),
+  maxImplementAttemptsPerThread: z.number().int().min(1).default(3),
+  maxRevisionsPerThread: z.number().int().min(0).default(1),
+  maxRebasesPerThread: z.number().int().min(0).default(1),
+};
+
+/** Host-level execution timeouts and liveness windows. */
+const TimeoutFields = {
+  implementMaxTurns: z.number().int().min(1).default(40),
+  implementTimeoutMs: z.number().int().min(30_000).default(20 * 60_000),
+  setupTimeoutMs: z.number().int().min(5_000).default(5 * 60_000),
+  staleLeaseMs: z.number().int().min(10_000).default(3 * 60_000),
+  gateStartGraceMs: z.number().int().min(10_000).default(5 * 60_000),
+  gateTimeoutMs: z.number().int().min(60_000).default(60 * 60_000),
+  reviewerOutageMaxMs: z.number().int().min(60_000).default(6 * 60 * 60_000),
+};
+
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
@@ -111,19 +131,9 @@ export const ConfigSchema = z.object({
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
-  /** Autonomous steps (Attempt starts + auto-merges) allowed before the owner is next heard from. */
-  maxAutonomousStepsWithoutOwner: z.number().int().min(1).default(25),
   shadowMode: z.boolean().default(true),
-  maxImplementAttemptsPerThread: z.number().int().min(1).default(3),
-  maxRevisionsPerThread: z.number().int().min(0).default(1),
-  maxRebasesPerThread: z.number().int().min(0).default(1),
-  implementMaxTurns: z.number().int().min(1).default(40),
-  implementTimeoutMs: z.number().int().min(30_000).default(20 * 60_000),
-  setupTimeoutMs: z.number().int().min(5_000).default(5 * 60_000),
-  staleLeaseMs: z.number().int().min(10_000).default(3 * 60_000),
-  gateStartGraceMs: z.number().int().min(10_000).default(5 * 60_000),
-  gateTimeoutMs: z.number().int().min(60_000).default(60 * 60_000),
-  reviewerOutageMaxMs: z.number().int().min(60_000).default(6 * 60 * 60_000),
+  ...AttemptLimitFields,
+  ...TimeoutFields,
 
   // Per-project Gate policy & required checks (hard-coded; App has no administration:read)
   gate: GatePolicySchema.default({
@@ -189,6 +199,13 @@ export const ConfigSchema = z.object({
 
 export type ArchangelConfig = z.infer<typeof ConfigSchema>;
 
+const ProjectAttemptOverrides = {
+  maxAutonomousStepsWithoutOwner: z.number().int().min(1).optional(),
+  maxImplementAttemptsPerThread: z.number().int().min(1).optional(),
+  maxRevisionsPerThread: z.number().int().min(0).optional(),
+  maxRebasesPerThread: z.number().int().min(0).optional(),
+};
+
 const HostProjectYamlSchema = z.object({
   repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must be 'owner/name'"),
   defaultBranch: z.string().min(1).default("main"),
@@ -197,6 +214,7 @@ const HostProjectYamlSchema = z.object({
   shadowMode: z.boolean().default(true),
   maxConcurrentThreads: z.number().int().min(1).max(3).default(2),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
+  ...ProjectAttemptOverrides,
   requiredChecks: z.array(z.string().min(1)).default(["Gate"]),
   gate: GatePolicySchema.default({
     maxNonTestLines: 150,
@@ -225,6 +243,8 @@ export const HostYamlSchema = z.object({
   dailyTimezone: z.string().min(1).default("America/New_York"),
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
+  ...AttemptLimitFields,
+  ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
   implementerChain: z
     .array(ProviderEntrySchema)
@@ -412,6 +432,17 @@ export function loadProjectConfigs(opts: {
         digestHour: host.digestHour,
         maxConcurrentThreads: proj.maxConcurrentThreads,
         maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
+        maxAutonomousStepsWithoutOwner: proj.maxAutonomousStepsWithoutOwner ?? host.maxAutonomousStepsWithoutOwner,
+        maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
+        maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
+        maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
+        implementMaxTurns: host.implementMaxTurns,
+        implementTimeoutMs: host.implementTimeoutMs,
+        setupTimeoutMs: host.setupTimeoutMs,
+        staleLeaseMs: host.staleLeaseMs,
+        gateStartGraceMs: host.gateStartGraceMs,
+        gateTimeoutMs: host.gateTimeoutMs,
+        reviewerOutageMaxMs: host.reviewerOutageMaxMs,
         shadowMode: proj.shadowMode,
         requiredChecks: proj.requiredChecks,
         gate: proj.gate,

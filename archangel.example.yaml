@@ -6,6 +6,21 @@ pollIntervalMs: 30000
 maxDailyUsd: 20
 dailyTimezone: America/New_York
 
+# Per-thread limits (defaults shown; any project may override the first four)
+maxAutonomousStepsWithoutOwner: 25  # Attempt starts + auto-merges before the owner must be heard from
+maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to needs-you
+maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
+maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per thread
+
+# Execution timeouts (ms unless noted)
+implementMaxTurns: 40               # agent turn cap for one implement Attempt
+implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
+setupTimeoutMs: 300000              # .agents/setup dependency install
+staleLeaseMs: 180000                # daemon lock considered dead after this
+gateStartGraceMs: 300000            # wait for the Gate check to start
+gateTimeoutMs: 3600000              # wait for the Gate check to finish
+reviewerOutageMaxMs: 21600000       # how long to wait for reviewers before escalating
+
 # Native CLI subscriptions with fallback chains (no API keys required),
 # or switch to `authMode: api` for metered API keys in .env.
 authMode: subscription
