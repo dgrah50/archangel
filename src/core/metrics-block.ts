@@ -26,6 +26,18 @@ export function categorizeAttemptError(message: string): AttemptErrorCategory {
   return "other";
 }
 
+/** The keys of the `name: value` lines in the metrics block; a pitch may cite only these. */
+export const METRIC_KEYS = [
+  "threads_total",
+  "escalations_by_code",
+  "attempts",
+  "attempt_failure_categories",
+  "reviews_by_vendor",
+  "review_outages",
+  "outcomes",
+  "actionable_signals",
+] as const;
+
 const VENDORS: readonly ReviewerVendor[] = ["openai", "gemini", "anthropic"];
 const ESCALATION_CODES: readonly string[] = EscalationCodeSchema.options;
 

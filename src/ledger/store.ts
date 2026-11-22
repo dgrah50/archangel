@@ -1248,6 +1248,58 @@ export class Ledger {
     return tx();
   }
 
+  // ---- Pitches (V5): owner-decided proposals from pitch Scouts; separate from bug proposals ----
+
+  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; now?: number; repo?: string }): void {
+    const now = input.now ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, status_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now);
+  }
+
+  /** Pitches whose issue is no longer open (closed by the owner or expired) become `declined`. `promoted` is set only by the owner's promote command. */
+  syncPitchStatuses(openIssueNumbers: readonly number[], now = Date.now(), repo = this.repo): void {
+    const open = new Set(openIssueNumbers);
+    for (const row of this.db.prepare(`SELECT issue_number FROM pitches WHERE repo = ? AND status = 'open'`).all(repo) as Array<{ issue_number: number }>) {
+      if (!open.has(row.issue_number)) {
+        this.db.prepare(`UPDATE pitches SET status = 'declined', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, row.issue_number);
+      }
+    }
+  }
+
+  countOpenPitches(repo = this.repo): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM pitches WHERE repo = ? AND status = 'open'`).get(repo) as { n: number }).n;
+  }
+
+  /** Titles of pitches that are open or were decided in the last `days` days (for the prompt and the duplicate check). */
+  recentPitchTitles(days: number, now = Date.now(), repo = this.repo): Array<{ title: string; titleFp: string }> {
+    return (
+      this.db
+        .prepare(`SELECT title, title_fp FROM pitches WHERE repo = ? AND (status = 'open' OR status_at >= ?) ORDER BY filed_at DESC`)
+        .all(repo, now - days * 86_400_000) as Array<{ title: string; title_fp: string }>
+    ).map((r) => ({ title: r.title, titleFp: r.title_fp }));
+  }
+
+  /** A pitch Scout pauses for one exact `trustHash` after `n` consecutive pitches that were not promoted. Editing the Scout (a new hash) resumes it. */
+  isPitchScoutPaused(scoutName: string, trustHash: string, n: number, repo = this.repo): boolean {
+    const rows = this.db
+      .prepare(`SELECT status FROM pitches WHERE repo = ? AND scout_name = ? AND trust_hash = ? ORDER BY filed_at DESC, issue_number DESC LIMIT ?`)
+      .all(repo, scoutName, trustHash, n) as Array<{ status: string }>;
+    return rows.length === n && rows.every((r) => r.status !== "promoted");
+  }
+
+  /** Did this Scout start a run at or after `sinceMs`? (weekly schedule) */
+  scoutRanSince(scoutName: string, sinceMs: number, repo = this.repo): boolean {
+    return Boolean(
+      this.db
+        .prepare(`SELECT 1 FROM audit_log WHERE repo = ? AND topic = 'scout/run' AND actor = ? AND ts >= ? LIMIT 1`)
+        .get(repo, scoutName, sinceMs),
+    );
+  }
+
   // ---- Daily digest ----
 
   dayKeyOf(ts: number): string {

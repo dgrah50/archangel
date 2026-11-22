@@ -48,6 +48,8 @@ export const LabelsSchema = z.object({
   needsYou: z.string().default("needs-you"),
   disagree: z.string().default("factory:disagree"),
   agentProposed: z.string().default("agent-proposed"),
+  /** Label on pitch issues (never `agent-proposed`, so a pitch can never be auto-promoted or counted as a bug proposal). */
+  agentPitch: z.string().default("agent-pitch"),
   /** Owner-applied label that makes a Thread a feature (owner merges; no red-on-base proof). */
   feature: z.string().default("class:feature"),
 });
@@ -123,6 +125,7 @@ export const ConfigSchema = z.object({
     needsYou: "needs-you",
     disagree: "factory:disagree",
     agentProposed: "agent-proposed",
+    agentPitch: "agent-pitch",
     feature: "class:feature",
   }),
   scouts: ScoutsConfigSchema.default({

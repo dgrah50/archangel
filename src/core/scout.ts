@@ -9,14 +9,26 @@ import type { ArchangelConfig, ProviderEntry } from "../config.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import type { Logger } from "./logger.js";
-import { METRICS_WINDOW_DAYS, buildMetricsBlock } from "./metrics-block.js";
+import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlock } from "./metrics-block.js";
+import {
+  PITCH_DECLINE_WINDOW_DAYS,
+  PITCH_MAX_OPEN,
+  PITCH_PAUSE_AFTER_UNPROMOTED,
+  PITCH_TIMEOUT_MS,
+  PitchOutputSchema,
+  buildPitchPrompt,
+  checkPitch,
+  pitchJsonSchema,
+  renderPitchBody,
+} from "./pitch.js";
 import { resolveSkills, type Skill } from "./skills.js";
 import type { EffectiveScout, OkWorkflow } from "./workflow.js";
 
 /** A Scout as the runner needs it: the workflow file's spec resolved with its prompt body and skills. */
 export interface ScoutWorkflow {
   name: string;
-  schedule: "daily" | "manual";
+  kind: "bug" | "pitch";
+  schedule: "daily" | "weekly" | "manual";
   maxProposals: number;
   /** Effective promotion: the repo asked for `auto` and neither the host cap nor a revocation overrode it. */
   autoPromote: boolean;
@@ -50,6 +62,8 @@ export type ScoutCliInvoker = (input: {
   prompt: string;
   maxProposals: number;
   timeoutMs: number;
+  /** JSON schema the CLI must answer in; defaults to the bug-finding schema. */
+  outputSchema?: Record<string, unknown>;
 }) => Promise<unknown>;
 
 export function scoutContentHash(title: string, body: string): string {
@@ -70,6 +84,7 @@ export function normalizeTitleFp(title: string): string {
 export function toScoutWorkflow(scout: EffectiveScout): ScoutWorkflow {
   return {
     name: scout.name,
+    kind: scout.kind,
     schedule: scout.schedule,
     maxProposals: scout.maxProposals,
     autoPromote: scout.promotionEffective.value === "auto",
@@ -225,11 +240,12 @@ export async function defaultScoutCliInvoker(input: {
   prompt: string;
   maxProposals: number;
   timeoutMs: number;
+  outputSchema?: Record<string, unknown>;
 }): Promise<unknown> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `archangel-scout-${input.provider}-`));
   const schemaFile = path.join(tmpDir, "schema.json");
   const outFile = path.join(tmpDir, "out.json");
-  const schemaStr = JSON.stringify(buildScoutJsonSchema(input.maxProposals));
+  const schemaStr = JSON.stringify(input.outputSchema ?? buildScoutJsonSchema(input.maxProposals));
   fs.writeFileSync(schemaFile, schemaStr, "utf8");
 
   const args = buildScoutCliArgs(input.provider, {
@@ -308,7 +324,7 @@ export function buildScoutPrompt(workflow: ScoutWorkflow, metricsBlock?: string)
 
 export interface ScoutRunSummary {
   scoutName: string;
-  status: "dry_run" | "skipped_cap" | "skipped_open_limit" | "ran";
+  status: "dry_run" | "skipped_cap" | "skipped_open_limit" | "paused" | "ran";
   filedIssues: number[];
   blockedSecrets: number;
   skippedDuplicates: number;
@@ -332,7 +348,10 @@ export async function runScoutsForProject(opts: {
   const workflows = opts.workflow.scouts.map(toScoutWorkflow);
   const selected = workflows.filter((w) => {
     if (opts.filterName && w.name !== opts.filterName) return false;
-    if (opts.onlyScheduled && w.schedule !== "daily") return false;
+    if (opts.onlyScheduled) {
+      if (w.schedule === "manual") return false;
+      if (w.schedule === "weekly" && opts.ledger.scoutRanSince(w.name, now - 7 * 86_400_000)) return false;
+    }
     return true;
   });
 
@@ -365,6 +384,10 @@ export async function runScoutsForProject(opts: {
   const results: ScoutRunSummary[] = [];
 
   for (const wf of selected) {
+    if (wf.kind === "pitch") {
+      results.push(await runPitchScout({ ...opts, now, wf, providerChoice, invoker, includeMetricsFrom: workflows }));
+      continue;
+    }
     if (openTrackedCount >= opts.config.scouts.maxOpenProposals) {
       results.push({
         scoutName: wf.name,
@@ -501,4 +524,100 @@ export async function runScoutsForProject(opts: {
   }
 
   return results;
+}
+
+/** One pitch Scout run: read-only sandbox, mechanical pre-file checks, filed as an `agent-pitch` issue, never promoted. */
+async function runPitchScout(opts: {
+  config: ArchangelConfig;
+  ledger: Ledger;
+  github: GitHubClient;
+  broker: GitBroker;
+  mainSha: string;
+  logger?: Logger;
+  now: number;
+  wf: ScoutWorkflow;
+  providerChoice: { provider: ScoutCliProvider; model?: string };
+  invoker: ScoutCliInvoker;
+  includeMetricsFrom: ScoutWorkflow[];
+}): Promise<ScoutRunSummary> {
+  const { wf, ledger, now } = opts;
+  const summary: ScoutRunSummary = { scoutName: wf.name, status: "ran", filedIssues: [], blockedSecrets: 0, skippedDuplicates: 0 };
+
+  // Caps: decided pitches free their slot; at most PITCH_MAX_OPEN stay open per repo.
+  const openIssues = await opts.github.listOpenIssuesByLabel(opts.config.labels.agentPitch);
+  ledger.syncPitchStatuses(openIssues.map((i) => i.number), now);
+  if (ledger.isPitchScoutPaused(wf.name, wf.trustHash, PITCH_PAUSE_AFTER_UNPROMOTED)) {
+    if (!ledger.listAudit({ topicPrefix: "pitch/paused", limit: 200 }).some((a) => a.actor === wf.name && a.payloadJson.includes(wf.trustHash.slice(0, 12)))) {
+      ledger.appendAudit("pitch/paused", null, wf.name, { trustHash: wf.trustHash.slice(0, 12), after: PITCH_PAUSE_AFTER_UNPROMOTED }, now);
+    }
+    return { ...summary, status: "paused" };
+  }
+  if (ledger.countOpenPitches() >= PITCH_MAX_OPEN) return { ...summary, status: "skipped_open_limit" };
+  if (!ledger.tryReserveScoutRun(wf.name, opts.config.scouts.maxRunsPerDay, false, now)) return { ...summary, status: "skipped_cap" };
+
+  const recent = ledger.recentPitchTitles(PITCH_DECLINE_WINDOW_DAYS, now);
+  const metricsGiven = wf.includeMetrics ? new Set<string>(METRIC_KEYS) : new Set<string>();
+  const cloneDir = await opts.broker.createThrowawayClone(900_000 + Math.floor(Math.random() * 90_000), opts.mainSha);
+  try {
+    opts.logger?.info("scout/start", `Running pitch scout '${wf.name}' via ${opts.providerChoice.provider}`, { repo: ledger.repo });
+    const raw = await opts.invoker({
+      provider: opts.providerChoice.provider,
+      model: opts.providerChoice.model,
+      cloneDir,
+      prompt: buildPitchPrompt({
+        name: wf.name,
+        skills: wf.skills,
+        prompt: wf.prompt,
+        declinedTitles: recent.map((r) => r.title),
+        metricsBlock: wf.includeMetrics
+          ? buildMetricsBlock(
+              ledger.computeMetrics({
+                repo: ledger.repo,
+                sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,
+                now,
+                excludeScouts: opts.includeMetricsFrom.filter((w) => w.includeMetrics).map((w) => w.name),
+              }),
+            )
+          : undefined,
+      }),
+      maxProposals: 1,
+      timeoutMs: PITCH_TIMEOUT_MS,
+      outputSchema: pitchJsonSchema(),
+    });
+    const parsed = PitchOutputSchema.safeParse(raw);
+    if (!parsed.success) {
+      ledger.appendAudit("pitch/invalid_output", null, wf.name, { error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400) }, now);
+      return summary;
+    }
+    const fps = new Set(recent.map((r) => r.titleFp));
+    for (const pitch of parsed.data.pitches.slice(0, 1)) {
+      const reason = await checkPitch(pitch, {
+        fileExists: async (file) => (await opts.broker.readFileAtRef(opts.mainSha, file)) !== null,
+        metricsGiven,
+        secretScan: scanForSecrets,
+        isDuplicate: (title) => fps.has(normalizeTitleFp(title)),
+      });
+      if (reason) {
+        if (reason.startsWith("secret scan")) summary.blockedSecrets++;
+        if (reason.startsWith("duplicates")) summary.skippedDuplicates++;
+        ledger.appendAudit("pitch/dropped", null, wf.name, { reason: reason.slice(0, 200), title: pitch.title.slice(0, 60) }, now);
+        continue;
+      }
+      const body = renderPitchBody(pitch);
+      const created = await opts.github.createIssue!({ title: pitch.title, body, labels: [opts.config.labels.agentPitch] });
+      ledger.recordPitch({
+        issueNumber: created.number,
+        scoutName: wf.name,
+        trustHash: wf.trustHash,
+        title: pitch.title,
+        titleFp: normalizeTitleFp(pitch.title),
+        contentSha256: scoutContentHash(created.title, created.body),
+        now,
+      });
+      summary.filedIssues.push(created.number);
+    }
+  } finally {
+    opts.broker.removeClone(cloneDir);
+  }
+  return summary;
 }

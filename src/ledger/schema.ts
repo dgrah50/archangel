@@ -274,6 +274,20 @@ CREATE TABLE IF NOT EXISTS provider_cooldowns (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pitches (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  scout_name TEXT NOT NULL,
+  trust_hash TEXT NOT NULL,
+  title TEXT NOT NULL,
+  title_fp TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  filed_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'declined', 'promoted')),
+  status_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number)
+);
+
 CREATE TABLE IF NOT EXISTS scout_proposals (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
