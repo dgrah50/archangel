@@ -38,9 +38,20 @@ export interface InstallationTokenMeta {
   repositorySelection?: string;
 }
 
+export interface IssueComment {
+  id: number;
+  userId: number;
+  isBot: boolean;
+  body: string;
+  createdAt: number;
+}
+
 export interface GitHubClient {
   getInstallationToken(): Promise<string>;
   listOwnerCommentsSince(issueOrPrNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
+  /** Every comment (any author) strictly after `sinceMs`, oldest first, with author id and bot flag. */
+  listCommentsSince(issueOrPrNumber: number, sinceMs: number): Promise<IssueComment[]>;
+  closePr(prNumber: number): Promise<void>;
   listOwnerReviewFeedbackSince(prNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
   mintInstallationTokenWithMeta?(): Promise<InstallationTokenMeta>;
   getRemoteUrlWithToken(): Promise<string>;
@@ -486,6 +497,31 @@ export class GitHubAppClient implements GitHubClient {
       .filter((c) => c.user?.id === ownerUserId && Date.parse(c.created_at ?? "") > sinceMs && (c.body ?? "").trim())
       .sort((a, b) => Date.parse(a.created_at ?? "") - Date.parse(b.created_at ?? ""))
       .map((c) => (c.body ?? "").trim());
+  }
+
+  async listCommentsSince(issueOrPrNumber: number, sinceMs: number): Promise<IssueComment[]> {
+    const comments = await this.requestAllPages<{
+      id?: number;
+      body?: string;
+      created_at?: string;
+      user?: { id?: number; type?: string } | null;
+    }>(`/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueOrPrNumber}/comments?per_page=100`, { useEtag: false });
+    return comments
+      .map((c) => ({
+        id: Number(c.id),
+        userId: Number(c.user?.id ?? 0),
+        isBot: c.user?.type === "Bot",
+        body: c.body ?? "",
+        createdAt: Date.parse(c.created_at ?? ""),
+      }))
+      .filter((c) => c.createdAt > sinceMs)
+      .sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+  }
+
+  async closePr(prNumber: number): Promise<void> {
+    await this.request("PATCH", `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}`, {
+      body: { state: "closed" },
+    });
   }
 
   /**

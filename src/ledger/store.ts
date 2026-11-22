@@ -918,6 +918,29 @@ export class Ledger {
       .run(now, repo, topic, issueNumber, actor, JSON.stringify(payload));
   }
 
+  /** True once a `/archangel` comment (by GitHub comment id) has been processed or deliberately ignored. */
+  hasHandledOwnerCommand(commentId: number, repo = this.repo): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM audit_log WHERE repo = ? AND topic LIKE 'owner_command/%'
+             AND json_extract(payload_json, '$.commentId') = ? LIMIT 1`,
+        )
+        .get(repo, commentId),
+    );
+  }
+
+  /** Durable per-comment record: the dedupe key survives restarts. Owner commands count as owner actions. */
+  recordOwnerCommand(
+    commentId: number,
+    issueNumber: number,
+    outcome: "retry" | "close" | "handoff_requested" | "unknown" | "ignored",
+    actor: string,
+    now = Date.now(),
+  ): void {
+    this.appendAudit(`owner_command/${outcome}`, issueNumber, actor, { commentId }, now);
+  }
+
   /**
    * Autonomous steps (Attempt starts and autonomous merges) since the owner was last heard from,
    * i.e. since the latest audit row whose actor is 'owner'.
