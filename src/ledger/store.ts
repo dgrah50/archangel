@@ -124,6 +124,7 @@ export class Ledger {
       }
       const pitchCols = this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>;
       if (!pitchCols.some((c) => c.name === "decline_reason")) this.db.exec("ALTER TABLE pitches ADD COLUMN decline_reason TEXT");
+      if (!pitchCols.some((c) => c.name === "promoted_slices")) this.db.exec("ALTER TABLE pitches ADD COLUMN promoted_slices TEXT NOT NULL DEFAULT '[]'");
       if (!pitchCols.some((c) => c.name === "pitch_json")) this.db.exec("ALTER TABLE pitches ADD COLUMN pitch_json TEXT NOT NULL DEFAULT ''");
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
@@ -1422,11 +1423,18 @@ export class Ledger {
     this.db.prepare(`UPDATE pitches SET decline_reason = ? WHERE repo = ? AND issue_number = ?`).run(reason, repo, issueNumber);
   }
 
-  getPitch(issueNumber: number, repo = this.repo): { issueNumber: number; status: "open" | "declined" | "promoted"; contentSha256: string; pitchJson: string } | null {
+  getPitch(
+    issueNumber: number,
+    repo = this.repo,
+  ): { issueNumber: number; status: "open" | "declined" | "promoted"; contentSha256: string; pitchJson: string; promotedSlices: number[] } | null {
     const r = this.db
-      .prepare(`SELECT issue_number, status, content_sha256, pitch_json FROM pitches WHERE repo = ? AND issue_number = ?`)
-      .get(repo, issueNumber) as { issue_number: number; status: "open" | "declined" | "promoted"; content_sha256: string; pitch_json: string } | undefined;
-    return r ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json } : null;
+      .prepare(`SELECT issue_number, status, content_sha256, pitch_json, promoted_slices FROM pitches WHERE repo = ? AND issue_number = ?`)
+      .get(repo, issueNumber) as
+      | { issue_number: number; status: "open" | "declined" | "promoted"; content_sha256: string; pitch_json: string; promoted_slices: string }
+      | undefined;
+    return r
+      ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json, promotedSlices: JSON.parse(r.promoted_slices) as number[] }
+      : null;
   }
 
   /**
@@ -1443,9 +1451,16 @@ export class Ledger {
       .run(kind === "revise" ? 1 : 0, kind === "rebase" ? 1 : 0, repo, issueNumber);
   }
 
-  /** Only `archangel pitch promote` (the owner's `gh`) sets this. */
-  markPitchPromoted(issueNumber: number, now = Date.now(), repo = this.repo): void {
-    this.db.prepare(`UPDATE pitches SET status = 'promoted', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, issueNumber);
+  /**
+   * Only `archangel pitch promote` (the owner's `gh`) calls this. Records which slices (0-based) became owner-authored issues; the pitch
+   * counts as promoted (for the Scout's pause rule) as soon as any slice is, while the remaining slices can still be promoted later.
+   */
+  markPitchSlicesPromoted(issueNumber: number, slices: readonly number[], now = Date.now(), repo = this.repo): void {
+    const current = this.getPitch(issueNumber, repo)?.promotedSlices ?? [];
+    const merged = [...new Set([...current, ...slices])].sort((a, b) => a - b);
+    this.db
+      .prepare(`UPDATE pitches SET status = 'promoted', status_at = ?, promoted_slices = ? WHERE repo = ? AND issue_number = ?`)
+      .run(now, JSON.stringify(merged), repo, issueNumber);
   }
 
   countOpenPitches(repo = this.repo): number {

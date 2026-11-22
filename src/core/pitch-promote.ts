@@ -51,7 +51,8 @@ export async function promotePitch(
   if (!REPO_SLUG_RE.test(input.repo)) throw new Error(`Expected owner/name, got '${input.repo}'`);
   const row = ledger.getPitch(input.issue);
   if (!row) throw new Error(`#${input.issue} is not a pitch recorded by this Ledger`);
-  if (row.status !== "open") throw new Error(`Pitch #${input.issue} is already ${row.status}`);
+  // `promoted` is allowed: a pitch with some slices promoted can still have its remaining slices promoted later.
+  if (row.status !== "open" && row.status !== "promoted") throw new Error(`Pitch #${input.issue} is already ${row.status}`);
 
   // The pitch the owner reads on GitHub must be exactly what was filed: re-check the pinned content hash first.
   const live = JSON.parse(await runner.run("gh", ["issue", "view", String(input.issue), "--repo", input.repo, "--json", "title,body,state,labels"])) as {
@@ -67,8 +68,12 @@ export async function promotePitch(
   }
 
   const pitch = PitchOutputSchema.shape.pitches.element.parse(JSON.parse(row.pitchJson));
-  const indexes = input.slice === undefined ? pitch.slices.map((_, i) => i) : [input.slice - 1];
+  const remaining = pitch.slices.map((_, i) => i).filter((i) => !row.promotedSlices.includes(i));
+  const indexes = input.slice === undefined ? remaining : [input.slice - 1];
   if (indexes.some((i) => i < 0 || i >= pitch.slices.length)) throw new Error(`--slice must be between 1 and ${pitch.slices.length}`);
+  const again = indexes.filter((i) => row.promotedSlices.includes(i));
+  if (again.length > 0) throw new Error(`Slice ${again.map((i) => i + 1).join(", ")} of pitch #${input.issue} is already promoted`);
+  if (indexes.length === 0) throw new Error(`Every slice of pitch #${input.issue} is already promoted`);
   const drafts = indexes.map((i) => sliceIssueBody(input.issue, pitch, i));
 
   for (const [n, d] of drafts.entries()) {
@@ -95,17 +100,21 @@ export async function promotePitch(
   } catch (err) {
     if (created.length === 0) throw err;
     // Some owner-authored issues already exist. Mark the pitch decided so a rerun cannot duplicate them, and say what is left.
-    ledger.markPitchPromoted(input.issue, input.now);
-    ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, partial: true }, input.now);
+    ledger.markPitchSlicesPromoted(input.issue, indexes.slice(0, created.length), input.now);
+    ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes.slice(0, created.length), partial: true }, input.now);
     throw new Error(
-      `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Pitch #${input.issue} is marked promoted and left open; open the remaining slices by hand.`,
+      `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Those slices are marked promoted and the pitch is left open; rerun to promote the remaining slices.`,
     );
   }
-  ledger.markPitchPromoted(input.issue, input.now);
-  ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created }, input.now);
-  await runner.run("gh", [
-    "issue", "close", String(input.issue), "--repo", input.repo, "--comment",
-    `Promoted by the owner to ${created.map((n) => `#${n}`).join(", ")}.`,
-  ]);
+  ledger.markPitchSlicesPromoted(input.issue, indexes, input.now);
+  ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes }, input.now);
+  const done = ledger.getPitch(input.issue)!.promotedSlices.length === pitch.slices.length;
+  const list = created.map((n) => `#${n}`).join(", ");
+  if (done) {
+    await runner.run("gh", ["issue", "close", String(input.issue), "--repo", input.repo, "--comment", `Promoted by the owner to ${list}.`]);
+  } else {
+    // Leave the pitch open so its remaining slices can still be promoted.
+    await runner.run("gh", ["issue", "comment", String(input.issue), "--repo", input.repo, "--body", `Slice ${indexes.map((i) => i + 1).join(", ")} promoted by the owner to ${list}. The other slices are still open for promotion.`]);
+  }
   return created;
 }

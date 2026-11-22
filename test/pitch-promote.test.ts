@@ -132,8 +132,12 @@ describe("archangel pitch promote", () => {
     await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/#100.*network down|network down.*#100/s);
     expect(ledger.getPitch(40)!.status).toBe("promoted");
     expect(ledger.listAudit({ topicPrefix: "pitch/promoted" })).toHaveLength(1);
-    // a rerun refuses instead of creating #100 again
-    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/already promoted/);
+    expect(ledger.getPitch(40)!.promotedSlices).toEqual([0]);
+    // a rerun promotes only the remaining slice instead of creating #100 again
+    const rerun = await promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true });
+    expect(rerun).toHaveLength(1);
+    expect(calls.filter((c) => c[1] === "create").map((c) => c[c.indexOf("--title") + 1])).toEqual(["Delete legacy parser", "Drop its tests", "Drop its tests"]);
+    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/Every slice .* already promoted/);
   });
 
   it("a promoted pitch counts toward the pause rule (the Scout does not pause after it)", async () => {
@@ -150,5 +154,39 @@ describe("no compatibility path for pitches without stored text", () => {
     // @ts-expect-error pitchJson is required: there is no "older build" shape to tolerate.
     void (() => ledger.recordPitch({ issueNumber: 1, scoutName: "p", trustHash: "h", title: "t", titleFp: "f", contentSha256: "c" }));
     ledger.close();
+  });
+});
+
+describe("promoting slices one at a time", () => {
+  const confirmed = <T extends object>(base: T) => ({ ...base, yes: true, confirm: async () => true });
+
+  it("--slice marks only that slice, leaves the pitch open for the rest, and closes it once every slice is promoted", async () => {
+    const { ledger, runner, calls, base } = setup();
+    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 2 })).toEqual([100]);
+    expect(ledger.getPitch(40)).toMatchObject({ status: "promoted", promotedSlices: [1] });
+    expect(calls.some((c) => c[1] === "close")).toBe(false); // still open: slice 1 is promotable
+    const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")!;
+    expect(comment[comment.indexOf("--body") + 1]).toContain("Slice 2 promoted");
+
+    expect(await promotePitch(runner, ledger, { ...confirmed(base), slice: 1 })).toEqual([101]);
+    expect(ledger.getPitch(40)!.promotedSlices).toEqual([0, 1]);
+    expect(calls.filter((c) => c[1] === "close")).toHaveLength(1);
+  });
+
+  it("refuses a slice that is already promoted, and defaults to the slices not yet promoted", async () => {
+    const { ledger, runner, calls, base } = setup();
+    await promotePitch(runner, ledger, { ...confirmed(base), slice: 1 });
+    await expect(promotePitch(runner, ledger, { ...confirmed(base), slice: 1 })).rejects.toThrow(/Slice 1 .* already promoted/);
+    const rest = await promotePitch(runner, ledger, confirmed(base));
+    expect(rest).toHaveLength(1);
+    const titles = calls.filter((c) => c[1] === "create").map((c) => c[c.indexOf("--title") + 1]);
+    expect(titles).toEqual(["Delete legacy parser", "Drop its tests"]);
+  });
+
+  it("counts as promoted for the pause rule as soon as any slice is promoted", async () => {
+    const { ledger, runner, base } = setup();
+    for (let n = 1; n <= 3; n++) ledger.recordPitch({ issueNumber: n, scoutName: "pitch", trustHash: "h", title: `t${n} title long`, titleFp: `f${n}`, contentSha256: "c", pitchJson: "{}", now: n });
+    await promotePitch(runner, ledger, { ...confirmed(base), slice: 2 });
+    expect(ledger.isPitchScoutPaused("pitch", "h", 4)).toBe(false);
   });
 });

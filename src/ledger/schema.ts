@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS pitches (
   status_at INTEGER NOT NULL,
   decline_reason TEXT,
   pitch_json TEXT NOT NULL DEFAULT '',
+  promoted_slices TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (repo, issue_number)
 );
 
