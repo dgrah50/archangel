@@ -128,4 +128,19 @@ describe("proposeWorkflow", () => {
     expect(plan.files.map((x) => x.path)).toEqual([".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
     expect(f.calls.filter((c) => c.includes("-X PUT")).every((c) => !c.includes("sha="))).toBe(true);
   });
+
+  it("labels a proposal policy:loosens when the current file is invalid and the proposal grants autonomy (nothing proves it does not loosen)", async () => {
+    const stale = JSON.stringify({ maxFiles: 3 }); // an old-format file: does not parse as a workflow
+    const loose = fake({ current: stale });
+    const a = await proposeWorkflow(loose.runner, "o/r", JSON.stringify(workflowFile([], { landing: { bugfix: "autonomous" } })), quiet);
+    expect(a.plan.classified).toBe(false);
+    expect(a.plan.loosens).toBe(true);
+    expect(loose.calls.find((c) => c.startsWith("pr create"))).toContain(`--label ${LOOSENS_LABEL}`);
+    const promoting = fake({ current: stale });
+    const b = await proposeWorkflow(promoting.runner, "o/r", JSON.stringify(workflowFile([{ name: "s", promotion: "auto" }])), { ...quiet, scoutPrompts: { s: "p" } });
+    expect(b.plan.loosens).toBe(true);
+    const owner = fake({ current: stale });
+    const c = await proposeWorkflow(owner.runner, "o/r", JSON.stringify(workflowFile([])), quiet);
+    expect(c.plan.loosens).toBe(false);
+  });
 });
