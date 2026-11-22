@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
 import { SubscriptionReviewerSuite } from "../src/agents/subscription-reviewers.js";
-import { resolveRequiredReviewers } from "../src/config.js";
+import { ChainsSchema, resolveRequiredReviewers } from "../src/config.js";
 import { computeBlockers, isShadowReady } from "../src/core/blockers.js";
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {
@@ -23,7 +23,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       const seenPrompts: Array<{ provider: string; prompt: string }> = [];
       const cooledDown = new Set<string>();
       const impl = new SubscriptionImplementer({
-        chain: [{ provider: "codex" }, { provider: "agy" }],
+        chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
         transcriptsDir: path.join(tmp, "transcripts"),
         cooldowns: {
           isCoolingDown: (p) => cooledDown.has(p),
@@ -51,7 +51,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
         abortController: new AbortController(),
         maxTurns: 10,
         timeoutMs: 10_000,
-        maxBudgetUsd: 5,
+        maxBudgetUsd: 5, role: "implement" as const,
       });
 
       expect(res.aborted).toBe(false);
@@ -72,14 +72,14 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
         abortController: new AbortController(),
         maxTurns: 10,
         timeoutMs: 10_000,
-        maxBudgetUsd: 5,
+        maxBudgetUsd: 5, role: "implement" as const,
       });
       expect(seenPrompts.map((p) => p.provider)).toEqual(["agy"]);
       expect(res2.providersUsed).toEqual(["gemini"]);
 
       // Non-quota crash with "429" / "capacity" inside test stdout must NOT trigger false quota failover (Opus B2)!
       const failFast = new SubscriptionImplementer({
-        chain: [{ provider: "codex" }, { provider: "agy" }],
+        chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
         transcriptsDir: path.join(tmp, "transcripts"),
         invoker: async (input) => {
           if (input.provider === "codex") {
@@ -101,7 +101,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
           abortController: new AbortController(),
           maxTurns: 10,
           timeoutMs: 10_000,
-          maxBudgetUsd: 5,
+          maxBudgetUsd: 5, role: "implement" as const,
         }),
       ).rejects.toThrow(/test failed/);
     } finally {
@@ -113,7 +113,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
     const called: string[] = [];
     const suite = new SubscriptionReviewerSuite({
       chain: [{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }],
-      primaryImplementerVendor: "openai", // codex implemented -> must NEVER review!
+      defaultExcludeVendors: ["openai"], // codex implemented -> must NEVER review!
       invoker: async (input) => {
         called.push(input.provider);
         return { verdict: "approve", findings: [] };
@@ -136,7 +136,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
     // Opus B1: when ONLY agy ran (because codex was in cooldown), codex + claude are BOTH eligible!
     const cfg = {
       authMode: "subscription" as const,
-      implementerChain: [{ provider: "codex" as const }, { provider: "agy" as const }],
+      chains: ChainsSchema.parse({ implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] }),
       reviewerChain: [{ provider: "agy" as const }, { provider: "claude" as const }, { provider: "codex" as const }],
     };
     expect(resolveRequiredReviewers(cfg, ["gemini"]).sort()).toEqual(["anthropic", "openai"]);

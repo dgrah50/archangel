@@ -13,6 +13,43 @@ export const ProviderEntrySchema = z.object({
 });
 export type ProviderEntry = z.infer<typeof ProviderEntrySchema>;
 
+const ChainSchema = z.array(ProviderEntrySchema).min(1, "a chain needs at least one provider");
+
+/** Roles whose Attempts write code in a clone: the reviewer-independence rule covers all of them. */
+export const WRITER_ROLES = ["implement", "revise", "rebase"] as const;
+export type WriterRole = (typeof WRITER_ROLES)[number];
+
+/**
+ * One provider chain per role, so menial work can run on cheaper models than the first implementation.
+ * `triage` is reserved for escalation triage and is only validated today.
+ */
+export const ChainsSchema = z
+  .object({
+    implement: ChainSchema.default([{ provider: "codex" }, { provider: "agy" }]),
+    revise: ChainSchema.default([{ provider: "codex" }, { provider: "agy" }]),
+    rebase: ChainSchema.default([{ provider: "codex" }, { provider: "agy" }]),
+    scout: ChainSchema.default([{ provider: "claude" }, { provider: "codex" }]),
+    triage: ChainSchema.default([{ provider: "claude" }, { provider: "codex" }]),
+  })
+  .strict()
+  .superRefine((c, ctx) => {
+    // Scouts run read-only and only claude and codex have a verified read-only mode.
+    if (!c.scout.some((e) => e.provider === "claude" || e.provider === "codex")) {
+      ctx.addIssue({ code: "custom", path: ["scout"], message: "the scout chain needs a claude or codex entry (agy has no verified read-only mode)" });
+    }
+  });
+export type Chains = z.infer<typeof ChainsSchema>;
+
+/** The vendor each writing role tries first: who wrote the code when no Attempt has recorded a vendor yet. */
+export function primaryWriterVendors(chains: Pick<Chains, WriterRole>): ReviewerVendor[] {
+  return [...new Set(WRITER_ROLES.map((r) => providerToVendor(chains[r][0]!.provider)))];
+}
+
+/** Every vendor that can write code for a Thread, across implement, revise and rebase. */
+export function writerVendors(chains: Pick<Chains, WriterRole>): ReviewerVendor[] {
+  return [...new Set(WRITER_ROLES.flatMap((r) => chains[r].map((e) => providerToVendor(e.provider))))];
+}
+
 export const AuthModeSchema = z.enum(["subscription", "api"]);
 export type AuthMode = z.infer<typeof AuthModeSchema>;
 
@@ -144,10 +181,7 @@ export const ConfigSchema = z.object({
 
   // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
   authMode: AuthModeSchema.default("api"),
-  implementerChain: z
-    .array(ProviderEntrySchema)
-    .min(1)
-    .default([{ provider: "codex" }, { provider: "agy" }]),
+  chains: ChainsSchema.default(ChainsSchema.parse({})),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
@@ -219,10 +253,7 @@ export const HostYamlSchema = z.object({
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
-  implementerChain: z
-    .array(ProviderEntrySchema)
-    .min(1)
-    .default([{ provider: "codex" }, { provider: "agy" }]),
+  chains: ChainsSchema.default(ChainsSchema.parse({})),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
@@ -247,7 +278,7 @@ export const HostYamlSchema = z.object({
  * Resolves the 2 independent reviewer vendors required for a project (ADR-0003: implementer != reviewer).
  */
 export function resolveRequiredReviewers(
-  cfg: Pick<ArchangelConfig, "authMode" | "implementerChain" | "reviewerChain">,
+  cfg: Pick<ArchangelConfig, "authMode" | "chains" | "reviewerChain">,
   threadImplementerVendors: ReviewerVendor[] = [],
 ): ReviewerVendor[] {
   if (cfg.authMode === "api") {
@@ -258,7 +289,7 @@ export function resolveRequiredReviewers(
   const blocked = new Set<ReviewerVendor>(
     threadImplementerVendors.length > 0
       ? threadImplementerVendors
-      : [providerToVendor(cfg.implementerChain[0]!.provider)],
+      : primaryWriterVendors(cfg.chains),
   );
   const chosen: ReviewerVendor[] = [];
   for (const entry of cfg.reviewerChain) {
@@ -312,6 +343,11 @@ export function resolvePaths(
   };
 }
 
+/** The host config path the daemon reads: the explicit option, else `ARCHANGEL_CONFIG`, else `./archangel.yaml`. */
+export function resolveConfigPath(configPath?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.resolve(configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml");
+}
+
 /**
  * Loads multi-project host config from `archangel.yaml` merged with secrets strictly from `env`.
  * A missing file is an error: there is no environment-only configuration.
@@ -321,8 +357,7 @@ export function loadProjectConfigs(opts: {
   env?: NodeJS.ProcessEnv;
 } = {}): ArchangelConfig[] {
   const env = opts.env ?? process.env;
-  const candidatePath = opts.configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
-  const resolvedConfig = path.resolve(candidatePath);
+  const resolvedConfig = resolveConfigPath(opts.configPath, env);
 
   if (!fs.existsSync(resolvedConfig)) {
     throw new Error(`Host config not found: ${resolvedConfig} (copy archangel.example.yaml to archangel.yaml)`);
@@ -371,7 +406,7 @@ export function loadProjectConfigs(opts: {
       factoryRetry: host.factoryRetry,
       scouts: proj.scouts,
       authMode: host.authMode,
-      implementerChain: host.implementerChain,
+      chains: host.chains,
       reviewerChain: host.reviewerChain,
       claudeModel: host.claudeModel,
       openaiReviewerModel: host.openaiReviewerModel,

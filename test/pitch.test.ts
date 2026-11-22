@@ -344,7 +344,7 @@ describe("pitch cross-vendor veto", () => {
         },
       };
       // The pitch Scout runs on codex (OpenAI) here, so OpenAI must not critique it.
-      const config = ConfigSchema.parse({ ...f.config, authMode: "api", reviewerChain: [{ provider: "codex" }, { provider: "claude" }] });
+      const config = ConfigSchema.parse({ ...f.config, authMode: "api", chains: { scout: [{ provider: "codex" }, { provider: "claude" }] }, reviewerChain: [{ provider: "codex" }, { provider: "claude" }] });
       const { res } = await f.run(out(pitch()), { reviewers: mastraLike, config });
       expect(ran).toEqual(["gemini"]);
       expect(res[0]!.filedIssues).toEqual([300]);

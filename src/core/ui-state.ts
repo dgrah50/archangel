@@ -49,6 +49,8 @@ export interface UiState {
   /** Last 14 local days, oldest first. */
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
+  /** Subsystem error classes survived in the last 24h, per repo. */
+  faults: ReturnType<Ledger["listHealthFaults"]>;
 }
 
 const DAY_MS = 86_400_000;
@@ -165,6 +167,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
     outcomes: ledger.computeMetrics({ now }).outcomes,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
+    faults: ledger.listHealthFaults(now),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({

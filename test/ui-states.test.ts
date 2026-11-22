@@ -29,7 +29,7 @@ const feed = <T = never,>(data: T | null, at: number | null, error: string | nul
 const noState = (error: string | null = null) => feed<UiState>(null, null, error);
 const noWfs = (error: string | null = null) => feed<WorkflowsState>(null, null, error);
 const view = (state: Feed<UiState>, workflows: Feed<WorkflowsState>, now = NOW, route: Route = { page: "overview" }) =>
-  html(createElement(AppView, { route, state, workflows, thread: { data: null, at: null, error: null }, logs: { data: null, at: null, error: null }, now, onRetry: () => {} }));
+  html(createElement(AppView, { route, state, workflows, host: { data: null, at: null, error: null }, thread: { data: null, at: null, error: null }, logs: { data: null, at: null, error: null }, now, onRetry: () => {} }));
 const pipelineView = (state: Feed<UiState>, workflows: Feed<WorkflowsState>) => view(state, workflows, NOW, { page: "pipeline" });
 
 describe("dashboard states are distinct", () => {

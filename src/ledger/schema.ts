@@ -1,3 +1,4 @@
+import type { CommandState } from "../core/command-machine.js";
 import type {
   AttemptKind,
   MainWatch,
@@ -123,9 +124,7 @@ export interface DaemonCommandRecord {
   repo: string;
   issueNumber: number;
   kind: "handoff";
-  status: "pending" | "completed" | "failed";
-  resultJson: string | null;
-  errorMessage: string | null;
+  state: CommandState;
   createdAt: number;
   updatedAt: number;
 }
@@ -276,9 +275,10 @@ CREATE TABLE IF NOT EXISTS daemon_commands (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
   kind TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  result_json TEXT,
-  error_message TEXT,
+  -- A CommandState (core/command-machine.ts), changed only through Ledger.stepCommandState (compare-and-set on version).
+  state_json TEXT NOT NULL,
+  state TEXT GENERATED ALWAYS AS (json_extract(state_json, '$.kind')) STORED,
+  version INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -300,6 +300,18 @@ CREATE TABLE IF NOT EXISTS system_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+-- Explicit per-repo health facts: a subsystem error class the daemon survived (log-and-continue) is counted here, never only logged.
+CREATE TABLE IF NOT EXISTS health_faults (
+  repo TEXT NOT NULL,
+  category TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  last_error TEXT NOT NULL,
+  recent_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (repo, category)
 );
 
 CREATE TABLE IF NOT EXISTS provider_cooldowns (
