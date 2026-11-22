@@ -340,7 +340,7 @@ export function buildScoutPrompt(workflow: ScoutWorkflow, metricsBlock?: string)
 
 export interface ScoutRunSummary {
   scoutName: string;
-  status: "dry_run" | "skipped_cap" | "skipped_open_limit" | "paused" | "ran";
+  status: "dry_run" | "skipped_cap" | "skipped_open_limit" | "paused" | "ran" | "partial_error" | "failed_output";
   filedIssues: number[];
   blockedSecrets: number;
   skippedDuplicates: number;
@@ -442,6 +442,7 @@ export async function runScoutsForProject(opts: {
     const cloneId = 900_000 + Math.floor(Math.random() * 90_000);
     const cloneDir = await opts.broker.createThrowawayClone(cloneId, opts.mainSha);
     let filedIssues: number[] = [];
+    let autoPromoteFailed = false;
     let blockedSecrets = 0;
     let skippedDuplicates = 0;
 
@@ -519,6 +520,7 @@ export async function runScoutsForProject(opts: {
             await opts.github.addLabels(created.number, [opts.config.labels.readyForAgent]);
             opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { trustHash: wf.trustHash.slice(0, 12) }, now);
           } catch (err) {
+            autoPromoteFailed = true;
             opts.ledger.appendAudit(
               "scout/auto_promote_label_failed",
               created.number,
@@ -537,7 +539,7 @@ export async function runScoutsForProject(opts: {
 
     results.push({
       scoutName: wf.name,
-      status: "ran",
+      status: autoPromoteFailed ? "partial_error" : "ran",
       filedIssues,
       blockedSecrets,
       skippedDuplicates,
@@ -619,7 +621,7 @@ async function runPitchScout(opts: {
     const parsed = PitchOutputSchema.safeParse(raw);
     if (!parsed.success) {
       ledger.appendAudit("pitch/invalid_output", null, wf.name, { error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400) }, now);
-      return summary;
+      return { ...summary, status: "failed_output" };
     }
     const fps = new Set(recent.map((r) => r.titleFp));
     for (const pitch of parsed.data.pitches.slice(0, 1)) {

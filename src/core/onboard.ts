@@ -19,6 +19,11 @@ export const execRunner: OnboardRunner = {
   },
 };
 
+/** `git cat-file -e` and `git merge-base --is-ancestor` answer "no" with exit status 1; any other failure (128: not a repo, bad object database) is an error, not an answer. */
+export function exitedOne(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === 1;
+}
+
 /** `gh api` reports a missing resource as HTTP 404 / Not Found; anything else (rate limit, 5xx, auth) is a real failure. */
 export function isNotFound(err: unknown): boolean {
   return /\b404\b|Not Found/i.test(err instanceof Error ? err.message : String(err));
@@ -88,7 +93,8 @@ export async function pinnedSha(runner: OnboardRunner, root: string, what = "onb
   const sha = (await runner.run("git", ["rev-parse", "HEAD"], { cwd: root })).trim();
   try {
     await runner.run("git", ["merge-base", "--is-ancestor", sha, "origin/main"], { cwd: root });
-  } catch {
+  } catch (err) {
+    if (!exitedOne(err)) throw err;
     throw new Error(`Refusing to ${what}: Archangel HEAD ${sha.slice(0, 10)} is not on origin/main (the Gate pin must be fetchable).`);
   }
   return sha;

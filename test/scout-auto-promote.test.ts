@@ -237,6 +237,7 @@ describe("Scout autoPromote label failure", () => {
         ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings,
       });
       expect(res[0]?.filedIssues).toEqual([60, 61]);
+      expect(res[0]?.status).toBe("partial_error");
       expect(labelsAdded).toEqual([{ n: 61, labels: ["ready-for-agent"] }]);
       expect(ledger.getScoutProposal(60)).toMatchObject({ autoPromoted: true });
       const failures = ledger.listAudit({ topicPrefix: "scout/auto_promote_label_failed" });
