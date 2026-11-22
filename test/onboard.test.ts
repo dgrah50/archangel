@@ -23,6 +23,7 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
       if (line.startsWith("gh label list")) return (opts.labels ?? []).join("\n");
       if (line.includes("contents/package.json")) return JSON.stringify(opts.pkg ?? {});
       if (line.startsWith("gh pr list")) return opts.openPr ?? "";
+      if (/git\/ref\/heads\/chore\//.test(line)) throw new Error("HTTP 404");
       if (line.includes("/git/ref/heads/")) return "basesha\n";
       if (line.startsWith("gh pr create")) return "https://github.com/o/r/pull/1\n";
       return "";
