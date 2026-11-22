@@ -22,6 +22,8 @@ export interface GitHubPr {
   state: "open" | "closed";
   merged: boolean;
   mergeCommitSha: string | null;
+  /** GitHub user id of whoever merged the PR (absent when unmerged). */
+  mergedBy?: number;
   draft: boolean;
   headRef: string;
   headSha: string;
@@ -461,6 +463,7 @@ export class GitHubAppClient implements GitHubClient {
       state: pr.state === "closed" ? "closed" : "open",
       merged,
       mergeCommitSha: pr.merge_commit_sha ? String(pr.merge_commit_sha) : null,
+      ...(typeof (pr.merged_by as { id?: unknown } | null | undefined)?.id === "number" ? { mergedBy: (pr.merged_by as { id: number }).id } : {}),
       draft: Boolean(pr.draft),
       headRef: String(head.ref ?? ""),
       headSha: String(head.sha ?? ""),
