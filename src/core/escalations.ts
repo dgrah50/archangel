@@ -118,6 +118,11 @@ export const MAIN_ESCALATION_POLICY = {
     recommendation:
       "A subsystem keeps failing and the daemon keeps surviving it (see the Health block in `archangel status` for the last error). Fix the cause (GitHub access, permissions, the Scout output); this notice repeats at most once a day per error class.",
   },
+  factory_retry_disabled: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "Factory retries were switched off for this repo because too many ended unmerged, or one was reverted or disputed. It stays off until `.agents/archangel.json` changes in an owner-merged edit (set `escalations.factoryRetry` to `off` to keep it off for good).",
+  },
   correction_repeated: {
     decisionClass: "owner_signoff",
     recommendation:

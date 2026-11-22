@@ -6,11 +6,11 @@ import {
   OutboxEffectSchema,
 } from "../core/thread-machine.js";
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
+import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type FactoryRetryOutcome } from "../core/factory-retry.js";
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
-import { categorizeAttemptError } from "../core/metrics-block.js";
 import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +19,7 @@ import {
   MainWatchSchema,
   PhaseSchema,
   type AttemptKind,
+  type EscalationCode,
   type MainWatch,
   type Mode,
   type OutboxEffect,
@@ -27,6 +28,7 @@ import {
 } from "../core/thread-machine.js";
 import {
   LEDGER_SCHEMA_SQL,
+  type AttemptErrorCategory,
   type AttemptRecord,
   type AuditLogEntry,
   type DaemonCommandRecord,
@@ -103,6 +105,8 @@ export interface StageMetrics {
   needsYou: { byDecisionClass: Record<string, number> };
   /** Threads split by the workflow file version stamped on them ("none" for Threads from before stamping). */
   byWorkflowSha: Record<string, { threads: number; merged: number; reverted: number }>;
+  /** Factory retries in the window, by outcome and by the escalation code they answered. */
+  factoryRetries: { total: number; byOutcome: Record<FactoryOutcome, number>; byCode: Record<string, Record<FactoryOutcome, number>> };
 }
 
 /** Consecutive unmerged auto-promoted Threads of one Scout version that revoke its auto-promotion. */
@@ -158,11 +162,14 @@ export class Ledger {
         this.db.exec("ALTER TABLE threads ADD COLUMN factory_retries INTEGER NOT NULL DEFAULT 0");
         this.db.exec("ALTER TABLE threads ADD COLUMN factory_guidance TEXT");
       }
+      if (!cols.some((c) => c.name === "factory_triage")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN factory_triage TEXT CHECK (factory_triage IN ('pending', 'done'))");
+      }
       const addCols = (table: string, cols: string[]) => {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
       };
-      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256"]);
+      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256", "error_category"]);
       addCols("reviews", ["provider", "model", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
@@ -195,6 +202,86 @@ export class Ledger {
     this.db
       .prepare("UPDATE threads SET retry_grants = retry_grants + 1, factory_guidance = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?")
       .run(now, this.repo, issueNumber);
+  }
+
+  /**
+   * Ends a held-back escalation: marks triage done and queues the Needs You effects (label and notification) that were held
+   * back, in one step, with the factory actor's audit row saying why.
+   */
+  releaseFactoryTriage(issueNumber: number, effects: OutboxEffect[], payload: unknown, now = Date.now()): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare("UPDATE threads SET factory_triage = 'done', updated_at = ? WHERE repo = ? AND issue_number = ?").run(now, this.repo, issueNumber);
+      for (const eff of effects) {
+        this.db.prepare(`INSERT INTO outbox (repo, effect_json, created_at) VALUES (?, ?, ?)`).run(this.repo, JSON.stringify(eff), now);
+      }
+      this.appendAudit("factory/escalated", issueNumber, "factory", payload, now);
+    });
+    tx();
+  }
+
+  /** Every factory retry in this repo (oldest first) with its outcome, decided by Ledger mechanics and owner actions only. */
+  factoryRetryOutcomes(opts: { afterAuditId?: number; repo?: string } = {}): FactoryRetryOutcome[] {
+    const repo = opts.repo ?? this.repo;
+    const rows = this.db
+      .prepare(`SELECT id, ts, issue_number, payload_json FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND id > ? ORDER BY id ASC`)
+      .all(repo, opts.afterAuditId ?? 0) as Array<{ id: number; ts: number; issue_number: number; payload_json: string }>;
+    const after = this.db.prepare(
+      `SELECT SUM(actor = 'owner') AS owner, SUM(topic = 'escalation/raised') AS escalated FROM audit_log WHERE repo = ? AND issue_number = ? AND id > ?`,
+    );
+    const out: FactoryRetryOutcome[] = [];
+    for (const r of rows) {
+      let code: EscalationCode;
+      try {
+        const parsed = EscalationCodeSchema.safeParse((JSON.parse(r.payload_json) as { code?: unknown }).code);
+        if (!parsed.success) continue;
+        code = parsed.data;
+      } catch {
+        continue;
+      }
+      const thread = this.getThread(r.issue_number, repo);
+      if (!thread) continue;
+      const merges = this.listMergesFor(r.issue_number, repo).filter((m) => !m.shadowOnly || m.disagreed);
+      const seen = after.get(repo, r.issue_number, r.id) as { owner: number | null; escalated: number | null };
+      out.push({
+        auditId: r.id,
+        issueNumber: r.issue_number,
+        code,
+        at: r.ts,
+        outcome: classifyFactoryOutcome({
+          phaseKind: thread.phase.kind,
+          doneOutcome: thread.phase.kind === "done" ? thread.phase.outcome : null,
+          reverted: (thread.phase.kind === "done" && thread.phase.outcome === "reverted") || merges.some((m) => m.mainWatch.kind === "red"),
+          disputed: merges.some((m) => m.disagreed),
+          ownerActedAfter: (seen.owner ?? 0) > 0,
+          escalatedAfter: (seen.escalated ?? 0) > 0,
+        }),
+      });
+    }
+    return out;
+  }
+
+  /** Factory retries this repo started in the 24 hours before `now`. */
+  factoryRetriesInLast24h(now = Date.now(), repo = this.repo): number {
+    return (
+      this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?").get(repo, now - 86_400_000) as { n: number }
+    ).n;
+  }
+
+  /** The latest auto-off of factory retry for this repo: the audit row id and the workflow file version it tripped under. */
+  lastFactoryAutoOff(repo = this.repo): { auditId: number; workflowSha: string } | null {
+    const r = this.db
+      .prepare(`SELECT id, payload_json FROM audit_log WHERE repo = ? AND topic = 'factory/auto_off' ORDER BY id DESC LIMIT 1`)
+      .get(repo) as { id: number; payload_json: string } | undefined;
+    if (!r) return null;
+    try {
+      return { auditId: r.id, workflowSha: String((JSON.parse(r.payload_json) as { workflowSha?: unknown }).workflowSha ?? "") };
+    } catch {
+      return { auditId: r.id, workflowSha: "" };
+    }
+  }
+
+  recordFactoryAutoOff(workflowSha: string, why: string, now = Date.now()): void {
+    this.appendAudit("factory/auto_off", null, "archangel", { workflowSha, why }, now);
   }
 
   /**
@@ -419,6 +506,8 @@ export class Ledger {
       incImplement?: boolean;
       incRevision?: boolean;
       incRebase?: boolean;
+      /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
+      factoryTriage?: "pending" | "done";
       auditTopic?: string;
       auditPayload?: unknown;
       now?: number;
@@ -448,6 +537,10 @@ export class Ledger {
       if (opts.incImplement) sets.push("implement_count = implement_count + 1");
       if (opts.incRevision) sets.push("revision_count = revision_count + 1");
       if (opts.incRebase) sets.push("rebase_count = rebase_count + 1");
+      if (opts.factoryTriage !== undefined) {
+        sets.push("factory_triage = ?");
+        vals.push(opts.factoryTriage);
+      }
 
       vals.push(repo, issueNumber, expectedVersion);
       const res = this.db
@@ -494,7 +587,7 @@ export class Ledger {
         if (t.phase.kind !== "working") continue;
         this.db
           .prepare(
-            `UPDATE attempts SET status = 'failed', error_message = 'stale working run swept on startup', finished_at = ?
+            `UPDATE attempts SET status = 'failed', error_message = 'stale working run swept on startup', error_category = 'other', finished_at = ?
              WHERE repo = ? AND issue_number = ? AND status = 'running'`,
           )
           .run(now, repo, t.issueNumber);
@@ -707,13 +800,15 @@ export class Ledger {
   finishAttempt(
     attemptId: number,
     result: {
-      status: "succeeded" | "failed" | "aborted";
       headSha?: string | null;
       costUsd?: number;
       reservedUsd?: number;
       transcriptPath?: string | null;
-      errorMessage?: string | null;
-    },
+    } & (
+      | { status: "succeeded" }
+      // An unsuccessful Attempt always says why, as a closed category, alongside the human message.
+      | { status: "failed" | "aborted"; errorCategory: AttemptErrorCategory; errorMessage: string }
+    ),
     now = Date.now(),
   ): AttemptRecord {
     const cost = Math.max(0, result.costUsd ?? 0);
@@ -722,7 +817,7 @@ export class Ledger {
     const done = this.db
       .prepare(
         `UPDATE attempts
-         SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, finished_at = ?
+         SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, error_category = ?, finished_at = ?
          WHERE id = ? AND status = 'running'`,
       )
       .run(
@@ -730,7 +825,8 @@ export class Ledger {
         result.headSha ?? null,
         cost,
         result.transcriptPath ?? null,
-        result.errorMessage ?? null,
+        result.status === "succeeded" ? null : result.errorMessage,
+        result.status === "succeeded" ? null : result.errorCategory,
         now,
         attemptId,
       );
@@ -750,7 +846,8 @@ export class Ledger {
         status: result.status,
         headSha: result.headSha ?? null,
         costUsd: cost,
-        error: result.errorMessage ?? null,
+        error: result.status === "succeeded" ? null : result.errorMessage,
+        errorCategory: result.status === "succeeded" ? null : result.errorCategory,
       },
       now,
       attempt.repo,
@@ -968,7 +1065,7 @@ export class Ledger {
     phase: Phase;
     updatedAt: number;
     merges: Array<{ headSha: string; shadowOnly: boolean; disagreed: boolean; mainWatch: string }>;
-    failedAttempts: Array<{ headSha: string; errorMessage: string }>;
+    failedAttempts: Array<{ headSha: string; errorMessage: string; errorCategory: string | null }>;
     title: string;
     /** The issue text kept at intake, or null for Threads from before it was kept. */
     issueBody: string | null;
@@ -983,7 +1080,7 @@ export class Ledger {
       .all(repo) as Array<Record<string, unknown>>;
     const failed = this.db
       .prepare(
-        `SELECT issue_number, head_sha, error_message FROM attempts
+        `SELECT issue_number, head_sha, error_message, error_category FROM attempts
          WHERE repo = ? AND status = 'failed' AND head_sha IS NOT NULL AND error_message IS NOT NULL ORDER BY id`,
       )
       .all(repo) as Array<Record<string, unknown>>;
@@ -1009,7 +1106,7 @@ export class Ledger {
           })),
         failedAttempts: failed
           .filter((a) => Number(a.issue_number) === t.issueNumber)
-          .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message) })),
+          .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message), errorCategory: a.error_category === null ? null : String(a.error_category) })),
         lastHead: heads.filter((h) => Number(h.issue_number) === t.issueNumber).map((h) => String(h.head_sha)).at(-1) ?? null,
       }));
   }
@@ -1841,6 +1938,17 @@ export class Ledger {
     return split;
   }
 
+  getBenchResult(cacheKey: string, caseId: string): unknown | null {
+    const row = this.db.prepare("SELECT result_json FROM bench_results WHERE cache_key = ? AND case_id = ?").get(cacheKey, caseId) as { result_json: string } | undefined;
+    return row ? JSON.parse(row.result_json) : null;
+  }
+
+  putBenchResult(cacheKey: string, caseId: string, result: unknown, now = Date.now()): void {
+    this.db
+      .prepare("INSERT INTO bench_results (cache_key, case_id, result_json, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key, case_id) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at")
+      .run(cacheKey, caseId, JSON.stringify(result), now);
+  }
+
   getEvalResult(promptHash: string, caseId: string): { verdict: "approve" | "veto"; vendors: string } | null {
     return (this.db.prepare(`SELECT verdict, vendors FROM eval_results WHERE prompt_hash = ? AND case_id = ?`).get(promptHash, caseId) as { verdict: "approve" | "veto"; vendors: string } | undefined) ?? null;
   }
@@ -2142,7 +2250,19 @@ export class Ledger {
       },
       needsYou: { byDecisionClass },
       byWorkflowSha,
+      factoryRetries: this.factoryRetryMetrics(repo, sinceMs),
     };
+  }
+
+  private factoryRetryMetrics(repo: string, sinceMs: number): StageMetrics["factoryRetries"] {
+    const zero = () => Object.fromEntries(FACTORY_OUTCOMES.map((o) => [o, 0])) as Record<FactoryOutcome, number>;
+    const out: StageMetrics["factoryRetries"] = { total: 0, byOutcome: zero(), byCode: {} };
+    for (const r of this.factoryRetryOutcomes({ repo }).filter((x) => x.at >= sinceMs)) {
+      out.total++;
+      out.byOutcome[r.outcome]++;
+      (out.byCode[r.code] ??= zero())[r.outcome]++;
+    }
+    return out;
   }
 
   /**
@@ -2261,7 +2381,7 @@ export class Ledger {
     escalations: Array<{ ts: number; repo: string; issueNumber: number; code: string | null }>;
     openNeedsYou: Array<{ repo: string; issueNumber: number; code: string; updatedAt: number }>;
     branchByThread: Record<string, string>;
-    attempts: Array<{ ts: number; repo: string; issueNumber: number; status: string; errorMessage: string | null }>;
+    attempts: Array<{ ts: number; repo: string; issueNumber: number; status: string; errorMessage: string | null; errorCategory: string | null }>;
     reviews: Array<{ ts: number; repo: string; issueNumber: number; vendor: string; verdict: string; findingsJson: string }>;
   } {
     const repo = opts.repo ?? null;
@@ -2290,7 +2410,7 @@ export class Ledger {
       branchByThread: Object.fromEntries(threads.map((t) => [`${t.repo}#${t.issueNumber}`, t.branchName])),
       attempts: (
         this.db
-          .prepare(`SELECT started_at, repo, issue_number, status, error_message FROM attempts WHERE started_at >= ?${scope}`)
+          .prepare(`SELECT started_at, repo, issue_number, status, error_message, error_category FROM attempts WHERE started_at >= ?${scope}`)
           .all(...args(opts.sinceMs)) as Array<Record<string, unknown>>
       )
         .filter((r) => keep(Number(r.issue_number)))
@@ -2300,6 +2420,7 @@ export class Ledger {
           issueNumber: Number(r.issue_number),
           status: String(r.status),
           errorMessage: r.error_message === null ? null : String(r.error_message),
+          errorCategory: r.error_category === null ? null : String(r.error_category),
         })),
       reviews: (
         this.db
@@ -2390,7 +2511,7 @@ export class Ledger {
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
-      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
+      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message, error_category FROM attempts ${attWhere}`)
       .all(...attParams) as Array<{
       kind: string;
       cost_usd: number;
@@ -2400,6 +2521,7 @@ export class Ledger {
       started_at: number;
       finished_at: number | null;
       error_message: string | null;
+      error_category: string | null;
     }>;
 
     let succeeded = 0;
@@ -2428,7 +2550,7 @@ export class Ledger {
       if (a.status === "failed" && a.error_message) {
         const key = a.error_message.slice(0, 120);
         errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
-        const cat = categorizeAttemptError(a.error_message);
+        const cat = a.error_category ?? "other"; // rows from before the category was recorded
         errorCategories[cat] = (errorCategories[cat] ?? 0) + 1;
       }
     }
@@ -2549,6 +2671,15 @@ export class Ledger {
       }
     }
 
+    const factoryRetries: Record<string, number> = {};
+    for (const repoName of repo ? [repo] : [...new Set(threads.map((t) => t.repo))]) {
+      for (const r of this.factoryRetryOutcomes({ repo: repoName })) {
+        if (r.at < since || skip.has(r.issueNumber) || r.outcome === "success" || r.outcome === "pending") continue;
+        const key = `${r.code}:${r.outcome}`;
+        factoryRetries[key] = (factoryRetries[key] ?? 0) + 1;
+      }
+    }
+
     const findings: Record<string, number> = {};
     for (const r of this.db
       .prepare(`SELECT issue_number, findings_json FROM reviews WHERE verdict != 'approve' AND created_at >= ?${repoClause}`)
@@ -2574,6 +2705,7 @@ export class Ledger {
       ownerRetriesByCode,
       reverts,
       findings,
+      factoryRetries,
     };
   }
 }
@@ -2602,6 +2734,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
     retryGrants: Number(r.retry_grants ?? 0),
     factoryRetries: Number(r.factory_retries ?? 0),
     factoryGuidance: r.factory_guidance === null || r.factory_guidance === undefined ? null : String(r.factory_guidance),
+    factoryTriage: r.factory_triage === "pending" || r.factory_triage === "done" ? r.factory_triage : null,
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
@@ -2619,6 +2752,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     costUsd: Number(r.cost_usd),
     transcriptPath: r.transcript_path === null ? null : String(r.transcript_path),
     errorMessage: r.error_message === null ? null : String(r.error_message),
+    errorCategory: r.error_category === null || r.error_category === undefined ? null : (String(r.error_category) as AttemptErrorCategory),
     startedAt: Number(r.started_at),
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),

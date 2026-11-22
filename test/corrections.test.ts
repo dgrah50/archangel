@@ -48,12 +48,15 @@ describe("closed correction categories", () => {
       windowDays: 30, vetoOverruled: 1, disagreements: 0, reverts: 0,
       ownerRetriesByCode: { gate_failed: 2, [EVIL]: 9 },
       findings: { "major:src": 3, [`major:${EVIL}`]: 5, "critical:src": 4 },
+      factoryRetries: { "review_vetoed:owner_overrode": 2, [`review_vetoed:${EVIL}`]: 9, "nonsense:bad": 3, "gate_failed:success": 4 },
     };
     const cats = correctionCategories(counts).map((c) => c.category);
     expect(cats).toEqual(expect.arrayContaining(["veto_overruled", "owner_retry:gate_failed", "finding:major:src"]));
     expect(cats.join("\n")).not.toContain("IGNORE");
     expect(cats).not.toContain("finding:critical:src");
-    expect(repeatedCategories(counts).map((c) => c.category).sort()).toEqual(["finding:major:src", "owner_retry:gate_failed"]);
+    expect(cats).toContain("factory_retry:review_vetoed:owner_overrode");
+    expect(cats.filter((c) => c.startsWith("factory_retry:"))).toHaveLength(1); // unknown codes, free text and success are dropped
+    expect(repeatedCategories(counts).map((c) => c.category).sort()).toEqual(["factory_retry:review_vetoed:owner_overrode", "finding:major:src", "owner_retry:gate_failed"]);
     expect(CORRECTION_REPEAT_THRESHOLD).toBe(2);
   });
 });
