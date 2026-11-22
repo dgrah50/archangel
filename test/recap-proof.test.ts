@@ -34,8 +34,15 @@ const thread: ThreadRecord = {
 const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"]) =>
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
-
-
+describe("Recap proof output is untrusted", () => {
+  it("strips ANSI and control characters and withholds output that matches the secret scan", () => {
+    const out = render({ base_output: "\x1b[31mFAIL\x1b[0m expected 1\x07\r\n", head_output: `token ghp_${"a".repeat(30)}` });
+    expect(out).toContain("FAIL expected 1");
+    expect(out).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]/);
+    expect(out).toContain("output withheld");
+    expect(out).not.toContain("ghp_");
+  });
+});
 
 describe("GitHubAppClient.getGateProof", () => {
   it("reads the Gate annotation for the matching head SHA and ignores stale or malformed ones", async () => {
