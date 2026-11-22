@@ -79,7 +79,7 @@ export interface PreviewResult {
 
 export type ProposeOutcome = { preview: PreviewResult } | { url: string } | { error: string };
 
-function csrfToken(): string {
+export function csrfToken(): string {
   return document.querySelector<HTMLMetaElement>('meta[name="archangel-token"]')?.content ?? "";
 }
 

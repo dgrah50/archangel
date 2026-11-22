@@ -64,6 +64,7 @@
       "src/core/host-facts.ts",
       "src/core/ui-doctor.ts",
       "src/core/ui-settings.ts",
+      "src/core/accounts.ts",
       "src/core/eval-reports.ts",
       "src/core/ui-host-config.ts",
       "src/core/ui-onboard.ts",
