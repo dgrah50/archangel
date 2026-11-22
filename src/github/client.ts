@@ -93,6 +93,8 @@ export interface GitHubAppConfig {
   installationId: number;
   privateKeyPem: string;
   apiBaseUrl?: string;
+  /** Abort any single GitHub request that takes longer than this (default 30 s): a stalled socket must not wedge the tick. */
+  requestTimeoutMs?: number;
 }
 
 interface EtagEntry {
@@ -111,12 +113,14 @@ const MAX_PAGES = 20;
 export class GitHubAppClient implements GitHubClient {
   private readonly cfg: GitHubAppConfig;
   private readonly apiBase: string;
+  private readonly timeoutMs: number;
   private cachedToken: InstallationTokenMeta | null = null;
   private readonly etagCache = new Map<string, EtagEntry>();
 
   constructor(cfg: GitHubAppConfig) {
     this.cfg = cfg;
     this.apiBase = (cfg.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
+    this.timeoutMs = cfg.requestTimeoutMs ?? 30_000;
   }
 
   private signAppJwt(): string {
@@ -148,6 +152,7 @@ export class GitHubAppClient implements GitHubClient {
           "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": "archangel-factory/0.1",
         },
+        signal: AbortSignal.timeout(this.timeoutMs),
       },
     );
     if (!res.ok) {
@@ -209,6 +214,7 @@ export class GitHubAppClient implements GitHubClient {
       method,
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (res.status === 304 && method === "GET" && opts.useEtag) {
