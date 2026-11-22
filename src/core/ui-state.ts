@@ -1,4 +1,5 @@
-import type { Ledger } from "../ledger/store.js";
+import type { Ledger, StageMetrics } from "../ledger/store.js";
+import type { EffectiveWorkflow, OkWorkflow } from "./workflow.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
 import type { ThreadRecord } from "../ledger/schema.js";
 import type { Phase } from "./thread-machine.js";
@@ -132,5 +133,185 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
       hasThread: known.has(`${p.repo}#${p.issueNumber}`),
       createdAt: p.createdAt,
     })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline view (V4): the resolved workflow, where each value came from, and per-stage metrics.
+// ---------------------------------------------------------------------------
+
+export type SourceChip = "kernel" | "host" | "repo";
+export interface PipelineItem {
+  label: string;
+  value: string;
+  source: SourceChip;
+}
+export interface PipelineStage {
+  id: "intake" | "scouts" | "promotion" | "work_class" | "gate" | "review" | "landing" | "needs_you";
+  title: string;
+  items: PipelineItem[];
+  /** "repo says X, host caps at Y" notes, only where a higher layer overrode the repo. */
+  clamps: string[];
+  metrics: string[];
+}
+export interface PipelineRepo {
+  repo: string;
+  /** missing/invalid fail closed: the repo is halted until the file is fixed. `unresolved` = the daemon has not resolved it yet. */
+  status: "ok" | "missing" | "invalid" | "unresolved";
+  error?: string;
+  mainSha?: string;
+  fileSha256?: string;
+  stages: PipelineStage[];
+}
+export interface WorkflowsState {
+  generatedAt: number;
+  windowDays: number;
+  repos: PipelineRepo[];
+}
+
+const WINDOW_DAYS = 14;
+const list = (xs: readonly string[]) => (xs.length > 0 ? xs.join(", ") : "none");
+const pairs = (rec: Record<string, number>) => {
+  const e = Object.entries(rec);
+  return e.length > 0 ? e.map(([k, v]) => `${k}=${v}`).join(", ") : "none";
+};
+
+/** Pure. `wf` is the cached EffectiveWorkflow (untrusted JSON from system_state); only whitelisted fields are read, Scout prompts never leave the Ledger. */
+export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: StageMetrics): PipelineRepo {
+  const intakeMetrics = [
+    `queued: ${m.intake.queued}${m.intake.oldestQueuedAgeSec === null ? "" : `, oldest ${formatAge(m.intake.oldestQueuedAgeSec * 1000)}`}`,
+    `rejected: ${pairs(m.intake.rejections)}`,
+  ];
+  const kernelStages = (ok: OkWorkflow | null): PipelineStage[] => {
+    const scoutEntries = Object.entries(m.scouts);
+    return [
+      {
+        id: "intake",
+        title: "Intake",
+        items: [{ label: "rule", value: "owner-authored issue, owner-applied ready-for-agent, pinned body hash", source: "kernel" }],
+        clamps: [],
+        metrics: intakeMetrics,
+      },
+      {
+        id: "scouts",
+        title: "Scouts",
+        items: ok
+          ? [
+              ...ok.scouts.map((s) => ({
+                label: s.name,
+                value: `${s.schedule}, max ${s.maxProposals}/run, skills: ${list(s.skills)}${s.includeMetrics ? ", metrics" : ""}`,
+                source: "repo" as const,
+              })),
+              { label: "runs/day", value: String(ok.caps.scoutRunsPerDay), source: "host" as const },
+            ]
+          : [],
+        clamps: [],
+        metrics: scoutEntries.length === 0
+          ? ["no Scout activity"]
+          : scoutEntries.map(([name, s]) => `${name}: ${s.runs} runs, ${s.filed} filed, ${s.becameThread} Threads, ${s.merged} merged, ${s.reverted} reverted, ${s.secretsBlocked} secrets blocked`),
+      },
+      {
+        id: "promotion",
+        title: "Promotion",
+        items: ok
+          ? [
+              ...ok.scouts.map((s) => ({ label: s.name, value: s.promotionEffective.value, source: s.promotionEffective.source })),
+              { label: "auto-promotions/day", value: String(ok.caps.autoPromotionsPerDay), source: "host" as const },
+            ]
+          : [],
+        clamps: ok
+          ? ok.scouts.flatMap((s) =>
+              s.promotionEffective.declared !== undefined
+                ? [`${s.name}: repo says ${s.promotionEffective.declared}, ${s.promotionEffective.source === "kernel" ? "kernel revoked it (an owner-merged edit to this Scout re-arms it)" : "host caps at 0 auto-promotions"}`]
+                : [],
+            )
+          : [],
+        metrics: [`auto-promotions: ${m.promotion.autoPromotionsLast24h} in 24h, ${m.promotion.autoPromotionsInWindow} in window`],
+      },
+      {
+        id: "work_class",
+        title: "Work class",
+        items: [{ label: "rule", value: "owner-labelled class:feature; scout proposals are always bugfix", source: "kernel" }],
+        clamps: [],
+        metrics: (["bugfix", "feature"] as const).map(
+          (c) => `${c}: ${m.workClass[c].threads} Threads, ${m.workClass[c].merged} merged, ${m.workClass[c].attemptsPerMerge ?? "n/a"} attempts/merge`,
+        ),
+      },
+      {
+        id: "gate",
+        title: "Gate",
+        items: ok
+          ? [
+              { label: "bounds", value: `<= ${ok.gate.maxNonTestLines} non-test lines, ${ok.gate.maxTotalLines} total, ${ok.gate.maxFiles} files`, source: "repo" },
+              { label: "test runs", value: `base ${ok.gate.baseTestRuns}, head ${ok.gate.headTestRuns}`, source: "repo" },
+              { label: "required checks", value: list(ok.requiredChecks), source: "repo" },
+              { label: "protected paths", value: `.github/, .agents/ and ${list(ok.gate.extraProtectedPaths)}`, source: "kernel" },
+            ]
+          : [],
+        clamps: [],
+        metrics: [
+          `attempts: ${m.gate.attempts.total} (${m.gate.attempts.succeeded} ok, ${m.gate.attempts.failed} failed)`,
+          `escalations: ${pairs(m.gate.escalations)}`,
+        ],
+      },
+      {
+        id: "review",
+        title: "Review",
+        items: [
+          { label: "quorum", value: "2 independent vendors, never the implementer's", source: "kernel" },
+          ...(ok ? [{ label: "rubric", value: ok.rubric ? "custom" : "default", source: "repo" as const }] : []),
+        ],
+        clamps: [],
+        metrics: [
+          `veto/approve: ${Object.entries(m.review.byVendor).map(([v, r]) => `${v} ${r.veto}/${r.approve}`).join(", ") || "none"}`,
+          `outages: ${m.review.outages}`,
+        ],
+      },
+      {
+        id: "landing",
+        title: "Landing",
+        items: ok
+          ? [
+              { label: "bugfix", value: ok.landingBugfix.value, source: ok.landingBugfix.source },
+              { label: "feature", value: "owner", source: "kernel" },
+              { label: "merges/day", value: String(ok.caps.autoMergesPerDay), source: "host" },
+            ]
+          : [],
+        clamps:
+          ok && ok.landingBugfix.declared !== undefined
+            ? [`bugfix landing: repo says ${ok.landingBugfix.declared}, host shadowMode caps at ${ok.landingBugfix.value}`]
+            : [],
+        metrics: [
+          `merged: ${m.landing.autoMerged} auto, ${m.landing.ownerMerged} owner`,
+          `reverts ${m.landing.reverts}, disagreements ${m.landing.disagreements}, autonomy-cap hits ${m.landing.autonomyCapHits}`,
+        ],
+      },
+      {
+        id: "needs_you",
+        title: "Needs You",
+        items: [{ label: "notifications", value: "host settings (read-only here)", source: "host" }],
+        clamps: [],
+        metrics: [`open by class: ${pairs(m.needsYou.byDecisionClass)}`],
+      },
+    ];
+  };
+
+  if (wf === null) return { repo, status: "unresolved", stages: kernelStages(null) };
+  if (wf.status === "missing") return { repo, status: "missing", error: wf.error, mainSha: wf.mainSha, stages: kernelStages(null) };
+  if (wf.status === "invalid") {
+    return { repo, status: "invalid", error: wf.error, mainSha: wf.mainSha, fileSha256: wf.fileSha256, stages: kernelStages(null) };
+  }
+  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, stages: kernelStages(wf) };
+}
+
+/** `/api/workflows`: every repo the Ledger knows, with its cached workflow (no GitHub calls). */
+export function buildWorkflowsState(ledger: Ledger, now = Date.now()): WorkflowsState {
+  const cached = new Map(ledger.listCachedWorkflows().map((c) => [c.repo, c.workflow as EffectiveWorkflow]));
+  const repos = [...new Set([...cached.keys(), ...ledger.listAllThreads().map((t) => t.repo)])].sort();
+  const since = now - WINDOW_DAYS * DAY_MS;
+  return {
+    generatedAt: now,
+    windowDays: WINDOW_DAYS,
+    repos: repos.map((repo) => describeWorkflow(repo, cached.get(repo) ?? null, ledger.computeStageMetrics(repo, since, now))),
   };
 }
