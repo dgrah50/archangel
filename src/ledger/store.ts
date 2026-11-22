@@ -112,6 +112,12 @@ export class Ledger {
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
       }
+      const addCols = (table: string, cols: string[]) => {
+        const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+        for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
+      };
+      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256"]);
+      addCols("reviews", ["provider", "model", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
         this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
@@ -513,6 +519,19 @@ export class Ledger {
     return this.getAttempt(id)!;
   }
 
+  /** Replay provenance for an Attempt: who ran it, with which prompt template, under which workflow file. */
+  recordAttemptProvenance(
+    attemptId: number,
+    p: { provider?: string | null; model?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model),
+           prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
+      )
+      .run(p.provider ?? null, p.model ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+  }
+
   finishAttempt(
     attemptId: number,
     result: {
@@ -610,6 +629,11 @@ export class Ledger {
     verdict: ReviewVerdict;
     findings: ReviewFinding[];
     costUsd: number;
+    provider?: string | null;
+    model?: string | null;
+    promptSha256?: string | null;
+    rubricSha256?: string | null;
+    workflowSha256?: string | null;
     now?: number;
     repo?: string;
   }): ReviewRecord {
@@ -618,13 +642,19 @@ export class Ledger {
     const cost = Math.max(0, input.costUsd);
     this.db
       .prepare(
-        `INSERT INTO reviews (repo, issue_number, head_sha, vendor, verdict, findings_json, cost_usd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO reviews (repo, issue_number, head_sha, vendor, verdict, findings_json, cost_usd, created_at,
+                              provider, model, prompt_sha256, rubric_sha256, workflow_sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(repo, issue_number, head_sha, vendor) DO UPDATE SET
            verdict = excluded.verdict,
            findings_json = excluded.findings_json,
            cost_usd = excluded.cost_usd,
-           created_at = excluded.created_at`,
+           created_at = excluded.created_at,
+           provider = excluded.provider,
+           model = excluded.model,
+           prompt_sha256 = excluded.prompt_sha256,
+           rubric_sha256 = excluded.rubric_sha256,
+           workflow_sha256 = excluded.workflow_sha256`,
       )
       .run(
         repo,
@@ -635,6 +665,11 @@ export class Ledger {
         JSON.stringify(input.findings),
         cost,
         now,
+        input.provider ?? null,
+        input.model ?? null,
+        input.promptSha256 ?? null,
+        input.rubricSha256 ?? null,
+        input.workflowSha256 ?? null,
       );
     if (cost > 0) {
       this.addSpend(cost, now);
@@ -727,6 +762,19 @@ export class Ledger {
       repo,
     );
     return this.getMerge(Number(info.lastInsertRowid))!;
+  }
+
+  /** Every commit a Thread's history depends on (reviewed heads, Attempt heads, merged heads), for eval-ref pinning. */
+  listEvalShas(repo = this.repo): Array<{ issueNumber: number; sha: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT issue_number, head_sha AS sha FROM reviews WHERE repo = ?
+         UNION SELECT issue_number, head_sha FROM attempts WHERE repo = ? AND head_sha IS NOT NULL
+         UNION SELECT issue_number, head_sha FROM merges WHERE repo = ?
+         ORDER BY issue_number, sha`,
+      )
+      .all(repo, repo, repo) as Array<{ issue_number: number; sha: string }>;
+    return rows.map((r) => ({ issueNumber: Number(r.issue_number), sha: String(r.sha) }));
   }
 
   getMerge(id: number): MergeRecord | null {
@@ -1888,6 +1936,10 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     errorMessage: r.error_message === null ? null : String(r.error_message),
     startedAt: Number(r.started_at),
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
+    provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
+    model: r.model === null || r.model === undefined ? null : String(r.model),
+    promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
+    workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
   };
 }
 
@@ -1902,6 +1954,11 @@ function mapReview(r: Record<string, unknown>): ReviewRecord {
     findingsJson: String(r.findings_json),
     costUsd: Number(r.cost_usd),
     createdAt: Number(r.created_at),
+    provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
+    model: r.model === null || r.model === undefined ? null : String(r.model),
+    promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
+    rubricSha256: r.rubric_sha256 === null || r.rubric_sha256 === undefined ? null : String(r.rubric_sha256),
+    workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
   };
 }
 
