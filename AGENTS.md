@@ -19,3 +19,9 @@ Keep the tests that guard trust boundaries and hard invariants: Gate proofs, pro
 No UI tests in this repo: no rendering, component-output, contrast or accessibility tests. The dashboard is checked by eye with screenshots. Only the UI HTTP server's security guards (token, Origin, remote-mode 403, audit-before-write, never merging) are tested, and those are server tests.
 
 When you touch an area, delete tests there that break these rules. Cutting a useless test is a good change.
+
+## UI changes: before and after screenshots in the PR
+
+A PR that changes how the dashboard looks (anything under `ui/`) shows before and after screenshots of every page it touches in its description, and is not merged without them. Shoot both from the same seeded data at the same viewport: before from the base commit, after from the PR head. Lay them out as a table, one row per page.
+
+Images never go on main. Push them to the `pr-screenshots` branch under `<head-branch-name>/` and link them as `https://github.com/dgrah50/archangel/blob/pr-screenshots/<head-branch-name>/<file>?raw=true`.
