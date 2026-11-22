@@ -36,7 +36,7 @@ import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
-import { loadWorkflow, workflowError } from "./workflow-load.js";
+import { loadRepoInstructions, loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
 import { emit } from "./telemetry.js";
 import { buildRecommendationPrompt, buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, vetRecommendation, RecommendationOnlySchema, RECOMMENDATION_ONLY_JSON_SCHEMA, RECOMMENDATION_TIMEOUT_MS, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
@@ -1723,6 +1723,7 @@ export class Reconciler {
       }
 
       const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
+      const repoInstructions = await loadRepoInstructions(this.broker, mainSha);
       const prompt =
         kind === "plan"
           ? buildPlanPrompt({
@@ -1732,6 +1733,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               ownerReply: workingThread.ownerReply,
               previousPlan: this.ledger.latestThreadPlan(workingThread.issueNumber)?.text ?? null,
+              repoInstructions,
               maxChars: PLAN_MAX_CHARS,
             })
           : kind === "implement"
@@ -1744,6 +1746,7 @@ export class Reconciler {
               ownerReply: workingThread.ownerReply,
               factoryGuidance: workingThread.factoryGuidance,
               approvedPlan,
+              repoInstructions,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1757,6 +1760,7 @@ export class Reconciler {
                 ownerReply: workingThread.ownerReply,
                 factoryGuidance: workingThread.factoryGuidance,
                 approvedPlan,
+                repoInstructions,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
@@ -1765,6 +1769,7 @@ export class Reconciler {
                 baseBranch: this.cfg.defaultBranch,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                repoInstructions,
               });
 
       const result: ImplementResult = await this.implementer
@@ -2303,6 +2308,7 @@ export class Reconciler {
           diffText,
           touchedFiles,
           reviewRubric: this.effectiveReviewRubric,
+          repoInstructions: await loadRepoInstructions(this.broker, mainSha),
           skipVendors: [...haveVendors],
           excludeVendors,
         });
