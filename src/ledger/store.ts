@@ -79,6 +79,9 @@ export interface StageMetrics {
   byWorkflowSha: Record<string, { threads: number; merged: number; reverted: number }>;
 }
 
+/** Consecutive unmerged auto-promoted Threads of one Scout version that revoke its auto-promotion. */
+export const SCOUT_WASTE_STREAK = 3;
+
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
@@ -119,6 +122,9 @@ export class Ledger {
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
         this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
       }
+      const pitchCols = this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>;
+      if (!pitchCols.some((c) => c.name === "decline_reason")) this.db.exec("ALTER TABLE pitches ADD COLUMN decline_reason TEXT");
+      if (!pitchCols.some((c) => c.name === "pitch_json")) this.db.exec("ALTER TABLE pitches ADD COLUMN pitch_json TEXT NOT NULL DEFAULT ''");
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
         this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
@@ -1230,10 +1236,52 @@ export class Ledger {
 
   /**
    * Auto-promotion trust for one exact version of a Scout file is revoked once any fix it
-   * auto-promoted was disagreed with, reverted, or turned main red. Editing the Scout file
-   * (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
+   * auto-promoted was disagreed with, reverted, or turned main red, or once its last
+   * SCOUT_WASTE_STREAK auto-promoted Threads all ended without a merge (wasted autonomy).
+   * Editing the Scout file (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
    */
   isScoutAutoPromoteRevoked(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    return this.isScoutAutoPromoteHarmful(scoutName, fileSha256, repo) || this.isScoutAutoPromoteWasted(scoutName, fileSha256, repo);
+  }
+
+  /**
+   * Waste: the most recent SCOUT_WASTE_STREAK auto-promoted proposals of this exact Scout version all ended without a merge
+   * (Needs You, PR closed, or abandoned). A merged one in that window, or any still in flight, means no streak.
+   */
+  isScoutAutoPromoteWasted(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    const rows = this.db
+      .prepare(
+        `SELECT t.phase_json AS phase FROM scout_proposals p
+         LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+         WHERE p.repo = ? AND p.scout_name = ? AND p.file_sha256 = ? AND p.auto_promoted = 1
+         ORDER BY p.created_at DESC, p.issue_number DESC LIMIT ?`,
+      )
+      .all(repo, scoutName, fileSha256, SCOUT_WASTE_STREAK) as Array<{ phase: string | null }>;
+    if (rows.length < SCOUT_WASTE_STREAK) return false;
+    return rows.every((r) => {
+      if (r.phase === null) return false;
+      const phase = JSON.parse(r.phase) as { kind: string; outcome?: string };
+      return phase.kind === "needs_you" || (phase.kind === "done" && (phase.outcome === "pr_closed" || phase.outcome === "abandoned"));
+    });
+  }
+
+  /** The owner has been told, once, that this exact Scout version was revoked for waste. */
+  scoutWasteNoticeSent(scoutName: string, trustHash: string, repo = this.repo): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM audit_log WHERE repo = ? AND topic = 'scout/auto_promote_revoked' AND actor = ?
+             AND json_extract(payload_json, '$.trustHash') = ? LIMIT 1`,
+        )
+        .get(repo, scoutName, trustHash),
+    );
+  }
+
+  markScoutWasteNoticeSent(scoutName: string, trustHash: string, now = Date.now(), repo = this.repo): void {
+    this.appendAudit("scout/auto_promote_revoked", null, scoutName, { trustHash, reason: "waste" }, now, repo);
+  }
+
+  private isScoutAutoPromoteHarmful(scoutName: string, fileSha256: string, repo: string): boolean {
     const row = this.db
       .prepare(
         `SELECT 1 FROM scout_proposals p
@@ -1298,24 +1346,43 @@ export class Ledger {
 
   // ---- Pitches (V5): owner-decided proposals from pitch Scouts; separate from bug proposals ----
 
-  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; now?: number; repo?: string }): void {
+  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson?: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, status_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, status_at, pitch_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now);
+      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now, input.pitchJson ?? "");
   }
 
   /** Pitches whose issue is no longer open (closed by the owner or expired) become `declined`. `promoted` is set only by the owner's promote command. */
-  syncPitchStatuses(openIssueNumbers: readonly number[], now = Date.now(), repo = this.repo): void {
+  syncPitchStatuses(openIssueNumbers: readonly number[], now = Date.now(), repo = this.repo): Array<{ issueNumber: number; filedAt: number }> {
     const open = new Set(openIssueNumbers);
-    for (const row of this.db.prepare(`SELECT issue_number FROM pitches WHERE repo = ? AND status = 'open'`).all(repo) as Array<{ issue_number: number }>) {
+    const declined: Array<{ issueNumber: number; filedAt: number }> = [];
+    for (const row of this.db.prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND status = 'open'`).all(repo) as Array<{ issue_number: number; filed_at: number }>) {
       if (!open.has(row.issue_number)) {
         this.db.prepare(`UPDATE pitches SET status = 'declined', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, row.issue_number);
+        declined.push({ issueNumber: row.issue_number, filedAt: row.filed_at });
       }
     }
+    return declined;
+  }
+
+  setPitchDeclineReason(issueNumber: number, reason: string, repo = this.repo): void {
+    this.db.prepare(`UPDATE pitches SET decline_reason = ? WHERE repo = ? AND issue_number = ?`).run(reason, repo, issueNumber);
+  }
+
+  getPitch(issueNumber: number, repo = this.repo): { issueNumber: number; status: "open" | "declined" | "promoted"; contentSha256: string; pitchJson: string } | null {
+    const r = this.db
+      .prepare(`SELECT issue_number, status, content_sha256, pitch_json FROM pitches WHERE repo = ? AND issue_number = ?`)
+      .get(repo, issueNumber) as { issue_number: number; status: "open" | "declined" | "promoted"; content_sha256: string; pitch_json: string } | undefined;
+    return r ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json } : null;
+  }
+
+  /** Only `archangel pitch promote` (the owner's `gh`) sets this. */
+  markPitchPromoted(issueNumber: number, now = Date.now(), repo = this.repo): void {
+    this.db.prepare(`UPDATE pitches SET status = 'promoted', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, issueNumber);
   }
 
   countOpenPitches(repo = this.repo): number {
@@ -1323,12 +1390,12 @@ export class Ledger {
   }
 
   /** Titles of pitches that are open or were decided in the last `days` days (for the prompt and the duplicate check). */
-  recentPitchTitles(days: number, now = Date.now(), repo = this.repo): Array<{ title: string; titleFp: string }> {
+  recentPitchTitles(days: number, now = Date.now(), repo = this.repo): Array<{ title: string; titleFp: string; declineReason: string | null }> {
     return (
       this.db
-        .prepare(`SELECT title, title_fp FROM pitches WHERE repo = ? AND (status = 'open' OR status_at >= ?) ORDER BY filed_at DESC`)
-        .all(repo, now - days * 86_400_000) as Array<{ title: string; title_fp: string }>
-    ).map((r) => ({ title: r.title, titleFp: r.title_fp }));
+        .prepare(`SELECT title, title_fp, decline_reason FROM pitches WHERE repo = ? AND (status = 'open' OR status_at >= ?) ORDER BY filed_at DESC`)
+        .all(repo, now - days * 86_400_000) as Array<{ title: string; title_fp: string; decline_reason: string | null }>
+    ).map((r) => ({ title: r.title, titleFp: r.title_fp, declineReason: r.decline_reason }));
   }
 
   /** A pitch Scout pauses for one exact `trustHash` after `n` consecutive pitches that were not promoted. Editing the Scout (a new hash) resumes it. */

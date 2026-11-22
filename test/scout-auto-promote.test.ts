@@ -10,6 +10,7 @@ import { normalizeTitleFp, runScoutsForProject, scoutContentHash } from "../src/
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
 import { SCOUT_PROMPT, hashOfScout, okWorkflow, workflowJson } from "./helpers/workflow.js";
+import { scoutDeps } from "./helpers/scout-deps.js";
 
 const AUTO_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "auto" };
 const MANUAL_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "owner" };
@@ -90,7 +91,7 @@ describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      const res = await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
+      const res = await runScoutsForProject({ ...scoutDeps, config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
       expect(res[0]?.filedIssues).toEqual([60, 61]);
       expect(labelsAdded).toEqual([{ n: 60, labels: ["ready-for-agent"] }]);
       expect(ledger.getScoutProposal(60)).toMatchObject({ autoPromoted: true, fileSha256: hashOfScout(AUTO_SCOUT) });
@@ -106,7 +107,7 @@ describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([MANUAL_SCOUT]), mainSha, invoker: twoFindings });
+      await runScoutsForProject({ ...scoutDeps, config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([MANUAL_SCOUT]), mainSha, invoker: twoFindings });
       expect(labelsAdded).toEqual([]);
       ledger.close();
     } finally {
@@ -119,7 +120,7 @@ describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
+      await runScoutsForProject({ ...scoutDeps, config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
       ledger.upsertThread({ issueNumber: 60, title: "t", themeLabel: null, bodySha256: "b", phase: { kind: "done", outcome: "merged" }, mode: "autonomous", now: 1 });
       (ledger as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
         .prepare(
@@ -140,7 +141,7 @@ describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
 
       // Revoked: even with the daily cap free (cap 5), no new auto-promotion.
       labelsAdded.length = 0;
-      await runScoutsForProject({
+      await runScoutsForProject({ ...scoutDeps,
         config: makeConfig({ scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 5 } }),
         ledger,
         github: gh,
@@ -231,7 +232,7 @@ describe("Scout autoPromote label failure", () => {
         if (calls === 1) throw new Error("GitHub 502");
         labelsAdded.push({ n, labels });
       };
-      const res = await runScoutsForProject({
+      const res = await runScoutsForProject({ ...scoutDeps,
         config: makeConfig({ scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 2 } }),
         ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings,
       });

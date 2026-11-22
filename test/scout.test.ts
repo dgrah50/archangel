@@ -18,6 +18,7 @@ import {
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
 import { SCOUT_PROMPT, okWorkflow, workflowJson } from "./helpers/workflow.js";
+import { scoutDeps } from "./helpers/scout-deps.js";
 
 const BUG_HUNT = { name: "bug-hunt", schedule: "daily", maxProposals: 2 };
 
@@ -134,7 +135,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
       } as unknown as GitHubClient;
 
       const cfg = makeConfig();
-      const res = await runScoutsForProject({
+      const res = await runScoutsForProject({ ...scoutDeps,
         config: cfg,
         ledger,
         github: gh,
@@ -166,7 +167,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
       expect(prop?.contentSha256).toBe(scoutContentHash(created[0]!.title, created[0]!.body));
       expect(ledger.hasScoutTitleFingerprint(normalizeTitleFp(created[0]!.title))).toBe(true);
 
-      const res2 = await runScoutsForProject({
+      const res2 = await runScoutsForProject({ ...scoutDeps,
         config: cfg,
         ledger,
         github: gh,
