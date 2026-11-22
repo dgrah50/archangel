@@ -1,3 +1,4 @@
+import type { Chapter } from "../core/recap-chapters.js";
 import { tryParseJson } from "../core/json.js";
 import {
   EscalationCodeSchema,
@@ -1551,6 +1552,16 @@ export class Ledger {
     const p = JSON.parse(row.payloadJson) as { code?: unknown; headSha?: unknown; headline?: unknown; reason?: unknown };
     if (p.code !== thread.phase.code || (p.headSha ?? null) !== (thread.phase.headSha ?? null)) return null;
     return { text: typeof p.headline === "string" && typeof p.reason === "string" ? { headline: p.headline, reason: p.reason } : null };
+  }
+
+  /** The chapters recorded for a head (`factory/chapters` audit row), written once per head so the Recap never re-asks the model. */
+  recordChapters(issueNumber: number, headSha: string, chapters: Chapter[], now = Date.now()): void {
+    this.appendAudit("factory/chapters", issueNumber, "factory", { headSha, chapters }, now);
+  }
+
+  latestChapters(issueNumber: number, repo = this.repo): { headSha: string; chapters: Chapter[] } | null {
+    const row = this.listAudit({ repo, topicPrefix: "factory/chapters", issueNumber, limit: 1 })[0];
+    return row ? (JSON.parse(row.payloadJson) as { headSha: string; chapters: Chapter[] }) : null;
   }
 
   recommendationsInLast24h(now = Date.now(), repo = this.repo): number {
