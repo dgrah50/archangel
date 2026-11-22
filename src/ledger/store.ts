@@ -1230,27 +1230,24 @@ export class Ledger {
   }
 
   getScoutProposal(issueNumber: number, repo = this.repo): ScoutProposalRecord | null {
-    try {
-      const row = this.db
-        .prepare(
-          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at
-           FROM scout_proposals WHERE repo = ? AND issue_number = ?`,
-        )
-        .get(repo, issueNumber) as Record<string, unknown> | undefined;
-      if (!row) return null;
-      return {
-        repo: String(row.repo),
-        issueNumber: Number(row.issue_number),
-        scoutName: String(row.scout_name),
-        contentSha256: String(row.content_sha256),
-        titleFp: String(row.title_fp),
-        fileSha256: row.file_sha256 === null || row.file_sha256 === undefined ? null : String(row.file_sha256),
-        autoPromoted: Number(row.auto_promoted) === 1,
-        createdAt: Number(row.created_at),
-      };
-    } catch {
-      return null;
-    }
+    // Database errors propagate: callers fail closed (no intake, no filing) rather than treating "could not read" as "no proposal".
+    const row = this.db
+      .prepare(
+        `SELECT repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at
+         FROM scout_proposals WHERE repo = ? AND issue_number = ?`,
+      )
+      .get(repo, issueNumber) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      repo: String(row.repo),
+      issueNumber: Number(row.issue_number),
+      scoutName: String(row.scout_name),
+      contentSha256: String(row.content_sha256),
+      titleFp: String(row.title_fp),
+      fileSha256: row.file_sha256 === null || row.file_sha256 === undefined ? null : String(row.file_sha256),
+      autoPromoted: Number(row.auto_promoted) === 1,
+      createdAt: Number(row.created_at),
+    };
   }
 
   /** Most recent Scout proposals across all repos (read-only; used by the dashboard). */
@@ -1273,15 +1270,9 @@ export class Ledger {
     }));
   }
 
+  /** Errors propagate: a failed dedupe read must stop filing, not let a duplicate through. */
   hasScoutTitleFingerprint(titleFp: string, repo = this.repo): boolean {
-    try {
-      const row = this.db
-        .prepare(`SELECT 1 FROM scout_proposals WHERE repo = ? AND title_fp = ? LIMIT 1`)
-        .get(repo, titleFp);
-      return Boolean(row);
-    } catch {
-      return false;
-    }
+    return Boolean(this.db.prepare(`SELECT 1 FROM scout_proposals WHERE repo = ? AND title_fp = ? LIMIT 1`).get(repo, titleFp));
   }
 
   /** Auto-promoted Scout proposals filed in the last 24 hours (host daily cap). */
