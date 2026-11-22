@@ -1,3 +1,4 @@
+import type { ExecResult, ExecSpec } from "../compute/provider.js";
 import type { WorkClass } from "../core/work-class.js";
 import { execFile } from "node:child_process";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -6,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { REPO_SLUG_RE, type GatePolicy } from "../config.js";
+import { emit } from "../core/telemetry.js";
 import {
   getDiffStats,
   isProtectedPath,
@@ -33,6 +35,9 @@ const HARDENED_GIT_FLAGS = [
   "-c",
   "protocol.file.allow=always",
 ];
+
+/** A remote provider's result bundle larger than this is refused before it is fetched. */
+export const MAX_RESULT_BUNDLE_BYTES = 50 * 1024 * 1024;
 
 const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-|chore-)?\d+$/;
 /** Machine-drafted owner-review PRs (correction loop): never `factory/*`, so the daemon's own Lander can never merge them. */
@@ -67,6 +72,8 @@ export interface GitBrokerOptions {
   enableLocalGate?: boolean;
   localGateSkipTests?: boolean;
   localGateTimeoutMs?: number;
+  /** `owner/name`, only to attribute telemetry. */
+  repo?: string;
 }
 
 /**
@@ -84,6 +91,7 @@ export class GitBroker {
   readonly enableLocalGate: boolean;
   readonly localGateSkipTests: boolean;
   readonly localGateTimeoutMs: number;
+  private readonly repo: string | null;
 
   constructor(opts: GitBrokerOptions) {
     this.bareRepoPath = path.resolve(opts.bareRepoPath);
@@ -92,10 +100,11 @@ export class GitBroker {
     this.enableLocalGate = opts.enableLocalGate ?? false;
     this.localGateSkipTests = opts.localGateSkipTests ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
+    this.repo = opts.repo ?? null;
   }
 
-  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-    const cleanEnv: NodeJS.ProcessEnv = {
+  private gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -103,10 +112,23 @@ export class GitBroker {
       GIT_TERMINAL_PROMPT: "0",
       ...env,
     };
+  }
+
+  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
       cwd,
-      env: cleanEnv,
+      env: this.gitEnv(env),
       maxBuffer: 20 * 1024 * 1024,
+    });
+    return stdout;
+  }
+
+  private async runGitBytes(cwd: string, args: string[]): Promise<Buffer> {
+    const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
+      cwd,
+      env: this.gitEnv(),
+      maxBuffer: 20 * 1024 * 1024,
+      encoding: "buffer",
     });
     return stdout;
   }
@@ -114,12 +136,14 @@ export class GitBroker {
   async ensureBareRepo(remoteUrl: string): Promise<void> {
     fs.mkdirSync(path.dirname(this.bareRepoPath), { recursive: true });
     if (!fs.existsSync(this.bareRepoPath)) {
+      const t0 = Date.now();
       await this.runGit(path.dirname(this.bareRepoPath), [
         "clone",
         "--bare",
         remoteUrl,
         this.bareRepoPath,
       ]);
+      emit("broker_ms", Date.now() - t0, { op: "clone" }, this.repo);
       // Never retain embedded token URLs inside bare repo config.
       await this.runGit(this.bareRepoPath, ["remote", "remove", "origin"]);
       return;
@@ -128,6 +152,7 @@ export class GitBroker {
   }
 
   async syncFromRemote(remoteUrl: string): Promise<void> {
+    const t0 = Date.now();
     await this.runGit(this.bareRepoPath, [
       "fetch",
       "--prune",
@@ -135,6 +160,7 @@ export class GitBroker {
       `+refs/heads/${this.defaultBranch}:refs/heads/${this.defaultBranch}`,
       "+refs/heads/factory/*:refs/heads/factory/*",
     ]);
+    emit("broker_ms", Date.now() - t0, { op: "fetch" }, this.repo);
   }
 
   /**
@@ -159,6 +185,19 @@ export class GitBroker {
     return ref;
   }
 
+  /** Keeps a PoC commit as a local ref in the bare repo. The ref name is built here from an integer; there is no push path. */
+  async savePocRef(issueNumber: number, headSha: string): Promise<string> {
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0 || !/^[0-9a-f]{40}$/.test(headSha)) throw new Error(`savePocRef: bad issue or sha (${issueNumber}, ${headSha})`);
+    const ref = `refs/pitch-poc/${issueNumber}`;
+    await this.runGit(this.bareRepoPath, ["update-ref", ref, headSha]);
+    return ref;
+  }
+
+  /** `git diff --stat` between two commits in the bare repo. */
+  async diffStat(baseSha: string, headSha: string): Promise<string> {
+    return (await this.runGit(this.bareRepoPath, ["diff", "--stat", "--no-color", baseSha, headSha])).trim();
+  }
+
   async resolveRef(ref: string): Promise<string> {
     return (await this.runGit(this.bareRepoPath, ["rev-parse", ref])).trim();
   }
@@ -170,7 +209,9 @@ export class GitBroker {
   async createThrowawayClone(issueNumber: number, startRef: string): Promise<string> {
     fs.mkdirSync(this.clonesDir, { recursive: true });
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
+    const t0 = Date.now();
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
+    emit("broker_ms", Date.now() - t0, { op: "clone" }, this.repo);
     // Ensure unpushed staging refs (`refs/archangel/staging/<n>`) are reachable before checkout.
     const hasStart = await this.hasCommitIn(cloneDir, startRef);
     if (!hasStart) {
@@ -189,6 +230,52 @@ export class GitBroker {
     return cloneDir;
   }
 
+  /** A bundle holding `startSha` and its history, for a remote provider to start from; the box never needs a Git credential. */
+  async createStartBundle(issueNumber: number, startSha: string): Promise<string> {
+    fs.mkdirSync(this.clonesDir, { recursive: true });
+    const file = path.join(this.clonesDir, `start-${issueNumber}-${Date.now()}.bundle`);
+    const ref = `refs/archangel/start/${issueNumber}`;
+    await this.runGit(this.bareRepoPath, ["update-ref", ref, startSha]);
+    try {
+      await this.runGit(this.bareRepoPath, ["bundle", "create", file, ref]);
+    } finally {
+      await this.runGit(this.bareRepoPath, ["update-ref", "-d", ref]);
+    }
+    return file;
+  }
+
+  /** Refuses a result bundle over the size cap or one `git bundle verify` rejects (against this repo, so its prerequisites must exist here). */
+  async verifyBundle(bundlePath: string): Promise<void> {
+    const size = fs.statSync(bundlePath).size;
+    if (size > MAX_RESULT_BUNDLE_BYTES) throw new Error(`result bundle is ${size} bytes, over the ${MAX_RESULT_BUNDLE_BYTES} byte cap`);
+    await this.runGit(this.bareRepoPath, ["bundle", "verify", bundlePath]);
+  }
+
+  /**
+   * `fetchAndValidateFromClone` for whatever a provider collected. A bundle is unpacked into a scratch clone with the same
+   * hardened flags (fsck on fetch), then validated exactly like a clone; the scratch clone is always removed.
+   */
+  async fetchAndValidateCollected(
+    collected: { kind: "clone" | "bundle"; path: string },
+    issueNumber: number,
+    baseSha: string,
+    bounds: GatePolicy,
+    workClass?: WorkClass,
+  ): Promise<BrokerFetchValidation> {
+    if (collected.kind === "clone") return this.fetchAndValidateFromClone(collected.path, issueNumber, baseSha, bounds, workClass);
+    await this.verifyBundle(collected.path);
+    const scratch = path.join(this.clonesDir, `bundle-${issueNumber}-${Date.now()}`);
+    try {
+      await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, scratch]);
+      await this.runGit(scratch, ["fetch", collected.path, "+HEAD:refs/archangel/result"]);
+      await this.runGit(scratch, ["checkout", "-B", `factory/${issueNumber}`, "refs/archangel/result"]);
+      await this.runGit(scratch, ["remote", "remove", "origin"]);
+      return await this.fetchAndValidateFromClone(scratch, issueNumber, baseSha, bounds, workClass);
+    } finally {
+      this.removeClone(scratch);
+    }
+  }
+
   /**
    * Reads a file directly from the broker's bare repo at a trusted ref (e.g. `main` tip).
    * Returns null if the file does not exist at that ref.
@@ -198,6 +285,13 @@ export class GitBroker {
     const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
     if (listed.trim() === "") return null;
     return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
+  }
+
+  /** Binary-safe `readFileAtRef`: the exact bytes of a blob, or null when the path does not exist at that ref. */
+  async readBinaryAtRef(ref: string, relPath: string): Promise<Buffer | null> {
+    const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
+    if (listed.trim() === "") return null;
+    return this.runGitBytes(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
   }
 
   private async hasCommitIn(repoDir: string, ref: string): Promise<boolean> {
@@ -274,10 +368,22 @@ export class GitBroker {
     cloneDir: string,
     mainSha: string,
     timeoutMs = 5 * 60_000,
+    /** Runs the script on a remote workspace instead of in `cloneDir` on this machine. */
+    remote?: (spec: ExecSpec) => Promise<ExecResult>,
   ): Promise<{ ran: boolean; stdout: string }> {
     const script = await this.readFileAtRef(mainSha, ".agents/setup");
     if (!script || !script.trim()) {
       return { ran: false, stdout: "" };
+    }
+    if (remote) {
+      const res = await remote({
+        cmd: "/bin/sh",
+        args: ["-eu", "-c", script],
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/tmp", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+        timeoutMs,
+      });
+      if (res.code !== 0) throw new Error(`repo setup exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-300)}`);
+      return { ran: true, stdout: res.stdout };
     }
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-setup-home-"));
     try {
@@ -313,17 +419,27 @@ export class GitBroker {
     policyRef: string,
     workClass?: WorkClass,
   ): Promise<LocalGateReport> {
-    return runGate({
-      workClass,
-      policyRef,
-      repoDir: this.bareRepoPath,
-      baseRef: baseSha,
-      headRef: headSha,
-      skipTests: this.localGateSkipTests,
-      baseRunsOverride: 1,
-      headRunsOverride: 1,
-      commandTimeoutMs: this.localGateTimeoutMs,
-    });
+    const t0 = Date.now();
+    let report: LocalGateReport | undefined;
+    try {
+      report = await runGate({
+        workClass,
+        policyRef,
+        repoDir: this.bareRepoPath,
+        baseRef: baseSha,
+        headRef: headSha,
+        skipTests: this.localGateSkipTests,
+        baseRunsOverride: 1,
+        headRunsOverride: 1,
+        commandTimeoutMs: this.localGateTimeoutMs,
+      });
+      return report;
+    } finally {
+      const ms = Date.now() - t0;
+      // The Gate does not report a timeout as such: a failed run that lasted at least the command timeout hit it.
+      const outcome = !report ? "error" : report.passed ? "passed" : ms >= this.localGateTimeoutMs ? "timeout" : "failed";
+      emit("gate_ms", ms, { outcome }, this.repo);
+    }
   }
 
   /**

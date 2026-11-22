@@ -1,6 +1,8 @@
 import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
-import { useState } from "react";
-import type { PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
+import { useEffect, useState } from "react";
+import { isMeasured } from "../../src/core/pitch.js";
+import { diagramRows } from "../../src/core/pitch-diagram.js";
+import type { PitchAttachment, PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
 import { CopyCommand, LinkButton, Page, PageHeadline, Ref, Section } from "./page";
 
@@ -83,9 +85,10 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
                   <Text as="h3" textStyle="rowTitle" color="fg" mt="1">
                     {p.pitch.title}
                   </Text>
-                  <Box mt="1" color="fg.muted">
+                  <Flex mt="1" gap="2" color="fg.muted" align="baseline">
                     <Ref repo={p.repo} num={p.issueNumber} />
-                  </Box>
+                    {p.attachments.length > 0 ? <Text textStyle="meta" color="fg.subtle">has pictures</Text> : null}
+                  </Flex>
                 </Box>
               ))}
             </Section>
@@ -132,6 +135,10 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
       <Text as="h2" textStyle="title" color="fg">
         {p.title}
       </Text>
+      {row.attachments.length > 0 ? <Pictures items={row.attachments} /> : null}
+      {row.pitch.changeDiagram ? <ChangeDiagramBlock diagram={row.pitch.changeDiagram} /> : null}
+      {row.pitch.estimates.length > 0 ? <Estimates items={row.pitch.estimates} /> : null}
+      <TryIt row={row} d={d} now={now} />
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
         <Flex direction="column" gap="4" flex="1" minW="0">
           <Field label="The problem">{p.problem}</Field>
@@ -204,6 +211,168 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
         </Flex>
       </Flex>
     </Section>
+  );
+}
+
+const CHANGE_WORD = { add: "added", remove: "removed", modify: "changed", same: "unchanged" } as const;
+const CHANGE_COLOR = { add: "green.fg", remove: "red.fg", modify: "fg", same: "fg.subtle" } as const;
+
+/** The model's nodes and edges, drawn here as an indented tree of React text. Nothing from the pitch is ever markup. */
+function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"]["changeDiagram"]> }) {
+  return (
+    <Section gap="2">
+      <Text textStyle="body13" color="fg.subtle">What changes</Text>
+      <Box borderLeftWidth="1px" borderLeftColor="border" pl="3">
+        {diagramRows(diagram).map((r, i) => (
+          <Flex key={i} gap="3" align="baseline">
+            <Text textStyle="meta" color={CHANGE_COLOR[r.change]} w="76px" flexShrink={0}>{CHANGE_WORD[r.change]}</Text>
+            <Text textStyle="body13" color={r.change === "same" ? "fg.muted" : "fg"} pl={`${r.depth * 20}px`}>
+              {r.label}
+              {r.repeat ? <Text as="span" color="fg.subtle"> (shown above)</Text> : null}
+            </Text>
+          </Flex>
+        ))}
+      </Box>
+    </Section>
+  );
+}
+
+/** Numbers the pitch claims. Each says "Estimate, not measured" unless it is a measured number that cites a repo file. */
+function Estimates({ items }: { items: PitchRow["pitch"]["estimates"] }) {
+  return (
+    <Section gap="2">
+      <Text textStyle="body13" color="fg.subtle">Numbers it claims</Text>
+      {items.map((e, i) => (
+        <Box key={i}>
+          <Flex gap="3" align="baseline" wrap="wrap">
+            <Text textStyle="body13" color="fg" fontWeight="medium">{e.metric}</Text>
+            <Text textStyle="body13" color="fg">{e.before === null ? "" : `${e.before} -> `}{e.after} {e.unit}</Text>
+            <Text textStyle="meta" color={isMeasured(e) ? "fg.muted" : "fg.subtle"}>{isMeasured(e) ? "Measured" : "Estimate, not measured"}</Text>
+          </Flex>
+          <Text textStyle="meta" color="fg.muted">Method: {e.method}{isMeasured(e) ? <> Evidence: <Text as="span" textStyle="ref">{e.source}</Text></> : null}</Text>
+        </Box>
+      ))}
+    </Section>
+  );
+}
+
+const POC_FAILURES: Record<string, string> = {
+  over_budget: "the daily budget was used up",
+  provider_unavailable: "no agent was available",
+  implementer_failed: "the agent did not finish",
+  setup_failed: "the repo's setup script failed",
+  empty: "the agent changed nothing",
+  out_of_bounds: "the change was over the size limits",
+  aborted: "it was stopped",
+  internal: "something went wrong inside Archangel",
+};
+
+const STOPPED: Record<string, string> = {
+  ttl: "it reached its 60 minute limit",
+  idle: "nobody used it for 15 minutes",
+  owner: "you stopped it",
+  restart: "the runner went away",
+};
+
+/** The proof-of-concept state in plain words. Starting a preview stays a command to copy; the page only shows that one runs and links to it. */
+function TryIt({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }) {
+  const poc = row.poc;
+  const used = poc === null ? 0 : poc.builds;
+  const left = d.pocMaxBuildsPerPitch - used;
+  const ask = (
+    <Flex direction="column" gap="2" align="flex-start">
+      <Text textStyle="meta" color="fg.muted">
+        {left > 0 ? `Build a throwaway PoC so you can see how big it really is. It stays on this machine and is never pushed. Uses one of your ${d.pocMaxBuildsPerDay} builds a day (${d.pocBuildsToday} used in the last 24 hours).` : `This pitch has used its ${d.pocMaxBuildsPerPitch} builds.`}
+      </Text>
+      {left > 0 ? <CopyCommand command={`archangel pitch poc ${row.repo} ${row.issueNumber}`} /> : null}
+    </Flex>
+  );
+  return (
+    <Section gap="3">
+      <Text textStyle="body13" color="fg.subtle">Try it</Text>
+      {poc === null ? ask : null}
+      {poc?.state.kind === "building" ? <Text textStyle="body13" color="fg">Building a PoC. It counts as build {poc.builds} of {d.pocMaxBuildsPerPitch} for this pitch.</Text> : null}
+      {poc?.state.kind === "failed" ? (
+        <>
+          <Text textStyle="body13" color="fg">The last build failed: {POC_FAILURES[poc.state.category]}.</Text>
+          {ask}
+        </>
+      ) : null}
+      {poc?.state.kind === "running" && poc.previewUrl ? (
+        <Flex direction="column" gap="2" align="flex-start">
+          <Text textStyle="body13" color="fg">
+            Running in a sandbox with no network except this machine. Expires in {Math.max(0, Math.ceil((poc.state.expiresAt - now) / 60_000))} min.
+          </Text>
+          <LinkButton href={poc.previewUrl} primary external>
+            Open preview
+          </LinkButton>
+        </Flex>
+      ) : null}
+      {poc?.state.kind === "ready" || poc?.state.kind === "stopped" ? (
+        <>
+          {poc.state.kind === "stopped" ? <Text textStyle="body13" color="fg">The preview stopped: {STOPPED[poc.state.reason]}. The screenshots are kept.</Text> : null}
+          <Text textStyle="body13" color="fg">A PoC is built, {poc.builds} of {d.pocMaxBuildsPerPitch} builds used. It is the local ref <Text as="span" textStyle="ref">refs/pitch-poc/{row.issueNumber}</Text> and was never pushed.</Text>
+          {row.hasPreview ? <CopyCommand command={`archangel pitch preview ${row.repo} ${row.issueNumber}`} /> : null}
+          {poc.diffStat ? <Box as="pre" textStyle="ref" color="fg.muted" borderWidth="1px" borderColor="border" p="3" overflowX="auto">{poc.diffStat}</Box> : null}
+          {left > 0 ? ask : null}
+        </>
+      ) : null}
+      {!row.hasPreview ? <Text textStyle="meta" color="fg.subtle">This repo has no preview set up. Add a preview block to .agents/archangel.json so a PoC can be run.</Text> : null}
+    </Section>
+  );
+}
+
+const assetUrl = (a: PitchAttachment) => `/api/pitch-asset/${a.sha256}`;
+
+/** Host-validated images from the repo. Only the stored image is shown, by its hash; captions and paths are React text. */
+function Pictures({ items }: { items: PitchAttachment[] }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const paths = [...new Set(items.filter((a) => a.kind === "repo").map((a) => a.path))];
+  return (
+    <Section gap="3">
+      <Flex gap="10" direction={{ base: "column", xl: "row" }} justify="space-between">
+        <Box minW="0" maxW="320px">
+          <Text textStyle="body13" color="fg.subtle">Pictures, {items.length}</Text>
+          {paths.length > 0 ? <Text textStyle="meta" color="fg.muted" mt="1">From the repo</Text> : null}
+          {paths.map((path) => (
+            <Text key={path} textStyle="ref" color="fg.muted" wordBreak="break-all">{path}</Text>
+          ))}
+          {items.some((a) => a.kind === "capture") ? <Text textStyle="meta" color="fg.muted" mt="1">Screenshot taken by Archangel</Text> : null}
+        </Box>
+        <Flex gap="4" wrap="wrap" align="flex-start">
+          {items.map((a, i) => (
+            <Box key={a.sha256} w="160px">
+              <Box as="button" cursor="zoom-in" display="block" w="160px" borderWidth="1px" borderColor="border" onClick={() => setOpen(i)} aria-label={`Open picture: ${a.caption}`}>
+                <img src={assetUrl(a)} alt="" width="160" style={{ display: "block", width: "160px", height: "auto" }} />
+              </Box>
+              <Text textStyle="meta" color="fg.subtle" mt="1">{a.caption}</Text>
+            </Box>
+          ))}
+        </Flex>
+      </Flex>
+      {open !== null ? <Lightbox items={items} index={open} onIndex={setOpen} onClose={() => setOpen(null)} /> : null}
+    </Section>
+  );
+}
+
+function Lightbox({ items, index, onIndex, onClose }: { items: PitchAttachment[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight") onIndex((index + 1) % items.length);
+      else if (e.key === "ArrowLeft") onIndex((index - 1 + items.length) % items.length);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, items.length, onIndex, onClose]);
+  const a = items[index]!;
+  return (
+    <Flex role="dialog" aria-modal="true" aria-label="Picture" position="fixed" inset="0" zIndex="overlay" bg="blackAlpha.800" direction="column" align="center" justify="center" gap="3" p="6" onClick={onClose}>
+      <img src={assetUrl(a)} alt="" style={{ maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain" }} onClick={(e) => e.stopPropagation()} />
+      <Text textStyle="body13" color="white" onClick={(e) => e.stopPropagation()}>
+        {a.caption} <Text as="span" color="whiteAlpha.700">({index + 1} of {items.length})</Text>
+      </Text>
+    </Flex>
   );
 }
 

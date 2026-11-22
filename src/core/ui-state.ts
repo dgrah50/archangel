@@ -4,6 +4,8 @@ import { z } from "zod";
 import { HostYamlSchema, resolveConfigPath } from "../config.js";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } from "./corrections.js";
 import type { Ledger, StageMetrics } from "../ledger/store.js";
+import { describeRule, type SignalRule } from "./signal-rules.js";
+import { ANOMALY_TEXT, type AnomalyMetric } from "./telemetry-scout.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
 import { describeEscalation, ESCALATION_POLICY, formatDecisionClass, type EscalationPolicy } from "./escalations.js";
@@ -39,6 +41,8 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
+  /** Set by the UI server before the daemon has ever created the Ledger; everything below is then an empty stand-in. */
+  ledgerMissing?: boolean;
   needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string; threadRecommendation: { headline: string; reason: string } | null }>;
   /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;
@@ -65,6 +69,8 @@ export interface UiState {
   /** Subsystem error classes survived in the last 24h, per repo. */
   /** Null when the Ledger's schema is behind (no `health_faults` table yet): only this section is unavailable, never the whole dashboard. */
   faults: ReturnType<Ledger["listHealthFaults"]> | null;
+  /** What the telemetry Scout found abnormal in the last 24h (nothing normal is listed). Null when the Ledger's schema is behind. */
+  telemetry: Array<{ repo: string; title: string; detail: string; observedAt: number }> | null;
 }
 
 const DAY_MS = 86_400_000;
@@ -75,6 +81,21 @@ export function isSchemaBehind(err: unknown): boolean {
 }
 
 /** Runs one section's read; a missing table or column makes that section null instead of failing the whole payload. Other errors still throw. */
+const fmtAnomaly = (unit: "ms" | "share" | "count", n: number): string =>
+  unit === "ms" ? (n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${Math.round(n)} ms`) : unit === "share" ? `${Math.round(n * 100)}%` : `${Math.round(n * 10) / 10}`;
+
+function describeAnomaly(a: { repo: string; payload: Record<string, unknown>; observedAt: number }): { repo: string; title: string; detail: string; observedAt: number } {
+  const p = a.payload as { metric: AnomalyMetric; baseline: number; observed: number; ratio: number };
+  const t = ANOMALY_TEXT[p.metric];
+  const per = t.unit === "count" ? " per day" : "";
+  return {
+    repo: a.repo,
+    title: t.title,
+    detail: `${fmtAnomaly(t.unit, p.observed)} in the last 24h against ${fmtAnomaly(t.unit, p.baseline)}${per} over the 7 days before (${p.ratio}x).`,
+    observedAt: a.observedAt,
+  };
+}
+
 function schemaGap<T>(read: () => T): T | null {
   try {
     return read();
@@ -169,7 +190,7 @@ export function groupThreads(
     const stage = stageOf(t.phase, t.updatedAt, now);
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
-      const p = describeEscalation(t.phase.code);
+      const p = describeEscalation(t.phase.code, undefined, t.phase.cause);
       needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason, threadRecommendation: recommendationOf(t) });
     }
   }
@@ -225,6 +246,7 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
     faults: schemaGap(() => ledger.listHealthFaults(now)),
+    telemetry: schemaGap(() => ledger.listTelemetryAnomalies(now - DAY_MS).map((a) => describeAnomaly(a))),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     ownerLastHeardAt: Object.fromEntries(repos.map((r) => [r, ledger.ownerLastHeardAt(r)])),
@@ -292,11 +314,28 @@ const pairs = (rec: Record<string, number>) => {
   return e.length > 0 ? e.map(([k, v]) => `${k}=${v}`).join(", ") : "none";
 };
 
+/** What the Intake stage shows about the signal layer: this repo's rules from archangel.yaml and its signal counts. */
+export interface SignalsView {
+  rules: SignalRule[];
+  counts: Record<string, number>;
+}
+
+/** The signal rules in archangel.yaml (all of them; empty when signals are off); null when the file is missing or invalid. Read-only. */
+export function readSignalRules(configPath: string | undefined): SignalRule[] | null {
+  try {
+    const host = HostYamlSchema.safeParse(parseYaml(fs.readFileSync(resolveConfigPath(configPath), "utf8")));
+    return host.success && host.data.signals.enabled ? host.data.signals.rules : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 /** Pure. `wf` is the cached EffectiveWorkflow (untrusted JSON from system_state); only whitelisted fields are read, Scout prompts never leave the Ledger. */
-export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: StageMetrics): PipelineRepo {
+export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: StageMetrics, signals: SignalsView | null = null): PipelineRepo {
   const intakeMetrics = [
     `queued: ${m.intake.queued}${m.intake.oldestQueuedAgeSec === null ? "" : `, oldest ${formatAge(m.intake.oldestQueuedAgeSec * 1000)}`}`,
     `rejected: ${pairs(m.intake.rejections)}`,
+    ...(signals && Object.keys(signals.counts).length > 0 ? [`signals (7d): ${pairs(signals.counts)}`] : []),
   ];
   const kernelStages = (ok: OkWorkflow | null): PipelineStage[] => {
     const scoutEntries = Object.entries(m.scouts);
@@ -304,7 +343,10 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
       {
         id: "intake",
         title: "Intake",
-        items: [{ label: "rule", value: "owner-authored issue, owner-applied ready-for-agent, pinned body hash", source: "kernel" }],
+        items: [
+          { label: "rule", value: "owner-authored issue, owner-applied ready-for-agent, pinned body hash", source: "kernel" },
+          ...(signals?.rules ?? []).map((r) => ({ label: "signal rule", value: `${r.name}: ${describeRule(r)}`, source: "host" as const })),
+        ],
         clamps: [],
         metrics: intakeMetrics,
       },
@@ -486,7 +528,7 @@ const CachedWorkflow = z.union([
 ]);
 
 /** `/api/workflows`: every repo the Ledger knows, with its cached workflow (no GitHub calls). */
-export function buildWorkflowsState(ledger: Ledger, now = Date.now()): WorkflowsState {
+export function buildWorkflowsState(ledger: Ledger, now = Date.now(), signalRules: SignalRule[] | null = null): WorkflowsState {
   const cached = new Map(ledger.listCachedWorkflows().map((c) => [c.repo, CachedWorkflow.safeParse(c.workflow)]));
   const repos = [...new Set([...cached.keys(), ...ledger.listAllThreads().map((t) => t.repo)])].sort();
   const since = now - WINDOW_DAYS * DAY_MS;
@@ -495,11 +537,17 @@ export function buildWorkflowsState(ledger: Ledger, now = Date.now()): Workflows
     windowDays: WINDOW_DAYS,
     repos: repos.map((repo) => {
       const metrics = ledger.computeStageMetrics(repo, since, now);
+      const signals: SignalsView | null = signalRules
+        ? {
+            rules: signalRules.filter((r) => r.repo === undefined || r.repo.toLowerCase() === repo.toLowerCase()),
+            counts: schemaGap(() => ledger.signalCounts(now - 7 * DAY_MS, repo)) ?? {},
+          }
+        : null;
       const hit = cached.get(repo);
       if (hit && !hit.success) {
-        return { ...describeWorkflow(repo, null, metrics), status: "unreadable" as const, error: "The cached workflow could not be read; the daemon rewrites it on its next tick." };
+        return { ...describeWorkflow(repo, null, metrics, signals), status: "unreadable" as const, error: "The cached workflow could not be read; the daemon rewrites it on its next tick." };
       }
-      return describeWorkflow(repo, hit ? (hit.data as unknown as EffectiveWorkflow) : null, metrics);
+      return describeWorkflow(repo, hit ? (hit.data as unknown as EffectiveWorkflow) : null, metrics, signals);
     }),
   };
 }

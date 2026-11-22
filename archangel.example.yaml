@@ -12,6 +12,20 @@ maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to ne
 maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
 maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per thread
 
+# Where Scouts run. Default is this machine. Uncomment to run Scouts in Sail Sailboxes (needs `sail auth login`; nothing
+# from this machine's environment goes into a box). A provider runs on Sail only when it has a remote credential below; otherwise it runs here.
+# compute:
+#   provider: sail
+#   sail:
+#     app: archangel
+#     maxLifetimeSeconds: 600       # server-side kill for a leaked box
+#     maxDailyComputeUsd: 2         # new boxes are refused past this estimate (box-minutes at Sail's rates)
+#     claudeTokenSecret: CLAUDE_CODE_OAUTH_TOKEN   # the Sail secret (`sail secret set <name>`) the egress policy injects; the box sees only a placeholder
+#     remoteClaudeAttempts: false   # let claude entries run on Sail (off: they stay local)
+#     codexApiKeySecret: OPENAI_API_KEY_SAIL   # codex entries run on Sail with this OpenAI API key (`sail secret set <name>`); unset: codex stays local
+#     codexBrokerHome: ~/.archangel/accounts/codex-sail   # instead of codexApiKeySecret: a dedicated ChatGPT login the daemon's token broker keeps fresh (see README, Running providers on Sail)
+#     geminiApiKeySecret: GEMINI_API_KEY_SAIL  # agy entries run on Sail with this Gemini API key; unset: agy stays local
+
 # Execution timeouts (ms unless noted)
 implementMaxTurns: 40               # agent turn cap for one implement Attempt
 implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
@@ -70,6 +84,40 @@ reviewerChain:
 # below 20 merged PRs: its pitches say so. Optional owner notes it may read (absolute paths, secret-scanned, max 5):
 # fleetScouts: [fleet-pr-miner]
 # fleetMinerSeeds: [/Users/me/notes/review-report.md]
+
+# Signal layer (off by default): adapters record merged PRs, releases, Dependabot advisories and your schedules as durable
+# signals; the rules below (yours, host-wide) turn them into actions, each at most once, within the caps. Advisories are
+# untrusted: a rule on them may only start a pitch (run_pitch), and any other action fails config load. Filed issues carry
+# agent-proposed and never start work until you apply ready-for-agent. Run/pitch actions need scouts.enabled on the project.
+# signals:
+#   enabled: true
+#   maxActionsPerDay: 5
+#   schedules:
+#     - { name: weekly-review, every: weekly }
+#   rules:
+#     - name: advisory-pitch
+#       on: advisory
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+#       maxPerDay: 1
+#     - name: release-chore
+#       on: release
+#       repo: owner/my-repo
+#       do: { action: file_issue, class: chore, title: Check the release for follow-ups }
+#     - name: weekly-sweep
+#       on: schedule
+#       schedule: weekly-review
+#       do: { action: run_scout, scout: self-audit }
+#     # Local telemetry (never sent anywhere) is compared hourly: the last 24h against the 7 days before. A regression, error
+#     # spike, repeated 429 or quota hit, slow ticks or repeated Gate timeouts becomes one mechanical telemetry_anomaly signal
+#     # per metric, repo and day. Mechanical signals may file an issue or run any Scout; the Scout reads the anomaly, not you.
+#     - name: telemetry-chore
+#       on: telemetry_anomaly
+#       do: { action: file_issue, class: chore, title: Investigate a telemetry anomaly }
+#       maxPerDay: 1
+#     # or hand it to the meta-Scout for deeper analysis:
+#     # - name: telemetry-deep-dive
+#     #   on: telemetry_anomaly
+#     #   do: { action: run_pitch, scout: fleet-pr-miner }
 
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767

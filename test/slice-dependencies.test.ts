@@ -40,9 +40,9 @@ function setup() {
   const implementer: Implementer = {
     async run(input) {
       ran.push(input.issueNumber);
-      fs.writeFileSync(path.join(input.cloneDir, "app.go"), `package demo\n\nfunc Val() int { return ${10 + ran.length} }\n`);
-      git(input.cloneDir, ["add", "-A"]);
-      git(input.cloneDir, ["commit", "-m", `attempt ${ran.length}`]);
+      fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), `package demo\n\nfunc Val() int { return ${10 + ran.length} }\n`);
+      git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+      git((await input.workspaces.local.workspace()).path, ["commit", "-m", `attempt ${ran.length}`]);
       return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
     },
   };

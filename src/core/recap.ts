@@ -4,7 +4,8 @@ import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
-import { scanForSecrets } from "./scout.js";
+import { scanForSecrets, withholdSecrets } from "./secrets.js";
+import { renderShotImages, type ShotLink } from "./pr-shots.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
@@ -21,7 +22,12 @@ export function renderRecapComment(input: {
   gateProofError?: string | null;
   /** What machine triage decided for this Thread (a `factory/triage` audit row); null/undefined when triage never ran. */
   triage?: TriageSummary | null;
+  /** Small screenshots of the PR head, already published by the host; rendered as a short section. */
+  shots?: ShotLink[];
+  /** Called with the pattern name when agent-authored text was withheld for matching the secret scan. */
+  onWithheld?: (pattern: string) => void;
 }): string {
+  const safe = (text: string): string => withholdSecrets(text, input.onWithheld);
   const { thread, reviews, blockers } = input;
   const pr = extractPrFromPhase(thread.phase);
   const headSha = pr?.headSha ?? ("headSha" in thread.phase ? thread.phase.headSha : null) ?? null;
@@ -55,10 +61,10 @@ export function renderRecapComment(input: {
     );
   }
   if (thread.phase.kind === "needs_you") {
-    const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName));
+    const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName), thread.phase.cause);
     lines.push(
       "",
-      `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${thread.phase.reason}`,
+      `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${safe(thread.phase.reason)}`,
       `> **Recommended:** ${policy.recommendation}`,
     );
   }
@@ -72,12 +78,17 @@ export function renderRecapComment(input: {
     if (t.action === "guidance" && t.steps.length > 0) lines.push("", ...fencedText(t.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")));
     else if (t.action === "escalate" && t.reason) lines.push("", ...fencedText(t.reason));
   }
-  const summaryText = input.summary ?? thread.lastSummary;
-  if (summaryText) {
+  const rawSummary = input.summary ?? thread.lastSummary;
+  if (rawSummary) {
+    const summaryText = safe(rawSummary);
     lines.push("", "#### Latest Summary", summaryText);
     const assumptions = extractAssumptions(summaryText);
     lines.push("", "#### Implementer Assumptions", "_Decisions made without asking, quoted from the implementer's summary as plain text._", "");
     lines.push(...(assumptions === null ? ["_none stated_"] : fencedText(assumptions)));
+  }
+
+  if (input.shots && input.shots.length > 0) {
+    lines.push("", "#### Screenshots", "_Taken by Archangel from a sandboxed run of this head. The images are host-built links to the `archangel/assets` branch._", "", renderShotImages(input.shots));
   }
 
   const unavailable = input.gateProof ? null : (input.gateProofError ?? null);
@@ -116,7 +127,7 @@ export function renderRecapComment(input: {
       );
       for (const f of findings) {
         const loc = f.line ? `${f.file}:${f.line}` : f.file;
-        lines.push(`  - [${f.severity}] \`${loc}\`: ${f.summary}`);
+        lines.push(`  - [${f.severity}] \`${loc}\`: ${safe(f.summary)}`);
       }
     }
   }
@@ -124,7 +135,7 @@ export function renderRecapComment(input: {
   if (blockers.length > 0) {
     lines.push("", "#### Current Blockers");
     for (const b of blockers) {
-      lines.push(`- \`${b.code}\`: ${b.message}`);
+      lines.push(`- \`${b.code}\`: ${safe(b.message)}`);
     }
   } else {
     lines.push("", "#### Current Blockers", "- None — eligible to land.");

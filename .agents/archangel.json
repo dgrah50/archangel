@@ -24,6 +24,7 @@
       "src/core/thread-machine.ts",
       "src/core/reconciler.ts",
       "src/core/scout.ts",
+      "src/core/secrets.ts",
       "src/core/spawn-group.ts",
       "src/compute/**",
       "templates/**",
@@ -37,6 +38,7 @@
       "src/core/onboard.ts",
       "src/core/bump.ts",
       "src/core/pitch-promote.ts",
+      "src/core/pitch-ingest.ts",
       "src/core/owner-reply.ts",
       "src/core/metrics-block.ts",
       "src/core/skills.ts",
@@ -77,9 +79,20 @@
       "src/core/eval-reports.ts",
       "src/core/ui-host-config.ts",
       "src/core/ui-onboard.ts",
+      "src/core/telemetry.ts",
+      "src/core/telemetry-events.ts",
+      "src/core/telemetry-scout.ts",
       "src/core/ui-gh.ts",
       "src/core/ui-accounts.ts",
-      "src/core/plan.ts"
+      "src/core/plan.ts",
+      "src/core/signals.ts",
+      "src/core/signal-kinds.ts",
+      "src/core/signal-rules.ts",
+      "src/core/poc-machine.ts",
+      "src/core/pitch-poc.ts",
+      "src/core/pitch-preview.ts",
+      "src/core/pr-shots.ts",
+      "src/core/pitch-diagram.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

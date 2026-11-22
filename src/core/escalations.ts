@@ -1,3 +1,4 @@
+import type { AttemptErrorCategory } from "../ledger/schema.js";
 import type { EscalationCode } from "./thread-machine.js";
 import type { WorkClass } from "./work-class.js";
 
@@ -100,7 +101,7 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     decisionClass: "product_decision",
     short: "recommends commenting what it missed, then retry",
     recommendation:
-      "The implementer could not produce a valid fix. Read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
+      "The implementer could not produce a valid fix. If the reason names a cause (login, CLI, permissions, network, context size), fix that first. Otherwise read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
   },
   dependency_unmet: {
     decisionClass: "owner_signoff",
@@ -121,12 +122,32 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
 };
 
+/** What the owner should do about a failed Attempt whose cause was recorded; categories not listed have no cause-specific advice. */
+export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string>> = {
+  provider_network: "The CLI lost its connection twice; check the network, then retry.",
+  auth: "A CLI login is invalid or expired: re-login the account named in the reason (its CLI's login, with that account's config dir), then retry.",
+  permission_denied: "The CLI denied a tool in headless mode and did no work: check that provider's permission flags, then retry.",
+  cli_missing: "The provider CLI is not installed or not on PATH: install it or run `archangel doctor`, then retry.",
+  context_overflow: "The prompt exceeded the model's context: narrow the issue, then retry.",
+};
+
 /** One-tap answers the owner can post as a comment on the Thread's issue or PR. */
 export const OWNER_COMMANDS_LINE =
   "Reply `/archangel retry` with a hint, `/archangel close`, or `/archangel handoff`.";
 
-export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix"): EscalationPolicy {
-  const policy = ESCALATION_POLICY[code];
+/** Decision class of a failed Attempt by its recorded cause; causes not listed stay `attempt_failed`'s own class. */
+const ATTEMPT_FAILURE_CLASS: Partial<Record<AttemptErrorCategory, DecisionClass>> = {
+  auth: "credentials",
+  cli_missing: "credentials",
+  permission_denied: "credentials",
+  provider_network: "live_infrastructure",
+};
+
+export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix", cause?: AttemptErrorCategory): EscalationPolicy {
+  const base = ESCALATION_POLICY[code];
+  const policy = cause
+    ? { ...base, decisionClass: ATTEMPT_FAILURE_CLASS[cause] ?? base.decisionClass, recommendation: ATTEMPT_FAILURE_ADVICE[cause] ?? base.recommendation }
+    : base;
   const feature = workClass !== "bugfix" ? ` This is a ${workClass} Thread: the owner merges it.` : "";
   return { ...policy, recommendation: `${policy.recommendation}${feature} ${OWNER_COMMANDS_LINE}` };
 }

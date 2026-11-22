@@ -3,7 +3,7 @@ import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
-import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -19,9 +19,10 @@ import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
-import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
+import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, Ledger } from "../ledger/store.js";
 import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { LocalProvider } from "../compute/local.js";
+import { LazyWorkspace, type WorkspaceHandle } from "../compute/lazy-workspace.js";
 import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { captureAttemptInput } from "./attempt-input.js";
@@ -29,11 +30,18 @@ import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } fr
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
-import { defaultScoutCliInvoker, runScoutsForProject, scanForSecrets, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
+import { scanForSecrets, withholdSecrets } from "./secrets.js";
+import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
+import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
+import { capturePrShots, getPrShots, setPrShots } from "./pr-shots.js";
+import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
+import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
+import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
-import { loadWorkflow, workflowError } from "./workflow-load.js";
+import { loadRepoInstructions, loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
+import { emit } from "./telemetry.js";
 import { buildRecommendationPrompt, buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, vetRecommendation, RecommendationOnlySchema, RECOMMENDATION_ONLY_JSON_SCHEMA, RECOMMENDATION_TIMEOUT_MS, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
 import {
   classifyGate,
@@ -65,6 +73,12 @@ export interface ReconcilerDeps {
   correctionDrafts?: CorrectionDraftDeps;
   /** Runs the read-only triage CLI; defaults to the Scout sandbox invoker. Tests pass a fake. */
   triageInvoker?: ScoutCliInvoker;
+  /** Where Scouts run when the host config says so; absent means this machine. Implement, revise and review always stay local. */
+  scoutCompute?: ComputeProvider;
+  /** Where claude Attempts (implement, revise, rebase) run when they run remotely; unset keeps every Attempt local. */
+  remoteAttemptCompute?: ComputeProvider;
+  /** A sandboxing provider for previews. Without it no PR screenshots are taken. */
+  previewCompute?: ComputeProvider;
 }
 
 /** What the drafting half needs from outside: the Scout CLI, the eval, the PR opener and a PR status lookup. */
@@ -120,6 +134,9 @@ export class Reconciler {
   private readonly github: GitHubClient;
   private readonly broker: GitBroker;
   private readonly compute: ComputeProvider;
+  private readonly scoutCompute: ComputeProvider | undefined;
+  private readonly remoteAttemptCompute: ComputeProvider | undefined;
+  private readonly previewCompute: ComputeProvider | undefined;
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
@@ -128,6 +145,9 @@ export class Reconciler {
 
   private isTicking = false;
   private readonly runningTasks = new Map<number, RunningTask>();
+  /** The one PoC build in flight, if any: it takes a concurrency slot like a Thread's Attempt. */
+  private prShot: Promise<void> | null = null;
+  private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
@@ -157,6 +177,9 @@ export class Reconciler {
     this.github = deps.github;
     this.broker = deps.broker;
     this.compute = new LocalProvider(deps.broker);
+    this.scoutCompute = deps.scoutCompute;
+    this.remoteAttemptCompute = deps.remoteAttemptCompute;
+    this.previewCompute = deps.previewCompute;
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
@@ -172,13 +195,14 @@ export class Reconciler {
 
   /** Waits for all in-flight background attempts to settle (useful for `--once`, shutdown, and tests). */
   async waitForActiveTasks(): Promise<void> {
-    while (this.runningTasks.size > 0) {
-      await Promise.allSettled([...this.runningTasks.values()].map((t) => t.promise));
+    while (this.runningTasks.size > 0 || this.pocBuild || this.prShot) {
+      await Promise.allSettled([...[...this.runningTasks.values()].map((t) => t.promise), ...(this.pocBuild ? [this.pocBuild.promise] : []), ...(this.prShot ? [this.prShot] : [])]);
     }
     await this.draftChain;
   }
 
   abortAllActive(cause: "control" | "handoff" = "control"): void {
+    this.pocBuild?.abortController.abort(new Error(`Daemon shutdown (${cause})`));
     for (const task of this.runningTasks.values()) {
       task.abortCause = cause;
       task.abortController.abort(new Error(`Daemon shutdown (${cause})`));
@@ -209,6 +233,69 @@ export class Reconciler {
     }
   }
 
+  /**
+   * Starts at most one PoC build, when a concurrency slot is free. A `building` row with no task here was requested by the owner's
+   * command (or survived a restart) and runs first; a build lost for hours is closed as failed instead. Otherwise the oldest pitch
+   * queued for an automatic build starts, but only if it is still undecided and `reservePocBuild`'s caps allow it.
+   */
+  private startPocBuild(mainSha: string, now: number): void {
+    if (!this.workflow || this.pocBuild || this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+    const mine = this.ledger.listPocs().filter((p) => p.repo === this.ledger.repo);
+    let issueNumber: number | null = null;
+    for (const p of mine) {
+      if (p.state.kind !== "building") continue;
+      if (now - p.state.since > POC_STALE_BUILD_MS) {
+        this.ledger.stepPocState(p.issueNumber, { t: "build_failed", category: "aborted", at: now }, {}, now);
+        continue;
+      }
+      issueNumber = p.issueNumber;
+      break;
+    }
+    if (issueNumber === null && this.ledger.pocBuildsInLastDay(now) < Ledger.POC_MAX_BUILDS_PER_DAY) {
+      const undecided = (n: number) => {
+        const pitch = this.ledger.getPitch(n);
+        return pitch !== null && isUndecided(pitch.state);
+      };
+      const queued = mine.find((p) => p.autoQueued && p.state.kind === "none" && undecided(p.issueNumber));
+      if (queued && this.ledger.reservePocBuild(queued.issueNumber, now).ok) issueNumber = queued.issueNumber;
+    }
+    if (issueNumber === null) return;
+    const abortController = new AbortController();
+    const webPreview = this.previewCompute && this.workflow.preview?.kind === "web" ? this.workflow.preview : null;
+    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.scoutCompute ?? this.compute, local: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, sandbox: this.previewCompute!, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
+      .catch((err: unknown) => this.recordFault("poc_build", err, now, issueNumber!))
+      .finally(() => {
+        this.pocBuild = null;
+      });
+    this.pocBuild = { abortController, promise };
+  }
+
+  /**
+   * After the Gate and the reviews pass, previews the PR head in the sandbox and puts 1 to 2 small screenshots in the Recap. Once per
+   * head sha (an attempt that fails is recorded as empty, never retried), one at a time, in the background. Only repos whose policy
+   * declares a web `preview`, and only when the host gave the reconciler a sandboxing provider.
+   */
+  private startPrShots(thread: ThreadRecord, pr: GitHubPr, repost: () => Promise<void>): void {
+    const preview = this.workflow?.preview;
+    if (!this.previewCompute || preview?.kind !== "web" || this.prShot || getPrShots(this.ledger, pr.number, pr.headSha) !== null) return;
+    const now = Date.now();
+    setPrShots(this.ledger, pr.number, pr.headSha, [], now);
+    const repoSlug = this.ledger.repo;
+    this.prShot = capturePrShots(
+      { github: this.github, repoSlug, local: this.compute, sandbox: this.previewCompute, preview, dataDir: resolvePaths(this.cfg).dataDir, installTimeoutMs: this.cfg.setupTimeoutMs },
+      { issueNumber: thread.issueNumber, prNumber: pr.number, headSha: pr.headSha },
+    )
+      .then(async (links) => {
+        setPrShots(this.ledger, pr.number, pr.headSha, links, Date.now());
+        this.ledger.appendAudit("pr_shots/published", thread.issueNumber, "archangel", { pr: pr.number, count: links.length }, Date.now());
+        await repost();
+      })
+      .catch((err: unknown) => this.recordFault("pr_shots", err, now, thread.issueNumber))
+      .finally(() => {
+        this.prShot = null;
+      });
+  }
+
   /** Dashboard read path: the latest resolution (ok, missing or invalid) per repo, so the UI never calls GitHub. */
   private cacheWorkflow(resolved: EffectiveWorkflow, now: number): void {
     const key = `workflow:${this.ledger.repo}`;
@@ -217,6 +304,11 @@ export class Reconciler {
   }
 
   private async runTickInternal(now: number): Promise<void> {
+    let phaseStart = Date.now();
+    const endPhase = (phase: "sync" | "threads" | "signals" | "scouts"): void => {
+      emit("tick_phase_ms", Date.now() - phaseStart, { phase }, this.ledger.repo);
+      phaseStart = Date.now();
+    };
     await this.flushOutbox();
 
     const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -277,6 +369,7 @@ export class Reconciler {
     await this.processPendingCommands(mainSha, now);
 
     await this.reconcilePostMergeMain(mainSha, now);
+    endPhase("sync");
 
     const readyIssues = await this.github.listOpenIssuesByLabel(this.cfg.labels.readyForAgent);
     const issueMap = new Map<number, GitHubIssue>();
@@ -310,6 +403,8 @@ export class Reconciler {
       await this.reconcileThread(thread, issue, mainSha, now);
     }
 
+    endPhase("threads");
+
     // 4b. Pitch housekeeping: record decisions and close pitches nobody decided in 14 days (only when any is open).
     if (this.ledger.countOpenPitches() > 0) {
       try {
@@ -320,6 +415,64 @@ export class Reconciler {
         this.recordFault("pitch_housekeeping", err, now);
       }
     }
+
+    try {
+      closeStalePreviews(this.ledger, now);
+      this.startPocBuild(mainSha, now);
+    } catch (err) {
+      this.recordFault("poc_build", err, now);
+    }
+
+    if (this.cfg.signals.enabled) {
+      try {
+        await ingestSignals({
+          ledger: this.ledger,
+          github: this.github,
+          defaultBranch: this.cfg.defaultBranch,
+          wanted: wantedKinds(this.cfg.signals, this.ledger.repo),
+          schedules: this.cfg.signals.schedules,
+          now,
+          onError: (adapter, err) => this.recordFault(`signals:${adapter}`, err, now),
+        });
+        await convergeSignals({
+          cfg: this.cfg.signals,
+          ledger: this.ledger,
+          canRunScouts: this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0,
+          now,
+          actions: {
+            fileIssue: async (input) => {
+              if (!this.github.createIssue) throw new Error("GitHubClient does not support createIssue.");
+              return (await this.github.createIssue({ ...input, labels: [this.cfg.labels.agentProposed] })).number;
+            },
+            runScout: async ({ scout, pitchOnly }) => {
+              const wf = this.workflow!;
+              const spec = wf.scouts.find((s) => s.name === scout);
+              if (!spec || (pitchOnly && spec.kind !== "pitch")) return "rejected";
+              const [res] = await runScoutsForProject({
+                config: this.cfg,
+                ledger: this.ledger,
+                github: this.github,
+                broker: this.broker,
+                workflow: wf,
+                reviewers: this.reviewers,
+                notifier: this.notifier,
+                mainSha,
+                filterName: scout,
+                compute: this.scoutCompute,
+                logger: this.logger,
+                now,
+              });
+              if (res?.status === "skipped_cap" || res?.status === "skipped_open_limit") return "deferred";
+              return res?.status === "paused" ? "rejected" : "ran";
+            },
+          },
+        });
+      } catch (err) {
+        this.recordFault("signals", err, now);
+      }
+    }
+
+    endPhase("signals");
 
     if (this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0) {
       try {
@@ -333,6 +486,7 @@ export class Reconciler {
           notifier: this.notifier,
           mainSha,
           onlyScheduled: true,
+          compute: this.scoutCompute,
           logger: this.logger,
           now,
         });
@@ -341,6 +495,8 @@ export class Reconciler {
         this.recordFault("scout", err, now);
       }
     }
+
+    endPhase("scouts");
 
     await this.raiseCorrectionSignals(now);
     await this.measureCorrectionDrafts(now);
@@ -543,6 +699,7 @@ export class Reconciler {
             const policy = describeEscalation(
               eff.code,
               workClassOfBranch((eff.issueNumber === null ? null : this.ledger.getThread(eff.issueNumber))?.branchName ?? ""),
+              eff.cause,
             );
             await this.notifier.notifyNeedsYou({
               issueNumber: eff.issueNumber,
@@ -1596,26 +1753,34 @@ export class Reconciler {
     structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>,
     task: RunningTask,
   ): Promise<void> {
-    let cloneDir = "";
-    let workspace: Workspace | null = null;
     let actualCostUsd = 0;
     let transcriptPath: string | null = null;
+    // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
+    const handleFor = (compute: ComputeProvider) =>
+      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha }, async (ws) => {
+        // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
+        try {
+          await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
+        } catch (err) {
+          // The repo's own setup script failed: the repo's problem, not a provider outage.
+          if (!this.workflow || task.abortController.signal.aborted) throw err;
+          throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
+        }
+      });
+    const local = handleFor(this.compute);
+    const remote = this.remoteAttemptCompute ? handleFor(this.remoteAttemptCompute) : undefined;
+    const destroyWorkspaces = () => {
+      local.destroy();
+      remote?.destroy();
+    };
+    let ranOn: WorkspaceHandle = local;
 
     try {
-      workspace = await this.compute.prepare({ issueNumber: workingThread.issueNumber, startSha: fromSha });
-      cloneDir = workspace.path;
-      task.cloneDir = cloneDir;
-
-      // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
-      try {
-        await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
-      } catch (err) {
-        // The repo's own setup script failed: the repo's problem, not a provider outage.
-        if (!this.workflow || task.abortController.signal.aborted) throw err;
-        throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
-      }
+      // Without a remote provider the one workspace is prepared up front, exactly as before.
+      if (!remote) await local.workspace();
 
       const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
+      const repoInstructions = await loadRepoInstructions(this.broker, mainSha);
       const prompt =
         kind === "plan"
           ? buildPlanPrompt({
@@ -1625,6 +1790,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               ownerReply: workingThread.ownerReply,
               previousPlan: this.ledger.latestThreadPlan(workingThread.issueNumber)?.text ?? null,
+              repoInstructions,
               maxChars: PLAN_MAX_CHARS,
             })
           : kind === "implement"
@@ -1637,6 +1803,7 @@ export class Reconciler {
               ownerReply: workingThread.ownerReply,
               factoryGuidance: workingThread.factoryGuidance,
               approvedPlan,
+              repoInstructions,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1650,6 +1817,7 @@ export class Reconciler {
                 ownerReply: workingThread.ownerReply,
                 factoryGuidance: workingThread.factoryGuidance,
                 approvedPlan,
+                repoInstructions,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
@@ -1658,12 +1826,13 @@ export class Reconciler {
                 baseBranch: this.cfg.defaultBranch,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                repoInstructions,
               });
 
       const result: ImplementResult = await this.implementer
         .run({
         issueNumber: issue.number,
-        cloneDir,
+        workspaces: { local, ...(remote ? { remote } : {}) },
         prompt,
         abortController: task.abortController,
         maxTurns: this.cfg.implementMaxTurns,
@@ -1673,12 +1842,14 @@ export class Reconciler {
         role: kind === "plan" ? "implement" : kind,
         })
         .catch((err: unknown) => {
-          // The implementer (every provider in its chain) threw: that is a provider failure, whatever its prose says.
-          throw err instanceof AttemptError ? err : new AttemptError("provider_unavailable", err instanceof Error ? err.message : String(err));
+          // An implementer failure that did not name its cause.
+          throw err instanceof AttemptError ? err : new AttemptError("implementer_failed", err instanceof Error ? err.message : String(err));
         });
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      if (result.ranOn === "remote" && remote) ranOn = remote;
+      this.ledger.recordAttemptProvenance(attemptId, { compute: ranOn.compute.remote ? "sail" : "local" });
       if (result.durationMs !== undefined) this.ledger.recordAttemptMeasure(attemptId, { durationMs: result.durationMs, peakRssKb: result.peakRssKb ?? null });
       this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
@@ -1706,8 +1877,8 @@ export class Reconciler {
         if (cause === "handoff") {
           let unpushed: string | null = null;
           try {
-            const val = await this.broker.fetchAndValidateFromClone(
-              (await this.compute.collect(workspace!)).path,
+            const val = await this.broker.fetchAndValidateCollected(
+              await ranOn.compute.collect(await ranOn.workspace()),
               workingThread.issueNumber,
               mainSha,
               this.effectiveGate,
@@ -1732,7 +1903,7 @@ export class Reconciler {
             try {
               await this.github.postComment(
                 workingThread.issueNumber,
-                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${unpushed.slice(0, 300)}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
+                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${withholdSecrets(unpushed.slice(0, 300))}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
               );
             } catch (err) {
               this.logger.warn("handoff/push_failed_comment_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: workingThread.issueNumber });
@@ -1770,8 +1941,8 @@ export class Reconciler {
       }
 
       // Hardened fetch + pre-push validation (including local `archangel-gate` if built — Neon P1).
-      const validation = await this.broker.fetchAndValidateFromClone(
-        (await this.compute.collect(workspace!)).path,
+      const validation = await this.broker.fetchAndValidateCollected(
+        await ranOn.compute.collect(await ranOn.workspace()),
         workingThread.issueNumber,
         mainSha,
         this.effectiveGate,
@@ -1846,8 +2017,7 @@ export class Reconciler {
           if (backToQueued) {
             // Release current runningTasks entry before spawning the pre-push revision.
             this.runningTasks.delete(workingThread.issueNumber);
-            this.compute.destroy(workspace);
-            cloneDir = "";
+            destroyWorkspaces();
             await this.spawnAttempt(
               backToQueued,
               issue,
@@ -2007,13 +2177,14 @@ export class Reconciler {
         errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
+      const cause = err instanceof AttemptError ? err.category : undefined;
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}`, cause },
           { auditTopic: "thread/needs_you" },
         );
       }
@@ -2021,7 +2192,7 @@ export class Reconciler {
       if (this.runningTasks.get(workingThread.issueNumber) === task) {
         this.runningTasks.delete(workingThread.issueNumber);
       }
-      if (workspace) this.compute.destroy(workspace);
+      destroyWorkspaces();
     }
   }
 
@@ -2196,6 +2367,7 @@ export class Reconciler {
           diffText,
           touchedFiles,
           reviewRubric: this.effectiveReviewRubric,
+          repoInstructions: await loadRepoInstructions(this.broker, mainSha),
           skipVendors: [...haveVendors],
           excludeVendors,
         });
@@ -2527,7 +2699,9 @@ export class Reconciler {
         { auditTopic: "thread/shadow_ready", now },
       );
       if (updated) {
-        await this.postRecapSafe(updated, pr, blockers, isOwnerMergeClass ? undefined : { wouldMerge: true });
+        const recapOpts = isOwnerMergeClass ? undefined : { wouldMerge: true };
+        await this.postRecapSafe(updated, pr, blockers, recapOpts);
+        this.startPrShots(updated, pr, () => this.postRecapSafe(this.ledger.getThread(updated.issueNumber) ?? updated, pr, blockers, recapOpts));
       }
       return;
     }
@@ -2866,6 +3040,8 @@ export class Reconciler {
           gateProof,
           gateProofError,
           triage,
+          shots: getPrShots(this.ledger, pr.number, pr.headSha) ?? [],
+          onWithheld: (pattern) => this.logger.warn("recap/secret_withheld", pattern, { repo: this.ledger.repo, issue: thread.issueNumber }),
         }),
       );
     } catch (err) {

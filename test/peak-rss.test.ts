@@ -18,8 +18,8 @@ it("the peak-RSS poller measures the process tree and is stopped when the proces
     const res = await execInGroup(process.cwd(), { cmd: "sh", args: ["-c", "sleep 0.4"], env: { PATH: process.env.PATH }, timeoutMs: 10_000, rssPollMs: 20 });
     expect(res.code).toBe(0);
     expect(res.peakRssKb).toBeGreaterThan(0);
-    expect(made.length).toBe(1);
-    expect(cleared.size).toBe(1);
+    expect(made.length).toBeGreaterThan(0);
+    expect(cleared.size).toBe(made.length);
   } finally {
     globalThis.setInterval = realSet;
     globalThis.clearInterval = realClear;

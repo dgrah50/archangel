@@ -8,6 +8,7 @@ import {
 } from "../core/thread-machine.js";
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
 import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type FactoryRetryOutcome } from "../core/factory-retry.js";
+import { PocStateSchema, stepPoc, type PocEvent, type PocState } from "../core/poc-machine.js";
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
@@ -33,6 +34,8 @@ import {
   type ValidatedPhase,
 } from "../core/thread-machine.js";
 import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
+import { emit } from "../core/telemetry.js";
+import type { TelemetryTags } from "../core/telemetry-events.js";
 import {
   LEDGER_SCHEMA_SQL,
   type AttemptErrorCategory,
@@ -46,6 +49,8 @@ import {
   type ReviewerVendor,
   type ReviewVerdict,
   type ScoutProposalRecord,
+  type SignalRecord,
+  type SignalTaint,
   type ThreadRecord,
   type TriageSummary,
 } from "./schema.js";
@@ -177,7 +182,7 @@ export class Ledger {
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} ${type}`);
       };
       addCols("attempts", ["duration_ms", "peak_rss_kb"], "INTEGER");
-      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
+      addCols("attempts", ["provider", "model", "account_id", "compute", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
       addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
       this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
@@ -821,14 +826,14 @@ export class Ledger {
   /** Replay provenance for an Attempt: who ran it, with which prompt template, under which workflow file. */
   recordAttemptProvenance(
     attemptId: number,
-    p: { provider?: string | null; model?: string | null; accountId?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
+    p: { provider?: string | null; model?: string | null; accountId?: string | null; compute?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
   ): void {
     this.db
       .prepare(
-        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model), account_id = COALESCE(?, account_id),
+        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model), account_id = COALESCE(?, account_id), compute = COALESCE(?, compute),
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
-      .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+      .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.compute ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
   }
 
   /** What the Attempt's agent runs cost in wall time and memory (peak RSS in KB, null when never sampled). */
@@ -892,6 +897,9 @@ export class Ledger {
       this.addSpend(cost, now);
     }
     const attempt = this.getAttempt(attemptId)!;
+    const provider = (attempt.provider ?? "none") as TelemetryTags<"attempt_ms">["provider"];
+    emit("attempt_ms", attempt.durationMs ?? now - attempt.startedAt, { kind: attempt.kind, provider, outcome: result.status }, attempt.repo);
+    if (attempt.peakRssKb !== null) emit("attempt_rss_kb", attempt.peakRssKb, { kind: attempt.kind, provider }, attempt.repo);
     this.appendAudit(
       "attempt/finished",
       attempt.issueNumber,
@@ -1612,6 +1620,7 @@ export class Ledger {
          ON CONFLICT(account_id) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
       )
       .run(accountId, now + duration, reason.slice(0, 300), now);
+    emit("account_cooldown", 1, { account: accountId });
     this.appendAudit("account/cooldown", null, "archangel", { accountId, durationMs: duration }, now, null);
   }
 
@@ -1852,6 +1861,111 @@ export class Ledger {
     return Boolean(row);
   }
 
+  insertTelemetry(r: { ts: number; repo: string | null; name: string; value: number; tagsJson: string }): void {
+    this.db.prepare(`INSERT INTO telemetry (ts, repo, name, value, tags_json) VALUES (?, ?, ?, ?, ?)`).run(r.ts, r.repo, r.name, r.value, r.tagsJson);
+  }
+
+  /** Deletes up to `limit` telemetry rows older than `beforeMs`; call again while it returns `limit`. */
+  pruneTelemetry(beforeMs: number, limit: number): number {
+    return this.db.prepare(`DELETE FROM telemetry WHERE id IN (SELECT id FROM telemetry WHERE ts < ? LIMIT ?)`).run(beforeMs, limit).changes;
+  }
+
+  /** Telemetry rows of one event from `sinceMs` (to `untilMs`, exclusive), optionally for one repo. */
+  listTelemetry(name: string, sinceMs: number, untilMs = Number.MAX_SAFE_INTEGER, repo?: string | null): Array<{ ts: number; repo: string | null; value: number; tags: Record<string, string> }> {
+    const rows = this.db
+      .prepare(`SELECT ts, repo, value, tags_json FROM telemetry WHERE name = ? AND ts >= ? AND ts < ? ${repo === undefined ? "" : repo === null ? "AND repo IS NULL" : "AND repo = ?"} ORDER BY ts`)
+      .all(...([name, sinceMs, untilMs, ...(typeof repo === "string" ? [repo] : [])] as Array<string | number>)) as Array<{ ts: number; repo: string | null; value: number; tags_json: string }>;
+    return rows.map((r) => ({ ts: r.ts, repo: r.repo, value: r.value, tags: JSON.parse(r.tags_json) as Record<string, string> }));
+  }
+
+  /** Appends one signal; false when its `dedupe_key` was already ingested (so ingestion is idempotent). */
+  insertSignal(s: Omit<SignalRecord, "id">): boolean {
+    const r = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO signals (repo, source, kind, dedupe_key, taint, payload_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(s.repo, s.source, s.kind, s.dedupeKey, s.taint, JSON.stringify(s.payload), s.observedAt);
+    return r.changes === 1;
+  }
+
+  /** This repo's signals observed at or after `sinceMs`, oldest first. */
+  listSignals(sinceMs: number, repo = this.repo): SignalRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM signals WHERE repo = ? AND observed_at >= ? ORDER BY id ASC`)
+      .all(repo, sinceMs) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      repo: String(r.repo),
+      source: String(r.source),
+      kind: String(r.kind),
+      dedupeKey: String(r.dedupe_key),
+      taint: r.taint as SignalTaint,
+      payload: JSON.parse(String(r.payload_json)),
+      observedAt: Number(r.observed_at),
+    }));
+  }
+
+  /** Telemetry anomalies the telemetry Scout recorded since `sinceMs`, across repos, newest first. */
+  listTelemetryAnomalies(sinceMs: number): Array<{ repo: string; payload: Record<string, unknown>; observedAt: number }> {
+    const rows = this.db
+      .prepare(`SELECT repo, payload_json, observed_at FROM signals WHERE kind = 'telemetry_anomaly' AND observed_at >= ? ORDER BY id DESC`)
+      .all(sinceMs) as Array<{ repo: string; payload_json: string; observed_at: number }>;
+    return rows.map((r) => ({ repo: r.repo, payload: JSON.parse(r.payload_json) as Record<string, unknown>, observedAt: r.observed_at }));
+  }
+
+  signalCounts(sinceMs: number, repo = this.repo): Record<string, number> {
+    const rows = this.db
+      .prepare(`SELECT kind, COUNT(*) AS n FROM signals WHERE repo = ? AND observed_at >= ? GROUP BY kind`)
+      .all(repo, sinceMs) as Array<{ kind: string; n: number }>;
+    return Object.fromEntries(rows.map((r) => [r.kind, r.n]));
+  }
+
+  getSignalWatermark(adapter: string, repo = this.repo): { watermark: number; polledAt: number } | null {
+    const r = this.db.prepare(`SELECT watermark, polled_at FROM signal_watermarks WHERE repo = ? AND adapter = ?`).get(repo, adapter) as
+      | { watermark: number; polled_at: number }
+      | null;
+    return r ? { watermark: r.watermark, polledAt: r.polled_at } : null;
+  }
+
+  setSignalWatermark(adapter: string, watermark: number, now: number, repo = this.repo): void {
+    this.db
+      .prepare(
+        `INSERT INTO signal_watermarks (repo, adapter, watermark, polled_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (repo, adapter) DO UPDATE SET watermark = excluded.watermark, polled_at = excluded.polled_at`,
+      )
+      .run(repo, adapter, watermark, now);
+  }
+
+  hasSignalAction(signalId: number, ruleKey: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM signal_actions WHERE signal_id = ? AND rule_key = ?`).get(signalId, ruleKey) !== null;
+  }
+
+  /** Actions taken today (local day), across every repo: for one rule when `ruleName` is given, else all. Rejected rows do not count. */
+  countSignalActionsToday(now: number, ruleName?: string): number {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM signal_actions WHERE day_key = ? AND outcome != 'rejected' AND (? IS NULL OR rule_name = ?)`)
+      .get(dayKey, ruleName ?? null, ruleName ?? null) as { n: number };
+    return r.n;
+  }
+
+  /** Claims (signal, rule version) before acting, so the action happens at most once. False when already claimed. */
+  claimSignalAction(signalId: number, ruleKey: string, ruleName: string, outcome: string, now: number): boolean {
+    const r = this.db
+      .prepare(`INSERT OR IGNORE INTO signal_actions (signal_id, rule_key, rule_name, day_key, outcome, actioned_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(signalId, ruleKey, ruleName, formatDayKey(now, this.timeZone), outcome, now);
+    return r.changes === 1;
+  }
+
+  finishSignalAction(signalId: number, ruleKey: string, outcome: string, detail: string | null): void {
+    this.db.prepare(`UPDATE signal_actions SET outcome = ?, detail = ? WHERE signal_id = ? AND rule_key = ?`).run(outcome, detail, signalId, ruleKey);
+  }
+
+  /** Gives a claim back when the action provably did not happen (a Scout cap), so the signal stays pending. */
+  releaseSignalAction(signalId: number, ruleKey: string): void {
+    this.db.prepare(`DELETE FROM signal_actions WHERE signal_id = ? AND rule_key = ?`).run(signalId, ruleKey);
+  }
+
   /**
    * Atomically checks daily cap (and once-per-day dedupe for scheduled runs) and reserves
    * a `scout/run` audit slot in a single SQLite transaction (Opus M5).
@@ -1901,7 +2015,7 @@ export class Ledger {
   }
 
 
-  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
+  recordPitch(input: { autoPocBuild?: boolean; issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
@@ -1909,6 +2023,111 @@ export class Ledger {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, JSON.stringify({ kind: "open" }), now, input.pitchJson);
+    if (input.autoPocBuild) this.queuePocBuild(input.issueNumber, now, input.repo ?? this.repo);
+  }
+
+  /** The most one pitch may be built (owner command or automatic), and the most builds started in any 24 hours across repos. */
+  static readonly POC_MAX_BUILDS_PER_PITCH = 2;
+  static readonly POC_MAX_BUILDS_PER_DAY = 2;
+
+  /** Marks a freshly filed pitch for an automatic build. The reconciler starts it when the caps and a slot allow. */
+  queuePocBuild(issueNumber: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO pitch_pocs (repo, issue_number, ref, auto_queued, state_json, state_at) VALUES (?, ?, ?, 1, ?, ?)`)
+      .run(repo, issueNumber, `refs/pitch-poc/${issueNumber}`, JSON.stringify({ kind: "none" }), now);
+  }
+
+  /** Builds requested in the 24 hours before `now`, in every repo: PoC builds spend the one subscription. */
+  pocBuildsInLastDay(now = Date.now()): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE topic = 'poc/requested' AND ts > ?`).get(now - 86_400_000) as { n: number }).n;
+  }
+
+  /**
+   * Starts a build if the caps allow: at most POC_MAX_BUILDS_PER_PITCH per pitch and POC_MAX_BUILDS_PER_DAY a day, and none already
+   * running. `poc/requested` is written in the same transaction, before any build begins. A cap refusal is audited (`poc/refused_cap`).
+   */
+  reservePocBuild(issueNumber: number, now = Date.now(), repo = this.repo): { ok: true } | { ok: false; reason: string } {
+    const tx = this.db.transaction((): { ok: true } | { ok: false; reason: string } => {
+      if (!this.getPitch(issueNumber, repo)) return { ok: false, reason: `no pitch #${issueNumber} in ${repo}` };
+      this.db
+        .prepare(`INSERT OR IGNORE INTO pitch_pocs (repo, issue_number, ref, state_json, state_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(repo, issueNumber, `refs/pitch-poc/${issueNumber}`, JSON.stringify({ kind: "none" }), now);
+      const row = this.getPoc(issueNumber, repo)!;
+      if (row.state.kind === "building") return { ok: false, reason: "a build is already running for this pitch" };
+      const refuse = (scope: "pitch" | "day", reason: string) => {
+        this.appendAudit("poc/refused_cap", issueNumber, "archangel", { scope, builds: row.builds }, now, repo);
+        return { ok: false as const, reason };
+      };
+      if (row.builds >= Ledger.POC_MAX_BUILDS_PER_PITCH) return refuse("pitch", `this pitch has used its ${Ledger.POC_MAX_BUILDS_PER_PITCH} builds`);
+      if (this.pocBuildsInLastDay(now) >= Ledger.POC_MAX_BUILDS_PER_DAY) return refuse("day", `${Ledger.POC_MAX_BUILDS_PER_DAY} PoC builds were already started in the last 24 hours`);
+      const step = this.stepPocState(issueNumber, { t: "build_requested", at: now }, {}, now, repo);
+      if (!step.ok) return { ok: false, reason: step.reject };
+      this.db.prepare(`UPDATE pitch_pocs SET builds = builds + 1, auto_queued = 0 WHERE repo = ? AND issue_number = ?`).run(repo, issueNumber);
+      this.appendAudit("poc/requested", issueNumber, "archangel", { builds: row.builds + 1 }, now, repo);
+      return { ok: true };
+    });
+    return tx();
+  }
+
+  /** The only way a PoC changes state: read, `stepPoc`, compare-and-set on `version`. An illegal move changes nothing and is audited. */
+  stepPocState(
+    issueNumber: number,
+    ev: PocEvent,
+    extra: { diffStat?: string; costUsd?: number } = {},
+    now = Date.now(),
+    repo = this.repo,
+  ): { ok: true; state: PocState } | { ok: false; reject: string } {
+    const row = this.db.prepare(`SELECT state_json, version FROM pitch_pocs WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as
+      | { state_json: string; version: number }
+      | undefined;
+    if (!row) return { ok: false, reject: `no PoC for pitch #${issueNumber}` };
+    const state = PocStateSchema.parse(JSON.parse(row.state_json));
+    const step = stepPoc(state, ev);
+    if (!step.ok) {
+      this.appendAudit("poc/illegal_transition", issueNumber, "archangel", { from: state.kind, event: ev.t, reason: step.reject.slice(0, 200) }, now, repo);
+      return step;
+    }
+    const res = this.db
+      .prepare(
+        `UPDATE pitch_pocs SET state_json = ?, state_at = ?, version = version + 1, diff_stat = COALESCE(?, diff_stat), cost_usd = cost_usd + ?
+         WHERE repo = ? AND issue_number = ? AND version = ?`,
+      )
+      .run(JSON.stringify(step.next), now, extra.diffStat ?? null, extra.costUsd ?? 0, repo, issueNumber, row.version);
+    if (res.changes !== 1) return { ok: false, reject: "the PoC changed concurrently; retry" };
+    return { ok: true, state: step.next };
+  }
+
+  getPoc(issueNumber: number, repo = this.repo): PocRow | null {
+    const r = this.db.prepare(`SELECT * FROM pitch_pocs WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as PocDbRow | undefined;
+    return r ? toPocRow(r) : null;
+  }
+
+  /** Every PoC row across repos, for the dashboard and the reconciler's level-triggered scan. */
+  listPocs(): PocRow[] {
+    return (this.db.prepare(`SELECT * FROM pitch_pocs ORDER BY rowid`).all() as PocDbRow[]).map(toPocRow);
+  }
+
+  recordPitchAttachment(input: { issueNumber: number; sha256: string; kind: "repo" | "capture"; mime: string; width: number; height: number; bytes: number; caption: string; source: string; now?: number; repo?: string }): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO pitch_attachments (repo, issue_number, sha256, kind, mime, width, height, bytes, caption, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.repo ?? this.repo, input.issueNumber, input.sha256, input.kind, input.mime, input.width, input.height, input.bytes, input.caption, input.source, input.now ?? Date.now());
+  }
+
+  /** A new preview run replaces the old screenshots of the pitch (the files stay: they are content-addressed). */
+  clearPitchCaptures(issueNumber: number, repo = this.repo): void {
+    this.db.prepare(`DELETE FROM pitch_attachments WHERE repo = ? AND issue_number = ? AND kind = 'capture'`).run(repo, issueNumber);
+  }
+
+  listPitchAttachments(): Array<{ repo: string; issueNumber: number; sha256: string; kind: string; mime: string; width: number; height: number; caption: string; source: string }> {
+    return (
+      this.db.prepare(`SELECT repo, issue_number, sha256, kind, mime, width, height, caption, source FROM pitch_attachments ORDER BY created_at, rowid`).all() as Array<{ repo: string; issue_number: number; sha256: string; kind: string; mime: string; width: number; height: number; caption: string; source: string }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, sha256: r.sha256, kind: r.kind, mime: r.mime, width: r.width, height: r.height, caption: r.caption, source: r.source }));
+  }
+
+  /** The stored image type for a content hash, or null when no pitch has it. The asset route serves nothing else. */
+  pitchAssetMime(sha256: string): string | null {
+    const r = this.db.prepare(`SELECT mime FROM pitch_attachments WHERE sha256 = ? LIMIT 1`).get(sha256) as { mime: string } | undefined;
+    return r?.mime ?? null;
   }
 
   /**
@@ -2255,7 +2474,7 @@ export class Ledger {
     const needsYou = attempt(() =>
       this.listAllThreads(["needs_you"]).flatMap((t) =>
         t.phase.kind === "needs_you"
-          ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
+          ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, cause: t.phase.cause, since: t.updatedAt }]
           : [],
       ),
     );
@@ -2401,7 +2620,7 @@ export class Ledger {
     for (const t of threads) {
       if (t.phase.kind !== "needs_you") continue;
       escalations[t.phase.code] = (escalations[t.phase.code] ?? 0) + 1;
-      const cls = describeEscalation(t.phase.code).decisionClass;
+      const cls = describeEscalation(t.phase.code, undefined, t.phase.cause).decisionClass;
       byDecisionClass[cls] = (byDecisionClass[cls] ?? 0) + 1;
     }
 
@@ -2960,6 +3179,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
     model: r.model === null || r.model === undefined ? null : String(r.model),
     accountId: r.account_id === null || r.account_id === undefined ? null : String(r.account_id),
+    compute: r.compute === null || r.compute === undefined ? null : String(r.compute),
     promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     durationMs: r.duration_ms === null || r.duration_ms === undefined ? null : Number(r.duration_ms),
@@ -3038,4 +3258,30 @@ function outboxRecord(r: Record<string, unknown>): OutboxRecord {
     lastError: r.last_error === null ? null : String(r.last_error),
     createdAt: Number(r.created_at),
   };
+}
+
+export interface PocRow {
+  repo: string;
+  issueNumber: number;
+  ref: string;
+  builds: number;
+  autoQueued: boolean;
+  costUsd: number;
+  diffStat: string | null;
+  state: PocState;
+}
+
+interface PocDbRow {
+  repo: string;
+  issue_number: number;
+  ref: string;
+  builds: number;
+  auto_queued: number;
+  cost_usd: number;
+  diff_stat: string | null;
+  state_json: string;
+}
+
+function toPocRow(r: PocDbRow): PocRow {
+  return { repo: r.repo, issueNumber: r.issue_number, ref: r.ref, builds: r.builds, autoQueued: r.auto_queued === 1, costUsd: r.cost_usd, diffStat: r.diff_stat, state: PocStateSchema.parse(JSON.parse(r.state_json)) };
 }

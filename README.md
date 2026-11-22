@@ -41,8 +41,8 @@
 ```bash
 git clone https://github.com/dgrah50/archangel.git && cd archangel
 bun install
+bun src/cli/index.ts init          # creates archangel.yaml, .env and an empty Ledger; never overwrites
 bun scripts/create-github-app.ts   # creates the App, then writes its ids into .env
-cp archangel.example.yaml archangel.yaml
 bun src/cli/index.ts onboard owner/my-repo
 bun src/cli/index.ts doctor --smoke && bun src/cli/index.ts ui
 ```
@@ -87,7 +87,7 @@ Bugs can land end-to-end autonomously once you disable shadow mode. Features, ch
 | --- | --- |
 | **Host config (`archangel.yaml`)** | Owner GitHub ID, multi-account logins, provider chains, daily spend caps, autonomy caps, and per-repo shadow mode. |
 | **Repo policy (`.agents/archangel.json`)** | Diff bounds, test commands, required checks, protected paths, review rubric, factory retry toggle, and Scouts read strictly from `main`. |
-| **Thread** | One issue's validated state machine (`queued`, `working`, `awaiting_gate`, `reviewing`, `landing`, `shadow_ready`, `needs_you`, `done`) stored in SQLite. |
+| **Thread** | One issue's validated state machine (`queued`, `working`, `awaiting_plan`, `awaiting_gate`, `reviewing`, `landing`, `shadow_ready`, `needs_you`, `owner_driving`, `done`) stored in SQLite. |
 | **Mechanical Gate** | Ephemeral CI check that validates diff bounds, protected paths, test immutability, pre-commit hooks, and test proofs. |
 | **Rival Review** | Two independent vendors that never share a provider with the implementer. |
 
@@ -197,6 +197,49 @@ Archangel enforces its own reliability rules in CI so critical state transitions
 - **Exhaustive formal model checker (`bun run verify:formal`).** Explores reachable states of the Thread, Command, Pitch, and Daemon Lock state machines via BFS to verify safety invariants and liveness bounds.
 - **Structural AST lint (`bun run lint`).** Blocks silent catch handlers and recurring failure modes across the TypeScript source tree.
 
+## Running providers on Sail
+
+A provider runs on a Sail box only when it has a remote credential in `compute.sail`; otherwise it runs on this machine with its own login. This is decided per chain entry and never changes mid-Attempt. Nothing from your account homes or environment ever enters a box: it holds placeholders, and the real key is swapped in on the wire for the one allow-listed model host. Run `sail auth login` once, then pick a route per provider. `archangel doctor` checks that each named Sail secret exists.
+
+| Provider | Route | Config under `compute.sail` | Owner steps |
+| --- | --- | --- | --- |
+| claude | subscription token | `remoteClaudeAttempts: true`, `claudeTokenSecret` | `sail secret set CLAUDE_CODE_OAUTH_TOKEN` (hidden prompt) |
+| codex | OpenAI API key | `codexApiKeySecret: OPENAI_API_KEY_SAIL` | create an OpenAI Platform API key, `sail secret set OPENAI_API_KEY_SAIL` |
+| codex | dedicated ChatGPT login (broker) | `codexBrokerHome: ~/.archangel/accounts/codex-sail` | see below; exclusive with `codexApiKeySecret` |
+| agy | Gemini API key | `geminiApiKeySecret: GEMINI_API_KEY_SAIL` | create a Google AI Studio API key (put a billing limit on the project), `sail secret set GEMINI_API_KEY_SAIL` |
+
+agy with a Google subscription login is not supported on Sail: its login lives in a keyring and Google's terms ban this use. Use the Gemini API key.
+
+Set the secrets at the hidden prompt, never as an argument, and add the config:
+
+```yaml
+compute:
+  provider: sail
+  sail:
+    app: archangel
+    codexApiKeySecret: OPENAI_API_KEY_SAIL
+    geminiApiKeySecret: GEMINI_API_KEY_SAIL
+```
+
+For the broker route, create a second, separately paid ChatGPT account (never your main one), then:
+
+```sh
+mkdir -p ~/.archangel/accounts/codex-sail
+printf 'cli_auth_credentials_store = "file"\n' > ~/.archangel/accounts/codex-sail/config.toml
+CODEX_HOME=~/.archangel/accounts/codex-sail codex login
+```
+
+Never log that account in anywhere else: its refresh token rotates and only the broker may use it. Then set `codexBrokerHome` and verify as below. You decide whether the OpenAI terms allow this use; the API-key route is the documented default for automation.
+
+### Verify the codex ChatGPT broker (once, after creating the dedicated account)
+
+`compute.sail.codexBrokerHome` points at a CODEX_HOME holding a dedicated ChatGPT login (never your main account) stored as a file (`cli_auth_credentials_store = "file"`). The daemon's token broker is the only thing that refreshes it: it lets codex do the refresh (`codex app-server`, `account/read` with `refreshToken`), writes only the access token to the Sail secret `ARCHANGEL_CODEX_ACCESS`, and refreshes at about half the token's life. A box holds a placeholder and cannot reach `auth.openai.com`, so it can never refresh. If a refresh fails the broker writes a sentinel into the secret and Attempts refuse to start; a 401 mid-Attempt fails the Attempt and is never retried by copying tokens.
+
+Two things are not proven until you run them on the real account:
+
+1. Start the daemon, then run `archangel doctor`. The `Sail token broker (codex)` check prints the measured access-token lifetime. Refreshes are scheduled from it, so a short lifetime is fine, but note it.
+2. Let one codex Attempt run on a throwaway issue. It must reach `chatgpt.com` and answer; a `401` in its transcript means the placeholder was not swapped on the wire for the login file (not env). Then remove `codexBrokerHome` from the config and use `codexApiKeySecret` instead.
+
 ## Configuration examples
 
 <details>
@@ -265,6 +308,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 
 | Command | What it does |
 | --- | --- |
+| `archangel init` | Create `archangel.yaml`, `.env` (mode 0600) and an empty Ledger in the current directory. Never overwrites, safe to rerun. |
 | `archangel start [--once] [-c <path>]` | Run the reconciler daemon continuously, or execute one tick and exit. |
 | `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` background agent. |
 | `archangel onboard <repo> [--dry-run]` | Create labels and open one onboarding PR with your `gh` CLI (never auto-merged). |

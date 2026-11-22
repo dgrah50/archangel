@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { timeReview } from "../core/telemetry.js";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
@@ -32,6 +33,7 @@ export interface ReviewRequest {
   diffText: string;
   touchedFiles: Record<string, string>;
   reviewRubric?: string;
+  repoInstructions?: string | null;
   skipVendors?: ReviewerVendor[];
   excludeVendors?: ReviewerVendor[];
 }
@@ -175,13 +177,13 @@ export class MastraReviewerSuite implements ReviewerSuite {
     if (!skip.has("openai")) {
       entries.push({
         vendor: "openai",
-        promise: this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req), "review_contract"),
+        promise: timeReview("openai", this.runOne("openai", this.openaiAgent, buildOpenAiReviewerPrompt(req), "review_contract")),
       });
     }
     if (!skip.has("gemini")) {
       entries.push({
         vendor: "gemini",
-        promise: this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req), "review_adversarial"),
+        promise: timeReview("gemini", this.runOne("gemini", this.geminiAgent, buildGeminiAdversarialPrompt(req), "review_adversarial")),
       });
     }
 
