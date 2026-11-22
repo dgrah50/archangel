@@ -15,6 +15,7 @@ import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
+import { runScoutsForProject } from "../core/scout.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { runGate } from "../gate/gate.js";
@@ -843,6 +844,70 @@ daemonCmd
       } catch {
         console.log("Not loaded in launchd.");
       }
+    }
+  });
+
+const scoutCmd = program
+  .command("scout")
+  .description("Discover and run repo-owned read-only Scout workflows (.agents/scouts/*.md)");
+
+scoutCmd
+  .command("run [name]")
+  .description("Run repo-owned Scout workflow(s) against the default branch (or --dry-run to list them)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--repo <owner/name>", "Target repository")
+  .option("--dry-run", "List parsed .agents/scouts/*.md workflows without running CLIs", false)
+  .action(async (name: string | undefined, opts: { config?: string; repo?: string; dryRun?: boolean }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const paths = resolvePaths(cfg);
+    const logger = new ArchangelLogger({
+      logFilePath: path.join(paths.dataDir, "archangel.log.jsonl"),
+      consoleOutput: true,
+    });
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
+    try {
+      const github = new GitHubAppClient({
+        owner: cfg.githubOwner,
+        repo: cfg.githubRepo,
+        appId: cfg.githubAppId,
+        installationId: cfg.githubInstallationId,
+        privateKeyPem: cfg.githubPrivateKeyPem,
+      });
+      const broker = new GitBroker({
+        bareRepoPath: paths.brokerBareRepoPath,
+        clonesDir: paths.clonesDir,
+        defaultBranch: cfg.defaultBranch,
+      });
+      const remoteUrl = await github.getRemoteUrlWithToken();
+      await broker.ensureBareRepo(remoteUrl);
+      const mainSha = await broker.resolveRef(`refs/heads/${cfg.defaultBranch}`);
+
+      const summaries = await runScoutsForProject({
+        config: cfg,
+        ledger,
+        github,
+        broker,
+        mainSha,
+        filterName: name,
+        dryRun: Boolean(opts.dryRun),
+        logger,
+      });
+      if (summaries.length === 0) {
+        console.log(`No matching .agents/scouts/*.md workflows found on ${repoSlug}@${mainSha.slice(0, 8)}.`);
+        return;
+      }
+      for (const s of summaries) {
+        if (s.status === "dry_run") {
+          console.log(`[dry-run] ${repoSlug}: scout '${s.scoutName}'`);
+        } else {
+          console.log(
+            `[${s.status}] ${repoSlug} scout '${s.scoutName}': filed=${s.filedIssues.map((n) => `#${n}`).join(",") || "none"}, deduped=${s.skippedDuplicates}, secrets_blocked=${s.blockedSecrets}`,
+          );
+        }
+      }
+    } finally {
+      ledger.close();
     }
   });
 

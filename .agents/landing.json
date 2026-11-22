@@ -26,6 +26,7 @@
     "src/core/blockers.ts",
     "src/core/thread-machine.ts",
     "src/core/reconciler.ts",
+    "src/core/scout.ts",
     "templates/**",
     "workflows/**",
     "bin/**"

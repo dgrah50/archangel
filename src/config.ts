@@ -64,7 +64,16 @@ export const LabelsSchema = z.object({
   stop: z.string().default("factory:stop"),
   needsYou: z.string().default("needs-you"),
   disagree: z.string().default("factory:disagree"),
+  agentProposed: z.string().default("agent-proposed"),
 });
+
+export const ScoutsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  maxRunsPerDay: z.number().int().min(1).max(10).default(2),
+  maxOpenProposals: z.number().int().min(1).max(10).default(3),
+});
+
+export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
 
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/landing.json)
@@ -125,6 +134,12 @@ export const ConfigSchema = z.object({
     stop: "factory:stop",
     needsYou: "needs-you",
     disagree: "factory:disagree",
+    agentProposed: "agent-proposed",
+  }),
+  scouts: ScoutsConfigSchema.default({
+    enabled: false,
+    maxRunsPerDay: 2,
+    maxOpenProposals: 3,
   }),
 
   // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
@@ -148,6 +163,15 @@ export const ConfigSchema = z.object({
   paseoHome: z.string().optional(),
   telegramBotToken: z.string().optional(),
   telegramChatId: z.string().optional(),
+}).superRefine((cfg, ctx) => {
+  if (cfg.scouts.enabled && (!cfg.githubAppBotUserId || cfg.githubAppBotUserId <= 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["githubAppBotUserId"],
+      message:
+        "scouts.enabled requires githubAppBotUserId (set ARCHANGEL_GITHUB_BOT_USER_ID in .env) to safely verify bot-authored proposals",
+    });
+  }
 });
 
 export type ArchangelConfig = z.infer<typeof ConfigSchema>;
@@ -172,6 +196,11 @@ const HostProjectYamlSchema = z.object({
     headTestRuns: 2,
   }),
   reviewRubric: z.string().optional(),
+  scouts: ScoutsConfigSchema.default({
+    enabled: false,
+    maxRunsPerDay: 2,
+    maxOpenProposals: 3,
+  }),
 });
 
 export const HostYamlSchema = z.object({
@@ -370,6 +399,7 @@ export function loadProjectConfigs(opts: {
         requiredChecks: proj.requiredChecks,
         gate: proj.gate,
         reviewRubric: proj.reviewRubric,
+        scouts: proj.scouts,
         labels: host.labels,
         authMode: host.authMode,
         implementerChain: host.implementerChain,
