@@ -21,7 +21,7 @@ Archangel runs on your machine, watches your GitHub repositories, and turns real
 </picture>
 
 1. **Scouts find bugs—or you file them.** Read-only Bug Scouts audit `main` on schedule (using `claude` or `codex` in read-only mode, scanning for secrets and deduplicating before filing) and open reproducible bug proposals. By default they wait for your `ready-for-agent` label; you can also opt a Scout into capped auto-promotion (`scouts.maxAutoPromotionsPerDay`, default `1`), which automatically revokes itself on any disagreement, revert, red `main`, or 3 unmerged Threads in a row. Owner-authored issues labelled `class:feature` run as features and always wait for your merge.
-2. **Implement on the subscriptions you already pay for.** Archangel runs your configured `implementerChain` (`codex`, `claude`, `agy`) in a throwaway clone with a scrubbed environment. If one provider hits a rate or quota limit, it records a cooldown and fails over to the next CLI while carrying the working tree forward. Metered API keys (`authMode: api`) work too.
+2. **Implement on the subscriptions you already pay for.** Archangel runs the provider chain for the Attempt's role (`chains.implement`, `chains.revise`, `chains.rebase`; `codex`, `claude`, `agy`, each with an optional `model`) in a throwaway clone with a scrubbed environment, so cheaper models can take the menial roles. If one provider hits a rate or quota limit, it records a cooldown and fails over to the next CLI while carrying the working tree forward. Metered API keys (`authMode: api`) work too.
 3. **A mechanical Gate proves every fix.** Before review or merge, deterministic code checks diff bounds (at most 150 non-test lines, 300 total lines, 5 files, zero binaries), protected paths, pre-existing test and fixture immutability, and your repo's `.pre-commit-config.yaml` hooks from `main`. For bug fixes, it proves `main` is green, overlays your brand-new test file onto `main` to verify it compiles and fails (`>= 3` runs), then proves the suite passes on the fix (`>= 2` runs).
 4. **Two independent reviewers must approve.** Every passing PR is reviewed in parallel by two models from different vendors than the one that wrote the code—one checking the contract and test, one trying to break the fix—with backup vendor failover if configured.
 5. **It merges cleanly, then watches `main`.** Autonomous landing runs only when both the repo (`landing.bugfix: "autonomous"`) and your host (`shadowMode: false`) allow it. Every project defaults to `shadowMode: true`, posting a `WOULD MERGE` Recap so you can check agreement first. When it lands, it squash-merges the exact verified commit SHA and watches required checks on `main`: if `main` goes red, it trips the repo's circuit breaker and opens an exact-inverse revert PR for you to merge (or escalates to `Needs You` if `main` moved on).
@@ -104,7 +104,8 @@ digestHour: 9
 maxDailyUsd: 20
 maxAutonomousStepsWithoutOwner: 25
 authMode: subscription
-implementerChain: [{ provider: codex }, { provider: agy }]
+chains:
+  implement: [{ provider: codex }, { provider: agy }]
 reviewerChain: [{ provider: agy }, { provider: claude }, { provider: codex }]
 projects:
   - repo: owner/my-repo
