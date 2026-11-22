@@ -204,6 +204,21 @@ function checkThreadModel(name: string, m: ThreadMutants = {}): CheckResult {
             ? `budgetSettlements (${s.budgetSettlements}) exceeded finished attempts (${s.attemptsFinished})`
             : null,
       },
+      {
+        property: "OwnerExitAlwaysAvailable",
+        check: (s) => {
+          if (s.phase.kind === "done") return null;
+          const ab = stepPhase(s.phase, s.mode, { t: "owner_abandon" }, META);
+          if (!ab.ok || ab.next.kind !== "done" || ab.next.outcome !== "abandoned") {
+            return `Phase ${s.phase.kind} failed owner_abandon exit`;
+          }
+          const mg = stepPhase(s.phase, s.mode, { t: "pr_observed", status: "merged" }, META);
+          if (!mg.ok || mg.next.kind !== "done" || mg.next.outcome !== "owner_merged") {
+            return `Phase ${s.phase.kind} failed pr_observed(merged) exit`;
+          }
+          return null;
+        },
+      },
     ],
     step: (s) => {
       const out: Array<{ action: string; next: ThreadModelState; check?: { property: string; ok: boolean; detail: string } }> = [];
