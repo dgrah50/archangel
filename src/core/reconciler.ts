@@ -20,7 +20,7 @@ import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
 import { runScoutsForProject, scoutContentHash } from "./scout.js";
-import { ownerMergesOnly, type OkWorkflow } from "./workflow.js";
+import { ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import {
   classifyGate,
@@ -144,6 +144,13 @@ export class Reconciler {
     }
   }
 
+  /** Dashboard read path: the latest resolution (ok, missing or invalid) per repo, so the UI never calls GitHub. */
+  private cacheWorkflow(resolved: EffectiveWorkflow, now: number): void {
+    const key = `workflow:${this.ledger.repo}`;
+    const json = JSON.stringify(resolved);
+    if (this.ledger.getSystemState(key) !== json) this.ledger.setSystemState(key, json, now);
+  }
+
   private async runTickInternal(now: number): Promise<void> {
     // 0. Flush durable outbox side effects (retries any labels/notifications lost on crash).
     await this.flushOutbox();
@@ -156,6 +163,7 @@ export class Reconciler {
     // Missing or invalid halts new work for this repo (fail closed); owner commands and post-merge main
     // monitoring still run.
     const resolved = await loadWorkflow(this.broker, this.cfg, this.ledger, mainSha);
+    this.cacheWorkflow(resolved, now);
     const policyError = workflowError(resolved);
     if (resolved.status === "ok") {
       this.workflow = resolved;

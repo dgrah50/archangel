@@ -3,7 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import type { Ledger } from "../ledger/store.js";
 import { ARCHANGEL_ROOT } from "./onboard.js";
-import { buildUiState } from "./ui-state.js";
+import { buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -52,6 +52,11 @@ export async function startUiServer(
       if (pathname === "/api/state") {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(buildUiState(ledger)));
+        return;
+      }
+      if (pathname === "/api/workflows") {
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(buildWorkflowsState(ledger)));
         return;
       }
       const file = path.resolve(uiDir, "." + (pathname === "/" ? "/index.html" : pathname));
