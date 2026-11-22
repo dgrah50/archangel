@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { stepPhase, type MachineEvent, type Mode, type Phase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -179,6 +182,56 @@ describe("daemon lock heartbeat", () => {
       expect(ledger.listAudit({ topicPrefix: "thread/owner_retry" })).toHaveLength(0);
     } finally {
       ledger.close();
+    }
+  });
+
+  it("enforces daemon lock, handoff command mutual exclusion, and CAS retry atomicity across two real WAL SQLite connections", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-wal-"));
+    const dbPath = path.join(dir, "ledger.db");
+    const daemonA = new Ledger(dbPath, { repo: "acme/app" });
+    const daemonB = new Ledger(dbPath, { repo: "acme/app" });
+    try {
+      expect(daemonA.acquireDaemonLock("d1", 1000, 10_000)).toBe(true);
+      expect(daemonB.acquireDaemonLock("d2", 1000, 10_500)).toBe(false);
+      // Stale takeover by d2, followed by delayed release by d1, must leave d2's lock intact.
+      expect(daemonB.acquireDaemonLock("d2", 1000, 11_500)).toBe(true);
+      daemonA.releaseDaemonLock("d1");
+      expect(daemonB.heartbeatDaemonLock("d2", 11_600)).toBe(true);
+
+      // Handoff command mutual exclusion across two connections.
+      const cmdId = daemonA.enqueueCommand(9, "handoff", 12_000);
+      expect(daemonB.claimCommand(cmdId, 12_010)).toBe(true);
+      expect(daemonA.cancelCommand(cmdId, "timeout", 12_020)).toBe(false);
+      expect(daemonB.completeCommand(cmdId, { ok: true }, 12_030)).toBe(true);
+
+      // CAS race on owner_retry across two connections leaks no retry budget or audit row.
+      const t = daemonA.upsertThread({
+        issueNumber: 9,
+        title: "WAL CAS",
+        bodySha256: "h1",
+        phase: { kind: "needs_you", code: "gate_failed", reason: "red", resumeTo: { kind: "queued" } },
+        now: 12_000,
+      });
+      const retryNext = mustStep(t.phase, t.mode, { t: "owner_retry", now: 12_100 }, 9);
+      const abandonNext = mustStep(t.phase, t.mode, { t: "owner_abandon" }, 9);
+      expect(daemonB.transition(9, t.version, abandonNext, { now: 12_050 })).not.toBeNull();
+      expect(
+        daemonA.transition(9, t.version, retryNext, {
+          ownerReply: "hint",
+          grantRetryBudget: true,
+          extraAudits: [{ topic: "thread/owner_retry", actor: "owner", payload: { via: "cli", code: "gate_failed" } }],
+          now: 12_100,
+        }),
+      ).toBeNull();
+      const finalThread = daemonB.getThread(9)!;
+      expect(finalThread.phase).toMatchObject({ kind: "done", outcome: "abandoned" });
+      expect(finalThread.retryGrants).toBe(0);
+      expect(finalThread.ownerReply).toBeNull();
+      expect(daemonB.listAudit({ topicPrefix: "thread/owner_retry" })).toHaveLength(0);
+    } finally {
+      daemonA.close();
+      daemonB.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
