@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
+import { AttemptError } from "../src/ledger/schema.js";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {
@@ -103,6 +104,40 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
           maxBudgetUsd: 5, role: "implement" as const,
         }),
       ).rejects.toThrow(/test failed/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("retries a network drop once on the same account, then fails; an exit-0 headless denial with no work is a failure", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sub-test-"));
+    const repo = path.join(tmp, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "test@local"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.go"), "package a\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    try {
+      const chain = [{ provider: "codex" as const }];
+      const make = (invoker: ConstructorParameters<typeof SubscriptionImplementer>[0]["invoker"]) =>
+        new SubscriptionImplementer({ chains: { implement: chain, revise: chain, rebase: chain }, transcriptsDir: path.join(tmp, "t"), networkRetryWaitMs: 0, invoker });
+      const run = (impl: SubscriptionImplementer) =>
+        impl.run({ issueNumber: 1, cloneDir: repo, prompt: "Fix", abortController: new AbortController(), maxTurns: 10, timeoutMs: 10_000, maxBudgetUsd: 5, role: "implement" as const });
+
+      let calls = 0;
+      const dropped = make(async () => {
+        calls++;
+        return { code: 1, stdout: "", stderr: "Error: read ECONNRESET", aborted: false };
+      });
+      await expect(run(dropped)).rejects.toMatchObject({ category: "provider_network" });
+      expect(calls).toBe(2);
+
+      const denied = make(async () => ({ code: 0, stdout: "{}", stderr: 'jetski: no output produced: a tool required the "command" permission, so it was auto-denied.', aborted: false }));
+      const err = await run(denied).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AttemptError);
+      expect((err as AttemptError).category).toBe("permission_denied");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

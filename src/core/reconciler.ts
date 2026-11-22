@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
+import { ATTEMPT_FAILURE_ADVICE, MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -1785,8 +1785,8 @@ export class Reconciler {
         role: kind === "plan" ? "implement" : kind,
         })
         .catch((err: unknown) => {
-          // The implementer (every provider in its chain) threw: that is a provider failure, whatever its prose says.
-          throw err instanceof AttemptError ? err : new AttemptError("provider_unavailable", err instanceof Error ? err.message : String(err));
+          // An implementer failure that did not name its cause.
+          throw err instanceof AttemptError ? err : new AttemptError("implementer_failed", err instanceof Error ? err.message : String(err));
         });
 
       actualCostUsd = result.costUsd;
@@ -2119,13 +2119,14 @@ export class Reconciler {
         errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
+      const advice = err instanceof AttemptError ? ATTEMPT_FAILURE_ADVICE[err.category] : undefined;
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}${advice ? ` ${advice}` : ""}` },
           { auditTopic: "thread/needs_you" },
         );
       }
