@@ -1,11 +1,12 @@
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import type { AttemptErrorCategory } from "../ledger/schema.js";
 import type { EscalationCode } from "./thread-machine.js";
 
 export interface DigestInput {
   now: number;
   /** All configured projects, not one repo. */
   /** null = could not be read ("unavailable"), distinct from an empty list. */
-  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; since: number }> | null;
+  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; cause?: AttemptErrorCategory; since: number }> | null;
   /** Each figure is null when it could not be computed ("unavailable"), distinct from a real 0. */
   yesterday: { autonomousMerges: number | null; ownerMerges: number | null; reverts: number | null; spendUsd: number | null };
   /** Scout proposals still awaiting the owner (no Thread yet); null = could not be read. */
@@ -52,7 +53,7 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.needsYou.length > 0) {
     lines.push("", `Needs You (${input.needsYou.length}):`);
     for (const item of input.needsYou) {
-      const p = describeEscalation(item.code);
+      const p = describeEscalation(item.code, undefined, item.cause);
       lines.push(`${item.repo}#${item.issueNumber} ${item.title}`);
       lines.push(`  ${formatDecisionClass(p.decisionClass)}, waiting ${age(input.now - item.since)}`);
       lines.push(`  Recommended: ${p.recommendation}`);
