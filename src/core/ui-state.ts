@@ -39,7 +39,7 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
-  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string }>;
+  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string; threadRecommendation: { headline: string; reason: string } | null }>;
   /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
@@ -151,6 +151,8 @@ export function groupByNeed(threads: ThreadRecord[], now: number): Record<NeedGr
 export function groupThreads(
   threads: ThreadRecord[],
   now: number,
+  /** The model-written, per-Thread recommendation for a needs_you Thread's current entry (read-only); absent means none. */
+  recommendationOf: (t: ThreadRecord) => { headline: string; reason: string } | null = () => null,
 ): { stages: Record<Stage, UiItem[]>; needsYou: UiState["needsYou"] } {
   const stages = Object.fromEntries(STAGES.map((s) => [s, [] as UiItem[]])) as Record<Stage, UiItem[]>;
   const needsYou: UiState["needsYou"] = [];
@@ -167,7 +169,7 @@ export function groupThreads(
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
       const p = describeEscalation(t.phase.code);
-      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason });
+      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason, threadRecommendation: recommendationOf(t) });
     }
   }
   for (const list of Object.values(stages)) list.sort((a, b) => b.since - a.since);
@@ -197,7 +199,7 @@ export function readLimits(configPath: string | undefined): { maxDailyUsd: numbe
 /** Pure read of the Ledger into the dashboard's data. Never writes; makes no network calls. */
 export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnType<typeof readLimits> = null): UiState {
   const threads = ledger.listAllThreads();
-  const { stages, needsYou } = groupThreads(threads, now);
+  const { stages, needsYou } = groupThreads(threads, now, (t) => ledger.threadRecommendationFor(t)?.text ?? null);
   const repos = [...new Set(threads.map((t) => t.repo))];
   const known = new Set(threads.map((t) => `${t.repo}#${t.issueNumber}`));
   const pitches = ledger.listOpenPitches();

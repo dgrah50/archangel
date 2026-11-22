@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
-import { age } from "./common";
+import { age, recommendationShort } from "./common";
 import { CopyCommand, LinkButton, Owed, Page, PageHeadline, Ref, Section } from "./page";
 import { itemHash, threadHash, type ItemRef } from "./route";
 
@@ -113,7 +113,7 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
                     </Text>
                   </Flex>
                   <Text textStyle="meta" color="fg.muted">
-                    {cap(i.decisionClass)} · {i.recommendationShort}
+                    {cap(i.decisionClass)} · {recommendationShort(i)}
                   </Text>
                 </Link>
               </li>
@@ -158,13 +158,13 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
       </Flex>
       <Flex direction="column" gap="2" p="6" rounded="20px" bg="bg.muted">
         <Text textStyle="meta" color="fg.muted">
-          The factory recommends
+          {i.threadRecommendation ? "The factory recommends, for this Thread" : "The factory recommends"}
         </Text>
         <Text textStyle="rowTitle" fontSize="18px" color="fg">
-          {i.recommendation}
+          {i.threadRecommendation ? i.threadRecommendation.headline : i.recommendation}
         </Text>
         <Text textStyle="body13" color="fg.muted">
-          {i.reason}
+          {i.threadRecommendation ? i.threadRecommendation.reason : i.reason}
         </Text>
       </Flex>
       {d === null ? (
