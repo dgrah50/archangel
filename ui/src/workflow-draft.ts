@@ -88,14 +88,26 @@ export function proposingEnabled(): boolean {
   return csrfToken() !== "";
 }
 
+/** Never throws: a network failure or a non-JSON reply becomes `{ error }` so the editor can show it and re-enable its buttons. */
 export async function propose(repo: string, draft: Workflow, baseFileSha256: string, dryRun: boolean): Promise<ProposeOutcome> {
-  const res = await fetch(`/api/workflows/${encodeURIComponent(repo)}/propose`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Archangel-Token": csrfToken() },
-    body: JSON.stringify({ draft, baseFileSha256, dryRun }),
-  });
-  const body = (await res.json().catch(() => ({}))) as Partial<{ preview: PreviewResult; url: string; error: string }>;
-  if (!res.ok || body.error) return { error: body.error ?? `HTTP ${res.status}` };
+  let res: Response;
+  try {
+    res = await fetch(`/api/workflows/${encodeURIComponent(repo)}/propose`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Archangel-Token": csrfToken() },
+      body: JSON.stringify({ draft, baseFileSha256, dryRun }),
+    });
+  } catch (e) {
+    return { error: `network error: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const text = await res.text().catch(() => "");
+  let body: Partial<{ preview: PreviewResult; url: string; error: string }> = {};
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    // not JSON: reported below with the status and the start of the body
+  }
+  if (!res.ok || body.error) return { error: body.error ?? `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}` };
   if (body.preview) return { preview: body.preview };
   if (body.url) return { url: body.url };
   return { error: "unexpected response" };
