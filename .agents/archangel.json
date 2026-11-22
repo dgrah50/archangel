@@ -9,8 +9,8 @@
   "testBuildCmd": "npm run typecheck",
   "baseTestCmd": "npx vitest run",
   "testCmd": "npm run test:all",
-  "baseTestRuns": 1,
-  "headTestRuns": 1,
+  "baseTestRuns": 3,
+  "headTestRuns": 2,
   "extraProtectedPaths": [
     "package.json",
     "package-lock.json",
@@ -32,7 +32,8 @@
     "templates/**",
     "workflows/**",
     "bin/**",
-    "skills/**"
+    "skills/**",
+    "src/core/work-class.ts src/core/onboard.ts src/core/owner-reply.ts src/core/metrics-block.ts src/core/skills.ts src/core/ui-server.ts ui/**"
   ],
   "requiredChecks": [
     "Gate",
