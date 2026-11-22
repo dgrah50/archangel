@@ -103,21 +103,26 @@ export class PaseoCliRunner implements PaseoRunner {
   }
 
   async isAgentRunning(agentId: string): Promise<boolean> {
+    let stdout: string;
     try {
-      const { stdout } = await execFileAsync(
-        "paseo",
-        [...this.baseArgs(), "inspect", agentId, "--json"],
-        { maxBuffer: 2 * 1024 * 1024 },
-      );
-      const parsed = JSON.parse(stdout) as { Status?: string; status?: string; Archived?: boolean };
-      if (parsed.Archived) return false;
-      const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
-      // Explicit allowlist for stopped statuses (Opus Step 6 / S16).
-      return !STOPPED_PASEO_STATUSES.has(st);
-    } catch {
-      // Agent deleted or archived (404/non-zero) -> treat as stopped so resume never deadlocks (Opus S16).
-      return false;
+      ({ stdout } = await execFileAsync("paseo", [...this.baseArgs(), "inspect", agentId, "--json"], { maxBuffer: 2 * 1024 * 1024 }));
+    } catch (err) {
+      // Only a definite "no such agent" counts as stopped. A Paseo daemon that is down, a timeout or any other failure is UNKNOWN,
+      // and an unknown agent must never read as "not running" (resume would run beside a Paseo agent that is still pushing).
+      const e = err as { message?: string; stderr?: string };
+      if (/not found|no such|unknown agent|\b404\b/i.test(`${e.message ?? ""} ${e.stderr ?? ""}`)) return false;
+      throw new Error(`Could not verify whether Paseo agent ${agentId} is running: ${(e.stderr || e.message || String(err)).slice(0, 200)}`);
     }
+    let parsed: { Status?: string; status?: string; Archived?: boolean };
+    try {
+      parsed = JSON.parse(stdout) as typeof parsed;
+    } catch {
+      throw new Error(`Could not read the state of Paseo agent ${agentId} (unparseable inspect output)`);
+    }
+    if (parsed.Archived) return false;
+    const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
+    // Explicit allowlist for stopped statuses (Opus Step 6 / S16).
+    return !STOPPED_PASEO_STATUSES.has(st);
   }
 }
 
@@ -150,20 +155,19 @@ export async function handoffThreadToPaseo(
   const now = Date.now();
   if (deps.ledger.isDaemonActive(deps.config.staleLeaseMs, now)) {
     const cmdId = deps.ledger.enqueueCommand(issueNumber, "handoff", now);
-    const deadline = now + (deps.daemonWaitTimeoutMs ?? 30_000);
-    while (Date.now() < deadline) {
-      const cmd = deps.ledger.getCommand(cmdId);
-      if (cmd?.status === "completed") break;
-      if (cmd?.status === "failed") {
-        throw new Error(`Daemon handoff command failed: ${cmd.errorMessage ?? "unknown"}`);
+    const waitMs = deps.daemonWaitTimeoutMs ?? 30_000;
+    let outcome = await waitForCommand(deps.ledger, cmdId, now + waitMs);
+    if (outcome.kind === "pending") {
+      // Give up only by cancelling: that succeeds only if the daemon has NOT claimed the command, so it can never later park the
+      // Thread as owner_driving behind our back. If it already claimed it, it is mid-handoff: wait for it to finish.
+      if (deps.ledger.cancelCommand(cmdId, "CLI timed out waiting for the daemon to claim the handoff")) {
+        throw new Error("Timed out waiting for live Archangel daemon to claim the handoff; nothing was changed");
       }
-      await new Promise((r) => setTimeout(r, 250));
+      outcome = await waitForCommand(deps.ledger, cmdId, Date.now() + waitMs);
     }
-    const finalCmd = deps.ledger.getCommand(cmdId);
-    if (finalCmd?.status !== "completed") {
-      // Mark timed-out command failed so daemon never later parks the thread as owner_driving without Paseo!
-      deps.ledger.failCommand(cmdId, "Timed out waiting for daemon handoff abort");
-      throw new Error("Timed out waiting for live Archangel daemon to complete handoff abort");
+    if (outcome.kind === "failed") throw new Error(`Daemon handoff command failed: ${outcome.error}`);
+    if (outcome.kind !== "completed") {
+      throw new Error("The daemon claimed the handoff but did not finish it in time; Paseo was not launched. Check `archangel status` and retry.");
     }
     thread = deps.ledger.getThread(issueNumber)!;
   } else {
@@ -299,4 +303,18 @@ export async function resumeThreadFromPaseo(
   }
 
   return { headSha };
+}
+
+type CommandOutcome = { kind: "pending" } | { kind: "claimed" } | { kind: "completed" } | { kind: "failed"; error: string } | { kind: "cancelled" };
+
+/** Polls a command until it is finished or the deadline passes; returns its last observed state (`pending` or `claimed` on timeout). */
+async function waitForCommand(ledger: Ledger, id: number, deadline: number): Promise<CommandOutcome> {
+  for (;;) {
+    const s = ledger.getCommand(id)?.state;
+    if (s?.kind === "completed") return { kind: "completed" };
+    if (s?.kind === "failed") return { kind: "failed", error: s.error };
+    if (s?.kind === "cancelled") return { kind: "cancelled" };
+    if (Date.now() >= deadline) return { kind: s?.kind === "claimed" ? "claimed" : "pending" };
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }

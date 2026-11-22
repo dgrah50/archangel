@@ -41,7 +41,7 @@ function runnerFor(root: string, o: { wf?: string | null; openPr?: string; dirty
       if (cmd === "git") {
         if (args[0] === "fetch") return "";
         if (args[0] === "status") return o.dirty ? " M x\n" : "";
-        if (o.offMain && args[0] === "merge-base" && args.includes("origin/main")) throw new Error("not ancestor");
+        if (o.offMain && args[0] === "merge-base" && args.includes("origin/main")) throw Object.assign(new Error("not ancestor"), { code: 1 });
         return execRunner.run(cmd, args, opts);
       }
       if (line.startsWith("gh repo view")) return "main\n";
@@ -105,6 +105,18 @@ describe("drift detection", () => {
     expect(edited.reasons).toEqual(["workflow differs from the canonical template (ignoring the pin)"]);
     const nopin = await assessPinDrift(execRunner, "steps: [gate]\n", c3, { root, template: TEMPLATE });
     expect(nopin.reasons[0]).toContain("no ARCHANGEL_GATE_SHA");
+  });
+});
+
+describe("git failures are not pin drift", () => {
+  it("a cat-file failure other than exit 1 (a broken checkout) is thrown, not reported as an unknown pin", async () => {
+    const broken: OnboardRunner = {
+      async run() {
+        throw Object.assign(new Error("fatal: not a git repository"), { code: 128 });
+      },
+    };
+    const wf = withPin(TEMPLATE, "a".repeat(40));
+    await expect(assessPinDrift(broken, wf, "b".repeat(40), { root: "/nonexistent", template: wf })).rejects.toThrow(/not a git repository/);
   });
 });
 
