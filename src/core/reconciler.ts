@@ -943,16 +943,27 @@ export class Reconciler {
         const dependsOn = this.ledger.getThreadDependency(thread.issueNumber);
         if (dependsOn !== null) {
           const pred = this.ledger.getThread(dependsOn);
-          if (!pred || pred.phase.kind !== "done") return;
-          this.ledger.clearThreadDependency(thread.issueNumber); // consumed: a retry after the Needs You runs the slice on its own
-          if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
-            this.applyMachineEvent(
-              thread,
-              { t: "escalate", code: "dependency_unmet", reason: `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.` },
-              { auditTopic: "thread/needs_you", now },
-            );
+          let unmet: string | null = null;
+          if (!pred) {
+            // No Thread yet: still waiting while the predecessor is an open, ready-for-agent issue that intake will pick up.
+            // Closed or un-labelled, it will never get one, so the chain can never advance.
+            const predIssue = await this.github.getIssue(dependsOn);
+            if (predIssue.state !== "open" || !predIssue.labels.includes(this.cfg.labels.readyForAgent)) {
+              unmet = `Slice #${dependsOn} was closed or un-labelled before it started, so this chained slice has not started.`;
+            }
+          } else if (pred.phase.kind !== "done") {
+            return;
+          } else if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
+            unmet = `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.`;
+          }
+          if (unmet === null && !pred) return;
+          if (unmet !== null) {
+            // Consume the dependency only once the escalation has landed: a lost CAS retries next tick instead of starting the slice unblocked.
+            const escalated = this.applyMachineEvent(thread, { t: "escalate", code: "dependency_unmet", reason: unmet }, { auditTopic: "thread/needs_you", now });
+            if (escalated) this.ledger.clearThreadDependency(thread.issueNumber); // a retry after the Needs You runs the slice on its own
             return;
           }
+          this.ledger.clearThreadDependency(thread.issueNumber);
         }
         await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
         return;

@@ -107,6 +107,27 @@ describe("chained slice dependencies", () => {
     }
   });
 
+  it("escalates when the predecessor issue is closed before it ever got a Thread, and keeps waiting while it is still open", async () => {
+    const s = setup();
+    try {
+      s.ledger.clearThreadDependency(11);
+      s.ledger.addThreadDependency(11, 77); // 77 has no Thread and no issue yet
+      s.github.issues.set(77, { number: 77, title: "pred", body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: "" });
+      s.github.labelActors.set("77:ready-for-agent", 0); // never verified as the owner's, so intake never creates its Thread
+      await s.tick(0);
+      await s.tick(1);
+      expect(s.ledger.getThread(11)?.phase.kind).toBe("queued");
+      expect(s.ledger.getThreadDependency(11)).toBe(77);
+      s.github.issues.get(77)!.state = "closed";
+      await s.tick(2);
+      expect(s.ledger.getThread(11)?.phase).toMatchObject({ kind: "needs_you", code: "dependency_unmet" });
+      expect(s.notes.filter((n) => n.issueNumber === 11)).toHaveLength(1);
+      expect(s.ledger.getThreadDependency(11)).toBeNull();
+    } finally {
+      s.cleanup();
+    }
+  });
+
   it("a slice without a dependency is unaffected", async () => {
     const s = setup();
     try {
