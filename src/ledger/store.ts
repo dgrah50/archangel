@@ -62,6 +62,21 @@ export interface OutcomeMetrics {
 }
 
 /** Per-stage figures for one repo (V4 Pipeline view). Numbers and fixed enums only. */
+/** The number of most recent decided pitches the promotion rate is taken over. */
+export const PITCH_RATE_WINDOW = 6;
+
+export interface PitchMetrics {
+  filed: number;
+  promoted: number;
+  declined: number;
+  expired: number;
+  open: number;
+  vetoed: number;
+  /** Of the last PITCH_RATE_WINDOW decided pitches (fewer if fewer exist): how many, and how many were promoted. */
+  lastDecided: number;
+  lastDecidedPromoted: number;
+}
+
 export interface StageMetrics {
   windowDays: number;
   intake: { queued: number; oldestQueuedAgeSec: number | null; rejections: Record<string, number> };
@@ -70,6 +85,7 @@ export interface StageMetrics {
     { runs: number; secretsBlocked: number; filed: number; becameThread: number; merged: number; reverted: number }
   >;
   promotion: { autoPromotionsLast24h: number; autoPromotionsInWindow: number };
+  pitches: PitchMetrics;
   workClass: Record<"bugfix" | "feature", { threads: number; merged: number; attemptsPerMerge: number | null }>;
   gate: { attempts: { total: number; succeeded: number; failed: number }; escalations: Record<string, number> };
   review: { byVendor: Record<string, { approve: number; veto: number }>; outages: number };
@@ -124,6 +140,7 @@ export class Ledger {
       }
       const pitchCols = this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>;
       if (!pitchCols.some((c) => c.name === "decline_reason")) this.db.exec("ALTER TABLE pitches ADD COLUMN decline_reason TEXT");
+      if (!pitchCols.some((c) => c.name === "expired_at")) this.db.exec("ALTER TABLE pitches ADD COLUMN expired_at INTEGER");
       if (!pitchCols.some((c) => c.name === "promoted_slices")) this.db.exec("ALTER TABLE pitches ADD COLUMN promoted_slices TEXT NOT NULL DEFAULT '[]'");
       if (!pitchCols.some((c) => c.name === "pitch_json")) this.db.exec("ALTER TABLE pitches ADD COLUMN pitch_json TEXT NOT NULL DEFAULT ''");
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
@@ -1419,6 +1436,59 @@ export class Ledger {
     return declined;
   }
 
+  /** Open pitches filed at or before `cutoffMs` (candidates for the 14-day expiry). */
+  listOpenPitchesFiledBefore(cutoffMs: number, repo = this.repo): Array<{ issueNumber: number; filedAt: number }> {
+    return (
+      this.db
+        .prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND status = 'open' AND filed_at <= ? ORDER BY filed_at ASC`)
+        .all(repo, cutoffMs) as Array<{ issue_number: number; filed_at: number }>
+    ).map((r) => ({ issueNumber: r.issue_number, filedAt: r.filed_at }));
+  }
+
+  /**
+   * The bot closed an open pitch nobody decided in 14 days. Stored as `declined` with `expired_at` set (the status CHECK cannot
+   * change on an existing Ledger), so the pause rule counts it as not promoted, exactly like a decline.
+   */
+  markPitchExpired(issueNumber: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`UPDATE pitches SET status = 'declined', status_at = ?, expired_at = ? WHERE repo = ? AND issue_number = ? AND status = 'open'`)
+      .run(now, now, repo, issueNumber);
+  }
+
+  /** Open pitches across every repo, oldest first, for the daily digest. */
+  listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; filedAt: number }> {
+    return (
+      this.db.prepare(`SELECT repo, issue_number, scout_name, filed_at FROM pitches WHERE status = 'open' ORDER BY filed_at ASC`).all() as Array<{
+        repo: string;
+        issue_number: number;
+        scout_name: string;
+        filed_at: number;
+      }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, filedAt: r.filed_at }));
+  }
+
+  /**
+   * Pitch outcomes for the dashboard: counts of pitches filed in the window by how they ended, vetoes (audit rows: a vetoed pitch is
+   * never filed), and the promotion rate over the most recent decided pitches (V7's entry trigger is at least 1 in 3 over 6).
+   */
+  pitchMetrics(sinceMs: number, repo = this.repo): PitchMetrics {
+    const rows = this.db
+      .prepare(`SELECT status, expired_at, filed_at FROM pitches WHERE repo = ? ORDER BY filed_at DESC, issue_number DESC`)
+      .all(repo) as Array<{ status: string; expired_at: number | null; filed_at: number }>;
+    const inWindow = rows.filter((r) => r.filed_at >= sinceMs);
+    const decided = rows.filter((r) => r.status !== "open").slice(0, PITCH_RATE_WINDOW);
+    return {
+      filed: inWindow.length,
+      promoted: inWindow.filter((r) => r.status === "promoted").length,
+      declined: inWindow.filter((r) => r.status === "declined" && r.expired_at === null).length,
+      expired: inWindow.filter((r) => r.expired_at !== null).length,
+      open: rows.filter((r) => r.status === "open").length,
+      vetoed: (this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'pitch/vetoed' AND ts >= ?`).get(repo, sinceMs) as { n: number }).n,
+      lastDecided: decided.length,
+      lastDecidedPromoted: decided.filter((r) => r.status === "promoted").length,
+    };
+  }
+
   setPitchDeclineReason(issueNumber: number, reason: string, repo = this.repo): void {
     this.db.prepare(`UPDATE pitches SET decline_reason = ? WHERE repo = ? AND issue_number = ?`).run(reason, repo, issueNumber);
   }
@@ -1557,6 +1627,7 @@ export class Ledger {
           .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
       ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name })),
     );
+    const pitches = attempt(() => this.listOpenPitches().map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, scoutName: p.scoutName, since: p.filedAt })));
     return {
       now,
       needsYou,
@@ -1567,6 +1638,7 @@ export class Ledger {
         spendUsd,
       },
       proposals,
+      pitches,
     };
   }
 
@@ -1701,6 +1773,7 @@ export class Ledger {
         autoPromotionsLast24h: this.countRecentAutoPromotions(now, repo),
         autoPromotionsInWindow: count(`SELECT COUNT(*) AS n FROM scout_proposals WHERE repo = ? AND auto_promoted = 1 AND created_at >= ?`, repo, sinceMs),
       },
+      pitches: this.pitchMetrics(sinceMs, repo),
       workClass,
       gate: { attempts: { total: attemptRows.reduce((a, r) => a + r.n, 0), succeeded: attemptsBy("succeeded"), failed: attemptsBy("failed") }, escalations },
       review: { byVendor, outages: auditCount("review/outage_started") },

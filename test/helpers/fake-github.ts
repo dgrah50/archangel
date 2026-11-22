@@ -37,6 +37,12 @@ export class FakeGitHub implements GitHubClient {
       .filter((c) => c.createdAt > sinceMs)
       .map((c) => ({ id: c.id ?? 0, userId: c.userId, isBot: Boolean(c.isBot), body: c.body, createdAt: c.createdAt }));
   }
+  async closeIssue(issueNumber: number): Promise<void> {
+    const i = this.issues.get(issueNumber);
+    if (i) i.state = "closed";
+    this.closedIssues.push(issueNumber);
+  }
+  closedIssues: number[] = [];
   async closePr(prNumber: number): Promise<void> {
     this.closedPrs.push(prNumber);
     const pr = this.prs.get(prNumber);

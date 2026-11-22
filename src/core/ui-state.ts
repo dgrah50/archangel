@@ -174,6 +174,15 @@ export interface WorkflowsState {
 }
 
 const WINDOW_DAYS = 14;
+/** Pitch outcomes for the Scouts card; nothing when the repo has never had a pitch activity. */
+export function pitchMetricLines(p: StageMetrics["pitches"]): string[] {
+  if (p.filed + p.vetoed + p.open === 0 && p.lastDecided === 0) return [];
+  return [
+    `pitches (${WINDOW_DAYS}d): ${p.filed} filed, ${p.promoted} promoted, ${p.declined} declined, ${p.expired} expired, ${p.vetoed} vetoed; ${p.open} open`,
+    `pitch promotion rate (last ${p.lastDecided} decided): ${p.lastDecided === 0 ? "no decided pitches yet" : `${p.lastDecidedPromoted}/${p.lastDecided}`}`,
+  ];
+}
+
 const list = (xs: readonly string[]) => (xs.length > 0 ? xs.join(", ") : "none");
 const pairs = (rec: Record<string, number>) => {
   const e = Object.entries(rec);
@@ -211,9 +220,12 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
             ]
           : [],
         clamps: ok && !ok.caps.scoutsEnabled && ok.scouts.length > 0 ? ["Scouts are disabled on this host (scouts.enabled is false): the repo declares them but nothing runs"] : [],
-        metrics: scoutEntries.length === 0
-          ? ["no Scout activity"]
-          : scoutEntries.map(([name, s]) => `${name}: ${s.runs} runs, ${s.filed} filed, ${s.becameThread} Threads, ${s.merged} merged, ${s.reverted} reverted, ${s.secretsBlocked} secrets blocked`),
+        metrics: [
+          ...(scoutEntries.length === 0
+            ? ["no Scout activity"]
+            : scoutEntries.map(([name, s]) => `${name}: ${s.runs} runs, ${s.filed} filed, ${s.becameThread} Threads, ${s.merged} merged, ${s.reverted} reverted, ${s.secretsBlocked} secrets blocked`)),
+          ...pitchMetricLines(m.pitches),
+        ],
       },
       {
         id: "promotion",

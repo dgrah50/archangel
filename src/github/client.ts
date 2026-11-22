@@ -54,6 +54,8 @@ export interface GitHubClient {
   /** Every comment (any author) strictly after `sinceMs`, oldest first, with author id and bot flag. */
   listCommentsSince(issueOrPrNumber: number, sinceMs: number): Promise<IssueComment[]>;
   closePr(prNumber: number): Promise<void>;
+  /** Closes an issue (the bot closing an expired pitch). */
+  closeIssue(issueNumber: number): Promise<void>;
   listOwnerReviewFeedbackSince(prNumber: number, ownerUserId: number, sinceMs: number): Promise<string[]>;
   mintInstallationTokenWithMeta?(): Promise<InstallationTokenMeta>;
   getRemoteUrlWithToken(): Promise<string>;
@@ -558,6 +560,12 @@ export class GitHubAppClient implements GitHubClient {
       }))
       .filter((c) => c.createdAt > sinceMs)
       .sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+  }
+
+  async closeIssue(issueNumber: number): Promise<void> {
+    await this.request("PATCH", `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueNumber}`, {
+      body: { state: "closed", state_reason: "not_planned" },
+    });
   }
 
   async closePr(prNumber: number): Promise<void> {
