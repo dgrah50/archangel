@@ -237,6 +237,8 @@ export class Reconciler {
           github: this.github,
           broker: this.broker,
           workflow: this.workflow!,
+          reviewers: this.reviewers,
+          notifier: this.notifier,
           mainSha,
           onlyScheduled: true,
           logger: this.logger,

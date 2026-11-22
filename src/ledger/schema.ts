@@ -285,6 +285,8 @@ CREATE TABLE IF NOT EXISTS pitches (
   filed_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'declined', 'promoted')),
   status_at INTEGER NOT NULL,
+  decline_reason TEXT,
+  pitch_json TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (repo, issue_number)
 );
 
