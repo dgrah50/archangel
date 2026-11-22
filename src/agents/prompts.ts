@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { GatePolicy } from "../config.js";
 import type { ReviewFinding } from "../ledger/schema.js";
 
@@ -240,4 +241,30 @@ export function buildGeminiAdversarialPrompt(input: {
     ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='veto' with exact file/line findings if you find ANY real defect or risk; otherwise return verdict='approve'.",
   ].join("\n");
+}
+
+
+export type PromptKind = "implement" | "revise" | "rebase" | "review_contract" | "review_adversarial";
+
+/**
+ * sha256 of a prompt's fixed template (issue, diff, rubric and repo gate numbers blanked), recorded with each
+ * Attempt and review so replay can tell which prompt wording produced a result. Editing the wording changes it.
+ */
+export function promptTemplateSha(kind: PromptKind, workClass: "bugfix" | "feature" = "bugfix"): string {
+  const base = { issueNumber: 0, title: "", body: "" };
+  const text =
+    kind === "implement"
+      ? buildImplementPrompt({ ...base, repoName: "", workClass })
+      : kind === "revise"
+        ? buildRevisionPrompt({ ...base, gateViolations: [], structuredFindings: [], workClass })
+        : kind === "rebase"
+          ? buildRebasePrompt({ issueNumber: 0, title: "", baseBranch: "", })
+          : kind === "review_contract"
+            ? buildOpenAiReviewerPrompt({ ...base, diffText: "" })
+            : buildGeminiAdversarialPrompt({ ...base, diffText: "", touchedFiles: {} });
+  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+export function rubricSha(rubric: string | undefined): string {
+  return crypto.createHash("sha256").update(rubric ?? "", "utf8").digest("hex");
 }

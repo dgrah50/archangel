@@ -59,6 +59,12 @@ export interface AttemptRecord {
   errorMessage: string | null;
   startedAt: number;
   finishedAt: number | null;
+  /** Replay provenance, set when the Attempt ran (null for rows from before capture). */
+  provider: string | null;
+  model: string | null;
+  /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
+  promptSha256: string | null;
+  workflowSha256: string | null;
 }
 
 export interface ReviewRecord {
@@ -71,6 +77,12 @@ export interface ReviewRecord {
   findingsJson: string;
   costUsd: number;
   createdAt: number;
+  provider: string | null;
+  model: string | null;
+  promptSha256: string | null;
+  /** sha256 of the review rubric text in force (the empty string's hash when none). */
+  rubricSha256: string | null;
+  workflowSha256: string | null;
 }
 
 export interface MergeRecord {
@@ -173,6 +185,10 @@ CREATE TABLE IF NOT EXISTS attempts (
   error_message TEXT,
   started_at INTEGER NOT NULL,
   finished_at INTEGER,
+  provider TEXT,
+  model TEXT,
+  prompt_sha256 TEXT,
+  workflow_sha256 TEXT,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 
@@ -196,6 +212,11 @@ CREATE TABLE IF NOT EXISTS reviews (
   findings_json TEXT NOT NULL,
   cost_usd REAL NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
+  provider TEXT,
+  model TEXT,
+  prompt_sha256 TEXT,
+  rubric_sha256 TEXT,
+  workflow_sha256 TEXT,
   UNIQUE(repo, issue_number, head_sha, vendor),
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
