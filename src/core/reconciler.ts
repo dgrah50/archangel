@@ -17,7 +17,7 @@ import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
-import type { Ledger } from "../ledger/store.js";
+import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
 import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
@@ -258,7 +258,7 @@ export class Reconciler {
         await this.reconcileIntakeIssue(issue, now, mainSha);
       } catch (err) {
         // Fail closed for this issue and this tick (no Thread); the other issues still go through and the next tick retries.
-        this.logger.warn("intake/error", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: issue.number });
+        this.recordFault("intake", err, now, issue.number);
       }
     }
 
@@ -290,7 +290,7 @@ export class Reconciler {
         await syncPitchDecisions(this.ledger, this.github, this.cfg, now, log);
         await expireStalePitches(this.ledger, this.github, this.cfg, now, log);
       } catch (err) {
-        this.logger.warn("pitch/housekeeping_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+        this.recordFault("pitch_housekeeping", err, now);
       }
     }
 
@@ -311,20 +311,44 @@ export class Reconciler {
           now,
         });
       } catch (err) {
-        this.ledger.appendAudit(
-          "scout/error",
-          null,
-          "archangel",
-          { error: err instanceof Error ? err.message : String(err) },
-          now,
-        );
+        this.ledger.appendAudit("scout/error", null, "archangel", { error: err instanceof Error ? err.message : String(err) }, now);
+        this.recordFault("scout", err, now);
       }
     }
 
     await this.raiseCorrectionSignals(now);
+    await this.raiseHealthSignals(now);
 
     // Flush any newly enqueued outbox effects immediately.
     await this.flushOutbox();
+  }
+
+  /** A survived error is an explicit per-repo health fact (category, first/last seen, count), not just a log line. */
+  private recordFault(category: string, err: unknown, now: number, issue?: number): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this.logger.warn(`health/${category}`, message, { repo: this.ledger.repo, ...(issue === undefined ? {} : { issue }) });
+    this.ledger.recordHealthFault(category, message, now);
+  }
+
+  /** One Needs You per error class per day once the class has been survived HEALTH_FAULT_THRESHOLD times in 24h. Notify first, then record. */
+  private async raiseHealthSignals(now: number): Promise<void> {
+    for (const f of this.ledger.listHealthFaults(now, this.ledger.repo)) {
+      if (f.recent24h < HEALTH_FAULT_THRESHOLD) continue;
+      if (this.ledger.hasAudit({ topic: "health/needs_you", sinceMs: now - HEALTH_WINDOW_MS, payload: { key: "category", value: f.category } })) continue;
+      const policy = MAIN_ESCALATION_POLICY.health_fault_repeated;
+      try {
+        await this.notifier.notifyNeedsYou({
+          issueNumber: null,
+          title: `${this.ledger.repo}: ${f.category} keeps failing`,
+          reason: `${f.recent24h} errors of this class in 24h. Last: ${f.lastError.slice(0, 200)}`,
+          decisionClass: formatDecisionClass(policy.decisionClass),
+          recommendation: policy.recommendation,
+        });
+        this.ledger.appendAudit("health/needs_you", null, "archangel", { category: f.category, count: f.recent24h }, now);
+      } catch (err) {
+        this.logger.warn("health/notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
+    }
   }
 
   /**
@@ -742,10 +766,7 @@ export class Reconciler {
         for (const c of await this.github.listCommentsSince(where, thread.updatedAt)) found.push({ where, c });
       }
     } catch (err) {
-      this.logger.warn("thread/owner_command_fetch_failed", err instanceof Error ? err.message : String(err), {
-        repo: this.ledger.repo,
-        issue: thread.issueNumber,
-      });
+      this.recordFault("owner_command_fetch", err, now, thread.issueNumber);
       return null;
     }
     found.sort((a, b) => a.c.createdAt - b.c.createdAt || a.c.id - b.c.id);
@@ -907,7 +928,7 @@ export class Reconciler {
           try {
             await this.github.addLabels(thread.issueNumber, [this.cfg.labels.needsYou]);
           } catch (err) {
-            this.logger.warn("thread/needs_you_restore_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+            this.recordFault("needs_you_restore", err, now, thread.issueNumber);
           }
           return;
         }
@@ -1236,6 +1257,7 @@ export class Reconciler {
         timeoutMs: this.cfg.implementTimeoutMs,
         maxBudgetUsd: reservedUsd,
         preferVendors: kind === "implement" ? undefined : workingThread.implementerVendors,
+        role: kind,
       });
 
       actualCostUsd = result.costUsd;
@@ -1263,6 +1285,7 @@ export class Reconciler {
 
         // If handoff aborted us, try to push any valid unpushed factory commits before releasing!
         if (cause === "handoff") {
+          let unpushed: string | null = null;
           try {
             const val = await this.broker.fetchAndValidateFromClone(
               cloneDir,
@@ -1271,13 +1294,30 @@ export class Reconciler {
               this.effectiveGate,
               workClassOfBranch(workingThread.branchName),
             );
-            if (val.protectedViolations.length === 0) {
+            if (val.changedFiles.length === 0) {
+              // The agent had committed nothing: there is nothing to push.
+            } else if (val.protectedViolations.length > 0) {
+              unpushed = `the commits touch protected paths (${val.protectedViolations.join("; ")})`;
+            } else {
               const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
               await this.broker.pushFactoryBranch(workingThread.branchName, val.headSha, freshRemoteUrl);
               this.ledger.recordPushedSha(val.headSha, workingThread.issueNumber, "broker");
             }
-          } catch {
-            // Non-fatal during handoff abort if clone had no commits.
+          } catch (err) {
+            unpushed = err instanceof Error ? err.message : String(err);
+          }
+          if (unpushed !== null) {
+            // The owner's workspace is missing the agent's last commits: an explicit audited state plus a note where they will see it.
+            this.ledger.appendAudit("handoff/push_failed", workingThread.issueNumber, "archangel", { reason: unpushed, branch: workingThread.branchName }, Date.now());
+            this.logger.warn("handoff/push_failed", unpushed, { repo: this.ledger.repo, issue: workingThread.issueNumber });
+            try {
+              await this.github.postComment(
+                workingThread.issueNumber,
+                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${unpushed.slice(0, 300)}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
+              );
+            } catch (err) {
+              this.logger.warn("handoff/push_failed_comment_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: workingThread.issueNumber });
+            }
           }
         }
 
@@ -2266,13 +2306,15 @@ export class Reconciler {
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     let gateProof: GateProof | null = null;
+    let gateProofError: string | null = null;
     try {
       const gate = (await this.github.getCheckRunsForRef(pr.headSha)).find(
         (c) => c.name === "Gate" && c.appSlug === "github-actions" && c.status === "completed",
       );
       if (gate) gateProof = await this.github.getGateProof(gate.id, pr.headSha);
     } catch (err) {
-      this.logger.warn("recap/gate_proof_unavailable", err instanceof Error ? err.message : String(err), {
+      gateProofError = err instanceof Error ? err.message : String(err);
+      this.logger.warn("recap/gate_proof_unavailable", gateProofError, {
         repo: this.ledger.repo,
         issue: thread.issueNumber,
       });
@@ -2286,6 +2328,7 @@ export class Reconciler {
           blockers,
           wouldMerge: opts.wouldMerge,
           gateProof,
+          gateProofError,
         }),
       );
     } catch (err) {

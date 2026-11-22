@@ -15,6 +15,8 @@ export function renderRecapComment(input: {
   summary?: string | null;
   /** Gate reproduction-test output for the current head SHA; null/undefined when not captured. */
   gateProof?: GateProof | null;
+  /** Why the proof could not be read (a GitHub error): shown as "Gate proof unavailable", distinct from a Gate run that emitted no proof. */
+  gateProofError?: string | null;
 }): string {
   const { thread, reviews, blockers } = input;
   const pr = extractPrFromPhase(thread.phase);
@@ -63,6 +65,9 @@ export function renderRecapComment(input: {
     lines.push(...(assumptions === null ? ["_none stated_"] : fencedText(assumptions)));
   }
 
+  const unavailable = input.gateProof ? null : (input.gateProofError ?? null);
+  const proofBlock = (output: string | undefined): string[] =>
+    unavailable !== null ? [`_Gate proof unavailable: ${unavailable.replace(/[\r\n`]+/g, " ").trim().slice(0, 200)}_`] : fencedOutput(output);
   lines.push(
     "",
     "#### Reproduction Test Proof",
@@ -71,10 +76,10 @@ export function renderRecapComment(input: {
     "**On base (expected to fail):**",
     ...(workClassOfBranch(thread.branchName) === "feature"
       ? ["_not applicable: feature Threads add tests for new behaviour, with no red-on-base proof_"]
-      : fencedOutput(input.gateProof?.base_output)),
+      : proofBlock(input.gateProof?.base_output)),
     "",
     "**On head (expected to pass):**",
-    ...fencedOutput(input.gateProof?.head_output),
+    ...proofBlock(input.gateProof?.head_output),
   );
   const junit = input.gateProof?.junit;
   if (junit) {

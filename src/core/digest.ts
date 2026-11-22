@@ -12,6 +12,8 @@ export interface DigestInput {
   proposals: Array<{ repo: string; issueNumber: number; scoutName: string }> | null;
   /** Pitches awaiting the owner's decision (they expire after 14 days); null = could not be read. */
   pitches: Array<{ repo: string; issueNumber: number; scoutName: string; since: number }> | null;
+  /** Subsystem error classes survived in the last 24h; null = could not be read. */
+  faults: Array<{ repo: string; category: string; recent24h: number; lastError: string }> | null;
 }
 
 const UNAVAILABLE = "unavailable";
@@ -34,6 +36,7 @@ export function buildDigest(input: DigestInput): string | null {
     input.needsYou?.length === 0 &&
     input.pitches?.length === 0 &&
     input.proposals?.length === 0 &&
+    input.faults?.length === 0 &&
     y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 &&
     y.spendUsd === 0
   ) {
@@ -70,6 +73,12 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.pitches.length > 0) {
     lines.push("", `Pitches awaiting you (${input.pitches.length}; they close unanswered after 14 days):`);
     for (const p of input.pitches) lines.push(`  ${p.repo}#${p.issueNumber} (${p.scoutName}), open ${age(input.now - p.since)}`);
+  }
+  if (input.faults === null) {
+    lines.push("", `Errors survived: ${UNAVAILABLE}`);
+  } else if (input.faults.length > 0) {
+    lines.push("", `Errors survived in the last 24h (${input.faults.length} classes):`);
+    for (const f of input.faults) lines.push(`  ${f.repo} ${f.category} x${f.recent24h}: ${f.lastError.slice(0, 100)}`);
   }
   return lines.join("\n");
 }

@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { REPO_POLICY_PATH, loadProjectConfigs, providerToVendor, resolvePaths, resolveRequiredReviewers, type ArchangelConfig } from "../config.js";
+import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type ArchangelConfig } from "../config.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
@@ -19,6 +19,8 @@ export interface DoctorCheck {
   status: "pass" | "warn" | "fail";
   detail: string;
   remediation?: string;
+  /** `machine` checks need no network; `repo` checks call GitHub. */
+  scope?: "machine" | "repo";
 }
 
 export interface DoctorReport {
@@ -68,6 +70,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       detail: err instanceof Error ? err.message : String(err),
       remediation: "Copy .env.example -> .env and archangel.example.yaml -> archangel.yaml, then populate required fields.",
     });
+    for (const c of checks) c.scope = "machine";
     return { ok: false, checks };
   }
 
@@ -95,12 +98,12 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
   // 3. Model authentication (subscription CLIs vs metered API keys)
   if (first.authMode === "subscription") {
-    const neededProviders = [
-      ...new Set([
-        ...first.implementerChain.map((e) => e.provider),
-        ...first.reviewerChain.map((e) => e.provider),
-      ]),
-    ];
+    // Every provider any role chain names: implement, revise, rebase, scout, triage, review.
+    const rolesByProvider = new Map<string, string[]>();
+    for (const [role, chain] of [...Object.entries(first.chains), ["review", first.reviewerChain] as const]) {
+      for (const e of chain) rolesByProvider.set(e.provider, [...new Set([...(rolesByProvider.get(e.provider) ?? []), role])]);
+    }
+    const neededProviders = [...rolesByProvider.keys()];
     const missingBins: string[] = [];
     const verified: string[] = [];
     for (const p of neededProviders) {
@@ -134,7 +137,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         id: "subscription_clis",
         name: "Subscription CLI Providers",
         status: "pass",
-        detail: `${verified.join(", ")} (chain: impl=${first.implementerChain.map((e) => e.provider).join("->")}, rev=${first.reviewerChain.map((e) => e.provider).join("->")})`,
+        detail: `${verified.join(", ")} (${[...Object.entries(first.chains), ["review", first.reviewerChain] as const].map(([r, c]) => `${r}=${c.map((e) => e.provider).join("->")}`).join(", ")})`,
       });
     }
     const gaps = findReviewerIndependenceGaps(first);
@@ -149,7 +152,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     }
     if (opts.smoke) {
       for (const p of neededProviders) {
-        checks.push(await smokeProvider(p));
+        checks.push(await smokeProvider(p, rolesByProvider.get(p) ?? []));
       }
     }
   } else {
@@ -284,6 +287,21 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
+  // 8. The owner's `gh` login: onboarding and the dashboard's PR proposals use it (never the App identity).
+  try {
+    await execFileAsync("gh", ["auth", "status"]);
+    checks.push({ id: "gh_auth", name: "Owner gh login", status: "pass", detail: "gh is authenticated" });
+  } catch {
+    checks.push({
+      id: "gh_auth",
+      name: "Owner gh login",
+      status: "warn",
+      detail: "gh is not installed or not logged in (needed for onboarding and dashboard PR proposals)",
+      remediation: "Run `gh auth login`",
+    });
+  }
+
+  for (const c of checks) c.scope = "machine";
   if (opts.offline) {
     return { ok: checks.every((c) => c.status !== "fail"), checks };
   }
@@ -432,14 +450,15 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
+  for (const c of checks) c.scope ??= "repo";
   return { ok: checks.every((c) => c.status !== "fail"), checks };
 }
 
 // Version + login-status commands only; none of these spend model quota.
 // agy has no login-status command, so for it only installation is verified.
-async function smokeProvider(provider: string): Promise<DoctorCheck> {
+async function smokeProvider(provider: string, roles: string[]): Promise<DoctorCheck> {
   const id = `smoke_provider:${provider}`;
-  const name = `Smoke Check (${provider})`;
+  const name = `Smoke Check (${provider}${roles.length > 0 ? `, used by: ${roles.join(", ")}` : ""})`;
   const login = provider === "codex" ? `${provider} login` : `${provider} auth login`;
   try {
     const { stdout: v } = await execFileAsync(provider, ["--version"]);
@@ -482,9 +501,9 @@ function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolea
 
 /** Implementer vendors for which the reviewerChain cannot supply 2 independent reviewers. */
 export function findReviewerIndependenceGaps(
-  cfg: Pick<ArchangelConfig, "authMode" | "implementerChain" | "reviewerChain">,
+  cfg: Pick<ArchangelConfig, "authMode" | "chains" | "reviewerChain">,
 ): string[] {
-  const vendors = [...new Set(cfg.implementerChain.map((e) => providerToVendor(e.provider)))];
+  const vendors = writerVendors(cfg.chains);
   return vendors.filter((v) => resolveRequiredReviewers(cfg, [v]).length < 2);
 }
 
