@@ -252,12 +252,8 @@ export type EffectiveWorkflow =
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
       planApproval: "off" | "owner";
-<<<<<<< HEAD
       fixForward: "off" | "race";
-||||||| ade0257
-=======
       preview: Preview | null;
->>>>>>> origin/main
       scouts: EffectiveScout[];
       /** Fleet Scouts this repo opted out of in its workflow file. */
       fleetOptOut: FleetScoutName[];
@@ -355,12 +351,8 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     landingBugfix,
     factoryRetry,
     planApproval: wf.features.planApproval,
-<<<<<<< HEAD
     fixForward: wf.landing.fixForward,
-||||||| ade0257
-=======
     preview: wf.preview ?? null,
->>>>>>> origin/main
     scouts,
     fleetOptOut,
     caps: {
