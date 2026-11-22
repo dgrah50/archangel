@@ -7,6 +7,7 @@ import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from 
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
+  buildPlanPrompt,
   buildConflictReference,
   buildRebasePrompt,
   buildRevisionPrompt,
@@ -24,6 +25,7 @@ import { LocalProvider } from "../compute/local.js";
 import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { captureAttemptInput } from "./attempt-input.js";
+import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } from "./plan.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
@@ -1325,7 +1327,24 @@ export class Reconciler {
           }
           this.ledger.clearThreadDependency(thread.issueNumber);
         }
+        if (this.needsPlan(thread)) {
+          if (this.ledger.countThreadPlans(thread.issueNumber) >= PLAN_ROUNDS_PER_THREAD + thread.retryGrants) {
+            this.applyMachineEvent(
+              thread,
+              { t: "escalate", code: "plan_unresolved", reason: `The factory wrote ${PLAN_ROUNDS_PER_THREAD + thread.retryGrants} plans and none was approved.` },
+              { auditTopic: "thread/needs_you", now },
+            );
+            return;
+          }
+          await this.spawnAttempt(thread, issue, "plan", mainSha, [], [], now);
+          return;
+        }
         await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
+        return;
+      }
+
+      case "awaiting_plan": {
+        await this.reconcileAwaitingPlan(thread, now);
         return;
       }
 
@@ -1351,6 +1370,60 @@ export class Reconciler {
         // Already recorded shadow verdict; nothing to overwrite while PR remains open at same headSha.
         return;
       }
+    }
+  }
+
+  /** A feature in a repo that opted in to plan approval waits for its plan before any implementing, until one is approved and pinned. */
+  private needsPlan(thread: ThreadRecord): boolean {
+    return (
+      this.workflow?.planApproval === "owner" &&
+      workClassOfBranch(thread.branchName) === "feature" &&
+      this.ledger.approvedThreadPlan(thread.issueNumber) === null
+    );
+  }
+
+  /**
+   * The posted plan waits for the owner. Only the `plan:approved` label, applied by `ownerUserId` after the plan was posted, approves it
+   * (the approved text is pinned in the Ledger; edits to the GitHub comment change nothing). Any owner comment since the plan means
+   * "change it": the factory re-plans, bounded by PLAN_ROUNDS_PER_THREAD. An approval wins over comments, which then ride along as amendments.
+   */
+  private async reconcileAwaitingPlan(thread: ThreadRecord, now: number): Promise<void> {
+    if (thread.phase.kind !== "awaiting_plan") return;
+    const plan = this.ledger.latestThreadPlan(thread.issueNumber);
+    if (!plan || plan.version !== thread.phase.planVersion) {
+      this.applyMachineEvent(thread, { t: "escalate", code: "plan_unresolved", reason: `The Ledger has no plan v${thread.phase.planVersion} for this Thread.` }, { auditTopic: "thread/needs_you", now });
+      return;
+    }
+    const label = this.cfg.labels.planApproved;
+    let issue: GitHubIssue;
+    let approved: boolean;
+    let feedback: string | null;
+    try {
+      issue = await this.github.getIssue(thread.issueNumber);
+      approved = issue.labels.includes(label) && (await this.github.verifyLabelActor(thread.issueNumber, label, this.cfg.ownerUserId, plan.createdAt));
+      feedback = await collectOwnerReply({ github: this.github, ownerUserId: this.cfg.ownerUserId, issueNumber: thread.issueNumber, prNumber: null, sinceMs: plan.createdAt });
+    } catch (err) {
+      this.recordFault("plan_owner_check", err, now, thread.issueNumber);
+      return;
+    }
+    if (issue.labels.includes(label) && !approved && !this.ledger.hasAudit({ topic: "plan/approval_ignored", issueNumber: thread.issueNumber })) {
+      this.ledger.appendAudit("plan/approval_ignored", thread.issueNumber, "archangel", { label, reason: "not applied by the owner after the plan was posted" }, now);
+    }
+    if (approved) {
+      this.ledger.approveThreadPlan(thread.issueNumber, plan.version, now);
+      this.applyMachineEvent(
+        thread,
+        { t: "plan_approved" },
+        { ...(feedback ? { ownerReply: feedback } : {}), auditTopic: "plan/approved", auditActor: "owner", auditPayload: { version: plan.version, sha256: plan.sha256 }, now },
+      );
+      return;
+    }
+    if (feedback) {
+      this.applyMachineEvent(
+        thread,
+        { t: "plan_rejected" },
+        { ownerReply: feedback, auditTopic: "plan/revision_requested", auditActor: "owner", auditPayload: { version: plan.version, sha256: plan.sha256 }, now },
+      );
     }
   }
 
@@ -1539,8 +1612,19 @@ export class Reconciler {
         throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
       }
 
+      const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
       const prompt =
-        kind === "implement"
+        kind === "plan"
+          ? buildPlanPrompt({
+              issueNumber: issue.number,
+              title: issue.title,
+              body: issue.body,
+              repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
+              ownerReply: workingThread.ownerReply,
+              previousPlan: this.ledger.latestThreadPlan(workingThread.issueNumber)?.text ?? null,
+              maxChars: PLAN_MAX_CHARS,
+            })
+          : kind === "implement"
           ? buildImplementPrompt({
               issueNumber: issue.number,
               title: issue.title,
@@ -1549,6 +1633,7 @@ export class Reconciler {
               gate: this.effectiveGate,
               ownerReply: workingThread.ownerReply,
               factoryGuidance: workingThread.factoryGuidance,
+              approvedPlan,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1561,6 +1646,7 @@ export class Reconciler {
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
                 factoryGuidance: workingThread.factoryGuidance,
+                approvedPlan,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
@@ -1657,6 +1743,24 @@ export class Reconciler {
             latest,
             { t: "attempt_aborted", cause, now: Date.now() },
             { auditTopic: "attempt/aborted", auditPayload: { cause }, now: Date.now() },
+          );
+        }
+        return;
+      }
+
+      if (kind === "plan") {
+        // The plan is untrusted model text: vetted, stored in the Ledger, then posted as machine-written. Nothing is pushed and nothing is validated against the Gate.
+        const vetted = vetPlan(result.summary);
+        if (!vetted.ok) throw new AttemptError("plan_invalid", vetted.reason);
+        const stored = this.ledger.addThreadPlan(workingThread.issueNumber, vetted.text, Date.now());
+        await this.github.postComment(workingThread.issueNumber, renderPlanComment({ ...stored, text: vetted.text, approvalLabel: this.cfg.labels.planApproved }));
+        this.ledger.finishAttempt(attemptId, { status: "succeeded", costUsd: actualCostUsd, reservedUsd, transcriptPath });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            { t: "plan_ready", planVersion: stored.version },
+            { auditTopic: "plan/posted", auditPayload: { version: stored.version, sha256: stored.sha256 }, now: Date.now() },
           );
         }
         return;
@@ -1904,7 +2008,9 @@ export class Reconciler {
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
           latest,
-          { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
+          kind === "plan"
+            ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
+            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
           { auditTopic: "thread/needs_you" },
         );
       }

@@ -43,6 +43,49 @@ export function expandHome(p: string, home = os.homedir()): string {
   return p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
 }
 
+/** Resolves a user-supplied path, expanding a leading `~`. */
+export function resolveUserPath(p: string): string {
+  return path.resolve(expandHome(p));
+}
+
+/** An env value that is empty or whitespace is unset (`KEY=` lines in a copied .env.example). */
+function withoutEmptyValues(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined && v.trim() !== ""));
+}
+
+/** A config problem with a fix that fits it. Thrown by `loadProjectConfigs`; doctor, `start` and the UI show `message` and `remediation`. */
+export class ConfigError extends Error {
+  constructor(message: string, readonly remediation: string) {
+    super(message);
+    this.name = "ConfigError";
+  }
+}
+
+/** One line per Zod issue: the path plus the message. */
+export function formatZodIssues(err: z.ZodError): string {
+  return err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
+}
+
+const ENV_FIELDS: Record<string, string> = {
+  githubAppId: "ARCHANGEL_GITHUB_APP_ID",
+  githubInstallationId: "ARCHANGEL_GITHUB_INSTALLATION_ID",
+  githubPrivateKeyPem: "ARCHANGEL_GITHUB_PRIVATE_KEY_PATH or ARCHANGEL_GITHUB_PRIVATE_KEY_PEM",
+  githubAppBotUserId: "ARCHANGEL_GITHUB_BOT_USER_ID",
+};
+
+function parseConfig<T>(parse: () => T, file: string): T {
+  try {
+    return parse();
+  } catch (err) {
+    if (!(err instanceof z.ZodError)) throw err;
+    const envPaths = err.issues.map((i) => ENV_FIELDS[String(i.path[0])]).filter((v): v is string => v !== undefined);
+    const remediation = envPaths.length > 0
+      ? `Set ${[...new Set(envPaths)].join(", ")} in .env (see .env.example).`
+      : `Fix the listed fields in ${file}.`;
+    throw new ConfigError(`Invalid config:\n${formatZodIssues(err)}`, remediation);
+  }
+}
+
 /** The single environment variable that points a CLI at this account's login. Empty for an account on the default home. */
 export function accountEnv(account: Account | undefined): NodeJS.ProcessEnv {
   if (!account?.home) return {};
@@ -425,7 +468,7 @@ function resolvePrivateKeyPem(env: NodeJS.ProcessEnv): string | undefined {
     return env.ARCHANGEL_GITHUB_PRIVATE_KEY_PEM.replace(/\\n/g, "\n");
   }
   if (env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH && env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH.trim()) {
-    const keyPath = path.resolve(env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH.trim());
+    const keyPath = resolveUserPath(env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH.trim());
     return fs.readFileSync(keyPath, "utf8");
   }
   return undefined;
@@ -446,25 +489,25 @@ export function resolvePaths(
     "dataDir" | "ledgerDbPath" | "mastraDbPath" | "brokerBareRepoPath" | "clonesDir"
   > & { githubOwner?: string; githubRepo?: string },
 ): ResolvedPaths {
-  const dataDir = path.resolve(cfg.dataDir);
+  const dataDir = resolveUserPath(cfg.dataDir);
   const projectSlug =
     cfg.githubOwner && cfg.githubRepo ? `${cfg.githubOwner}__${cfg.githubRepo}` : null;
   const projectDir = projectSlug ? path.join(dataDir, "projects", projectSlug) : dataDir;
   return {
     dataDir,
-    ledgerDbPath: cfg.ledgerDbPath ? path.resolve(cfg.ledgerDbPath) : path.join(dataDir, "ledger.db"),
-    mastraDbPath: cfg.mastraDbPath ? path.resolve(cfg.mastraDbPath) : path.join(dataDir, "mastra.db"),
+    ledgerDbPath: cfg.ledgerDbPath ? resolveUserPath(cfg.ledgerDbPath) : path.join(dataDir, "ledger.db"),
+    mastraDbPath: cfg.mastraDbPath ? resolveUserPath(cfg.mastraDbPath) : path.join(dataDir, "mastra.db"),
     brokerBareRepoPath: cfg.brokerBareRepoPath
-      ? path.resolve(cfg.brokerBareRepoPath)
+      ? resolveUserPath(cfg.brokerBareRepoPath)
       : path.join(projectDir, "broker.git"),
-    clonesDir: cfg.clonesDir ? path.resolve(cfg.clonesDir) : path.join(projectDir, "clones"),
+    clonesDir: cfg.clonesDir ? resolveUserPath(cfg.clonesDir) : path.join(projectDir, "clones"),
     transcriptsDir: path.join(projectDir, "transcripts"),
   };
 }
 
 /** The host config path the daemon reads: the explicit option, else `ARCHANGEL_CONFIG`, else `./archangel.yaml`. */
 export function resolveConfigPath(configPath?: string, env: NodeJS.ProcessEnv = process.env): string {
-  return path.resolve(configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml");
+  return resolveUserPath(configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml");
 }
 
 /**
@@ -475,15 +518,15 @@ export function loadProjectConfigs(opts: {
   configPath?: string;
   env?: NodeJS.ProcessEnv;
 } = {}): ArchangelConfig[] {
-  const env = opts.env ?? process.env;
+  const env = withoutEmptyValues(opts.env ?? process.env);
   const resolvedConfig = resolveConfigPath(opts.configPath, env);
 
   if (!fs.existsSync(resolvedConfig)) {
-    throw new Error(`Host config not found: ${resolvedConfig} (copy archangel.example.yaml to archangel.yaml)`);
+    throw new ConfigError(`Host config not found: ${resolvedConfig}`, "Copy archangel.example.yaml to archangel.yaml in the directory you run archangel from.");
   }
   const rawText = fs.readFileSync(resolvedConfig, "utf8");
   const yamlObj = parseYaml(rawText);
-  const host = HostYamlSchema.parse(yamlObj);
+  const host = parseConfig(() => HostYamlSchema.parse(yamlObj), resolvedConfig);
   const homeProblems = accountHomeProblems(host.accounts);
   if (homeProblems.length > 0) {
     throw new Error(`Invalid accounts in ${resolvedConfig}: ${homeProblems.map((p) => `${p.id}: ${p.problem}`).join("; ")}`);
@@ -491,7 +534,7 @@ export function loadProjectConfigs(opts: {
 
   return host.projects.map((proj) => {
     const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
-    return ConfigSchema.parse({
+    return parseConfig(() => ConfigSchema.parse({
       githubOwner,
       githubRepo,
       defaultBranch: proj.defaultBranch,
@@ -544,6 +587,6 @@ export function loadProjectConfigs(opts: {
       googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
       telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
       telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
-    });
+    }), resolvedConfig);
   });
 }
