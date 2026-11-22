@@ -39,6 +39,8 @@ import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { LocalProvider } from "../compute/local.js";
 import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
+import { createSailProvider } from "../compute/sail-sdk.js";
+import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
 import { promotePitch } from "../core/pitch-promote.js";
@@ -185,6 +187,7 @@ program
     /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
     const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
+    const sailProviders: SailProvider[] = [];
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -204,6 +207,11 @@ program
         // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
         localGateSkipTests: true,
       });
+      const scoutCompute: SailProvider | undefined =
+        cfg.compute.provider === "sail" && cfg.compute.sail
+          ? createSailProvider({ sail: cfg.compute.sail, broker, dataDir: paths.dataDir, repoSlug })
+          : undefined;
+      if (scoutCompute) sailProviders.push(scoutCompute);
       const pemPath = process.env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH?.trim();
       const implementer =
         cfg.authMode === "subscription"
@@ -230,6 +238,7 @@ program
         notifier,
         logger,
         workerId: daemonOwnerId,
+        scoutCompute,
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"
@@ -288,6 +297,14 @@ program
         if (swept.length > 0) console.log(`[archangel] Killed orphan preview(s): ${swept.join(", ")}`);
       } catch (err) {
         console.error("[archangel] Preview sweep error:", err);
+      }
+      for (const sail of sailProviders) {
+        try {
+          const swept = await sail.sweepOrphans();
+          if (swept.length > 0) console.log(`[archangel] Terminated orphan Sail box(es): ${swept.join(", ")}`);
+        } catch (err) {
+          console.error("[archangel] Sail sweep error:", err);
+        }
       }
       for (const { repoSlug, rec } of reconcilers) {
         if (stopping) break;
