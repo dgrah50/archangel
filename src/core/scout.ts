@@ -678,7 +678,8 @@ async function pitchVeto(
   },
 ): Promise<string | null> {
   const author = providerToVendor(opts.providerChoice.provider);
-  const vendors = resolveRequiredReviewers(opts.config, [author]);
+  // In api mode resolveRequiredReviewers returns the two API vendors whatever the author is; drop the author itself.
+  const vendors = resolveRequiredReviewers(opts.config, [author]).filter((v) => v !== author);
   if (vendors.length === 0) return "no reviewer from another vendor is available to critique it";
   const touchedFiles: Record<string, string> = {};
   for (const e of pitch.evidence) {
@@ -697,7 +698,9 @@ async function pitchVeto(
       touchedFiles,
       reviewRubric: PITCH_CRITIC_RUBRIC,
       excludeVendors: [author],
-      skipVendors: vendors.slice(1),
+      // Subscription suite: exclude + a one-vendor skip leaves exactly vendors[0]. The API suite only honours skipVendors,
+      // so there every API vendor except the chosen one is skipped (which also skips the author).
+      skipVendors: opts.config.authMode === "api" ? (["openai", "gemini"] as const).filter((v) => v !== vendors[0]) : vendors.slice(1),
     });
   } catch (err) {
     return `critic unavailable: ${err instanceof Error ? err.message : String(err)}`;

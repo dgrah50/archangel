@@ -95,6 +95,8 @@ export interface ReplayReport {
   repo: string;
   cases: CaseResult[];
   mutants: MutantResult[];
+  /** Cases the Gate actually ran on (the rest were skipped: not pinned, no base policy, ...). */
+  replayed: number;
   regressions: number;
 }
 
@@ -278,11 +280,12 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayReport> {
   const log = opts.log ?? (() => undefined);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-replay-"));
   const dir = path.join(tmp, "clone");
-  const report: ReplayReport = { repo: opts.repo, cases: [], mutants: [], regressions: 0 };
+  const report: ReplayReport = { repo: opts.repo, cases: [], mutants: [], replayed: 0, regressions: 0 };
   try {
     // A throwaway local clone: the bare repo is never modified, and nothing leaves this machine.
     await git(tmp, ["clone", "--no-local", "--quiet", opts.bareRepoPath, dir]);
-    await git(dir, ["fetch", "--quiet", opts.bareRepoPath, "+refs/archangel/eval/*:refs/archangel/eval/*"]).catch(() => undefined);
+    // A failure here must surface: swallowing it would make every case look unpinned and the run pass vacuously.
+    await git(dir, ["fetch", "--quiet", opts.bareRepoPath, "+refs/archangel/eval/*:refs/archangel/eval/*"]);
     const mainRef = (await git(dir, ["rev-parse", "--verify", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || "HEAD";
 
     for (const c of deriveCases(opts.seeds)) {
@@ -360,6 +363,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayReport> {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+  report.replayed = report.cases.filter((c) => c.status !== "skipped").length;
   report.regressions = report.cases.filter((c) => c.status === "regression").length + report.mutants.filter((m) => m.status === "regression").length;
   return report;
 }
@@ -371,6 +375,8 @@ export function renderReplay(r: ReplayReport): string {
   for (const c of r.cases) lines.push(`  #${c.issueNumber} ${c.kind} [${c.label}] ${c.status.toUpperCase()}: ${c.detail}`);
   lines.push(`mutants: ${r.mutants.length} (${count(r.mutants, "rejected")} rejected, ${count(r.mutants, "regression")} ACCEPTED, ${count(r.mutants, "skipped")} skipped)`);
   for (const m of r.mutants.filter((x) => x.status !== "rejected")) lines.push(`  #${m.issueNumber} ${m.mutator} ${m.status.toUpperCase()}: ${m.detail}`);
+  lines.push(`replayed ${r.replayed} of ${r.cases.length} cases`);
+  if (r.replayed === 0) lines.push("NOTHING WAS REPLAYED: this run proves nothing about the Gate.");
   lines.push(r.regressions === 0 ? "No regressions." : `${r.regressions} REGRESSION(S).`);
   return lines.join("\n");
 }
