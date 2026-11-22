@@ -441,6 +441,24 @@ CREATE TABLE IF NOT EXISTS pitch_attachments (
   PRIMARY KEY (repo, issue_number, sha256)
 );
 
+-- A pitch's proof of concept: a local ref in the Broker's bare repo, never pushed. Lifecycle: a PocState (core/poc-machine.ts),
+-- changed only through Ledger.stepPocState / reservePocBuild (compare-and-set on version). The preview URL is never stored.
+CREATE TABLE IF NOT EXISTS pitch_pocs (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  ref TEXT NOT NULL CHECK (ref = 'refs/pitch-poc/' || issue_number),
+  builds INTEGER NOT NULL DEFAULT 0,
+  -- A not-L pitch was filed and a build waits for a free slot within the caps; cleared when any build is requested.
+  auto_queued INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  diff_stat TEXT,
+  state_json TEXT NOT NULL,
+  state TEXT GENERATED ALWAYS AS (json_extract(state_json, '$.kind')) STORED,
+  state_at INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (repo, issue_number)
+);
+
 CREATE TABLE IF NOT EXISTS scout_proposals (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,

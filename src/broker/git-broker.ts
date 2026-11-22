@@ -172,6 +172,19 @@ export class GitBroker {
     return ref;
   }
 
+  /** Keeps a PoC commit as a local ref in the bare repo. The ref name is built here from an integer; there is no push path. */
+  async savePocRef(issueNumber: number, headSha: string): Promise<string> {
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0 || !/^[0-9a-f]{40}$/.test(headSha)) throw new Error(`savePocRef: bad issue or sha (${issueNumber}, ${headSha})`);
+    const ref = `refs/pitch-poc/${issueNumber}`;
+    await this.runGit(this.bareRepoPath, ["update-ref", ref, headSha]);
+    return ref;
+  }
+
+  /** `git diff --stat` between two commits in the bare repo. */
+  async diffStat(baseSha: string, headSha: string): Promise<string> {
+    return (await this.runGit(this.bareRepoPath, ["diff", "--stat", "--no-color", baseSha, headSha])).trim();
+  }
+
   async resolveRef(ref: string): Promise<string> {
     return (await this.runGit(this.bareRepoPath, ["rev-parse", ref])).trim();
   }

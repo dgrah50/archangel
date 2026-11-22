@@ -83,7 +83,9 @@
       "src/core/plan.ts",
       "src/core/signals.ts",
       "src/core/signal-kinds.ts",
-      "src/core/signal-rules.ts"
+      "src/core/signal-rules.ts",
+      "src/core/poc-machine.ts",
+      "src/core/pitch-poc.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

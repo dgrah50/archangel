@@ -8,6 +8,7 @@ import {
 } from "../core/thread-machine.js";
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
 import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type FactoryRetryOutcome } from "../core/factory-retry.js";
+import { PocStateSchema, stepPoc, type PocEvent, type PocState } from "../core/poc-machine.js";
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
@@ -1955,7 +1956,7 @@ export class Ledger {
   }
 
 
-  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
+  recordPitch(input: { autoPocBuild?: boolean; issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
@@ -1963,6 +1964,88 @@ export class Ledger {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, JSON.stringify({ kind: "open" }), now, input.pitchJson);
+    if (input.autoPocBuild) this.queuePocBuild(input.issueNumber, now, input.repo ?? this.repo);
+  }
+
+  /** The most one pitch may be built (owner command or automatic), and the most builds started in any 24 hours across repos. */
+  static readonly POC_MAX_BUILDS_PER_PITCH = 2;
+  static readonly POC_MAX_BUILDS_PER_DAY = 2;
+
+  /** Marks a freshly filed pitch for an automatic build. The reconciler starts it when the caps and a slot allow. */
+  queuePocBuild(issueNumber: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO pitch_pocs (repo, issue_number, ref, auto_queued, state_json, state_at) VALUES (?, ?, ?, 1, ?, ?)`)
+      .run(repo, issueNumber, `refs/pitch-poc/${issueNumber}`, JSON.stringify({ kind: "none" }), now);
+  }
+
+  /** Builds requested in the 24 hours before `now`, in every repo: PoC builds spend the one subscription. */
+  pocBuildsInLastDay(now = Date.now()): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE topic = 'poc/requested' AND ts > ?`).get(now - 86_400_000) as { n: number }).n;
+  }
+
+  /**
+   * Starts a build if the caps allow: at most POC_MAX_BUILDS_PER_PITCH per pitch and POC_MAX_BUILDS_PER_DAY a day, and none already
+   * running. `poc/requested` is written in the same transaction, before any build begins. A cap refusal is audited (`poc/refused_cap`).
+   */
+  reservePocBuild(issueNumber: number, now = Date.now(), repo = this.repo): { ok: true } | { ok: false; reason: string } {
+    const tx = this.db.transaction((): { ok: true } | { ok: false; reason: string } => {
+      if (!this.getPitch(issueNumber, repo)) return { ok: false, reason: `no pitch #${issueNumber} in ${repo}` };
+      this.db
+        .prepare(`INSERT OR IGNORE INTO pitch_pocs (repo, issue_number, ref, state_json, state_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(repo, issueNumber, `refs/pitch-poc/${issueNumber}`, JSON.stringify({ kind: "none" }), now);
+      const row = this.getPoc(issueNumber, repo)!;
+      if (row.state.kind === "building") return { ok: false, reason: "a build is already running for this pitch" };
+      const refuse = (scope: "pitch" | "day", reason: string) => {
+        this.appendAudit("poc/refused_cap", issueNumber, "archangel", { scope, builds: row.builds }, now, repo);
+        return { ok: false as const, reason };
+      };
+      if (row.builds >= Ledger.POC_MAX_BUILDS_PER_PITCH) return refuse("pitch", `this pitch has used its ${Ledger.POC_MAX_BUILDS_PER_PITCH} builds`);
+      if (this.pocBuildsInLastDay(now) >= Ledger.POC_MAX_BUILDS_PER_DAY) return refuse("day", `${Ledger.POC_MAX_BUILDS_PER_DAY} PoC builds were already started in the last 24 hours`);
+      const step = this.stepPocState(issueNumber, { t: "build_requested", at: now }, {}, now, repo);
+      if (!step.ok) return { ok: false, reason: step.reject };
+      this.db.prepare(`UPDATE pitch_pocs SET builds = builds + 1, auto_queued = 0 WHERE repo = ? AND issue_number = ?`).run(repo, issueNumber);
+      this.appendAudit("poc/requested", issueNumber, "archangel", { builds: row.builds + 1 }, now, repo);
+      return { ok: true };
+    });
+    return tx();
+  }
+
+  /** The only way a PoC changes state: read, `stepPoc`, compare-and-set on `version`. An illegal move changes nothing and is audited. */
+  stepPocState(
+    issueNumber: number,
+    ev: PocEvent,
+    extra: { diffStat?: string; costUsd?: number } = {},
+    now = Date.now(),
+    repo = this.repo,
+  ): { ok: true; state: PocState } | { ok: false; reject: string } {
+    const row = this.db.prepare(`SELECT state_json, version FROM pitch_pocs WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as
+      | { state_json: string; version: number }
+      | undefined;
+    if (!row) return { ok: false, reject: `no PoC for pitch #${issueNumber}` };
+    const state = PocStateSchema.parse(JSON.parse(row.state_json));
+    const step = stepPoc(state, ev);
+    if (!step.ok) {
+      this.appendAudit("poc/illegal_transition", issueNumber, "archangel", { from: state.kind, event: ev.t, reason: step.reject.slice(0, 200) }, now, repo);
+      return step;
+    }
+    const res = this.db
+      .prepare(
+        `UPDATE pitch_pocs SET state_json = ?, state_at = ?, version = version + 1, diff_stat = COALESCE(?, diff_stat), cost_usd = cost_usd + ?
+         WHERE repo = ? AND issue_number = ? AND version = ?`,
+      )
+      .run(JSON.stringify(step.next), now, extra.diffStat ?? null, extra.costUsd ?? 0, repo, issueNumber, row.version);
+    if (res.changes !== 1) return { ok: false, reject: "the PoC changed concurrently; retry" };
+    return { ok: true, state: step.next };
+  }
+
+  getPoc(issueNumber: number, repo = this.repo): PocRow | null {
+    const r = this.db.prepare(`SELECT * FROM pitch_pocs WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as PocDbRow | undefined;
+    return r ? toPocRow(r) : null;
+  }
+
+  /** Every PoC row across repos, for the dashboard and the reconciler's level-triggered scan. */
+  listPocs(): PocRow[] {
+    return (this.db.prepare(`SELECT * FROM pitch_pocs ORDER BY rowid`).all() as PocDbRow[]).map(toPocRow);
   }
 
   recordPitchAttachment(input: { issueNumber: number; sha256: string; kind: "repo"; mime: string; width: number; height: number; bytes: number; caption: string; source: string; now?: number; repo?: string }): void {
@@ -3110,4 +3193,30 @@ function outboxRecord(r: Record<string, unknown>): OutboxRecord {
     lastError: r.last_error === null ? null : String(r.last_error),
     createdAt: Number(r.created_at),
   };
+}
+
+export interface PocRow {
+  repo: string;
+  issueNumber: number;
+  ref: string;
+  builds: number;
+  autoQueued: boolean;
+  costUsd: number;
+  diffStat: string | null;
+  state: PocState;
+}
+
+interface PocDbRow {
+  repo: string;
+  issue_number: number;
+  ref: string;
+  builds: number;
+  auto_queued: number;
+  cost_usd: number;
+  diff_stat: string | null;
+  state_json: string;
+}
+
+function toPocRow(r: PocDbRow): PocRow {
+  return { repo: r.repo, issueNumber: r.issue_number, ref: r.ref, builds: r.builds, autoQueued: r.auto_queued === 1, costUsd: r.cost_usd, diffStat: r.diff_stat, state: PocStateSchema.parse(JSON.parse(r.state_json)) };
 }
