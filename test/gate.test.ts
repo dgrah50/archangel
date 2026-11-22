@@ -441,3 +441,36 @@ describe("Gate cannot be run fail-open", () => {
     }
   });
 });
+
+describe("Gate policyRef", () => {
+  it("reads the policy from policyRef (the current main tip) instead of the diff base", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      // The branch is cut from baseSha (policy: maxFiles 5), then main tightens the policy to maxFiles 1.
+      git(repoDir, ["checkout", "-q", "-b", "branch", baseSha]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      writeFile(
+        repoDir,
+        "tests/issue.test.mjs",
+        'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-qm", "fix"]);
+      const head = git(repoDir, ["rev-parse", "HEAD"]);
+      git(repoDir, ["checkout", "-q", "main"]);
+      const policy = JSON.parse(fs.readFileSync(path.join(repoDir, ".agents/archangel.json"), "utf8"));
+      policy.gate.maxFiles = 1;
+      writeFile(repoDir, ".agents/archangel.json", JSON.stringify(policy));
+      git(repoDir, ["commit", "-qam", "tighten policy on main"]);
+      const mainTip = git(repoDir, ["rev-parse", "HEAD"]);
+
+      const old = await runGate({ repoDir, baseRef: baseSha, headRef: head, skipPreCommit: true, skipTests: true });
+      expect(old.violations).toEqual([]); // judged by the merge-base's looser policy
+      const current = await runGate({ repoDir, baseRef: baseSha, headRef: head, policyRef: mainTip, skipPreCommit: true, skipTests: true });
+      expect(current.passed).toBe(false);
+      expect(current.violations.join(" ")).toContain("exceeds limit 1");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});

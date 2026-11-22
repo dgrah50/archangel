@@ -256,16 +256,18 @@ export class GitBroker {
 
   /**
    * Executes the language-agnostic Archangel Gate strictly against `this.bareRepoPath`
-   * (never against the implementer clone), reading `.agents/archangel.json` and
-   * `.pre-commit-config.yaml` strictly from `baseSha`.
+   * (never against the implementer clone), diffing `baseSha..headSha` but reading `.agents/archangel.json` and
+   * `.pre-commit-config.yaml` strictly from `policyRef` (the current main tip, the same policy the Reconciler uses).
    */
   async runLocalGate(
     baseSha: string,
     headSha: string,
+    policyRef: string,
     workClass?: WorkClass,
   ): Promise<LocalGateReport> {
     return runGate({
       workClass,
+      policyRef,
       repoDir: this.bareRepoPath,
       baseRef: baseSha,
       headRef: headSha,
@@ -378,7 +380,7 @@ export class GitBroker {
 
     let gateReport: LocalGateReport | undefined;
     if (this.enableLocalGate && protectedViolations.length === 0) {
-      gateReport = await this.runLocalGate(effectiveBase, headSha, workClass);
+      gateReport = await this.runLocalGate(effectiveBase, headSha, baseSha, workClass);
     }
 
     return {

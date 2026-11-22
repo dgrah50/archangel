@@ -180,6 +180,11 @@ export interface GateRunOptions {
   commandTimeoutMs?: number;
   /** `feature` skips the red-on-base requirement only. Defaults to `bugfix` (full reproduction proof). */
   workClass?: "bugfix" | "feature";
+  /**
+   * Commit to read `.agents/archangel.json` and the pre-commit config from (default: `baseRef`). The daemon passes the current main tip
+   * so a pre-push check of an in-flight branch judges the same policy as the Reconciler instead of the (older) merge-base's.
+   */
+  policyRef?: string;
 }
 
 interface PreCommitHook {
@@ -531,6 +536,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     const baseSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.baseRef}^{commit}`], env)).trim();
     const headSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.headRef}^{commit}`], env)).trim();
 
+    const policySha = opts.policyRef
+      ? (await runGit(opts.repoDir, ["rev-parse", `${opts.policyRef}^{commit}`], env)).trim()
+      : baseSha;
     const stats = await getDiffStats(opts.repoDir, baseSha, headSha, env);
     const report: GateReport = {
       passed: false,
@@ -544,7 +552,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       file_stats: stats,
     };
 
-    const repoPolicyRaw = await readGitFileStrict(opts.repoDir, baseSha, REPO_POLICY_PATH, env);
+    const repoPolicyRaw = await readGitFileStrict(opts.repoDir, policySha, REPO_POLICY_PATH, env);
     if (!repoPolicyRaw) {
       report.violations.push("missing .agents/archangel.json on base commit (failing closed)");
       return report;
@@ -671,10 +679,10 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     await extractCommitTree(opts.repoDir, headSha, headDir, env);
 
     if (!opts.skipPreCommit) {
-      const yamlPrimary = await readGitFileStrict(opts.repoDir, baseSha, ".pre-commit-config.yaml", env);
+      const yamlPrimary = await readGitFileStrict(opts.repoDir, policySha, ".pre-commit-config.yaml", env);
       const yamlAlt = yamlPrimary
         ? null
-        : await readGitFileStrict(opts.repoDir, baseSha, ".pre-commit-config.yml", env);
+        : await readGitFileStrict(opts.repoDir, policySha, ".pre-commit-config.yml", env);
       const preCommitYaml = yamlPrimary ?? yamlAlt;
       const preCommitName = yamlPrimary ? ".pre-commit-config.yaml" : ".pre-commit-config.yml";
 
