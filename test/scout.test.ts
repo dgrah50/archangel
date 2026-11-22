@@ -35,6 +35,8 @@ function makeScoutFixtureRepo(): { root: string; remoteBare: string; mainSha: st
     path.join(seed, ".agents", "scouts", "bug-hunt.md"),
     `---\nname: bug-hunt\nschedule: daily\nmaxProposals: 2\n---\nFind real bugs in app.ts.\n`,
   );
+  fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   const mainSha = git(seed, ["rev-parse", "HEAD"]);

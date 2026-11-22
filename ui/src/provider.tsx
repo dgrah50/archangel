@@ -12,8 +12,8 @@ export function Provider({ children }: { children: ReactNode }) {
     <ChakraProvider value={system}>
       <ThemeProvider
         attribute={["class", "data-theme"]}
-        defaultTheme="light"
-        enableSystem={false}
+        defaultTheme="system"
+        enableSystem
         disableTransitionOnChange
         // next-themes renders a pre-hydration <script>. React 19 logs console.error for executable scripts rendered on the client
         // (and this SPA has no server render to flash-guard), so mark it as a non-executable data block.

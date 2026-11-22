@@ -22,7 +22,7 @@ function age(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-const n = (v: number | null, unit = "") => (v === null ? "n/a" : `${v}${unit}`);
+const n = (v: number | null, unit = "") => (v === null ? "n/a" : `${Math.round(v * 10) / 10}${unit}`);
 
 function GhLink({ repo, kind, num, children }: { repo: string; kind: "issues" | "pull"; num: number; children: string }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return <>{children}</>;
@@ -78,6 +78,10 @@ function Bars({ label, values, days }: { label: string; values: number[]; days: 
             </rect>
           ))}
         </svg>
+        <Box display="flex" justifyContent="space-between" color="fg.muted" textStyle="xs">
+          <span>{days[0]?.slice(5)}</span>
+          <span>{days[days.length - 1]?.slice(5)}</span>
+        </Box>
         <Text color="fg.muted" textStyle="sm">
           total {values.reduce((a, b) => a + b, 0)}
         </Text>
@@ -143,7 +147,7 @@ export function Dashboard({ state: s }: { state: UiState }) {
           <Card.Root>
             <Card.Body>
               <Text>
-                Metered cost: {o.costUsdPerFix === null ? "n/a" : `$${o.costUsdPerFix}`} (total ${o.meteredUsdTotal}; subscription runs count $0)
+                Metered cost: {o.costUsdPerFix === null ? "n/a" : `$${o.costUsdPerFix.toFixed(2)}`} (total ${o.meteredUsdTotal.toFixed(2)}; subscription runs count $0)
               </Text>
               <Text>
                 Attempts: {n(o.attemptsPerFix)}, attempt time {n(o.attemptMinutesPerFix, "m")}

@@ -21,4 +21,16 @@ describe("Dashboard", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain("<form");
   });
+
+  it("rounds per-fix ratios to one decimal and labels the chart's first and last day", () => {
+    const state = buildUiState(new Ledger(":memory:"), NOW);
+    state.outcomes = { ...state.outcomes, mergedFixes: 11, attemptsPerFix: 1.636, revertsPerFix: 0.0909, costUsdPerFix: 0.12345 };
+    const html = renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: createElement(Dashboard, { state }) }));
+    expect(html).toContain("Attempts: 1.6,");
+    expect(html).not.toContain("1.636");
+    expect(html).toContain("Reverts: 0.1 ");
+    expect(html).toContain("$0.12");
+    expect(html).toContain(`<span>${state.daily[0]!.day.slice(5)}</span>`);
+    expect(html).toContain(`<span>${state.daily[13]!.day.slice(5)}</span>`);
+  });
 });

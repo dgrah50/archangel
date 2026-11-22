@@ -29,6 +29,8 @@ async function fixture(scout: string) {
   git(seed, ["config", "user.email", "test@example.com"]);
   fs.writeFileSync(path.join(seed, "app.ts"), "export const x = 1;\n");
   fs.writeFileSync(path.join(seed, ".agents", "scouts", "auto-hunt.md"), scout);
+  fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   const mainSha = git(seed, ["rev-parse", "HEAD"]);

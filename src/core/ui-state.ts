@@ -58,6 +58,19 @@ function stageOf(phase: Phase, updatedAt: number, now: number): Stage | null {
   }
 }
 
+const OUTCOME_LABELS = {
+  merged: "merged",
+  owner_merged: "owner merged",
+  pr_closed: "PR closed",
+  reverted: "reverted",
+  abandoned: "abandoned",
+} as const;
+
+/** What the dashboard shows next to a Thread: the outcome for finished ones, else the phase. */
+function phaseLabel(phase: Phase): string {
+  return phase.kind === "done" ? OUTCOME_LABELS[phase.outcome] : phase.kind;
+}
+
 function prOf(phase: Phase): number | null {
   return "prNumber" in phase && typeof phase.prNumber === "number" ? phase.prNumber : null;
 }
@@ -73,7 +86,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
       issueNumber: t.issueNumber,
       prNumber: prOf(t.phase),
       title: t.title,
-      phase: t.phase.kind,
+      phase: phaseLabel(t.phase),
       since: t.updatedAt,
     };
     const stage = stageOf(t.phase, t.updatedAt, now);

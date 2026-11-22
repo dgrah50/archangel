@@ -107,6 +107,11 @@ export const MAIN_ESCALATION_POLICY = {
     recommendation:
       "Review and merge the revert PR to turn main green, then clear the circuit breaker; the original issue can be retried afterwards.",
   },
+  repo_policy_invalid: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "Fix .agents/archangel.json on the default branch with an owner-merged PR (`archangel doctor` shows the parse error). Archangel takes no new work in this repo until it parses.",
+  },
   red_main_manual: {
     decisionClass: "live_infrastructure",
     recommendation:

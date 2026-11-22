@@ -124,3 +124,24 @@ describe("owner reply", () => {
     expect(buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "acme/app" })).not.toContain("OWNER REPLY");
   });
 });
+
+describe("owner code-quality rules", () => {
+  it("reach implement and revision prompts", async () => {
+    const { buildOpenAiReviewerPrompt, buildGeminiAdversarialPrompt } = await import("../src/agents/prompts.js");
+    const impl = buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "a/b" });
+    const rev = buildRevisionPrompt({ issueNumber: 1, title: "t", body: "b", gateViolations: [], structuredFindings: [] });
+    for (const p of [impl, rev]) {
+      expect(p).toContain("No fallbacks, compatibility shims");
+      expect(p).toContain("single caller");
+      expect(p).toContain("make the state explicit");
+    }
+    const base = { issueNumber: 1, title: "t", body: "b", diffText: "d" };
+    for (const p of [
+      buildOpenAiReviewerPrompt(base),
+      buildGeminiAdversarialPrompt({ ...base, touchedFiles: {} }),
+    ]) {
+      expect(p).toContain("added fallback");
+      expect(p).toContain("do not veto solely for them");
+    }
+  });
+});
