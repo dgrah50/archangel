@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import type { Implementer } from "../src/agents/implementer.js";
 import type { ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
@@ -45,9 +45,9 @@ const report = (result: EvalReport["result"], reasons: string[] = []): EvalRepor
   }) as EvalReport;
 
 function deps(ledger: Ledger, over: Partial<DraftDeps> = {}) {
-  const invoker = vi.fn(async (_i: unknown) => GOOD as unknown);
-  const evaluate = vi.fn(async (_p: string, _h: boolean) => report("pass"));
-  const openPr = vi.fn(async (_d: unknown, _b: string, _c: unknown) => "https://github.com/dgrah50/archangel/pull/900");
+  const invoker = mock(async (_i: unknown) => GOOD as unknown);
+  const evaluate = mock(async (_p: string, _h: boolean) => report("pass"));
+  const openPr = mock(async (_d: unknown, _b: string, _c: unknown) => "https://github.com/dgrah50/archangel/pull/900");
   const d: DraftDeps = { ledger, chain: [{ provider: "claude" }, { provider: "codex" }], invoker, cwd: "/tmp", skills: ["general/bug-hunt"], evaluate, openPr, ...over };
   return { d, invoker, evaluate, openPr };
 }
@@ -165,7 +165,7 @@ describe("draftCorrection", () => {
     ] as const) {
       const l = new Ledger(":memory:", { repo: "a/b" });
       try {
-        const { d, openPr } = deps(l, { evaluate: vi.fn(ev) });
+        const { d, openPr } = deps(l, { evaluate: mock(ev) });
         expect(await draftCorrection(d, ctx, NOW)).toMatchObject(expected);
         expect(openPr).not.toHaveBeenCalled();
       } finally {
@@ -179,7 +179,7 @@ describe("draftCorrection", () => {
     try {
       const a = root.forRepo("a/a");
       const b = root.forRepo("b/b");
-      const dep = (l: Ledger, cat: string) => deps(l, { invoker: vi.fn(async () => ({ ...GOOD, rationale: `Corrections in ${cat} repeat.` })) }).d;
+      const dep = (l: Ledger, cat: string) => deps(l, { invoker: mock(async () => ({ ...GOOD, rationale: `Corrections in ${cat} repeat.` })) }).d;
       expect((await draftCorrection(deps(a).d, ctx, NOW)).kind).toBe("pr_opened");
       expect(await draftCorrection(deps(a).d, ctx, NOW + 5 * DAY)).toMatchObject({ kind: "skipped", why: "category_limit" });
       expect((await draftCorrection(dep(b, "disagree"), { ...ctx, category: "disagree" }, NOW + 1 * DAY)).kind).toBe("pr_opened"); // second this week, other repo
@@ -256,12 +256,12 @@ describe("the Reconciler drafts when a category crosses its threshold", () => {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const notes: Array<{ title: string; reason: string }> = [];
     const full: CorrectionDraftDeps = {
-      invoker: vi.fn(async () => GOOD as unknown) as never,
+      invoker: mock(async () => GOOD as unknown) as never,
       cwd: root,
       skills: [],
-      evaluate: vi.fn(async () => report("pass")),
-      openPr: vi.fn(async () => "https://github.com/dgrah50/archangel/pull/901"),
-      prStatus: vi.fn(async () => ({ state: "open" as const, mergedAt: null })),
+      evaluate: mock(async () => report("pass")),
+      openPr: mock(async () => "https://github.com/dgrah50/archangel/pull/901"),
+      prStatus: mock(async () => ({ state: "open" as const, mergedAt: null })),
       ...drafts,
     };
     const rec = new Reconciler({

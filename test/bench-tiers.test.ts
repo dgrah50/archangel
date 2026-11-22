@@ -2,13 +2,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
 import { Ledger } from "../src/ledger/store.js";
 
-vi.setConfig({ testTimeout: 120_000 });
 
 const git = (cwd: string, args: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
 const write = (root: string, rel: string, content: string) => {

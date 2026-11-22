@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import {
   KERNEL, Workflow, classifyChange, loosens, ownerMergesOnly, resolveWorkflow, trustHash,
   type HostWorkflowInput, type RepoWorkflowInput,
@@ -38,7 +38,7 @@ describe("kernel bounds", () => {
     ["requiredChecks missing", { ...baseFile(), requiredChecks: undefined }, "requiredChecks"],
     ["unknown key", { ...baseFile(), labels: {} }, "labels"],
     ["bad skill ref", { ...baseFile(), scouts: [{ name: "x", skills: ["../x"] }] }, "scouts.0.skills"],
-  ])("rejects %s", (_n, file, where) => {
+  ])("rejects %s", (_n: string, file: any, where: string) => {
     const r = resolveWorkflow(host(), repo(file));
     expect(r.status).toBe("invalid");
     expect((r as { error: string }).error).toContain(where);
@@ -113,8 +113,8 @@ describe("classifyChange", () => {
     ["scout metrics on", (o: any) => { o.scouts[0].includeMetrics = true; }, "scouts.bug-hunt.includeMetrics", "loosen"],
     ["scout added auto", (o: any) => { o.scouts.push({ name: "n", promotion: "auto" }); }, "scouts.n", "loosen"],
     ["scout removed", (o: any) => { o.scouts = []; }, "scouts.bug-hunt", "tighten"],
-  ])("%s", (_n, f, field, want) => {
-    expect(dir(edit(f), field)).toBe(want);
+  ])("%s", (_n: string, f: (o: any) => void, field: string, want: string) => {
+    expect(dir(edit(f), field)).toBe(want as ReturnType<typeof dir>);
   });
 
   it("reports nothing for an identical file and flags loosening in aggregate", () => {

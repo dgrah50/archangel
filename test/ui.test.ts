@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { assertBindable, startUiServer } from "../src/core/ui-server.js";
 import { Ledger } from "../src/ledger/store.js";
 

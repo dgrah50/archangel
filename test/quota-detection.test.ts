@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { isRateLimitOrQuotaError } from "../src/agents/subscription-implementer.js";
 
 describe("isRateLimitOrQuotaError", () => {

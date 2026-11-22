@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { classifyFactoryOutcome, shouldAutoOff, type FactoryOutcome } from "../src/core/factory-retry.js";
 import { TriageOutputSchema, extractPaths, pickTriageProvider, validateTriage, type TriageChecks } from "../src/core/triage.js";
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { buildImplementPrompt, buildRevisionPrompt, formatFactoryNote } from "../src/agents/prompts.js";
 import { KERNEL, Workflow, classifyChange, loosens, resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";

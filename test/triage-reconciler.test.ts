@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -39,7 +39,7 @@ function world(opts: { knob?: "off" | "once"; invoker?: ScoutCliInvoker; vendors
   const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
   const notes: string[] = [];
   const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-  const invoker = vi.fn<ScoutCliInvoker>(opts.invoker ?? (async () => GOOD));
+  const invoker = mock<ScoutCliInvoker>(opts.invoker ?? (async () => GOOD));
   const rec = new Reconciler({
     config: cfg, ledger, github, broker,
     implementer: { run: (async () => { throw new Error("unused"); }) as never },
@@ -49,10 +49,10 @@ function world(opts: { knob?: "off" | "once"; invoker?: ScoutCliInvoker; vendors
   });
   (rec as unknown as Priv).workflow = okWorkflow([], { extra: { escalations: { factoryRetry: opts.knob ?? "once" } } });
   github.issues.set(4, { number: 4, title: "Bug", body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: "" });
-  vi.spyOn(broker, "getDiffAndTouchedFiles").mockResolvedValue({ diffText: "+x", touchedFiles: {} });
-  vi.spyOn(broker, "createThrowawayClone").mockResolvedValue(path.join(root, "clone"));
-  vi.spyOn(broker, "readFileAtRef").mockImplementation(async (_ref, p) => (p === "app.go" ? "package demo\n" : null));
-  const spawn = vi.spyOn(rec as unknown as Priv, "spawnAttempt").mockResolvedValue(true);
+  spyOn(broker, "getDiffAndTouchedFiles").mockResolvedValue({ diffText: "+x", touchedFiles: {} });
+  spyOn(broker, "createThrowawayClone").mockResolvedValue(path.join(root, "clone"));
+  spyOn(broker, "readFileAtRef").mockImplementation(async (_ref, p) => (p === "app.go" ? "package demo\n" : null));
+  const spawn = spyOn(rec as unknown as Priv, "spawnAttempt").mockResolvedValue(true);
   ledger.upsertThread({ issueNumber: 4, title: "Bug", bodySha256: "x", phase: { kind: "awaiting_gate", prNumber: 9, headSha: "h", baseSha: "b", since: 1, nudgedAt: null } });
   sql(ledger, "UPDATE threads SET implementer_vendors_json = ? WHERE issue_number = 4", JSON.stringify(opts.vendors ?? ["anthropic"]));
   const review = (vendor: "openai" | "anthropic" | "gemini", verdict: "approve" | "veto") =>

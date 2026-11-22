@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -49,7 +49,7 @@ describe("an unreadable issue never lets a Thread advance", () => {
   it("skips the Thread this tick, logs it, and retries once the read works (the owner's factory:stop is never missed)", async () => {
     const w = await world();
     try {
-      const reconcileThread = vi.spyOn(w.rec as unknown as { reconcileThread: (...a: unknown[]) => Promise<void> }, "reconcileThread").mockResolvedValue();
+      const reconcileThread = spyOn(w.rec as unknown as { reconcileThread: (...a: unknown[]) => Promise<void> }, "reconcileThread").mockResolvedValue();
       const real = w.github.getIssue.bind(w.github);
       w.github.getIssue = async () => {
         throw new Error("GitHub 502");

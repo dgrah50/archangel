@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
@@ -76,7 +76,7 @@ describe("a handoff whose push fails is an explicit state, not a silent drop", (
       await new Promise((r) => setTimeout(r, 400));
       expect(w.ledger.getThread(4)!.phase.kind).toBe("working");
       const broker = (w.rec as unknown as { broker: GitBroker }).broker;
-      vi.spyOn(broker, "pushFactoryBranch").mockRejectedValue(new Error("remote rejected the push"));
+      spyOn(broker, "pushFactoryBranch").mockRejectedValue(new Error("remote rejected the push"));
       const mainSha = git(path.join(w.root, "remote.git"), ["rev-parse", "main"]);
       await w.rec.prepareDaemonHandoff(4, mainSha);
       await w.rec.tick(Date.now(), { waitForAttempts: true }).catch(() => undefined);

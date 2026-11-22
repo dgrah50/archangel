@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { stepPhase, type MachineEvent, type Mode, type Phase } from "../src/core/thread-machine.js";
 import { buildThreadDetail } from "../src/core/ui-thread.js";
 import { Ledger } from "../src/ledger/store.js";

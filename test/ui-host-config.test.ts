@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { PREVIEW_TTL_MS, makeHostConfigHandler, sha256, type ApplyResult, type PreviewResult } from "../src/core/ui-host-config.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { ProposeRefusal } from "../src/core/ui-propose.js";

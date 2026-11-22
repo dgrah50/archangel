@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { captureAttemptInput } from "../src/core/attempt-input.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { MUTATORS, deriveCases, renderReplay, runReplay } from "../src/core/replay.js";

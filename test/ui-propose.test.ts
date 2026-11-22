@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective } from "../src/core/ui-propose.js";
 import { startUiServer } from "../src/core/ui-server.js";

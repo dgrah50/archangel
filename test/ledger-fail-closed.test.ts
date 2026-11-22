@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { Ledger } from "../src/ledger/store.js";
 
 describe("ledger reads fail closed on unreadable state", () => {

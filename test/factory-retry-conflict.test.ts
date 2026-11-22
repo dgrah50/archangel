@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -45,8 +45,8 @@ function world(factoryRetry: "off" | "once") {
   });
   (rec as unknown as Priv).workflow = okWorkflow([], { extra: { escalations: { factoryRetry } } });
   github.issues.set(4, { number: 4, title: "Bug", body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: "" });
-  vi.spyOn(broker, "getDiffAndTouchedFiles").mockResolvedValue({ diffText: "+OLD-PATCH-LINE", touchedFiles: {} });
-  const spawn = vi.spyOn(rec as unknown as Priv, "spawnAttempt").mockResolvedValue(true);
+  spyOn(broker, "getDiffAndTouchedFiles").mockResolvedValue({ diffText: "+OLD-PATCH-LINE", touchedFiles: {} });
+  const spawn = spyOn(rec as unknown as Priv, "spawnAttempt").mockResolvedValue(true);
   const start = (rebaseCount = 1) => {
     ledger.upsertThread({ issueNumber: 4, title: "Bug", bodySha256: "x", phase: { kind: "awaiting_gate", prNumber: 9, headSha: "h", baseSha: "b", since: 1, nudgedAt: null } });
     sql(ledger, "UPDATE threads SET rebase_count = ? WHERE issue_number = 4", rebaseCount);

@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { ONBOARD_BRANCH, type OnboardRunner } from "../src/core/onboard.js";
 import { PLAN_TTL_MS, makeOnboardHandler, type ApplyResult, type PlanResult } from "../src/core/ui-onboard.js";
 
