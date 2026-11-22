@@ -25,7 +25,7 @@ export const TELEMETRY_EVENTS = {
   broker_ms: { purpose: "Duration of one Broker clone or fetch.", tags: { op: ["clone", "fetch"] } },
   review_ms: { purpose: "Latency of one reviewer run by vendor and verdict.", tags: { vendor: VENDORS, verdict: ["approve", "veto", "error"] } },
   scout_run: { purpose: "One Scout run finished (value 1) by outcome.", tags: { outcome: ["ran", "partial_error", "failed_output", "skipped", "paused", "dry_run"] } },
-  signal_ingested: { purpose: "Signals newly recorded by the adapters in one pass, by kind (value is the count).", tags: { kind: ["pr_merged", "release", "advisory", "schedule", "telemetry_anomaly", "policy_regression"] } },
+  signal_ingested: { purpose: "Signals newly recorded by the adapters in one pass, by kind (value is the count).", tags: { kind: ["pr_merged", "release", "advisory", "research", "schedule", "telemetry_anomaly", "policy_regression"] } },
   signal_action: { purpose: "A signal rule acted (value 1) by action and outcome.", tags: { action: ["file_issue", "run_scout", "run_pitch"], outcome: ["done", "failed", "rejected"] } },
   daemon_start: { purpose: "The daemon started (value 1); a burst of these is a restart loop.", tags: {} },
 } as const satisfies Record<string, { purpose: string; tags: Record<string, TagSpec> }>;

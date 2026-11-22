@@ -7,6 +7,8 @@ export const SIGNAL_KINDS = {
   pr_merged: { source: "github", taint: "mechanical" },
   release: { source: "github", taint: "mechanical" },
   advisory: { source: "github_advisory", taint: "untrusted" },
+  /** Public-internet research the host fetched: the payload is only a day and a count, never fetched text. */
+  research: { source: "research", taint: "untrusted" },
   schedule: { source: "schedule", taint: "owner" },
   /** Computed here from local telemetry by arithmetic only, never from outside text. */
   telemetry_anomaly: { source: "telemetry", taint: "mechanical" },
