@@ -119,6 +119,8 @@ export const ConfigSchema = z.object({
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
   shadowMode: z.boolean().default(true),
+  /** Host kill switch: false stops factory retries on every repo, whatever its workflow file says. */
+  factoryRetry: z.boolean().default(true),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -213,6 +215,7 @@ export const HostYamlSchema = z.object({
   dailyTimezone: z.string().min(1).default("America/New_York"),
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
+  factoryRetry: z.boolean().default(true),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -365,6 +368,7 @@ export function loadProjectConfigs(opts: {
       gateTimeoutMs: host.gateTimeoutMs,
       reviewerOutageMaxMs: host.reviewerOutageMaxMs,
       shadowMode: proj.shadowMode,
+      factoryRetry: host.factoryRetry,
       scouts: proj.scouts,
       authMode: host.authMode,
       implementerChain: host.implementerChain,

@@ -637,6 +637,7 @@ workflowCmd
         scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
         scoutsEnabled: cfg.scouts.enabled,
         maxConcurrentThreads: cfg.maxConcurrentThreads,
+        factoryRetry: cfg.factoryRetry,
         isRevoked: () => false,
       },
     });

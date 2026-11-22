@@ -139,6 +139,10 @@ export class Ledger {
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
       }
+      if (!cols.some((c) => c.name === "factory_retries")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN factory_retries INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("ALTER TABLE threads ADD COLUMN factory_guidance TEXT");
+      }
       const addCols = (table: string, cols: string[]) => {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
@@ -174,8 +178,36 @@ export class Ledger {
   /** An owner retry grants the Thread one more implement and one more revision Attempt. */
   grantRetryBudget(issueNumber: number, now = Date.now()): void {
     this.db
-      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, updated_at = ? WHERE repo = ? AND issue_number = ?")
+      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, factory_guidance = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?")
       .run(now, this.repo, issueNumber);
+  }
+
+  /**
+   * Spends the Thread's factory retry, atomically: refused when this Thread already used its allowance, when the owner has
+   * acted on it (a reply or a retry ends factory involvement for good), or when the repo already spent its daily allowance.
+   * The audit rows are written by the `factory` actor, which never resets the autonomy cap (only `owner` rows do).
+   */
+  claimFactoryRetry(
+    issueNumber: number,
+    input: { code: string; guidance: string | null; perThread: number; perRepoPerDay: number },
+    now = Date.now(),
+  ): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const row = this.db
+        .prepare("SELECT factory_retries, retry_grants, owner_reply FROM threads WHERE repo = ? AND issue_number = ?")
+        .get(this.repo, issueNumber) as { factory_retries: number; retry_grants: number; owner_reply: string | null } | undefined;
+      if (!row || row.factory_retries >= input.perThread || row.retry_grants > 0 || row.owner_reply !== null) return false;
+      const today = this.db
+        .prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?")
+        .get(this.repo, now - 86_400_000) as { n: number };
+      if (today.n >= input.perRepoPerDay) return false;
+      this.db
+        .prepare("UPDATE threads SET factory_retries = factory_retries + 1, factory_guidance = ?, updated_at = ? WHERE repo = ? AND issue_number = ?")
+        .run(input.guidance, now, this.repo, issueNumber);
+      this.appendAudit("factory/retry", issueNumber, "factory", { code: input.code }, now);
+      return true;
+    });
+    return tx.immediate();
   }
 
   forRepo(repo: string): Ledger {
@@ -256,10 +288,12 @@ export class Ledger {
     const existing = this.getSystemState("daemon_lock");
     if (!existing) return false;
     try {
-      const parsed = JSON.parse(existing) as { heartbeatAt: number };
-      return now - parsed.heartbeatAt < staleMs;
+      const at = (JSON.parse(existing) as { heartbeatAt?: unknown }).heartbeatAt;
+      // An unreadable lock must read as "a daemon may be live": handoff must not mutate the DB under it.
+      if (typeof at !== "number") return true;
+      return now - at < staleMs;
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -1340,18 +1374,14 @@ export class Ledger {
   }
 
   listActiveCooldowns(now = Date.now()): Array<{ provider: string; untilTs: number; reason: string }> {
-    try {
-      const rows = this.db
-        .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
-        .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
-      return rows.map((r) => ({
-        provider: String(r.provider),
-        untilTs: Number(r.until_ts),
-        reason: String(r.reason),
-      }));
-    } catch {
-      return [];
-    }
+    const rows = this.db
+      .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
+      .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
+    return rows.map((r) => ({
+      provider: String(r.provider),
+      untilTs: Number(r.until_ts),
+      reason: String(r.reason),
+    }));
   }
 
   // ---- Scout Proposals & Atomic Daily Run Caps (V2.0 / Opus H2, M3, M5) ----
@@ -1540,7 +1570,8 @@ export class Ledger {
             if (r.actor === scoutName) ranThisScoutToday = true;
           }
         } catch {
-          // ignore malformed payload
+          // A row we cannot read may be today's run: count it against the cap (fail closed).
+          todayCount++;
         }
       }
       if (todayCount >= maxRunsPerDay) return false;
@@ -2478,6 +2509,8 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
       : [],
     ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
     retryGrants: Number(r.retry_grants ?? 0),
+    factoryRetries: Number(r.factory_retries ?? 0),
+    factoryGuidance: r.factory_guidance === null || r.factory_guidance === undefined ? null : String(r.factory_guidance),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
