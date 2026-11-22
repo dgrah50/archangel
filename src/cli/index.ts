@@ -154,6 +154,7 @@ program
         : "Auth mode: api (metered keys)",
     );
 
+    const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -210,6 +211,7 @@ program
       if (swept.length > 0) {
         console.log(`[archangel] [${repoSlug}] Stale-working sweep recovered threads: ${swept.join(", ")}`);
       }
+      digestSources.push({ repoSlug, github, agentProposedLabel: cfg.labels.agentProposed });
       return { repoSlug, rec };
     });
 
@@ -230,6 +232,13 @@ program
           now: Date.now(),
           timeZone: first.dailyTimezone,
           digestHour: first.digestHour,
+          openProposals: async () => {
+            const open = new Set<string>();
+            for (const { repoSlug, github, agentProposedLabel } of digestSources) {
+              for (const issue of await github.listOpenIssuesByLabel(agentProposedLabel)) open.add(`${repoSlug}#${issue.number}`);
+            }
+            return open;
+          },
         });
       } catch (err) {
         console.error("[archangel] Digest error:", err);

@@ -53,7 +53,7 @@ describe("sendDigestIfDue", () => {
   it("sends nothing and records nothing on a quiet day", async () => {
     const l = ledger();
     const sendDigest = vi.fn(async () => {});
-    expect(await sendDigestIfDue(l, { sendDigest }, { now: NOW, timeZone: TZ, digestHour: 9 })).toBe(false);
+    expect(await sendDigestIfDue(l, { sendDigest }, { now: NOW, timeZone: TZ, digestHour: 9, openProposals: async () => new Set() })).toBe(false);
     expect(sendDigest).not.toHaveBeenCalled();
     l.close();
   });
@@ -64,7 +64,7 @@ describe("sendDigestIfDue", () => {
     needsYouThread(l, "c/d", 2, NOW - 30 * HOUR);
     l.forRepo("a/b").recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h", shadowOnly: false, now: YESTERDAY, repo: "a/b" });
     const sendDigest = vi.fn(async (_t: string) => {});
-    const opts = { timeZone: TZ, digestHour: 9 };
+    const opts = { timeZone: TZ, digestHour: 9, openProposals: async () => new Set<string>() };
 
     expect(await sendDigestIfDue(l, { sendDigest }, { ...opts, now: Date.UTC(2026, 2, 10, 12, 0, 0) })).toBe(false); // 08:00 local, too early
     expect(await sendDigestIfDue(l, { sendDigest }, { ...opts, now: NOW })).toBe(true);
@@ -79,6 +79,22 @@ describe("sendDigestIfDue", () => {
     // Next local day sends again.
     expect(await sendDigestIfDue(l, { sendDigest }, { ...opts, now: NOW + 24 * HOUR })).toBe(true);
     expect(sendDigest).toHaveBeenCalledTimes(2);
+    l.close();
+  });
+});
+
+describe("digest Scout proposals", () => {
+  it("lists only proposals whose issue is still open with the agent-proposed label", async () => {
+    const l = ledger();
+    needsYouThread(l, "a/b", 1, NOW - HOUR);
+    for (const n of [10, 11, 12]) l.recordScoutProposal({ issueNumber: n, scoutName: "bug-hunt", contentSha256: `c${n}`, titleFp: `t${n}`, repo: "a/b" });
+    const sendDigest = vi.fn(async (_t: string) => {});
+    // #10 open, #11 closed by the owner, #12 had its label removed.
+    await sendDigestIfDue(l, { sendDigest }, { now: NOW, timeZone: TZ, digestHour: 9, openProposals: async () => new Set(["a/b#10"]) });
+    const text = sendDigest.mock.calls[0]![0];
+    expect(text).toContain("a/b#10 (bug-hunt)");
+    expect(text).not.toContain("a/b#11");
+    expect(text).not.toContain("a/b#12");
     l.close();
   });
 });

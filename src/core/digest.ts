@@ -66,12 +66,21 @@ export interface DigestLedger {
 export async function sendDigestIfDue(
   ledger: DigestLedger,
   notifier: { sendDigest(text: string): Promise<void> },
-  opts: { now: number; timeZone: string; digestHour: number },
+  opts: {
+    now: number;
+    timeZone: string;
+    digestHour: number;
+    /** `repo#issue` of every Scout proposal issue that is still open with the agent-proposed label. */
+    openProposals: () => Promise<Set<string>>;
+  },
 ): Promise<boolean> {
   if (localHour(opts.now, opts.timeZone) < opts.digestHour) return false;
   const today = ledger.dayKeyOf(opts.now);
   if (ledger.digestSentFor(today)) return false;
-  const text = buildDigest(ledger.collectDigestInput(opts.now));
+  const input = ledger.collectDigestInput(opts.now);
+  const open = await opts.openProposals();
+  input.proposals = input.proposals.filter((p) => open.has(`${p.repo}#${p.issueNumber}`));
+  const text = buildDigest(input);
   if (text === null) return false;
   await notifier.sendDigest(text);
   ledger.markDigestSent(today, opts.now);
