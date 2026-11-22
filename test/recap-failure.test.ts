@@ -22,7 +22,7 @@ describe("finishAttempt settles an Attempt once", () => {
     const after = l.getSpendBreakdown(2);
     expect(after.spentUsd).toBeCloseTo(1.2);
     expect(after.reservedUsd).toBeCloseTo(0);
-    const second = l.finishAttempt(a.id, { status: "failed", costUsd: 1.2, reservedUsd: reserved, errorMessage: "late" }, 3);
+    const second = l.finishAttempt(a.id, { status: "failed", costUsd: 1.2, reservedUsd: reserved, errorMessage: "late", errorCategory: "other" }, 3);
     expect(second.status).toBe("succeeded");
     expect(l.getSpendBreakdown(3)).toEqual(after);
     expect(l.listAudit({ topicPrefix: "attempt/finished" })).toHaveLength(1);
