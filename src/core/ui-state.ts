@@ -50,10 +50,26 @@ export interface UiState {
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
   /** Subsystem error classes survived in the last 24h, per repo. */
-  faults: ReturnType<Ledger["listHealthFaults"]>;
+  /** Null when the Ledger's schema is behind (no `health_faults` table yet): only this section is unavailable, never the whole dashboard. */
+  faults: ReturnType<Ledger["listHealthFaults"]> | null;
 }
 
 const DAY_MS = 86_400_000;
+
+/** True for the SQLite errors a Ledger that the daemon has not migrated yet produces. */
+export function isSchemaBehind(err: unknown): boolean {
+  return err instanceof Error && /no such (table|column)/i.test(err.message);
+}
+
+/** Runs one section's read; a missing table or column makes that section null instead of failing the whole payload. Other errors still throw. */
+function schemaGap<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (err) {
+    if (isSchemaBehind(err)) return null;
+    throw err;
+  }
+}
 
 function stageOf(phase: Phase, updatedAt: number, now: number): Stage | null {
   switch (phase.kind) {
@@ -167,7 +183,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
     outcomes: ledger.computeMetrics({ now }).outcomes,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
-    faults: ledger.listHealthFaults(now),
+    faults: schemaGap(() => ledger.listHealthFaults(now)),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({

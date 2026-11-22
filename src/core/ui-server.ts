@@ -12,7 +12,7 @@ import { buildHostStatus } from "./host-facts.js";
 import { listReports } from "./eval-reports.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
-import { buildUiState, buildWorkflowsState } from "./ui-state.js";
+import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -35,6 +35,8 @@ export function assertBindable(host: string, allowRemote: boolean): void {
   }
 }
 
+/** Error code for a read that hit a table or column the daemon has not migrated into the Ledger yet. */
+export const SCHEMA_BEHIND = "ledger_schema_behind";
 export const TOKEN_HEADER = "x-archangel-token";
 const PROPOSE_PATH = /^\/api\/workflows\/([^/]+)\/propose$/;
 const MAX_BODY_BYTES = 1_000_000;
@@ -186,9 +188,10 @@ export async function startUiServer(
     } catch (err) {
       // Bodies are built before any header is written, so a failure here can still answer with an error.
       const message = err instanceof Error ? err.message : "error";
-      const status = err instanceof URIError ? 400 : 500;
+      const behind = isSchemaBehind(err);
+      const status = err instanceof URIError ? 400 : behind ? 503 : 500;
       if (res.headersSent) res.destroy();
-      else if ((req.url ?? "").startsWith("/api/")) sendJson(res, status, { error: message });
+      else if ((req.url ?? "").startsWith("/api/")) sendJson(res, status, behind ? { error: SCHEMA_BEHIND, detail: message } : { error: message });
       else res.writeHead(status).end(message);
     }
   });
