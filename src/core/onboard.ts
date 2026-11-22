@@ -100,6 +100,28 @@ export async function pinnedSha(runner: OnboardRunner, root: string, what = "onb
   return sha;
 }
 
+/** Points the template's pull_request trigger at the repo's real default branch (the template says `main`). */
+export function withBranch(workflow: string, branch: string): string {
+  const line = /^(\s*branches:).*$/m;
+  if (!line.test(workflow)) throw new Error("Gate template has no branches: line to set");
+  return workflow.replace(line, `$1 [${JSON.stringify(branch)}]`);
+}
+
+/** Distinct names of the check runs that succeeded on the default branch tip: the repo's real CI, read-only. */
+async function ciCheckNames(runner: OnboardRunner, repo: string, branch: string): Promise<string[]> {
+  const out = await runner.run("gh", ["api", `repos/${repo}/commits/${branch}/check-runs?per_page=100`, "--jq", '.check_runs[] | select(.conclusion == "success") | .name']);
+  return [...new Set(out.split("\n").map((l) => l.trim()).filter(Boolean))].filter((n) => n !== "Gate").sort();
+}
+
+/** The package manager is whatever lockfile the repo commits; no lockfile means no answer. */
+function nodeTestCmd(have: Set<string>): string | null {
+  if (have.has("bun.lock") || have.has("bun.lockb")) return "bun run test";
+  if (have.has("pnpm-lock.yaml")) return "pnpm test";
+  if (have.has("yarn.lock")) return "yarn test";
+  if (have.has("package-lock.json")) return "npm test";
+  return null;
+}
+
 function guessTestGlobs(paths: string[]): string[] {
   const exts = new Set<string>();
   for (const p of paths) {
@@ -119,16 +141,54 @@ Only propose an issue if you can name the exact file and symbol, the failing beh
 `;
 
 /** Adds the explicit landing mode and the bug-hunt Scout entry to a workflow starter. */
-function withBugHuntScout(workflowJson: string, stack: Stack | null): string {
-  const wf = JSON.parse(workflowJson) as Record<string, unknown>;
+function withBugHuntScout(wf: Record<string, unknown>, stack: Stack | null): string {
   wf.landing = { bugfix: "autonomous" };
   wf.scouts = [{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: bugHuntSkills(stack) }];
   return JSON.stringify(wf, null, 2) + "\n";
 }
 
 /**
+ * The `.agents/archangel.json` starter, or null with a note saying exactly why none is written. Nothing is guessed: the test
+ * command comes from the repo's manifest and lockfile, and the required checks are the repo's own CI plus the Gate.
+ */
+async function starterPolicy(
+  runner: OnboardRunner,
+  repo: string,
+  defaultBranch: string,
+  tree: string[],
+  have: Set<string>,
+  stack: Stack | null,
+  root: string,
+  notes: string[],
+): Promise<Record<string, unknown> | null> {
+  const skip = (why: string) => {
+    notes.push(`No ${POLICY_PATH} written: ${why}. Write it by hand (see templates/go/.agents/archangel.json for the shape).`);
+    return null;
+  };
+  if (stack === null) {
+    return skip(`unknown stack${have.has("pyproject.toml") ? " (pyproject.toml found, but no test command is derived from it)" : ""}`);
+  }
+  let base: Record<string, unknown>;
+  if (stack === "go") {
+    base = JSON.parse(fs.readFileSync(path.join(root, "templates/go/.agents/archangel.json"), "utf8")) as Record<string, unknown>;
+  } else {
+    const pkgRaw = await runner.run("gh", ["api", `repos/${repo}/contents/package.json?ref=${defaultBranch}`, "-H", "Accept: application/vnd.github.raw"]);
+    const testScript = (JSON.parse(pkgRaw) as { scripts?: { test?: string } }).scripts?.test;
+    const globs = guessTestGlobs(tree);
+    if (!testScript) return skip("package.json has no scripts.test");
+    if (globs.length === 0) return skip("no *.test.* / *.spec.* files found");
+    const testCmd = nodeTestCmd(have);
+    if (!testCmd) return skip("no bun.lock, pnpm-lock.yaml, yarn.lock or package-lock.json, so the package manager and test command are unknown");
+    const protectedPaths = ["package.json", "package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
+    base = { version: 1, gate: { testFileGlobs: globs, testCmd, protectedPaths } };
+  }
+  const checks = await ciCheckNames(runner, repo, defaultBranch);
+  if (checks.length === 0) return skip(`no successful CI check runs found on ${defaultBranch}, so the required checks are unknown`);
+  return { ...base, requiredChecks: ["Gate", ...checks] };
+}
+
+/**
  * Builds the plan from reads only. Existing files are never overwritten (only missing ones are planned).
- * The `.agents/archangel.json` starter is only planned when it can be derived without guessing.
  */
 export async function buildPlan(
   runner: OnboardRunner,
@@ -166,43 +226,15 @@ export async function buildPlan(
   };
 
   consider(GATE_WORKFLOW_PATH, () =>
-    fs
-      .readFileSync(path.join(root, "workflows/archangel-gate.yml"), "utf8")
-      .replace(/^(\s*ARCHANGEL_GATE_SHA:).*$/m, `$1 ${sha}`),
+    withBranch(
+      fs.readFileSync(path.join(root, "workflows/archangel-gate.yml"), "utf8").replace(/^(\s*ARCHANGEL_GATE_SHA:).*$/m, `$1 ${sha}`),
+      defaultBranch,
+    ),
   );
 
-  consider(POLICY_PATH, () => {
-    if (stack === "go") {
-      return withBugHuntScout(fs.readFileSync(path.join(root, "templates/go/.agents/archangel.json"), "utf8"), stack);
-    }
-    if (stack === "node") {
-      return null; // filled below, needs package.json
-    }
-    notes.push(`Unknown stack: write ${POLICY_PATH} by hand (see templates/go/.agents/archangel.json for the shape).`);
-    return null;
-  });
-  if (stack === "node" && !have.has(POLICY_PATH)) {
-    const globs = guessTestGlobs(tree);
-    const pkgRaw = await runner.run("gh", ["api", `repos/${repo}/contents/package.json?ref=${defaultBranch}`, "-H", "Accept: application/vnd.github.raw"]);
-    const testScript = (JSON.parse(pkgRaw) as { scripts?: { test?: string } }).scripts?.test;
-    if (!testScript || globs.length === 0) {
-      notes.push(
-        `Node repo without ${!testScript ? "a package.json scripts.test" : "any *.test.* / *.spec.* files"}: write ${POLICY_PATH} by hand once tests exist.`,
-      );
-    } else {
-      const protectedPaths = ["package.json", "package-lock.json", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
-      files.push({
-        path: POLICY_PATH,
-        content: withBugHuntScout(
-          JSON.stringify({
-            version: 1,
-            gate: { testFileGlobs: globs, testCmd: "npm test", protectedPaths },
-            requiredChecks: ["Gate", "Test"],
-          }),
-          stack,
-        ),
-      });
-    }
+  if (!have.has(POLICY_PATH)) {
+    const policy = await starterPolicy(runner, repo, defaultBranch, tree, have, stack, root, notes);
+    if (policy) files.push({ path: POLICY_PATH, content: withBugHuntScout(policy, stack) });
   }
 
   // The Scout prompt only works together with its entry in the workflow file, so it is planned with a new one.
@@ -222,7 +254,13 @@ export function printPlan(plan: OnboardPlan, log: (s: string) => void): void {
   for (const n of plan.notes) log(`Note: ${n}`);
 }
 
-export function printOwnerSteps(repo: string, defaultBranch: string, log: (s: string) => void): void {
+/** The required checks of the policy this plan writes; with none written, the Gate is all that is known. */
+function requiredChecksOf(plan: OnboardPlan): string[] {
+  const policy = plan.files.find((f) => f.path === POLICY_PATH);
+  return policy ? (JSON.parse(policy.content) as { requiredChecks: string[] }).requiredChecks : ["Gate"];
+}
+
+export function printOwnerSteps(repo: string, defaultBranch: string, requiredChecks: string[], log: (s: string) => void): void {
   log("");
   log("Owner steps (not done by this command):");
   log("1. Add to archangel.yaml under projects:");
@@ -230,8 +268,17 @@ export function printOwnerSteps(repo: string, defaultBranch: string, log: (s: st
   log(`     defaultBranch: ${defaultBranch}`);
   log("     scouts:");
   log("       enabled: false");
-  log(`2. Merge the onboarding PR, then protect ${defaultBranch}: require status checks "Gate" and "Test" (your CI job name), PRs before merging.`);
+  log(`2. Merge the onboarding PR, then protect ${defaultBranch}: require status checks ${requiredChecks.map((c) => `"${c}"`).join(", ")}, PRs before merging.`);
   log("3. Install the Archangel GitHub App on the repo.");
+}
+
+/** Says exactly what the PR adds, and what it leaves for the owner. */
+function prBody(plan: OnboardPlan): string {
+  const lines = [`Adds: ${plan.files.map((f) => f.path).join(", ")}.`];
+  if (plan.files.some((f) => f.path === POLICY_PATH)) lines.push(`Required checks in the policy: ${requiredChecksOf(plan).join(", ")}.`);
+  for (const n of plan.notes) lines.push(n);
+  lines.push("Review and merge manually; nothing here merges itself.");
+  return lines.join("\n\n");
 }
 
 /** Applies the plan with the owner's `gh`. Idempotent: existing labels, an open onboarding PR, and existing files are left alone. */
@@ -283,7 +330,7 @@ export async function applyPlan(runner: OnboardRunner, plan: OnboardPlan, log: (
       "--title",
       "chore: onboard to Archangel",
       "--body",
-      `Adds the Archangel Gate workflow (pinned), repo policy and a bug-hunt Scout. Review and merge manually; nothing here merges itself.\n\nFiles: ${plan.files.map((f) => f.path).join(", ")}`,
+      prBody(plan),
     ])
   ).trim();
   log(`Opened ${url}`);
@@ -303,6 +350,6 @@ export async function onboard(
   } else {
     await applyPlan(runner, plan, log);
   }
-  printOwnerSteps(repo, plan.defaultBranch, log);
+  printOwnerSteps(repo, plan.defaultBranch, requiredChecksOf(plan), log);
   return plan;
 }

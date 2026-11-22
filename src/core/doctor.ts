@@ -394,7 +394,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         if (wf !== null) {
           try {
             gateLatest ??= await latestGateCommit(execRunner);
-            const drift = await assessPinDrift(execRunner, wf, gateLatest);
+            const drift = await assessPinDrift(execRunner, wf, gateLatest, { branch: cfg.defaultBranch });
             checks.push({
               id: `gate_pin:${repoSlug}`,
               name: `Gate Pin (${repoSlug})`,

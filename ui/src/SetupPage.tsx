@@ -176,7 +176,7 @@ function OnboardPanel({ repo, onChanged }: { repo: string; onChanged: () => void
 }
 
 /** The host diff that adds the project (shadow mode on, Scouts off) goes through W2 with its own preview and confirm. */
-function AddProject({ repo, onChanged }: { repo: string; onChanged: () => void }) {
+function AddProject({ repo, defaultBranch, onChanged }: { repo: string; defaultBranch: string; onChanged: () => void }) {
   const [base, setBase] = useState<{ sha: string | null; text: string } | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [error, setError] = useState<HostError | null>(null);
@@ -190,7 +190,7 @@ function AddProject({ repo, onChanged }: { repo: string; onChanged: () => void }
     if (!read.ok) { setBusy(false); return fail(read.error); }
     if (read.value.text === null) { setBusy(false); return fail({ kind: "validation", message: "There is no archangel.yaml yet. Create it under This machine's settings first." }); }
     let text: string;
-    try { text = addProject(read.value.text, repo); } catch (e) { setBusy(false); return fail({ kind: "validation", message: e instanceof Error ? e.message : String(e) }); }
+    try { text = addProject(read.value.text, repo, defaultBranch); } catch (e) { setBusy(false); return fail({ kind: "validation", message: e instanceof Error ? e.message : String(e) }); }
     const r = await previewHostConfig(read.value.sha256, text);
     setBusy(false);
     if (r.ok) { setBase({ sha: read.value.sha256, text }); setPreview(r.value); } else fail(r.error);
@@ -297,6 +297,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
   const [machine, runMachine] = useLadder("machine", false, true);
   const [repoLadder, runRepo] = useLadder("repo", false, enabled);
   const [repos, reloadRepos] = useGh<GhRepo[]>("repos", enabled ? {} : null);
+  const routeBranch = repos.state === "ok" ? repos.value.find((r) => r.nameWithOwner === routeRepo)?.defaultBranchRef?.name : undefined;
   const [user, reloadUser] = useGh<{ id: number; login: string }>("user", enabled ? {} : null);
   const [pr, reloadPr] = useGh<OnboardingPr>("pr", enabled && repo ? { repo, branch: ONBOARD_BRANCH } : null);
   const targets = useMemo(() => {
@@ -390,7 +391,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
           {open === 3 ? (
             <Flex direction="column" gap="4">
               <RepoPicker repo={routeRepo} gh={repos} onRetry={reloadRepos} />
-              {routeRepo ? <><OnboardPanel repo={routeRepo} onChanged={reloadAll} />{project === undefined && host?.state === "ok" ? <AddProject repo={routeRepo} onChanged={reloadAll} /> : null}</> : null}
+              {routeRepo ? <><OnboardPanel repo={routeRepo} onChanged={reloadAll} />{project === undefined && host?.state === "ok" && routeBranch ? <AddProject repo={routeRepo} defaultBranch={routeBranch} onChanged={reloadAll} /> : null}</> : null}
               {repo ? <PrCard repo={repo} gh={pr} onRetry={reloadPr} /> : <Line>Choose a repo to see its setup PR.</Line>}
             </Flex>
           ) : null}

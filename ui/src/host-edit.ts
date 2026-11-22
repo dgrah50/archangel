@@ -45,8 +45,8 @@ export function editField(text: string, path: Path, value: unknown): string {
   return edit(text, (d) => d.setIn(path, value));
 }
 /** Adds a project the way the wizard onboards one: shadow mode on and Scouts off. */
-export function addProject(text: string, repo: string): string {
-  return edit(text, (d) => d.addIn(["projects"], { repo, shadowMode: true, scouts: { enabled: false } }));
+export function addProject(text: string, repo: string, defaultBranch: string): string {
+  return edit(text, (d) => d.addIn(["projects"], { repo, defaultBranch, shadowMode: true, scouts: { enabled: false } }));
 }
 export function setChainEntry(text: string, chain: Path, i: number, entry: ChainEntry): string {
   return edit(text, (d) => {
