@@ -137,6 +137,16 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       const val = await broker.fetchAndValidateFromClone(cloneDir, 4, newMainSha);
       expect(val.protectedViolations).toEqual([]);
       expect(val.changedFiles).toEqual(["app.go"]);
+
+      // Deterministic Broker rebase onto advanced main preserves only app.go on top of newMainSha
+      const rebased = await broker.rebaseCleanOntoMain(4, newMainSha, val.headSha);
+      expect(rebased.ok).toBe(true);
+      if (rebased.ok) {
+        const parents = git(broker.bareRepoPath, ["rev-list", "--parents", "-n", "1", rebased.headSha]);
+        expect(parents).toContain(newMainSha);
+        const diff = await broker.getDiffAndTouchedFiles(newMainSha, rebased.headSha);
+        expect(Object.keys(diff.touchedFiles)).toEqual(["app.go"]);
+      }
     } finally {
       cleanupDir(root);
     }

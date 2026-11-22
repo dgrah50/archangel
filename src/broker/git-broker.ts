@@ -448,6 +448,43 @@ export class GitBroker {
   }
 
   /**
+   * Deterministically rebases `headSha` onto `mainSha` inside an isolated Broker clone
+   * (0 LLM tokens, hooks disabled). Returns `{ ok: false }` on any conflict so caller can fall back.
+   */
+  async rebaseCleanOntoMain(
+    issueNumber: number,
+    mainSha: string,
+    headSha: string,
+  ): Promise<{ ok: true; headSha: string } | { ok: false; error: string }> {
+    const branchName = `factory/${issueNumber}`;
+    const tmpDir = path.join(this.clonesDir, `rebase-${issueNumber}-${Date.now()}`);
+    fs.mkdirSync(this.clonesDir, { recursive: true });
+    try {
+      await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, tmpDir]);
+      // Ensure both commits are reachable inside the temp clone.
+      const hasHead = await this.runGit(tmpDir, ["cat-file", "-e", `${headSha}^{commit}`])
+        .then(() => true)
+        .catch(() => false);
+      if (!hasHead) {
+        await this.runGit(tmpDir, ["fetch", this.bareRepoPath, headSha]);
+      }
+      await this.runGit(tmpDir, ["checkout", "-B", branchName, headSha]);
+      await this.runGit(tmpDir, ["config", "user.name", "Archangel Worker"]);
+      await this.runGit(tmpDir, ["config", "user.email", "archangel-worker@users.noreply.github.com"]);
+      const oldBase = (await this.runGit(tmpDir, ["merge-base", mainSha, headSha])).trim();
+      await this.runGit(tmpDir, ["rebase", "--onto", mainSha, oldBase]);
+      const stagingRef = `refs/archangel/staging/${issueNumber}`;
+      await this.runGit(this.bareRepoPath, ["fetch", tmpDir, `+HEAD:${stagingRef}`]);
+      const rebasedSha = await this.resolveRef(stagingRef);
+      return { ok: true, headSha: rebasedSha };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.removeClone(tmpDir);
+    }
+  }
+
+  /**
    * Creates an exact-inverse revert commit of a recorded factory squash-merge SHA on top of baseSha.
    */
   async createExactRevertBranch(
