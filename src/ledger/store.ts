@@ -1202,6 +1202,38 @@ export class Ledger {
    * Autonomous steps (Attempt starts and autonomous merges) since the owner was last heard from,
    * i.e. since the latest audit row whose actor is 'owner'.
    */
+  /**
+   * What the autonomous steps since the owner was last heard from were spent on, per Thread (the same rows
+   * `autonomousStepsSinceOwner` counts), plus the Threads waiting in needs_you. Counts and issue numbers only.
+   */
+  autonomousStepBreakdown(repo = this.repo): {
+    threads: Array<{ issueNumber: number; implement: number; revise: number; rebase: number; merged: number; total: number }>;
+    needsYou: number[];
+  } {
+    const rows = this.db
+      .prepare(
+        `SELECT issue_number, topic, json_extract(payload_json, '$.kind') AS kind FROM audit_log
+         WHERE repo = ? AND topic IN ('attempt/started', 'thread/merged')
+           AND id > COALESCE((SELECT MAX(id) FROM audit_log WHERE repo = ? AND actor = 'owner'), 0)`,
+      )
+      .all(repo, repo) as Array<{ issue_number: number | null; topic: string; kind: string | null }>;
+    const by = new Map<number, { issueNumber: number; implement: number; revise: number; rebase: number; merged: number; total: number }>();
+    for (const r of rows) {
+      if (r.issue_number === null) continue;
+      const t = by.get(r.issue_number) ?? { issueNumber: r.issue_number, implement: 0, revise: 0, rebase: 0, merged: 0, total: 0 };
+      if (r.topic === "thread/merged") t.merged++;
+      else if (r.kind === "revise") t.revise++;
+      else if (r.kind === "rebase") t.rebase++;
+      else t.implement++;
+      t.total++;
+      by.set(r.issue_number, t);
+    }
+    return {
+      threads: [...by.values()].sort((a, b) => b.total - a.total || a.issueNumber - b.issueNumber),
+      needsYou: this.listThreads(["needs_you"], repo).map((t) => t.issueNumber),
+    };
+  }
+
   autonomousStepsSinceOwner(repo = this.repo): number {
     const row = this.db
       .prepare(
@@ -1211,6 +1243,20 @@ export class Ledger {
       )
       .get(repo, repo) as { n: number };
     return row.n;
+  }
+
+  /**
+   * Has this repo's audit log a row matching all of these? The "notify once" markers use it: it is always scoped to this repo (one repo's
+   * marker must never silence another's) and unlimited (an old marker must not age out of a LIMIT and let the alert fire again).
+   */
+  hasAudit(q: { topic: string; actor?: string; issueNumber?: number; sinceMs?: number; payload?: { key: "category" | "trustHash"; value: string } }, repo = this.repo): boolean {
+    const where = [`repo = ?`, `topic = ?`];
+    const params: unknown[] = [repo, q.topic];
+    if (q.actor !== undefined) { where.push(`actor = ?`); params.push(q.actor); }
+    if (q.issueNumber !== undefined) { where.push(`issue_number = ?`); params.push(q.issueNumber); }
+    if (q.sinceMs !== undefined) { where.push(`ts >= ?`); params.push(q.sinceMs); }
+    if (q.payload) { where.push(`json_extract(payload_json, '$.${q.payload.key}') = ?`); params.push(q.payload.value); }
+    return Boolean(this.db.prepare(`SELECT 1 FROM audit_log WHERE ${where.join(" AND ")} LIMIT 1`).get(...params));
   }
 
   listAudit(

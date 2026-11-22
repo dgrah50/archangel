@@ -196,3 +196,55 @@ describe("repeated corrections raise one Needs You per category per 30 days", ()
     }
   });
 });
+
+describe("notify-once markers are per repo and never age out", () => {
+  it("hasAudit is scoped to its repo, matches payload and window, and is not limited", () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    l.appendAudit("corrections/needs_you", null, "archangel", { category: "revert" }, NOW, "a/b");
+    expect(l.hasAudit({ topic: "corrections/needs_you", payload: { key: "category", value: "revert" } })).toBe(true);
+    expect(l.forRepo("c/d").hasAudit({ topic: "corrections/needs_you", payload: { key: "category", value: "revert" } })).toBe(false);
+    expect(l.hasAudit({ topic: "corrections/needs_you", payload: { key: "category", value: "disagree" } })).toBe(false);
+    expect(l.hasAudit({ topic: "corrections/needs_you", sinceMs: NOW + 1 })).toBe(false);
+    for (let i = 0; i < 700; i++) l.appendAudit("noise", null, "archangel", {}, NOW + i, "a/b"); // far more than the old LIMIT 500
+    expect(l.hasAudit({ topic: "corrections/needs_you", payload: { key: "category", value: "revert" } })).toBe(true);
+    l.close();
+  });
+
+  it("one repo's marker does not silence another repo's Needs You (same category)", async () => {
+    const sent: string[] = [];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-corr2-"));
+    const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+    const seedDir = path.join(root, "seed");
+    fs.mkdirSync(seedDir);
+    git(seedDir, ["init", "-b", "main"]);
+    git(seedDir, ["config", "user.name", "T"]);
+    git(seedDir, ["config", "user.email", "t@example.com"]);
+    fs.writeFileSync(path.join(seedDir, "app.go"), "package demo\n");
+    fs.mkdirSync(path.join(seedDir, ".agents"), { recursive: true });
+    fs.writeFileSync(path.join(seedDir, ".agents", "archangel.json"), goWorkflowJson());
+    git(seedDir, ["add", "-A"]);
+    git(seedDir, ["commit", "-m", "initial"]);
+    git(root, ["clone", "--bare", seedDir, path.join(root, "remote.git")]);
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
+    const notifier: Notifier = { async notifyNeedsYou(i) { sent.push(i.title); }, async sendDigest() {} };
+    const implementer: Implementer = { async run() { throw new Error("none"); } };
+    const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
+    const reconciler = new Reconciler({
+      config: cfg, ledger, github: new FakeGitHub(path.join(root, "remote.git")),
+      broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }), implementer, reviewers, notifier,
+    });
+    try {
+      const now = Date.now();
+      // The OTHER repo already raised this category this month.
+      ledger.appendAudit("corrections/needs_you", null, "archangel", { category: "owner_retry:gate_failed", count: 2 }, now - DAY, "other/repo");
+      for (let i = 0; i < 2; i++) ledger.appendAudit("thread/owner_retry", 1, "owner", { via: "label_removed", code: "gate_failed" }, now - DAY);
+      await reconciler.tick(now);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain("owner_retry:gate_failed");
+    } finally {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});

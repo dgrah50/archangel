@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, repeatedCategories } from "./corrections.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
+import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../agents/prompts.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
-import type { GateProof } from "../gate/gate.js";
+import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
@@ -61,6 +61,22 @@ interface RunningTask {
   abortCause: "timeout" | "control" | "handoff" | null;
   cloneDir: string;
   promise: Promise<void>;
+}
+
+/** What used the autonomy cap's steps, per Thread (counts and issue numbers only). The cap is never extended automatically. */
+export function describeCapUsage(b: ReturnType<Ledger["autonomousStepBreakdown"]>): string {
+  const SHOWN = 10;
+  const lines = b.threads.slice(0, SHOWN).map((t) => {
+    const parts = [t.implement && `${t.implement} implement`, t.revise && `${t.revise} revise`, t.rebase && `${t.rebase} rebase`, t.merged && `${t.merged} merged`].filter(Boolean);
+    return `  #${t.issueNumber}: ${parts.join(", ")}`;
+  });
+  const rest = b.threads.slice(SHOWN).reduce((n, t) => n + t.total, 0);
+  return [
+    `Used by ${b.threads.length} Thread(s):`,
+    ...lines,
+    ...(rest > 0 ? [`  and ${b.threads.length - SHOWN} more Thread(s) (${rest} steps)`] : []),
+    b.needsYou.length > 0 ? `Waiting on you: ${b.needsYou.map((n) => `#${n}`).join(", ")}` : "Nothing is waiting on you.",
+  ].join("\n");
 }
 
 const POST_MERGE_WATCH_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -317,14 +333,8 @@ export class Reconciler {
   private async raiseCorrectionSignals(now: number): Promise<void> {
     const windowStart = now - CORRECTION_WINDOW_DAYS * 86_400_000;
     const counts = this.ledger.computeCorrections({ repo: this.ledger.repo, sinceMs: windowStart, now });
-    const already = new Set(
-      this.ledger
-        .listAudit({ topicPrefix: "corrections/needs_you", limit: 500 })
-        .filter((a) => a.ts >= windowStart)
-        .map((a) => (JSON.parse(a.payloadJson) as { category?: string }).category),
-    );
     for (const { category, count } of repeatedCategories(counts)) {
-      if (already.has(category)) continue;
+      if (this.ledger.hasAudit({ topic: "corrections/needs_you", sinceMs: windowStart, payload: { key: "category", value: category } })) continue;
       const policy = MAIN_ESCALATION_POLICY.correction_repeated;
       try {
         await this.notifier.notifyNeedsYou({
@@ -841,7 +851,7 @@ export class Reconciler {
             disagreed ||= await this.github.verifyLabelActor(where, this.cfg.labels.disagree, actor);
           }
         }
-        if (!disagreed && this.ledger.listAudit({ topicPrefix: "shadow/disagree_ignored", issueNumber: thread.issueNumber, limit: 1 }).length === 0) {
+        if (!disagreed && !this.ledger.hasAudit({ topic: "shadow/disagree_ignored", issueNumber: thread.issueNumber })) {
           this.ledger.appendAudit("shadow/disagree_ignored", thread.issueNumber, "archangel", { label: this.cfg.labels.disagree, reason: "not applied by the owner" }, now);
         }
       }
@@ -1028,7 +1038,7 @@ export class Reconciler {
         await this.notifier.notifyNeedsYou({
           issueNumber: null,
           title: `Autonomy cap reached for ${this.ledger.repo}`,
-          reason: `${steps} autonomous steps (cap ${cap}) since you were last heard from; no new Attempts or merges will start.`,
+          reason: `${steps} autonomous steps (cap ${cap}) since you were last heard from; no new Attempts or merges will start.\n${describeCapUsage(this.ledger.autonomousStepBreakdown())}`,
           decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.autonomy_cap.decisionClass),
           recommendation: MAIN_ESCALATION_POLICY.autonomy_cap.recommendation,
         });
@@ -1386,13 +1396,23 @@ export class Reconciler {
         });
         const latest = this.ledger.getThread(workingThread.issueNumber);
         if (latest && latest.version === workingThread.version) {
+          // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
+          // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
+          const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
+          const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
           this.applyMachineEvent(
             latest,
-            {
-              t: "attempt_failed",
-              code: "review_vetoed",
-              reason: "Revision attempt produced no new changes (identical SHA) — needs owner review",
-            },
+            conflict
+              ? {
+                  t: "attempt_failed",
+                  code: "existing_test_conflict",
+                  reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.`,
+                }
+              : {
+                  t: "attempt_failed",
+                  code: "revision_no_change",
+                  reason: "Revision attempt produced no new changes (identical SHA).",
+                },
             { auditTopic: "thread/needs_you" },
           );
         }
@@ -2044,6 +2064,15 @@ export class Reconciler {
       decisionClass: formatDecisionClass(policy.decisionClass),
       recommendation: policy.recommendation,
     });
+  }
+
+  /** The first test file named in `texts` that is a test file by this repo's globs and exists on `baseSha`, or null. */
+  private async findExistingTestConflict(texts: readonly string[], baseSha: string): Promise<string | null> {
+    for (const path of testFilesMentioned(texts)) {
+      if (!isTestFile(path, this.effectiveGate)) continue;
+      if ((await this.broker.readFileAtRef(baseSha, path)) !== null) return path;
+    }
+    return null;
   }
 
   private async reconcilePostMergeMain(mainSha: string, now: number): Promise<void> {
