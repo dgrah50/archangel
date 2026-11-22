@@ -1,5 +1,6 @@
 import { Badge, Box, Card, Heading, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { PipelineItem, PipelineRepo, WorkflowsState } from "../../src/core/ui-state.js";
+import { WorkflowEditor } from "./WorkflowEditor";
 
 // Everything here is rendered as React text children. Values originate in a repo's workflow file (untrusted) and are never HTML.
 
@@ -83,6 +84,7 @@ export function Pipeline({ data }: { data: WorkflowsState }) {
                 </Card.Root>
               ))}
             </SimpleGrid>
+            {r.draft && r.fileSha256 ? <WorkflowEditor repo={r.repo} initial={r.draft} baseFileSha256={r.fileSha256} /> : null}
           </Box>
         ))}
       </Stack>
