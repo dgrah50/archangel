@@ -26,7 +26,7 @@ export function computeHealth(ledger: Ledger, now: number, repos: string[]): Hea
     if (!wf || typeof wf.status !== "string") halted.push({ repo: c.repo, status: "unreadable", error: "cached workflow is not valid JSON" });
     else if (wf.status !== "ok") halted.push({ repo: c.repo, status: wf.status, error: String(wf.error ?? "") });
   }
-  const stuckOutbox = ledger.listStuckOutbox().map((o) => ({ repo: o.repo, effect: o.effect.kind, attempts: o.attempts, lastError: o.lastError }));
+  const stuckOutbox = ledger.listStuckOutbox().map((o) => ({ repo: o.repo, effect: o.effect?.kind ?? "unknown", attempts: o.attempts, lastError: o.lastError }));
   const autonomyCapHit = repos.filter((r) => ledger.autonomyCapHitSinceOwner(r));
   return { daemon, halted, stuckOutbox, autonomyCapHit, ok: daemon.state === "running" && halted.length === 0 && stuckOutbox.length === 0 && autonomyCapHit.length === 0 };
 }
