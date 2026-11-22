@@ -14,6 +14,7 @@ import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
+import { listAllSkills } from "./skills.js";
 import { makeGhReads, type GhRead } from "./ui-gh.js";
 import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
 
@@ -185,6 +186,12 @@ export async function startUiServer(
           if (err instanceof ProposeRefusal) return sendJson(res, err.status, { error: err.message });
           throw err;
         }
+      }
+      if (pathname === "/api/skills") {
+        // The bundled skill list for the Scout picker: token required, never served remotely.
+        if (opts.allowRemote) return sendJson(res, 403, { error: "skills are disabled in remote mode" });
+        if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
+        return sendJson(res, 200, { skills: listAllSkills() });
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));

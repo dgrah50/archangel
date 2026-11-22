@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective, lineDiff, previewDraft } from "../src/core/ui-propose.js";
+import { listAllSkills } from "../src/core/skills.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { buildWorkflowsState } from "../src/core/ui-state.js";
 import { Workflow, resolveWorkflow } from "../src/core/workflow.js";
@@ -322,5 +323,28 @@ describe("workflow editor error and stale states", () => {
     expect(out).toEqual({ error: "HTTP 502: <html>Bad Gateway</html>" });
     stubFetch(async () => new Response(JSON.stringify({ error: "stale base" }), { status: 409 }));
     expect(await propose("a/b", draft(), "0".repeat(64), true)).toEqual({ error: "stale base" });
+  });
+});
+
+describe("GET /api/skills", () => {
+  it("lists the bundled skills with the token, 401 without, 403 in remote mode", async () => {
+    const ui = fs.mkdtempSync(path.join(os.tmpdir(), "arc-u11-"));
+    fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
+    const runner: OnboardRunner = { run: async () => "" };
+    const local = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, proposeRunner: runner });
+    const remote = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, allowRemote: true, proposeRunner: runner });
+    try {
+      const base = `http://127.0.0.1:${(local.address() as AddressInfo).port}`;
+      const token = /name="archangel-token" content="([0-9a-f]+)"/.exec(await (await fetch(base)).text())![1]!;
+      expect((await fetch(`${base}/api/skills`)).status).toBe(401);
+      const ok = await fetch(`${base}/api/skills`, { headers: { "x-archangel-token": token } });
+      expect(((await ok.json()) as { skills: string[] }).skills).toEqual(listAllSkills());
+      expect((await fetch(`${base}/api/skills`, { method: "POST", headers: { "x-archangel-token": token } })).status).toBe(405);
+      const rb = `http://127.0.0.1:${(remote.address() as AddressInfo).port}`;
+      expect((await fetch(`${rb}/api/skills`, { headers: { "x-archangel-token": token } })).status).toBe(403);
+    } finally {
+      local.close();
+      remote.close();
+    }
   });
 });
