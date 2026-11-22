@@ -85,7 +85,6 @@ describe("thread-machine global invariants", () => {
       requiredChecks: ["Gate"],
       checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: null }],
       since: 0,
-      nudgedAt: null,
       now: 1000,
       graceMs: 5000,
       timeoutMs: 60_000,

@@ -21,6 +21,7 @@ import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
 import { collectOwnerReply } from "../core/owner-reply.js";
+import { listAllSkills } from "../core/skills.js";
 import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
@@ -619,6 +620,7 @@ program
         github,
         paseo,
       });
+      ledger.appendAudit("thread/owner_resumed", Number(issueArg), "owner", {});
       console.log(
         `Resumed ${repoSlug}#${issueArg} at owner-authorized SHA ${res.headSha?.slice(0, 10) ?? "none"} (advisory mode).`,
       );
@@ -671,6 +673,7 @@ program
         bodySha256: sha256(issue.body),
         auditTopic: "thread/owner_retried",
       });
+      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", {});
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
       ledger.close();
@@ -899,6 +902,13 @@ daemonCmd
 const scoutCmd = program
   .command("scout")
   .description("Discover and run repo-owned read-only Scout workflows (.agents/scouts/*.md)");
+
+scoutCmd
+  .command("skills")
+  .description("List bundled Scout skills (reference them from a repo's .agents/scouts/*.md `skills:` list)")
+  .action(() => {
+    for (const ref of listAllSkills()) console.log(ref);
+  });
 
 scoutCmd
   .command("run [name]")

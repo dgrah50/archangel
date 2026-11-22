@@ -90,8 +90,12 @@ export function formatDecisionClass(c: DecisionClass): string {
   return c.replace(/_/g, " ");
 }
 
-/** Escalations raised by post-merge main monitoring rather than by a Thread. */
+/** Escalations raised by project-level monitors (autonomy cap, post-merge main) rather than by a Thread. */
 export const MAIN_ESCALATION_POLICY = {
+  autonomy_cap: {
+    decisionClass: "spending",
+    recommendation: "Reply on any Thread or run `archangel retry` to continue.",
+  },
   red_main_reverted: {
     decisionClass: "live_infrastructure",
     recommendation:

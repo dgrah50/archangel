@@ -1,8 +1,5 @@
----
-name: bug-hunt
-schedule: daily
-maxProposals: 2
----
+# Bug hunt
+
 Audit the repository's non-test production source files for concrete, reproducible reliability bugs:
 - null/undefined or nil dereferences
 - off-by-one indexing, slicing, or boundary wrapping bugs

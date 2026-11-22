@@ -2,7 +2,9 @@
   "maxNonTestLines": 150,
   "maxTotalLines": 300,
   "maxFiles": 5,
-  "testFileGlobs": ["test/**/*.test.ts"],
+  "testFileGlobs": [
+    "test/**/*.test.ts"
+  ],
   "testDataGlobs": [],
   "testBuildCmd": "npm run typecheck",
   "baseTestCmd": "npx vitest run",
@@ -29,7 +31,11 @@
     "src/core/scout.ts",
     "templates/**",
     "workflows/**",
-    "bin/**"
+    "bin/**",
+    "skills/**"
   ],
-  "requiredChecks": ["Gate", "Test"]
+  "requiredChecks": [
+    "Gate",
+    "Test"
+  ]
 }

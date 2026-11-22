@@ -107,6 +107,8 @@ export const ConfigSchema = z.object({
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
+  /** Autonomous steps (Attempt starts + auto-merges) allowed before the owner is next heard from. */
+  maxAutonomousStepsWithoutOwner: z.number().int().min(1).default(25),
   shadowMode: z.boolean().default(true),
   maxImplementAttemptsPerThread: z.number().int().min(1).default(3),
   maxRevisionsPerThread: z.number().int().min(0).default(1),
