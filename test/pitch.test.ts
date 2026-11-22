@@ -134,6 +134,19 @@ describe("pitch Scout runs", () => {
     }
   });
 
+  it("queues an automatic PoC build for a pitch that is not size L, never for size L", async () => {
+    const f = await fixture();
+    try {
+      await f.run(out(pitch({ size: "M" })));
+      await f.run(out(pitch({ size: "L", title: "Split the monolith into packages" })), { now: NOW + 8 * DAY });
+      expect(f.created).toHaveLength(2);
+      expect(f.ledger.getPoc(300)).toMatchObject({ autoQueued: true, builds: 0 });
+      expect(f.ledger.getPoc(301)).toBeNull();
+    } finally {
+      f.cleanup();
+    }
+  });
+
   it("drops a pitch citing a missing file, a traversal or an absolute path, and audits why", async () => {
     const f = await fixture();
     try {

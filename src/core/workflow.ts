@@ -80,6 +80,27 @@ export const ScoutSpec = z
   .strict();
 export type ScoutSpec = z.infer<typeof ScoutSpec>;
 
+/** One command as an argv: no shell, so no quoting or expansion. */
+const Argv = z.array(z.string().min(1).max(200).regex(/^[^\0\r\n]+$/)).min(1).max(20);
+
+/**
+ * How the owner says a PoC of this repo is shown. Absent means no preview. Nothing here runs yet; the sandboxed runner reads it.
+ * `web` starts a server on a port the host health-checks; `demo` lists commands whose output is recorded as a before/after transcript.
+ */
+export const Preview = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("web"),
+      install: Argv,
+      start: Argv,
+      port: z.number().int().min(1024).max(65535),
+      readyPath: z.string().max(100).regex(/^\/([\w.-]+\/)*[\w.-]*$/),
+    })
+    .strict(),
+  z.object({ kind: z.literal("demo"), commands: z.array(Argv).min(1).max(5) }).strict(),
+]);
+export type Preview = z.infer<typeof Preview>;
+
 export const Workflow = z
   .object({
     version: z.literal(1),
@@ -107,6 +128,7 @@ export const Workflow = z
     features: z.object({ planApproval: z.enum(["off", "owner"]).default("off") }).strict().default({ planApproval: "off" }),
     /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
     escalations: z.object({ factoryRetry: z.enum(["off", "once"]).default("off") }).strict().default({ factoryRetry: "off" }),
+    preview: Preview.optional(),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
     /** Fleet Scouts the host enables run here unless named in `optOut`. Unknown names are invalid, so a typo never silently keeps one running. */
     fleetScouts: z.object({ optOut: z.array(z.enum(FLEET_SCOUT_NAMES)).max(FLEET_SCOUT_NAMES.length) }).strict().default({ optOut: [] }),
@@ -218,6 +240,7 @@ export type EffectiveWorkflow =
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
       planApproval: "off" | "owner";
+      preview: Preview | null;
       scouts: EffectiveScout[];
       /** Fleet Scouts this repo opted out of in its workflow file. */
       fleetOptOut: FleetScoutName[];
@@ -315,6 +338,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     landingBugfix,
     factoryRetry,
     planApproval: wf.features.planApproval,
+    preview: wf.preview ?? null,
     scouts,
     fleetOptOut,
     caps: {
@@ -380,6 +404,8 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   if (prev.features.planApproval !== next.features.planApproval) {
     add("features.planApproval", next.features.planApproval === "owner" ? "tighten" : "loosen");
   }
+
+  if (!eq(prev.preview, next.preview)) add("preview", "changed");
 
   const before = new Map(prev.scouts.map((s) => [s.name, s]));
   const after = new Map(next.scouts.map((s) => [s.name, s]));

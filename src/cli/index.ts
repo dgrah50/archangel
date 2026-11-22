@@ -404,6 +404,25 @@ pitchCmd
     }
   });
 
+pitchCmd
+  .command("poc <repo> <issue>")
+  .description("Ask the daemon to build a throwaway proof of concept of a pitch (kept as a local ref, never pushed; at most 2 per pitch and 2 a day)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action((repo: string, issueArg: string, opts: { config?: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+    const ledger = new Ledger(resolvePaths(cfg).ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
+    try {
+      const res = ledger.reservePocBuild(Number(issueArg));
+      if (!res.ok) {
+        console.error(`No build started: ${res.reason}.`);
+        process.exit(1);
+      }
+      console.log(`Build queued for pitch #${issueArg}. The daemon starts it on its next pass (it uses your subscription once).`);
+    } finally {
+      ledger.close();
+    }
+  });
+
 program
   .command("gate")
   .description("Run the language-agnostic mechanical Gate against a git repository (always reads .pre-commit-config.yaml and .agents/archangel.json from the base commit)")
