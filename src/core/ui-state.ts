@@ -265,6 +265,8 @@ export interface PipelineRepo {
   fileSha256?: string;
   /** Editable version 1 draft of the current file (only when status is ok); Scout prompts are not included. */
   draft?: Workflow;
+  /** Fleet Scouts running here: enabled on this machine and not opted out by the repo. */
+  fleetScouts?: string[];
   stages: PipelineStage[];
 }
 export interface WorkflowsState {
@@ -313,7 +315,7 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
               ...ok.scouts.map((s) => ({
                 label: s.name,
                 value: `${s.schedule}, max ${s.maxProposals}/run, skills: ${list(s.skills)}${s.includeMetrics ? ", metrics" : ""}`,
-                source: "repo" as const,
+                source: s.fleet ? ("host" as const) : ("repo" as const),
               })),
               { label: "enabled on this host", value: ok.caps.scoutsEnabled ? "yes" : "no", source: "host" as const },
               { label: "runs/day", value: String(ok.caps.scoutRunsPerDay), source: "host" as const },
@@ -348,9 +350,9 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
       {
         id: "work_class",
         title: "Work class",
-        items: [{ label: "rule", value: "owner-labelled class:feature; scout proposals are always bugfix", source: "kernel" }],
+        items: [{ label: "rule", value: "owner-labelled class:feature or class:chore; scout proposals are always bugfix", source: "kernel" }],
         clamps: [],
-        metrics: (["bugfix", "feature"] as const).map(
+        metrics: (["bugfix", "feature", "chore"] as const).map(
           (c) => `${c}: ${m.workClass[c].threads} Threads, ${m.workClass[c].merged} merged, ${m.workClass[c].attemptsPerMerge ?? "n/a"} attempts/merge`,
         ),
       },
@@ -391,6 +393,7 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
           ? [
               { label: "bugfix", value: ok.landingBugfix.value, source: ok.landingBugfix.source },
               { label: "feature", value: "owner", source: "kernel" },
+              { label: "chore", value: "owner", source: "kernel" },
               { label: "merges/day", value: String(ok.caps.autoMergesPerDay), source: "host" },
             ]
           : [],
@@ -432,7 +435,7 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
       stages: kernelStages(wf),
     };
   }
-  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, draft, stages: kernelStages(wf) };
+  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, draft, fleetScouts: wf.scouts.filter((s) => s.fleet).map((s) => s.name), stages: kernelStages(wf) };
 }
 
 const Source = z.enum(["kernel", "host", "repo"]);
@@ -468,10 +471,12 @@ const CachedWorkflow = z.union([
             maxProposals: z.number(),
             skills: z.array(z.string()),
             includeMetrics: z.boolean(),
+            fleet: z.boolean(),
             promotionEffective: Eff(z.enum(["owner", "auto"])),
           })
           .passthrough(),
       ),
+      fleetOptOut: z.array(z.string()),
       caps: z
         .object({ autoMergesPerDay: z.number(), autoPromotionsPerDay: z.number(), scoutRunsPerDay: z.number(), scoutsEnabled: z.boolean(), concurrent: z.number() })
         .passthrough(),

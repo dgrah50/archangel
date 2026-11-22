@@ -190,7 +190,7 @@ export async function buildPlan(
         `Node repo without ${!testScript ? "a package.json scripts.test" : "any *.test.* / *.spec.* files"}: write ${POLICY_PATH} by hand once tests exist.`,
       );
     } else {
-      const protectedPaths = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
+      const protectedPaths = ["package.json", "package-lock.json", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
       files.push({
         path: POLICY_PATH,
         content: withBugHuntScout(

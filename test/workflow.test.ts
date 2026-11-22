@@ -13,7 +13,7 @@ const baseFile = () => ({
 });
 const host = (o: Partial<HostWorkflowInput> = {}): HostWorkflowInput => ({
   shadowMode: false, maxAutoMergesPerDay: 3, maxAutoPromotionsPerDay: 1, scoutRunsPerDay: 2,
-  maxConcurrentThreads: 2, scoutsEnabled: true, factoryRetry: true, isRevoked: () => false, ...o,
+  maxConcurrentThreads: 2, scoutsEnabled: true, factoryRetry: true, isRevoked: () => false, fleetScouts: [], ...o,
 });
 const repo = (file: unknown, o: Partial<RepoWorkflowInput> = {}): RepoWorkflowInput => ({
   repo: "a/b", mainSha: "abc", fileRaw: file === null ? null : JSON.stringify(file),
@@ -36,6 +36,9 @@ describe("kernel bounds", () => {
     ["requiredChecks without Gate", { ...baseFile(), requiredChecks: ["Test"] }, "requiredChecks"],
     ["requiredChecks Gate only (landing could never see main green)", { ...baseFile(), requiredChecks: ["Gate"] }, "requiredChecks"],
     ["requiredChecks missing", { ...baseFile(), requiredChecks: undefined }, "requiredChecks"],
+    ["unknown fleet Scout in optOut (a typo must not keep one running)", { ...baseFile(), fleetScouts: { optOut: ["anti-slop-bug"] } }, "fleetScouts.optOut"],
+    ["unknown key in fleetScouts", { ...baseFile(), fleetScouts: { optOut: [], enabled: true } }, "fleetScouts"],
+    ["repo Scout reusing a fleet name", { ...baseFile(), scouts: [{ name: "anti-slop-bugs" }] }, "scouts.0.name"],
     ["unknown key", { ...baseFile(), labels: {} }, "labels"],
     ["bad skill ref", { ...baseFile(), scouts: [{ name: "x", skills: ["../x"] }] }, "scouts.0.skills"],
   ])("rejects %s", (_n: string, file: any, where: string) => {
@@ -54,6 +57,24 @@ describe("kernel bounds", () => {
     expect(resolveWorkflow(host(), { ...repo(baseFile()), fileRaw: "{nope" }).status).toBe("invalid");
     expect(resolveWorkflow(host(), repo(null)).status).toBe("missing");
     expect(resolveWorkflow(host(), repo(baseFile(), { scoutPrompts: {} })).status).toBe("invalid");
+  });
+});
+
+describe("fleet Scouts", () => {
+  const fleetHost = host({ fleetScouts: ["anti-slop-bugs", "anti-slop-cleanup", "fleet-pr-miner"] });
+  const names = (file: unknown) => {
+    const r = resolveWorkflow(fleetHost, repo(file));
+    if (r.status !== "ok") throw new Error(r.status === "invalid" ? r.error : r.status);
+    return r;
+  };
+
+  it("run on a repo unless it opts out, and are never auto-promoted even when the host allows auto", () => {
+    const on = names(baseFile());
+    expect(on.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs", "anti-slop-cleanup", "fleet-pr-miner"]);
+    expect(on.scouts.filter((s) => s.fleet).map((s) => s.promotionEffective.value)).toEqual(["owner", "owner", "owner"]);
+    const out = names({ ...baseFile(), fleetScouts: { optOut: ["anti-slop-cleanup"] } });
+    expect(out.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs", "fleet-pr-miner"]);
+    expect(resolveWorkflow(host(), repo(baseFile()))).toMatchObject({ scouts: [{ name: "bug-hunt", fleet: false }] });
   });
 });
 

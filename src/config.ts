@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { FLEET_SCOUT_NAMES } from "./core/fleet-scouts.js";
 import type { ReviewerVendor } from "./ledger/schema.js";
 
 export const CliProviderSchema = z.enum(["codex", "agy", "claude"]);
@@ -191,6 +192,8 @@ export const LabelsSchema = z.object({
   agentPitch: z.string().default("agent-pitch"),
   /** Owner-applied label that makes a Thread a feature (owner merges; no red-on-base proof). */
   feature: z.string().default("class:feature"),
+  /** Owner-applied label that makes a Thread a chore (cleanup/hygiene; owner merges; no red-on-base proof). */
+  chore: z.string().default("class:chore"),
 });
 
 export const ScoutsConfigSchema = z.object({
@@ -255,6 +258,10 @@ export const ConfigSchema = z.object({
   shadowMode: z.boolean().default(true),
   /** Host kill switch: false stops factory retries on every repo, whatever its workflow file says. */
   factoryRetry: z.boolean().default(true),
+  /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
+  fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
+  /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
+  fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -268,6 +275,7 @@ export const ConfigSchema = z.object({
     agentProposed: "agent-proposed",
     agentPitch: "agent-pitch",
     feature: "class:feature",
+    chore: "class:chore",
   }),
   scouts: ScoutsConfigSchema.default({
     enabled: false,
@@ -348,6 +356,10 @@ export const HostYamlSchema = z.object({
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   factoryRetry: z.boolean().default(true),
+  /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
+  fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
+  /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
+  fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -512,6 +524,8 @@ export function loadProjectConfigs(opts: {
       reviewerOutageMaxMs: host.reviewerOutageMaxMs,
       shadowMode: proj.shadowMode,
       factoryRetry: host.factoryRetry,
+      fleetScouts: host.fleetScouts,
+      fleetMinerSeeds: host.fleetMinerSeeds,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

@@ -13,7 +13,7 @@ permissions:
 env:
   ARCHANGEL_REPO: dgrah50/archangel
   # Pin to an immutable 40-char commit SHA of dgrah50/archangel.
-  ARCHANGEL_GATE_SHA: 56b92e7cdad4ca690b8708d8e0de69f7fbcaf7f0
+  ARCHANGEL_GATE_SHA: 8b2e300bc9e92c2184af0c658c53e473db4f9bfe
 
 jobs:
   gate:
@@ -57,20 +57,20 @@ jobs:
 
       - name: Checkout PR merge ref with full history (no persisted credentials)
         if: steps.classify.outputs.is_factory == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js (for language-agnostic Archangel Gate CLI)
         if: steps.classify.outputs.is_factory == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
       - name: Setup Go (when target repository has go.mod)
         if: steps.classify.outputs.is_factory == 'true' && hashFiles('go.mod') != ''
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -132,10 +132,11 @@ jobs:
         run: |
           git cat-file -e "${BASE_SHA}^{commit}"
           EXTRA_ARGS=()
-          # Work class comes only from the branch name. The daemon alone chooses factory/feature-<n> (from an
-          # owner-verified `class:feature` issue label); the implementer cannot name the pushed branch.
-          if [[ "$HEAD_REF" =~ ^factory/feature-[0-9]+$ ]]; then
-            EXTRA_ARGS+=(--work-class feature)
+          # Work class comes only from the branch name. The daemon alone chooses factory/feature-<n> or
+          # factory/chore-<n> (from an owner-verified `class:feature` / `class:chore` issue label); the implementer
+          # cannot name the pushed branch.
+          if [[ "$HEAD_REF" =~ ^factory/(feature|chore)-[0-9]+$ ]]; then
+            EXTRA_ARGS+=(--work-class "${BASH_REMATCH[1]}")
           fi
           if [[ "$HEAD_REF" =~ ^factory/revert-[0-9]+$ ]]; then
             git cat-file -e "${HEAD_SHA}^{commit}"

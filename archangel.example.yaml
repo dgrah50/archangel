@@ -63,6 +63,14 @@ reviewerChain:
   - provider: claude
   - provider: codex
 
+# Bundled fleet Scouts for anti-slop hygiene: run on every project below (once Scouts are enabled there) unless the
+# repo's .agents/archangel.json opts out with "fleetScouts": { "optOut": ["anti-slop-cleanup"] }. Always promotion: owner.
+# fleetScouts: [anti-slop-bugs, anti-slop-cleanup]
+# fleet-pr-miner is a read-only cross-repo pitch Scout (Skills, Scouts, graduation/pruning, Archangel improvements). Provisional
+# below 20 merged PRs: its pitches say so. Optional owner notes it may read (absolute paths, secret-scanned, max 5):
+# fleetScouts: [fleet-pr-miner]
+# fleetMinerSeeds: [/Users/me/notes/review-report.md]
+
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767
 
