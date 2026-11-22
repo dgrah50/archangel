@@ -97,6 +97,9 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       expect(rep.new_test_files).toEqual(["tests/issue1.test.mjs"]);
       expect(rep.hooks_run).toEqual(["no-banned-marker"]);
       expect(rep.violations).toEqual([]);
+      // Reproduction-test output is captured for the Recap: red on base, green on head.
+      expect(rep.proof?.base_output).toBeTruthy();
+      expect(rep.proof?.head_output).toBeDefined();
     } finally {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

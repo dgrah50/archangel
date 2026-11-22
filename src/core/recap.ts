@@ -1,6 +1,7 @@
 import type { Blocker } from "./blockers.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
 import { extractPrFromPhase } from "./thread-machine.js";
+import { tailOutput, type GateProof } from "../gate/gate.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
@@ -11,6 +12,8 @@ export function renderRecapComment(input: {
   blockers: Blocker[];
   wouldMerge?: boolean;
   summary?: string | null;
+  /** Gate reproduction-test output for the current head SHA; null/undefined when not captured. */
+  gateProof?: GateProof | null;
 }): string {
   const { thread, reviews, blockers } = input;
   const pr = extractPrFromPhase(thread.phase);
@@ -54,6 +57,18 @@ export function renderRecapComment(input: {
     lines.push("", "#### Latest Summary", summaryText);
   }
 
+  lines.push(
+    "",
+    "#### Reproduction Test Proof",
+    "_Machine output from the Gate run, shown verbatim (last lines only); not written by Archangel._",
+    "",
+    "**On base (expected to fail):**",
+    ...fencedOutput(input.gateProof?.base_output),
+    "",
+    "**On head (expected to pass):**",
+    ...fencedOutput(input.gateProof?.head_output),
+  );
+
   if (reviews.length > 0) {
     lines.push("", "#### Independent Reviews");
     for (const r of reviews) {
@@ -78,6 +93,16 @@ export function renderRecapComment(input: {
   }
 
   return lines.join("\n");
+}
+
+function fencedOutput(output: string | undefined): string[] {
+  if (output === undefined) return ["_not captured_"];
+  if (!output.trim()) return ["_test command ran and printed nothing_"];
+  const text = tailOutput(output);
+  // Fence longer than any backtick run in the output so it cannot close the block early.
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((m) => m.length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [fence + "text", text, fence];
 }
 
 function parseFindings(json: string): ReviewFinding[] {
