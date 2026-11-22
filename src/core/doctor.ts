@@ -26,6 +26,7 @@ export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
   offline?: boolean;
   apiBaseUrl?: string;
+  smoke?: boolean;
 }
 
 export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
@@ -129,6 +130,38 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         status: "pass",
         detail: `${verified.join(", ")} (chain: impl=${first.implementerChain.map((e) => e.provider).join("->")}, rev=${first.reviewerChain.map((e) => e.provider).join("->")})`,
       });
+    }
+    if (opts.smoke) {
+      for (const provider of neededProviders) {
+        let detail = "";
+        let failure: string | undefined;
+        try {
+          const { stdout: version } = await execFileAsync(provider, ["--version"]);
+          const authArgs = provider === "codex" ? ["login", "status"] : ["auth", "status"];
+          const { stdout, stderr } = await execFileAsync(provider, authArgs);
+          const authOutput = `${stdout}\n${stderr}`.trim();
+          if (!/(?<!not )logged in|authenticated|\"loggedIn\"\s*:\s*true/i.test(authOutput)) {
+            failure = `Authentication check did not confirm a logged-in session (${authOutput || "no status output"})`;
+          } else {
+            detail = `${version.trim().split("\n")[0]}; ${authOutput}`;
+          }
+        } catch (err) {
+          failure = err instanceof Error && "code" in err && err.code === "ENOENT"
+            ? "CLI not found in PATH"
+            : `CLI version or authentication check failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        checks.push({
+          id: `smoke_provider:${provider}`,
+          name: `Smoke Check (${provider})`,
+          status: failure ? "fail" : "pass",
+          detail: failure ?? `Installed and authenticated: ${detail}`,
+          remediation: failure
+            ? provider === "codex"
+              ? "Install the Codex CLI and run `codex login`, then retry `archangel doctor --smoke`."
+              : `Install the ${provider} CLI, run ${provider} auth login, then retry archangel doctor --smoke.`
+            : undefined,
+        });
+      }
     }
   } else {
     const missingKeys = [
