@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountEnv, firstAccount, providerToVendor, type Account, type CliProvider, type ProviderEntry } from "../config.js";
+import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type CliProvider, type ProviderEntry } from "../config.js";
+import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import { promptTemplateSha } from "./prompts.js";
 import {
@@ -244,6 +245,8 @@ export function defaultReviewerCliInvoker(input: {
 export interface SubscriptionReviewerOptions {
   chain: ProviderEntry[];
   accounts?: Account[];
+  /** Per-account cooldowns and usage; without it selection is config order and nothing cools down. */
+  accountState?: AccountLedger;
   /** Vendors excluded when a request names none: the first provider of each writing role's chain. */
   defaultExcludeVendors: ReviewerVendor[];
   timeoutMs?: number;
@@ -263,6 +266,7 @@ export interface SubscriptionReviewerOptions {
 export class SubscriptionReviewerSuite implements ReviewerSuite {
   private readonly chain: ProviderEntry[];
   private readonly accounts: Account[];
+  private readonly state: AccountLedger;
   private readonly defaultExcludeVendors: ReviewerVendor[];
   private readonly timeoutMs: number;
   private readonly invoker: ReviewerCliInvoker;
@@ -272,6 +276,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
     this.prompts = opts.prompts ?? DEFAULT_REVIEW_PROMPTS;
     this.chain = opts.chain;
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
+    this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.defaultExcludeVendors = opts.defaultExcludeVendors;
     this.timeoutMs = opts.timeoutMs ?? 180_000;
     this.invoker = opts.invoker ?? defaultReviewerCliInvoker;
@@ -304,23 +309,45 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
       slotIndex: number,
     ): Promise<VendorReviewResult> => {
       const prompt = slotIndex === 0 ? this.prompts.contract(req) : this.prompts.adversarial(req);
-      const raw = await this.invoker({
-        provider: item.entry.provider,
-        model: item.entry.model,
-        account: firstAccount(this.accounts, item.entry),
-        prompt,
-        timeoutMs: this.timeoutMs,
-      });
-      const parsed = parseStrictVerdict(raw);
-      return {
-        vendor: item.vendor,
-        verdict: parsed.verdict,
-        findings: parsed.findings,
-        costUsd: 0,
-        provider: item.entry.provider,
-        model: item.entry.model ?? null,
-        promptSha256: promptTemplateSha(slotIndex === 0 ? "review_contract" : "review_adversarial"),
-      };
+      // The account is picked per run; a limit error cools it down and the next account of the SAME vendor runs (reviewer
+      // independence is by vendor, so two accounts of one vendor are still one reviewer).
+      const tried = new Set<string>();
+      let switches = 0;
+      for (;;) {
+        const account = selectAccount(accountsFor(this.accounts, item.entry), this.state, Date.now(), { exclude: tried });
+        if (!account) {
+          throw new Error(`no available ${item.entry.provider} account: usage limit reached on every account (cooling down, at its daily cap, or already tried)`);
+        }
+        tried.add(account.id);
+        let raw: unknown;
+        try {
+          raw = await this.invoker({
+            provider: item.entry.provider,
+            model: item.entry.model,
+            account,
+            prompt,
+            timeoutMs: this.timeoutMs,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (isRateLimitOrQuotaError(msg)) {
+            this.state.recordCooldown(account.id, ACCOUNT_COOLDOWN_MS, msg.slice(0, 200));
+            if (++switches <= MAX_ACCOUNT_SWITCHES) continue;
+          }
+          throw err;
+        }
+        const parsed = parseStrictVerdict(raw);
+        return {
+          vendor: item.vendor,
+          verdict: parsed.verdict,
+          findings: parsed.findings,
+          costUsd: 0,
+          provider: item.entry.provider,
+          model: item.entry.model ?? null,
+          accountId: account.id,
+          promptSha256: promptTemplateSha(slotIndex === 0 ? "review_contract" : "review_adversarial"),
+        };
+      }
     };
 
     const settled = await Promise.allSettled(active.map((item, idx) => runEntry(item, idx)));

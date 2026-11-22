@@ -2,17 +2,11 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountEnv, firstAccount, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
+import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
+import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
-
-const DEFAULT_COOLDOWN_MS = 15 * 60_000;
-
-export interface ProviderCooldownStore {
-  isCoolingDown(provider: CliProvider, now?: number): boolean;
-  recordCooldown(provider: CliProvider, durationMs: number, reason: string, now?: number): void;
-}
 
 // Real quota signals only: stderr can carry arbitrary tool or test output ("foo_test.go:429:", "memory exhausted"),
 // so a bare number or word is not enough. Known shapes: "HTTP 429: usage limit reached", "429 Too Many Requests",
@@ -66,7 +60,8 @@ export interface SubscriptionImplementerOptions {
   accounts?: Account[];
   transcriptsDir: string;
   invoker?: CliInvoker;
-  cooldowns?: ProviderCooldownStore;
+  /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
+  accountState?: AccountLedger;
   cooldownDurationMs?: number;
   logger?: Logger;
 }
@@ -320,7 +315,7 @@ export class SubscriptionImplementer implements Implementer {
   private readonly accounts: Account[];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
-  private readonly cooldowns?: ProviderCooldownStore;
+  private readonly state: AccountLedger;
   private readonly cooldownDurationMs: number;
   private readonly logger: Logger;
 
@@ -332,8 +327,8 @@ export class SubscriptionImplementer implements Implementer {
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
-    this.cooldowns = opts.cooldowns;
-    this.cooldownDurationMs = opts.cooldownDurationMs ?? DEFAULT_COOLDOWN_MS;
+    this.state = opts.accountState ?? NO_ACCOUNT_STATE;
+    this.cooldownDurationMs = opts.cooldownDurationMs ?? ACCOUNT_COOLDOWN_MS;
     this.logger = opts.logger ?? NOOP_LOGGER;
   }
 
@@ -359,118 +354,111 @@ export class SubscriptionImplementer implements Implementer {
       ? chain.filter((e) => !input.preferVendors!.includes(providerToVendor(e.provider)))
       : chain;
     const preferredChain = [...preferred, ...remaining];
-    // Reorder chain so providers currently in rate-limit cooldown are tried last (Continuity cooldown memory).
     const now = Date.now();
-    const healthy = preferredChain.filter((e) => !this.cooldowns?.isCoolingDown(e.provider, now));
-    const cooling = preferredChain.filter((e) => this.cooldowns?.isCoolingDown(e.provider, now));
-    const orderedChain = healthy.length > 0 ? [...healthy, ...cooling] : preferredChain;
+    // Entries with a selectable account (not cooling, under their daily cap) run first, in order. When none has one,
+    // cooldowns are ignored (caps are not) and the chain is tried as ordered, exactly as before accounts existed.
+    const healthy = preferredChain.filter((e) => selectAccount(accountsFor(this.accounts, e), this.state, now) !== null);
+    const ignoreCooldown = healthy.length === 0;
+    const orderedChain = ignoreCooldown ? preferredChain : [...healthy, ...preferredChain.filter((e) => !healthy.includes(e))];
+
+    // Same-vendor failover first: on a limit error the next account of the same entry runs before the next entry, and at most
+    // MAX_ACCOUNT_SWITCHES switches happen in one Attempt.
+    const tried = new Set<string>();
+    let switches = 0;
+    let runIndex = 0;
 
     try {
-      for (let i = 0; i < orderedChain.length; i++) {
-        const entry = orderedChain[i]!;
-        const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
-        const prompt =
-          i === 0
-            ? input.prompt
-            : `${captureWorkspaceContinuityContext(input.cloneDir)}\n\n${input.prompt}`;
+      for (const entry of orderedChain) {
+        for (;;) {
+          const account = selectAccount(accountsFor(this.accounts, entry), this.state, Date.now(), { exclude: tried, ignoreCooldown });
+          if (!account) break; // no account left on this entry: next entry
+          tried.add(account.id);
+          const i = runIndex++;
+          const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
+          const prompt = i === 0 ? input.prompt : `${captureWorkspaceContinuityContext(input.cloneDir)}\n\n${input.prompt}`;
+          const label = `${entry.provider}${entry.model ? ` (${entry.model})` : ""} [${account.id}]`;
 
-        this.logger.info(
-          "implementer/provider_start",
-          `Running ${entry.provider}${entry.model ? ` (${entry.model})` : ""}${i > 0 ? " [Continuity failover]" : ""}`,
-          { issue: input.issueNumber },
-        );
+          this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { issue: input.issueNumber });
+          fs.appendFileSync(
+            transcriptPath,
+            `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, account: account.id, ts: Date.now() })}\n`,
+          );
 
-        fs.appendFileSync(
-          transcriptPath,
-          `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, ts: Date.now() })}\n`,
-        );
-
-        const headBefore = headSha(input.cloneDir);
-        const res = await this.invoker({
-          provider: entry.provider,
-          model: entry.model,
-          account: firstAccount(this.accounts, entry),
-          cloneDir: input.cloneDir,
-          prompt,
-          abortController: input.abortController,
-          timeoutMs: input.timeoutMs,
-          goCacheDir,
-          outputFile,
-        });
-
-        const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
-        fs.appendFileSync(
-          transcriptPath,
-          `${JSON.stringify({
-            event: "provider_end",
+          const headBefore = headSha(input.cloneDir);
+          const res = await this.invoker({
             provider: entry.provider,
-            code: res.code,
-            aborted: res.aborted,
-            summary: extractedSummary.slice(0, 1000),
-            stderr: res.stderr.slice(0, 4000),
-            ts: Date.now(),
-          })}\n`,
-        );
+            model: entry.model,
+            account,
+            cloneDir: input.cloneDir,
+            prompt,
+            abortController: input.abortController,
+            timeoutMs: input.timeoutMs,
+            goCacheDir,
+            outputFile,
+          });
 
-        if (res.aborted) {
-          return {
-            summary: "Aborted",
-            costUsd: 0,
+          const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
+          fs.appendFileSync(
             transcriptPath,
-            aborted: true,
-            providersUsed,
-          };
-        }
+            `${JSON.stringify({
+              event: "provider_end",
+              provider: entry.provider,
+              account: account.id,
+              code: res.code,
+              aborted: res.aborted,
+              summary: extractedSummary.slice(0, 1000),
+              stderr: res.stderr.slice(0, 4000),
+              ts: Date.now(),
+            })}\n`,
+          );
 
-        if (res.code === 0) {
-          const vendor = providerToVendor(entry.provider);
-          if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
-          return {
-            summary: `[${entry.provider}] ${extractedSummary}`,
-            costUsd: 0,
-            transcriptPath,
-            aborted: false,
-            providersUsed,
-            runBy: { provider: entry.provider, model: entry.model ?? null },
-          };
-        }
-
-        // Only inspect stderr + final error envelope — never match test output on stdout (Opus B2).
-        const errorSignal = `${res.stderr}\n${extractErrorEnvelope(res.stdout)}`.trim();
-        const isQuota = isRateLimitOrQuotaError(errorSignal);
-        errors.push(`${entry.provider} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
-
-        // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
-        // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
-        if (mayHaveMutated(input.cloneDir, headBefore)) {
-          const vendor = providerToVendor(entry.provider);
-          if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
-        }
-
-        // Continuity failover: record cooldown + move to the next configured subscription provider!
-        if (isQuota) {
-          this.cooldowns?.recordCooldown(entry.provider, this.cooldownDurationMs, errorSignal.slice(0, 200));
-          if (i + 1 < orderedChain.length) {
-            this.logger.warn(
-              "implementer/continuity_failover",
-              `${entry.provider} hit rate/quota limit (cooling down ${Math.round(this.cooldownDurationMs / 60_000)}m) -> failing over to ${orderedChain[i + 1]!.provider}`,
-              { issue: input.issueNumber },
-            );
-            fs.appendFileSync(
-              transcriptPath,
-              `${JSON.stringify({
-                event: "continuity_failover",
-                from: entry.provider,
-                to: orderedChain[i + 1]!.provider,
-                reason: "rate_limit_or_quota",
-                ts: Date.now(),
-              })}\n`,
-            );
-            continue;
+          if (res.aborted) {
+            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed };
           }
-        }
 
-        throw new Error(errors.join(" | "));
+          if (res.code === 0) {
+            const vendor = providerToVendor(entry.provider);
+            if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
+            return {
+              summary: `[${entry.provider}] ${extractedSummary}`,
+              costUsd: 0,
+              transcriptPath,
+              aborted: false,
+              providersUsed,
+              runBy: { provider: entry.provider, model: entry.model ?? null, accountId: account.id },
+            };
+          }
+
+          // Only inspect stderr + final error envelope, never match test output on stdout (Opus B2).
+          const errorSignal = `${res.stderr}\n${extractErrorEnvelope(res.stdout)}`.trim();
+          const isQuota = isRateLimitOrQuotaError(errorSignal);
+          errors.push(`${label} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
+
+          // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
+          // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
+          if (mayHaveMutated(input.cloneDir, headBefore)) {
+            const vendor = providerToVendor(entry.provider);
+            if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
+          }
+
+          if (!isQuota) throw new Error(errors.join(" | "));
+
+          // Continuity failover: cool this account down, then move on (same vendor's next account, else the next entry).
+          this.state.recordCooldown(account.id, this.cooldownDurationMs, errorSignal.slice(0, 200));
+          switches++;
+          if (switches > MAX_ACCOUNT_SWITCHES) {
+            throw new Error(`account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
+          }
+          this.logger.warn(
+            "implementer/continuity_failover",
+            `${label} hit rate/quota limit (cooling down ${Math.round(this.cooldownDurationMs / 60_000)}m) -> switching (${switches}/${MAX_ACCOUNT_SWITCHES})`,
+            { issue: input.issueNumber },
+          );
+          fs.appendFileSync(
+            transcriptPath,
+            `${JSON.stringify({ event: "continuity_failover", from: account.id, switches, reason: "rate_limit_or_quota", ts: Date.now() })}\n`,
+          );
+        }
       }
 
       throw new Error(`All fallback subscription providers exhausted: ${errors.join(" | ")}`);
