@@ -9,8 +9,8 @@
   "testBuildCmd": "npm run typecheck",
   "baseTestCmd": "npx vitest run",
   "testCmd": "npm run test:all",
-  "baseTestRuns": 1,
-  "headTestRuns": 1,
+  "baseTestRuns": 3,
+  "headTestRuns": 2,
   "extraProtectedPaths": [
     "package.json",
     "package-lock.json",
