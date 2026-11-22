@@ -159,8 +159,9 @@ function defaultCliInvoker(input: {
     const killChild = () => {
       if (!child.killed) {
         child.kill("SIGTERM");
+        // `child.killed` only says a signal was sent, not that the process exited: escalate unless it really has exited.
         setTimeout(() => {
-          if (!child.killed) child.kill("SIGKILL");
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
         }, 3000).unref();
       }
     };
@@ -201,6 +202,8 @@ function defaultCliInvoker(input: {
       });
     });
 
+    // A CLI that exits before reading its prompt closes the pipe: that surfaces as its exit code, not as an uncaught EPIPE.
+    child.stdin.on("error", () => undefined);
     if (stdinPrompt !== null) {
       child.stdin.write(stdinPrompt);
     }
@@ -237,11 +240,16 @@ function extractErrorEnvelope(stdout: string): string {
   return "";
 }
 
-function hasWorkspaceEdits(cloneDir: string): boolean {
+/**
+ * Did this provider touch the workspace? If git cannot be inspected the answer is "yes": a vendor that may have written part of the
+ * code must not be treated as clean, because it would then be allowed to review its own work.
+ */
+function mayHaveMutated(cloneDir: string, headBefore: string | null): boolean {
   try {
-    return execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0;
+    if (execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0) return true;
+    return headBefore === null || execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim() !== headBefore;
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -423,7 +431,7 @@ export class SubscriptionImplementer implements Implementer {
 
         // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
         // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
-        if (hasWorkspaceEdits(input.cloneDir) || headSha(input.cloneDir) !== headBefore) {
+        if (mayHaveMutated(input.cloneDir, headBefore)) {
           const vendor = providerToVendor(entry.provider);
           if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
         }
