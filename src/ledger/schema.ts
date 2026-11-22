@@ -112,6 +112,9 @@ export interface AttemptRecord {
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;
   workflowSha256: string | null;
+  /** Wall time of the agent runs and peak RSS (KB) of their process tree; null for rows from before measurement or when unmeasured. */
+  durationMs: number | null;
+  peakRssKb: number | null;
 }
 
 export interface ReviewRecord {
@@ -244,6 +247,8 @@ CREATE TABLE IF NOT EXISTS attempts (
   account_id TEXT,
   prompt_sha256 TEXT,
   workflow_sha256 TEXT,
+  duration_ms INTEGER,
+  peak_rss_kb INTEGER,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 

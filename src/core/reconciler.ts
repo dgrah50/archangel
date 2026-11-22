@@ -20,6 +20,8 @@ import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, ty
 import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
 import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
+import { LocalProvider } from "../compute/local.js";
+import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { captureAttemptInput } from "./attempt-input.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
@@ -115,6 +117,7 @@ export class Reconciler {
   private readonly ledger: Ledger;
   private readonly github: GitHubClient;
   private readonly broker: GitBroker;
+  private readonly compute: ComputeProvider;
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
@@ -151,6 +154,7 @@ export class Reconciler {
     this.ledger = deps.ledger.forRepo(`${deps.config.githubOwner}/${deps.config.githubRepo}`);
     this.github = deps.github;
     this.broker = deps.broker;
+    this.compute = new LocalProvider(deps.broker);
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
@@ -871,14 +875,14 @@ export class Reconciler {
       return;
     }
     let verdict: Awaited<ReturnType<typeof validateTriage>>;
-    let cloneDir = "";
+    let workspace: Workspace | null = null;
     try {
       const diffText = headSha ? (await this.broker.getDiffAndTouchedFiles(mainSha, headSha)).diffText : "";
-      cloneDir = await this.broker.createThrowawayClone(thread.issueNumber, headSha ?? mainSha);
+      workspace = await this.compute.prepare({ issueNumber: thread.issueNumber, startSha: headSha ?? mainSha });
       const raw = await this.triageInvoker({
         provider: choice.provider,
         model: choice.model,
-        cloneDir,
+        cloneDir: workspace.path,
         prompt: buildTriagePrompt({ issueNumber: issue.number, title: issue.title, body: issue.body, code, reason: phase.reason, diffText, summary: thread.lastSummary, reviews: reviewFacts }),
         maxProposals: 0,
         timeoutMs: TRIAGE_TIMEOUT_MS,
@@ -900,7 +904,7 @@ export class Reconciler {
       this.releaseTriage(thread, `the triage run failed (${err instanceof Error ? err.message : String(err)}).`.slice(0, 600), "run_failed", now);
       return;
     } finally {
-      if (cloneDir) this.broker.removeClone(cloneDir);
+      if (workspace) this.compute.destroy(workspace);
     }
     if (verdict.action === "escalate") {
       // The one recommendation call for this needs_you entry rode on the triage run: record it (or its absence) so nothing asks again.
@@ -956,14 +960,14 @@ export class Reconciler {
     if (!choice) return;
     let headline: string | null = null;
     let reason: string | null = null;
-    let cloneDir = "";
+    let workspace: Workspace | null = null;
     try {
       const diffText = headSha ? (await this.broker.getDiffAndTouchedFiles(mainSha, headSha)).diffText : "";
-      cloneDir = await this.broker.createThrowawayClone(thread.issueNumber, headSha ?? mainSha);
+      workspace = await this.compute.prepare({ issueNumber: thread.issueNumber, startSha: headSha ?? mainSha });
       const raw = await this.triageInvoker({
         provider: choice.provider,
         model: choice.model,
-        cloneDir,
+        cloneDir: workspace.path,
         prompt: buildRecommendationPrompt({ issueNumber: issue.number, title: issue.title, body: issue.body, code: phase.code, reason: phase.reason, diffText, summary: thread.lastSummary }),
         maxProposals: 0,
         timeoutMs: RECOMMENDATION_TIMEOUT_MS,
@@ -976,7 +980,7 @@ export class Reconciler {
     } catch (err) {
       this.logger.warn("recommendation/run_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
     } finally {
-      if (cloneDir) this.broker.removeClone(cloneDir);
+      if (workspace) this.compute.destroy(workspace);
     }
     this.ledger.recordThreadRecommendation(thread.issueNumber, { code: phase.code, headSha, vendor: choice.vendor, headline, reason }, now);
   }
@@ -1517,11 +1521,13 @@ export class Reconciler {
     task: RunningTask,
   ): Promise<void> {
     let cloneDir = "";
+    let workspace: Workspace | null = null;
     let actualCostUsd = 0;
     let transcriptPath: string | null = null;
 
     try {
-      cloneDir = await this.broker.createThrowawayClone(workingThread.issueNumber, fromSha);
+      workspace = await this.compute.prepare({ issueNumber: workingThread.issueNumber, startSha: fromSha });
+      cloneDir = workspace.path;
       task.cloneDir = cloneDir;
 
       // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
@@ -1584,6 +1590,7 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      if (result.durationMs !== undefined) this.ledger.recordAttemptMeasure(attemptId, { durationMs: result.durationMs, peakRssKb: result.peakRssKb ?? null });
       this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
@@ -1611,7 +1618,7 @@ export class Reconciler {
           let unpushed: string | null = null;
           try {
             const val = await this.broker.fetchAndValidateFromClone(
-              cloneDir,
+              (await this.compute.collect(workspace!)).path,
               workingThread.issueNumber,
               mainSha,
               this.effectiveGate,
@@ -1657,7 +1664,7 @@ export class Reconciler {
 
       // Hardened fetch + pre-push validation (including local `archangel-gate` if built — Neon P1).
       const validation = await this.broker.fetchAndValidateFromClone(
-        cloneDir,
+        (await this.compute.collect(workspace!)).path,
         workingThread.issueNumber,
         mainSha,
         this.effectiveGate,
@@ -1732,7 +1739,7 @@ export class Reconciler {
           if (backToQueued) {
             // Release current runningTasks entry before spawning the pre-push revision.
             this.runningTasks.delete(workingThread.issueNumber);
-            this.broker.removeClone(cloneDir);
+            this.compute.destroy(workspace);
             cloneDir = "";
             await this.spawnAttempt(
               backToQueued,
@@ -1905,9 +1912,7 @@ export class Reconciler {
       if (this.runningTasks.get(workingThread.issueNumber) === task) {
         this.runningTasks.delete(workingThread.issueNumber);
       }
-      if (cloneDir) {
-        this.broker.removeClone(cloneDir);
-      }
+      if (workspace) this.compute.destroy(workspace);
     }
   }
 

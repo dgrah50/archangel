@@ -172,10 +172,11 @@ export class Ledger {
       if (!cols.some((c) => c.name === "factory_triage")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN factory_triage TEXT CHECK (factory_triage IN ('pending', 'done'))");
       }
-      const addCols = (table: string, cols: string[]) => {
+      const addCols = (table: string, cols: string[], type = "TEXT") => {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
-        for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
+        for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} ${type}`);
       };
+      addCols("attempts", ["duration_ms", "peak_rss_kb"], "INTEGER");
       addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
       addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
@@ -800,6 +801,11 @@ export class Ledger {
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
       .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+  }
+
+  /** What the Attempt's agent runs cost in wall time and memory (peak RSS in KB, null when never sampled). */
+  recordAttemptMeasure(attemptId: number, m: { durationMs: number; peakRssKb: number | null }): void {
+    this.db.prepare(`UPDATE attempts SET duration_ms = ?, peak_rss_kb = ? WHERE id = ?`).run(Math.round(m.durationMs), m.peakRssKb, attemptId);
   }
 
   /** Replay capture for a revise or rebase Attempt: the head it started from and its sanitized input (null when not capturable). */
@@ -2632,6 +2638,9 @@ export class Ledger {
       successRate: number;
       p50DurationSec: number | null;
       p95DurationSec: number | null;
+      /** Peak RSS (KB) of the agent's process tree per measured Attempt. */
+      p50PeakRssKb: number | null;
+      p95PeakRssKb: number | null;
       topErrors: Array<{ error: string; count: number }>;
       /** Failed attempts bucketed into fixed categories (never contains error text). */
       errorCategories: Record<string, number>;
@@ -2680,7 +2689,7 @@ export class Ledger {
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
-      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message, error_category FROM attempts ${attWhere}`)
+      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message, error_category, peak_rss_kb FROM attempts ${attWhere}`)
       .all(...attParams) as Array<{
       kind: string;
       cost_usd: number;
@@ -2691,12 +2700,14 @@ export class Ledger {
       finished_at: number | null;
       error_message: string | null;
       error_category: string | null;
+      peak_rss_kb: number | null;
     }>;
 
     let succeeded = 0;
     let failed = 0;
     let aborted = 0;
     const durationsSec: number[] = [];
+    const peakRssKb: number[] = attemptRows.flatMap((a) => (a.peak_rss_kb === null ? [] : [a.peak_rss_kb])).sort((x, y) => x - y);
     const errorCounts = new Map<string, number>();
     const errorCategories: Record<string, number> = {};
     const byRole: Record<string, { attempts: number; succeeded: number; failed: number; aborted: number; costUsd: number; models: Record<string, number> }> = {};
@@ -2780,6 +2791,8 @@ export class Ledger {
         successRate: finished > 0 ? Number((succeeded / finished).toFixed(3)) : 1,
         p50DurationSec: percentile(durationsSec, 0.5),
         p95DurationSec: percentile(durationsSec, 0.95),
+        p50PeakRssKb: percentile(peakRssKb, 0.5),
+        p95PeakRssKb: percentile(peakRssKb, 0.95),
         topErrors,
         errorCategories,
         byRole,
@@ -2921,6 +2934,8 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     accountId: r.account_id === null || r.account_id === undefined ? null : String(r.account_id),
     promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
+    durationMs: r.duration_ms === null || r.duration_ms === undefined ? null : Number(r.duration_ms),
+    peakRssKb: r.peak_rss_kb === null || r.peak_rss_kb === undefined ? null : Number(r.peak_rss_kb),
   };
 }
 

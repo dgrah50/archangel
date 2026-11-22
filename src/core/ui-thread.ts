@@ -100,6 +100,8 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
       details: [
         { label: "provider", value: [a.provider, a.model].filter(Boolean).join(" / ") || "unknown" },
         { label: "duration", value: duration },
+        ...(a.durationMs !== null ? [{ label: "agent run", value: `${Math.round(a.durationMs / 1000)}s` }] : []),
+        ...(a.peakRssKb !== null ? [{ label: "peak memory", value: `${Math.round(a.peakRssKb / 1024)} MB` }] : []),
         ...(a.errorMessage ? [{ label: "error category", value: a.errorCategory ?? "other" }] : []),
         ...(a.transcriptPath ? [{ label: "transcript", value: a.transcriptPath }] : []),
       ],
