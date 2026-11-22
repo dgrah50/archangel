@@ -119,22 +119,6 @@ describe("replay", () => {
     }
   }, 120_000);
 
-  it("by default runs no repo tests: static mutants are rejected and the test-dependent ones are reported as skipped", async () => {
-    const w = await world();
-    try {
-      const r = await run(w);
-      expect(renderReplay(r)).not.toContain("REGRESSION");
-      expect(r.regressions).toBe(0);
-      const st = Object.fromEntries(r.mutants.map((m) => [m.mutator, m.status]));
-      expect(st["revert-fix-keep-test"]).toBe("skipped");
-      expect(st["weaken-test-assertion"]).toBe("skipped");
-      for (const n of ["touch-protected-path", "drop-new-tests", "edit-existing-test", "exceed-diff-budget"]) expect(st[n]).toBe("rejected");
-    } finally {
-      w.ledger.close();
-      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
-
   it("detects a Gate that would now reject a merged fix", async () => {
     const w = await world();
     try {

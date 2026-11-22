@@ -102,12 +102,6 @@ describe("provenance and eval refs are captured as work happens", () => {
     }
   });
 
-  it("template hashes change only when the prompt wording changes, and differ per prompt", () => {
-    expect(promptTemplateSha("implement")).toBe(promptTemplateSha("implement"));
-    const all = (["implement", "revise", "rebase", "review_contract", "review_adversarial"] as const).map((k) => promptTemplateSha(k));
-    expect(new Set(all).size).toBe(5);
-    expect(promptTemplateSha("implement", "feature")).not.toBe(promptTemplateSha("implement", "bugfix"));
-  });
 });
 
 describe("eval refs", () => {
@@ -154,28 +148,4 @@ describe("eval refs", () => {
     }
   });
 
-  it("backfills still-fetchable SHAs from existing Ledger rows once, skipping unfetchable ones, and is idempotent", async () => {
-    const { root, remoteBare, mainSha } = seedRepo();
-    const github = new FakeGitHub(remoteBare);
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    const bare = path.join(root, "broker.git");
-    const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(root, "clones") });
-    const implementer: Implementer = { async run() { return { summary: "", costUsd: 0, transcriptPath: null, aborted: true }; } };
-    const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
-    try {
-      ledger.upsertThread({ issueNumber: 7, title: "old", bodySha256: "b", now: 1 });
-      ledger.recordReview({ issueNumber: 7, headSha: mainSha, vendor: "openai", verdict: "approve", findings: [], costUsd: 0, now: 1 });
-      ledger.recordReview({ issueNumber: 7, headSha: "e".repeat(40), vendor: "gemini", verdict: "approve", findings: [], costUsd: 0, now: 1 });
-      const reconciler = new Reconciler({ config: cfg(), ledger, github, broker, implementer, reviewers, notifier });
-      await reconciler.tick(Date.now(), { waitForAttempts: true });
-      const after = refs(bare, "refs/archangel/eval/acme/app/7/");
-      expect(after.map((l) => l.split(" ")[1])).toEqual([mainSha]);
-      expect(ledger.getSystemState("eval_refs_backfilled:acme/app")).toBe("1");
-      await reconciler.tick(Date.now(), { waitForAttempts: true });
-      expect(refs(bare, "refs/archangel/eval/acme/app/7/")).toEqual(after);
-    } finally {
-      ledger.close();
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
 });

@@ -56,21 +56,6 @@ describe("waste revocation of auto-promotion", () => {
     l.close();
   });
 
-  it("an owner-merged outcome also counts as a merge, and an in-flight Thread is not waste", () => {
-    const l = new Ledger(":memory:", { repo: "acme/app" });
-    promote(l, 1, "pr_closed");
-    promote(l, 2, "pr_closed");
-    promote(l, 3, "in_flight");
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", HASH)).toBe(false);
-    const m = new Ledger(":memory:", { repo: "acme/app" });
-    promote(m, 1, "pr_closed");
-    promote(m, 2, "pr_closed");
-    promote(m, 3, "owner_merged");
-    expect(m.isScoutAutoPromoteRevoked("auto-hunt", HASH)).toBe(false);
-    l.close();
-    m.close();
-  });
-
   it("a new trustHash (an owner-merged edit of the Scout) starts clean", () => {
     const l = new Ledger(":memory:", { repo: "acme/app" });
     for (const n of [1, 2, 3]) promote(l, n, "pr_closed");

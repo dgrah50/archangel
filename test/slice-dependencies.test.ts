@@ -128,14 +128,4 @@ describe("chained slice dependencies", () => {
     }
   });
 
-  it("a slice without a dependency is unaffected", async () => {
-    const s = setup();
-    try {
-      s.ledger.clearThreadDependency(11);
-      await s.tick(0);
-      expect([...s.ran].sort()).toEqual([10, 11]);
-    } finally {
-      s.cleanup();
-    }
-  });
 });

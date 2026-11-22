@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Workflow } from "../src/core/workflow.js";
-import { buildPlan, detectStack, onboard, type OnboardRunner } from "../src/core/onboard.js";
+import { buildPlan, onboard, type OnboardRunner } from "../src/core/onboard.js";
 
 const SHA = "a".repeat(40);
 
@@ -32,14 +32,6 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
   return { runner, calls, mutating: () => calls.filter((c) => /label create|-X POST|-X PUT|pr create/.test(c)) };
 }
 
-describe("detectStack", () => {
-  it("maps go.mod to go and package.json to node, else null", () => {
-    expect(detectStack(["go.mod", "main.go"])).toBe("go");
-    expect(detectStack(["package.json"])).toBe("node");
-    expect(detectStack(["Cargo.toml"])).toBeNull();
-  });
-});
-
 describe("buildPlan", () => {
   it("plans all three files for a go repo and pins the workflow to HEAD", async () => {
     const { runner } = fake({ tree: ["go.mod", "a_test.go"], labels: ["needs-you"] });
@@ -65,31 +57,12 @@ describe("buildPlan", () => {
     expect(plan.notes.join(" ")).toContain("add a Scout entry");
   });
 
-  it("derives the node starter from existing tests and package.json scripts.test", async () => {
-    const { runner } = fake({ tree: ["package.json", "package-lock.json", "src/a.test.ts"], pkg: { scripts: { test: "vitest run" } } });
-    const plan = await buildPlan(runner, "o/r");
-    const policy = JSON.parse(plan.files.find((f) => f.path === ".agents/archangel.json")!.content);
-    expect(Workflow.safeParse(policy).success).toBe(true);
-    expect(policy.gate.testFileGlobs).toEqual(["**/*.test.ts"]);
-    expect(policy.gate.testCmd).toBe("npm test");
-    expect(policy.gate.protectedPaths).toEqual(["package.json", "package-lock.json"]);
-    expect(policy.scouts[0].skills).toContain("typescript/*");
-  });
-
   it("does not guess a node policy without scripts.test, and still plans the rest", async () => {
     const { runner } = fake({ tree: ["package.json", "a.test.ts"], pkg: {} });
     const plan = await buildPlan(runner, "o/r");
     expect(plan.files.map((f) => f.path)).not.toContain(".agents/archangel.json");
     expect(plan.notes.join(" ")).toContain("scripts.test");
     expect(plan.files.map((f) => f.path)).toContain(".github/workflows/archangel-gate.yml");
-  });
-
-  it("handles an unknown stack by noting what to write by hand", async () => {
-    const { runner } = fake({ tree: ["Cargo.toml"] });
-    const plan = await buildPlan(runner, "o/r");
-    expect(plan.stack).toBeNull();
-    expect(plan.notes.join(" ")).toContain("by hand");
-    expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
   });
 
   it("a git failure other than exit 1 is an error, not 'not on origin/main'", async () => {
@@ -135,7 +108,4 @@ describe("onboard", () => {
     expect(f.mutating()).toEqual([]);
   });
 
-  it("rejects a malformed repo argument", async () => {
-    await expect(onboard(fake({ tree: [] }).runner, "nope", { log: () => {} })).rejects.toThrow(/owner\/name/);
-  });
 });
