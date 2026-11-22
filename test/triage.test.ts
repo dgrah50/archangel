@@ -28,6 +28,17 @@ describe("triage output", () => {
     expect(TriageOutputSchema.safeParse({ ...good, decision: "escalate", escalateReason: "" }).success).toBe(false);
   });
 
+  it("drops an oversized, invalid or secret-bearing recommendation without failing the verdict", async () => {
+    const esc = { ...good, decision: "escalate", escalateReason: "owner call" };
+    const rec = { headline: "Reject duplicates under --strict.", reason: "A behaviour choice only the owner can make." };
+    expect((await validateTriage({ ...esc, recommendation: rec }, checks(), "o")).recommendation).toEqual(rec);
+    for (const bad of [{ ...rec, headline: "x".repeat(91) }, { ...rec, reason: "x".repeat(401) }, { ...rec, extra: 1 }, { headline: "h" }, "text", { ...rec, reason: "use AKIAABCDEFGHIJKLMNOP" }]) {
+      const v = await validateTriage({ ...esc, recommendation: bad }, checks(), "o");
+      expect(v).toMatchObject({ action: "escalate", reason: "owner call" });
+      expect(v.recommendation).toBeUndefined();
+    }
+  });
+
   it.each(["needs_protected_path", "veto_disputed", "underspecified_issue"])("always escalates for cause %s, whatever decision says", async (cause) => {
     const v = await validateTriage({ ...good, cause, escalateReason: "owner call" }, checks(), "openai");
     expect(v).toMatchObject({ action: "escalate", cause });
