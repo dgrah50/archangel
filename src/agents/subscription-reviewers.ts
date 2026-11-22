@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { killGroup } from "../core/spawn-group.js";
+import { execInGroup } from "../compute/local.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -102,7 +101,7 @@ export function parseJsonEnvelope(stdout: string): unknown {
   return undefined;
 }
 
-export function defaultReviewerCliInvoker(input: {
+export async function defaultReviewerCliInvoker(input: {
   provider: CliProvider;
   model?: string;
   account?: Account;
@@ -181,55 +180,17 @@ export function defaultReviewerCliInvoker(input: {
     stdinPrompt = input.prompt;
   }
 
-  return new Promise<unknown>((resolve, reject) => {
-    const child = spawn(bin, args, {
-      cwd: tmpDir,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
-    });
-    let stdout = "";
-    let stderr = "";
-
-    const timer = setTimeout(() => {
-      killGroup(child, KILL_GRACE_MS);
-    }, input.timeoutMs);
-
-    child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
-    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-      reject(err);
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      try {
-        if (code !== 0) {
-          reject(new Error(`${input.provider} exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
-          return;
-        }
-        if (input.provider === "codex" && fs.existsSync(outFile)) {
-          const raw = fs.readFileSync(outFile, "utf8").trim();
-          resolve(raw ? JSON.parse(raw) : undefined);
-          return;
-        }
-        resolve(parseJsonEnvelope(stdout));
-      } catch (err) {
-        reject(err);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-      }
-    });
-
-    child.stdin.on("error", () => undefined); // a CLI that exits before reading its prompt shows up as its exit code, not an uncaught EPIPE
-    if (stdinPrompt !== null) {
-      child.stdin.write(stdinPrompt);
+  try {
+    const res = await execInGroup(tmpDir, { cmd: bin, args, env, stdin: stdinPrompt ?? undefined, timeoutMs: input.timeoutMs, killGraceMs: KILL_GRACE_MS });
+    if (res.code !== 0) throw new Error(`${input.provider} exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-600)}`);
+    if (input.provider === "codex" && fs.existsSync(outFile)) {
+      const raw = fs.readFileSync(outFile, "utf8").trim();
+      return raw ? JSON.parse(raw) : undefined;
     }
-    child.stdin.end();
-  });
+    return parseJsonEnvelope(res.stdout);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 }
 
 export interface SubscriptionReviewerOptions {

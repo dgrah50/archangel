@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { killGroup } from "./spawn-group.js";
+import { execInGroup, LocalProvider } from "../compute/local.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { tryParseJson } from "./json.js";
@@ -287,48 +286,17 @@ export async function defaultScoutCliInvoker(input: {
     ...accountEnv(input.account),
   };
 
-  return new Promise<unknown>((resolve, reject) => {
-    const child = spawn(input.provider, args, {
-      cwd: input.cloneDir,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      killGroup(child);
-    }, input.timeoutMs);
-    child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
-    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-      reject(err);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      try {
-        if (code !== 0) {
-          reject(new Error(`${input.provider} scout exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
-          return;
-        }
-        if (input.provider === "codex" && fs.existsSync(outFile)) {
-          const raw = fs.readFileSync(outFile, "utf8").trim();
-          resolve(raw ? JSON.parse(raw) : undefined);
-          return;
-        }
-        resolve(parseEnvelope(stdout));
-      } catch (err) {
-        reject(err);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-      }
-    });
-    child.stdin.on("error", () => undefined); // a CLI that exits before reading its prompt shows up as its exit code, not an uncaught EPIPE
-    child.stdin.write(input.prompt);
-    child.stdin.end();
-  });
+  try {
+    const res = await execInGroup(input.cloneDir, { cmd: input.provider, args, env, stdin: input.prompt, timeoutMs: input.timeoutMs });
+    if (res.code !== 0) throw new Error(`${input.provider} scout exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-600)}`);
+    if (input.provider === "codex" && fs.existsSync(outFile)) {
+      const raw = fs.readFileSync(outFile, "utf8").trim();
+      return raw ? JSON.parse(raw) : undefined;
+    }
+    return parseEnvelope(res.stdout);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 }
 
 export function buildScoutPrompt(workflow: ScoutWorkflow, metricsBlock?: string): string {
@@ -413,6 +381,7 @@ export async function runScoutsForProject(opts: {
     (iss) => opts.ledger.getScoutProposal(iss.number) !== null,
   ).length;
 
+  const compute = new LocalProvider(opts.broker);
   const invoker = opts.invoker ?? defaultScoutCliInvoker;
   const results: ScoutRunSummary[] = [];
 
@@ -455,7 +424,8 @@ export async function runScoutsForProject(opts: {
       opts.config.scouts.maxOpenProposals - openTrackedCount,
     );
     const cloneId = 900_000 + Math.floor(Math.random() * 90_000);
-    const cloneDir = await opts.broker.createThrowawayClone(cloneId, opts.mainSha);
+    const workspace = await compute.prepare({ issueNumber: cloneId, startSha: opts.mainSha });
+    const cloneDir = workspace.path;
     let filedIssues: number[] = [];
     let autoPromoteFailed = false;
     let blockedSecrets = 0;
@@ -550,7 +520,7 @@ export async function runScoutsForProject(opts: {
         openTrackedCount++;
       }
     } finally {
-      opts.broker.removeClone(cloneDir);
+      compute.destroy(workspace);
     }
 
     results.push({
@@ -614,7 +584,9 @@ async function runPitchScout(opts: {
   const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
   const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
   const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
-  const cloneDir = await opts.broker.createThrowawayClone(900_000 + Math.floor(Math.random() * 90_000), opts.mainSha);
+  const compute = new LocalProvider(opts.broker);
+  const workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
+  const cloneDir = workspace.path;
   try {
     opts.logger?.info("scout/start", `Running pitch scout '${wf.name}' via ${opts.providerChoice.provider}`, { repo: ledger.repo });
     const raw = await opts.invoker({
@@ -688,7 +660,7 @@ async function runPitchScout(opts: {
       summary.filedIssues.push(created.number);
     }
   } finally {
-    opts.broker.removeClone(cloneDir);
+    compute.destroy(workspace);
   }
   return summary;
 }

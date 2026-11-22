@@ -1,5 +1,5 @@
-import { execFileSync, spawn } from "node:child_process";
-import { killGroup } from "../core/spawn-group.js";
+import { execFileSync } from "node:child_process";
+import { execInGroup } from "../compute/local.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -41,6 +41,9 @@ export interface CliExecResult {
   stdout: string;
   stderr: string;
   aborted: boolean;
+  /** Wall time and peak process-tree RSS (KB) of the run; absent from test fakes. */
+  durationMs?: number;
+  peakRssKb?: number | null;
 }
 
 export type CliInvoker = (input: {
@@ -68,7 +71,7 @@ export interface SubscriptionImplementerOptions {
   logger?: Logger;
 }
 
-function defaultCliInvoker(input: {
+async function defaultCliInvoker(input: {
   provider: CliProvider;
   model?: string;
   account?: Account;
@@ -149,68 +152,18 @@ function defaultCliInvoker(input: {
     stdinPrompt = input.prompt;
   }
 
-  return new Promise<CliExecResult>((resolve, reject) => {
-    const child = spawn(bin, args, {
-      cwd: input.cloneDir,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    let killSent = false;
-    const killChild = () => {
-      if (killSent) return;
-      killSent = true;
-      killGroup(child, 3000);
-    };
-
-    const onAbort = () => killChild();
-    input.abortController.signal.addEventListener("abort", onAbort, { once: true });
-
-    const timer = setTimeout(() => {
-      input.abortController.abort(new Error(`${input.provider} attempt timed out after ${input.timeoutMs}ms`));
-      killChild();
-    }, input.timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      input.abortController.signal.removeEventListener("abort", onAbort);
-      reject(err);
-    });
-
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      input.abortController.signal.removeEventListener("abort", onAbort);
-      resolve({
-        code,
-        stdout,
-        stderr,
-        aborted: input.abortController.signal.aborted,
-      });
-    });
-
-    // A CLI that exits before reading its prompt closes the pipe: that surfaces as its exit code, not as an uncaught EPIPE.
-    child.stdin.on("error", () => undefined);
-    if (stdinPrompt !== null) {
-      child.stdin.write(stdinPrompt);
-    }
-    child.stdin.end();
+  const { abortController, provider, timeoutMs } = input;
+  const res = await execInGroup(input.cloneDir, {
+    cmd: bin,
+    args,
+    env,
+    stdin: stdinPrompt ?? undefined,
+    timeoutMs,
+    signal: abortController.signal,
+    killGraceMs: 3000,
+    onTimeout: () => abortController.abort(new Error(`${provider} attempt timed out after ${timeoutMs}ms`)),
   });
+  return { code: res.code, stdout: res.stdout, stderr: res.stderr, aborted: res.aborted, durationMs: res.durationMs, peakRssKb: res.peakRssKb };
 }
 
 function extractErrorEnvelope(stdout: string): string {
@@ -358,6 +311,9 @@ export class SubscriptionImplementer implements Implementer {
     const tried = new Set<string>();
     let switches = 0;
     let runIndex = 0;
+    let durationMs = 0;
+    let peakRssKb: number | undefined;
+    const measured = () => ({ durationMs, ...(peakRssKb === undefined ? {} : { peakRssKb }) });
 
     try {
       for (const entry of orderedChain) {
@@ -389,6 +345,8 @@ export class SubscriptionImplementer implements Implementer {
             outputFile,
           });
 
+          durationMs += res.durationMs ?? 0;
+          if (res.peakRssKb != null) peakRssKb = Math.max(peakRssKb ?? 0, res.peakRssKb);
           const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
           fs.appendFileSync(
             transcriptPath,
@@ -405,7 +363,7 @@ export class SubscriptionImplementer implements Implementer {
           );
 
           if (res.aborted) {
-            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed };
+            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
           }
 
           if (res.code === 0) {
@@ -418,6 +376,7 @@ export class SubscriptionImplementer implements Implementer {
               aborted: false,
               providersUsed,
               runBy: { provider: entry.provider, model: entry.model ?? null, accountId: account.id },
+              ...measured(),
             };
           }
 

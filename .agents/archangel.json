@@ -25,6 +25,7 @@
       "src/core/reconciler.ts",
       "src/core/scout.ts",
       "src/core/spawn-group.ts",
+      "src/compute/**",
       "templates/**",
       "workflows/**",
       "formal/**",
