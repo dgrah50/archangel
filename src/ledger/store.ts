@@ -11,6 +11,7 @@ import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type Fac
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
+import { planSha256 } from "../core/plan.js";
 import { workClassOfBranch, type WorkClass } from "../core/work-class.js";
 import type { DigestInput } from "../core/digest.js";
 import { readCodexUsage, type AccountLedger } from "../core/accounts.js";
@@ -2060,6 +2061,43 @@ export class Ledger {
          WHERE repo = ? AND issue_number = ?`,
       )
       .run(kind === "revise" ? 1 : 0, kind === "rebase" ? 1 : 0, repo, issueNumber);
+  }
+
+  /** Stores a new plan version for the Thread (text already vetted by `vetPlan`). */
+  addThreadPlan(issueNumber: number, text: string, now = Date.now(), repo = this.repo): { version: number; sha256: string } {
+    const sha256 = planSha256(text);
+    const row = this.db.prepare(`SELECT COALESCE(MAX(version), 0) + 1 AS v FROM thread_plans WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as { v: number };
+    this.db
+      .prepare(`INSERT INTO thread_plans (repo, issue_number, version, sha256, plan_text, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(repo, issueNumber, row.v, sha256, text, now);
+    return { version: row.v, sha256 };
+  }
+
+  /** The newest plan, approved or not. */
+  latestThreadPlan(issueNumber: number, repo = this.repo): { version: number; sha256: string; text: string; createdAt: number; approvedAt: number | null } | null {
+    const r = this.db
+      .prepare(`SELECT version, sha256, plan_text, created_at, approved_at FROM thread_plans WHERE repo = ? AND issue_number = ? ORDER BY version DESC LIMIT 1`)
+      .get(repo, issueNumber) as { version: number; sha256: string; plan_text: string; created_at: number; approved_at: number | null } | undefined;
+    return r ? { version: r.version, sha256: r.sha256, text: r.plan_text, createdAt: r.created_at, approvedAt: r.approved_at } : null;
+  }
+
+  countThreadPlans(issueNumber: number, repo = this.repo): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM thread_plans WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as { n: number }).n;
+  }
+
+  /** Pins a plan version as approved; a version already approved keeps its first approval time. */
+  approveThreadPlan(issueNumber: number, version: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`UPDATE thread_plans SET approved_at = COALESCE(approved_at, ?) WHERE repo = ? AND issue_number = ? AND version = ?`)
+      .run(now, repo, issueNumber, version);
+  }
+
+  /** The pinned plan later Attempts implement, or null when none is approved. */
+  approvedThreadPlan(issueNumber: number, repo = this.repo): { version: number; sha256: string; text: string } | null {
+    const r = this.db
+      .prepare(`SELECT version, sha256, plan_text FROM thread_plans WHERE repo = ? AND issue_number = ? AND approved_at IS NOT NULL ORDER BY version DESC LIMIT 1`)
+      .get(repo, issueNumber) as { version: number; sha256: string; plan_text: string } | undefined;
+    return r ? { version: r.version, sha256: r.sha256, text: r.plan_text } : null;
   }
 
   addThreadDependency(issueNumber: number, dependsOn: number, now = Date.now(), repo = this.repo): void {

@@ -94,6 +94,7 @@ function stageOf(phase: Phase, updatedAt: number, now: number): Stage | null {
     case "landing":
       return "In review";
     case "shadow_ready":
+    case "awaiting_plan":
       return "Ready for owner";
     case "needs_you":
       return "Needs you";

@@ -11,6 +11,7 @@ import type { ItemRef } from "./route";
 
 const RAIL: ReadonlyArray<{ kind: string; label: string }> = [
   { kind: "queued", label: "Queued" },
+  { kind: "awaiting_plan", label: "Plan" },
   { kind: "working", label: "Working" },
   { kind: "awaiting_gate", label: "Waiting on Gate" },
   { kind: "reviewing", label: "Review" },

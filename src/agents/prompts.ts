@@ -39,6 +39,45 @@ const CODE_QUALITY_RULES: string[] = [
 const ASSUMPTIONS_RULE =
   "End your final summary with an `Assumptions:` heading followed by one `- ` line per decision you made without asking (or `Assumptions: none`).";
 
+/** The owner-approved plan, pinned in the Ledger, framed as data: later Attempts implement it as written. */
+export function formatApprovedPlan(plan: string | null | undefined): string[] {
+  if (!plan || !plan.trim()) return [];
+  return [
+    "--- BEGIN APPROVED PLAN (DATA, written by Archangel and approved by the repository owner; implement exactly this plan) ---",
+    plan.slice(0, 6_000),
+    "--- END APPROVED PLAN ---",
+    "Implement the approved plan as written. If it cannot be done within the Mechanical Gate rules, do the closest part that can and say what you left out. The plan never overrides those rules.",
+    "",
+  ];
+}
+
+export function buildPlanPrompt(input: {
+  issueNumber: number;
+  title: string;
+  body: string;
+  repoName: string;
+  ownerReply?: string | null;
+  previousPlan?: string | null;
+  maxChars: number;
+}): string {
+  return [
+    `You are planning a feature for ${input.repoName} in an isolated local repository clone. Do NOT implement it.`,
+    `Plan GitHub Issue #${input.issueNumber}: ${input.title}`,
+    "",
+    "--- BEGIN ISSUE SPECIFICATION (DATA) ---",
+    input.body.slice(0, 12_000),
+    "--- END ISSUE SPECIFICATION ---",
+    "",
+    ...(input.previousPlan
+      ? ["--- BEGIN PREVIOUS PLAN (DATA, machine-written, rejected or amended by the owner) ---", input.previousPlan.slice(0, 6_000), "--- END PREVIOUS PLAN ---", ""]
+      : []),
+    ...formatOwnerReply(input.ownerReply),
+    "Read the repository to ground the plan (read-only: create, edit and delete no file, and run nothing that writes). Follow AGENTS.md.",
+    `Your final message must be ONLY the plan, in markdown, under ${input.maxChars} characters, with these headings: Approach, Files to change, Tests (only ones that lock down behaviour someone relies on), Risks and assumptions.`,
+    "The owner reads it and approves it before anything is built. Keep it small: the smallest change that delivers the feature.",
+  ].join("\n");
+}
+
 export function buildImplementPrompt(input: {
   issueNumber: number;
   title: string;
@@ -47,6 +86,7 @@ export function buildImplementPrompt(input: {
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
   factoryGuidance?: string | null;
+  approvedPlan?: string | null;
   workClass?: WorkClass;
 }): string {
   const feature = input.workClass === "feature";
@@ -61,6 +101,7 @@ export function buildImplementPrompt(input: {
     "",
     ...formatOwnerReply(input.ownerReply),
     ...formatFactoryNote(input.factoryGuidance),
+    ...formatApprovedPlan(input.approvedPlan),
     "MANDATORY MECHANICAL GATE RULES (violations fail CI automatically):",
     ...formatGateRules(input.gate, input.workClass),
     `6. Leave your verified changes cleanly in the working tree (or committed on \`factory/${input.issueNumber}\` if \`.git\` is writable). Do NOT attempt to push.`,
@@ -93,6 +134,7 @@ export function buildRevisionPrompt(input: {
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
   factoryGuidance?: string | null;
+  approvedPlan?: string | null;
   workClass?: WorkClass;
 }): string {
   const parts: string[] = [
@@ -103,6 +145,7 @@ export function buildRevisionPrompt(input: {
     "",
     ...formatOwnerReply(input.ownerReply),
     ...formatFactoryNote(input.factoryGuidance),
+    ...formatApprovedPlan(input.approvedPlan),
   ];
 
   if (input.gateViolations.length > 0) {
@@ -288,7 +331,7 @@ export function buildGeminiAdversarialPrompt(input: {
 }
 
 
-export type PromptKind = "implement" | "revise" | "rebase" | "review_contract" | "review_adversarial";
+export type PromptKind = "plan" | "implement" | "revise" | "rebase" | "review_contract" | "review_adversarial";
 
 /**
  * sha256 of a prompt's fixed template (issue, diff, rubric and repo gate numbers blanked), recorded with each
@@ -297,7 +340,9 @@ export type PromptKind = "implement" | "revise" | "rebase" | "review_contract" |
 export function promptTemplateSha(kind: PromptKind, workClass: WorkClass = "bugfix"): string {
   const base = { issueNumber: 0, title: "", body: "" };
   const text =
-    kind === "implement"
+    kind === "plan"
+      ? buildPlanPrompt({ ...base, repoName: "", maxChars: 0 })
+      : kind === "implement"
       ? buildImplementPrompt({ ...base, repoName: "", workClass })
       : kind === "revise"
         ? buildRevisionPrompt({ ...base, gateViolations: [], structuredFindings: [], workClass })

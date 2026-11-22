@@ -103,6 +103,8 @@ export const Workflow = z
     requiredChecks: z.array(NonBlank),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
     landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
+    /** `owner`: a feature waits, after a machine-written plan, for the owner's `plan:approved` label before it is implemented. Bugfixes and chores never plan. `off` can only loosen. */
+    features: z.object({ planApproval: z.enum(["off", "owner"]).default("off") }).strict().default({ planApproval: "off" }),
     /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
     escalations: z.object({ factoryRetry: z.enum(["off", "once"]).default("off") }).strict().default({ factoryRetry: "off" }),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
@@ -215,6 +217,7 @@ export type EffectiveWorkflow =
       rubric?: string;
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
+      planApproval: "off" | "owner";
       scouts: EffectiveScout[];
       /** Fleet Scouts this repo opted out of in its workflow file. */
       fleetOptOut: FleetScoutName[];
@@ -311,6 +314,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     rubric: wf.review.rubric,
     landingBugfix,
     factoryRetry,
+    planApproval: wf.features.planApproval,
     scouts,
     fleetOptOut,
     caps: {
@@ -371,6 +375,10 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
 
   if (prev.escalations.factoryRetry !== next.escalations.factoryRetry) {
     add("escalations.factoryRetry", next.escalations.factoryRetry === "once" ? "loosen" : "tighten");
+  }
+
+  if (prev.features.planApproval !== next.features.planApproval) {
+    add("features.planApproval", next.features.planApproval === "owner" ? "tighten" : "loosen");
   }
 
   const before = new Map(prev.scouts.map((s) => [s.name, s]));

@@ -108,6 +108,12 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     recommendation:
       "The slice this one was chained after ended without merging (closed or abandoned). Retry to run this slice on its own, or close it if it only made sense after that one.",
   },
+  plan_unresolved: {
+    decisionClass: "product_decision",
+    short: "recommends writing the plan yourself, or retry",
+    recommendation:
+      "The factory could not produce a plan you approved (it failed, or the re-plan budget is used up). Comment what the plan must say and retry for a fresh budget, or close the issue and take the feature yourself.",
+  },
   max_attempts: {
     decisionClass: "spending",
     short: "recommends retry for a fresh budget, or close",

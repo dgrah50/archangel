@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TRUSTED_CHECK_APP_SLUG, dedupeChecksByLatestId, type CheckStatus } from "./blockers.js";
 
-export const AttemptKindSchema = z.enum(["implement", "revise", "rebase"]);
+export const AttemptKindSchema = z.enum(["plan", "implement", "revise", "rebase"]);
 export type AttemptKind = z.infer<typeof AttemptKindSchema>;
 
 export const ModeSchema = z.enum(["autonomous", "advisory"]);
@@ -43,6 +43,7 @@ export const EscalationCodeSchema = z.enum([
   "attempt_failed",
   "max_attempts",
   "dependency_unmet",
+  "plan_unresolved",
 ]);
 export type EscalationCode = z.infer<typeof EscalationCodeSchema>;
 
@@ -65,6 +66,8 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
     resumeTo: ResumeTargetSchema,
     prNumber: z.number().int().positive().nullable().optional(),
   }),
+  /** A feature's machine-written plan is posted and the owner has not approved it yet (see `features.planApproval`). */
+  z.object({ kind: z.literal("awaiting_plan"), planVersion: z.number().int().positive() }),
   z.object({
     kind: z.literal("awaiting_gate"),
     prNumber: z.number().int().positive(),
@@ -164,6 +167,9 @@ export const OUTBOX_BACKOFF_MAX_MS = 3_600_000;
 export type MachineEvent =
   | { t: "start_working"; attemptId: number; attempt: AttemptKind; fromSha: string; prNumber?: number | null }
   | { t: "attempt_pushed"; pr: PrRef; now: number }
+  | { t: "plan_ready"; planVersion: number }
+  | { t: "plan_approved" }
+  | { t: "plan_rejected" }
   | { t: "attempt_aborted"; cause: "timeout" | "control" | "handoff"; now: number }
   | { t: "attempt_failed"; code: EscalationCode; reason: string }
   | { t: "gate_passed" }
@@ -328,6 +334,9 @@ export function stepPhase(
     if (mode === "advisory") {
       return { ok: false, reject: `Advisory mode forbids starting ${ev.attempt} attempt` };
     }
+    if (ev.attempt === "plan" && phase.kind !== "queued") {
+      return { ok: false, reject: `A plan Attempt starts only from queued, not ${phase.kind}` };
+    }
     if (!["queued", "awaiting_gate", "reviewing", "landing"].includes(phase.kind)) {
       return { ok: false, reject: `Cannot start working from ${phase.kind}` };
     }
@@ -343,7 +352,12 @@ export function stepPhase(
 
   switch (phase.kind) {
     case "working": {
+      if (ev.t === "plan_ready") {
+        if (phase.attempt !== "plan") return { ok: false, reject: `plan_ready needs a plan Attempt, not ${phase.attempt}` };
+        return ok({ kind: "awaiting_plan", planVersion: ev.planVersion });
+      }
       if (ev.t === "attempt_pushed") {
+        if (phase.attempt === "plan") return { ok: false, reject: "A plan Attempt pushes nothing" };
         return ok({
           kind: "awaiting_gate",
           prNumber: ev.pr.prNumber,
@@ -411,6 +425,12 @@ export function stepPhase(
         );
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in working` };
+    }
+
+    case "awaiting_plan": {
+      // Approval and rejection both go back to queued: the Ledger says whether an approved plan is pinned, which decides plan vs implement.
+      if (ev.t === "plan_approved" || ev.t === "plan_rejected") return ok({ kind: "queued" });
+      return { ok: false, reject: `Event ${ev.t} not allowed in awaiting_plan` };
     }
 
     case "awaiting_gate": {
