@@ -1,6 +1,6 @@
-Audit ONLY Archangel's non-kernel leaf modules (`src/core/doctor.ts`, `src/core/recap.ts`, `src/core/notifier.ts`, `src/core/logger.ts`, `src/core/studio.ts`, `src/handoff/paseo.ts`) for concrete, reproducible reliability or edge-case bugs.
+Audit ONLY Archangel's non-kernel leaf modules, the files listed in `.agents/leaf-modules.json` (`src/core/digest.ts`, `src/core/logger.ts`, `src/core/recap.ts`, `src/core/status-text.ts`, `src/core/studio.ts`, `src/core/ui-state.ts`, `src/mastra/index.ts`) for concrete, reproducible reliability or edge-case bugs.
 
-IMPORTANT: Never propose changes to protected Trust Kernel paths (`src/config.ts`, `src/env.ts`, `src/gate/**`, `src/broker/**`, `src/agents/**`, `src/github/**`, `src/ledger/**`, `src/cli/**`, `src/core/blockers.ts`, `src/core/thread-machine.ts`, `src/core/reconciler.ts`, `src/core/scout.ts`, `src/core/work-class.ts`, `src/core/workflow.ts`, `src/core/workflow-load.ts`, `src/core/onboard.ts`, `src/core/owner-reply.ts`, `src/core/metrics-block.ts`, `src/core/skills.ts`, `src/core/ui-server.ts`, `ui/**`, `skills/**`, `templates/**`, `workflows/**`, `bin/**`).
+IMPORTANT: Never propose changes to any file outside that leaf list. Everything else in this repo is the protected Trust Kernel (`gate.protectedPaths` in `.agents/archangel.json`, plus `.agents/**` and `.github/**`), and only the owner changes it.
 
 Only propose an issue if you can provide:
 1. **File & Symbol:** exact leaf file path and function/method name
