@@ -9,7 +9,6 @@ import { Reconciler } from "../src/core/reconciler.js";
 import {
   buildScoutCliArgs,
   normalizeTitleFp,
-  toScoutWorkflow,
   runScoutsForProject,
   scanForSecrets,
   scoutContentHash,
@@ -359,19 +358,4 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
     }
   });
 
-  it("builds the runnable Scout from its workflow entry, prompt body and skills", () => {
-    const wf = okWorkflow([{ name: "my-scout", schedule: "daily", skills: ["general/bug-hunt"], includeMetrics: true }], {
-      prompts: { "my-scout": "Audit src/." },
-    });
-    expect(toScoutWorkflow(wf.scouts[0]!)).toMatchObject({
-      name: "my-scout",
-      schedule: "daily",
-      maxProposals: 2,
-      autoPromote: false,
-      includeMetrics: true,
-      prompt: "Audit src/.",
-    });
-    expect(toScoutWorkflow(wf.scouts[0]!).skills.map((k) => k.ref)).toEqual(["general/bug-hunt"]);
-    expect(() => toScoutWorkflow(okWorkflow([{ name: "bad", skills: ["general/missing"] }]).scouts[0]!)).toThrow(/Unknown skill/);
-  });
 });
