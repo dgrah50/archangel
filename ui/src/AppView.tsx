@@ -14,6 +14,8 @@ import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
 import { Page, PageHeadline } from "./page";
+import { PitchesPage } from "./PitchesPage";
+import type { PitchesState } from "../../src/core/ui-pitches.js";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
 import { Shell } from "./Shell";
@@ -36,7 +38,7 @@ export const DAEMON_OFFLINE_MS = 3 * 60_000;
 const ago = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`);
 
 /** A state banner: a hairline rule and plain text, no box. Amber (red tone) when the factory has stopped or may be stopped; ink when only the data is in doubt. */
-function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
+export function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
   return (
     <Box role="alert" borderTopWidth="1px" borderTopColor={tone === "red" ? "owner" : "fg"} py="2.5" mb="3" color={tone === "red" ? "owner" : "fg"}>
       {children}
@@ -95,6 +97,7 @@ export function AppView({
   host,
   thread,
   logs,
+  pitches,
   now,
   onRetry,
 }: {
@@ -106,6 +109,7 @@ export function AppView({
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
   logs: Feed<LogsPayload>;
+  pitches: Feed<PitchesState>;
   now: number;
   onRetry: () => void;
 }) {
@@ -147,11 +151,7 @@ export function AppView({
       ) : null}
       {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
-      {route.page === "pitches" ? (
-        <Page>
-          <PageHeadline>{state.data.pitches.count === 0 ? "No pitches are waiting on you." : `${state.data.pitches.count} pitches are waiting on you.`}</PageHeadline>
-        </Page>
-      ) : null}
+      {route.page === "pitches" ? <PitchesPage pitches={pitches} now={now} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
           <Text fontWeight="medium">No such page.</Text>
