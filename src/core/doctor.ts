@@ -101,7 +101,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         if (p === "codex") {
           const { stdout, stderr } = await execFileAsync("codex", ["login", "status"]);
           const combined = `${stdout}\n${stderr}`.trim();
-          if (!/logged in/i.test(combined)) {
+          if (/not\s+logged\s+in/i.test(combined) || !/logged in/i.test(combined)) {
             missingBins.push("codex (not logged in — run `codex login`)");
           } else {
             verified.push(`codex (${combined})`);
