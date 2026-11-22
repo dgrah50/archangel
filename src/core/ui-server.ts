@@ -12,6 +12,7 @@ import { buildHostStatus } from "./host-facts.js";
 import { listReports } from "./eval-reports.js";
 import { buildAccountsState } from "./ui-accounts.js";
 import { buildSettingsState } from "./ui-settings.js";
+import { buildPitchesState } from "./ui-pitches.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
@@ -199,6 +200,12 @@ export async function startUiServer(
         if (opts.allowRemote) return sendJson(res, 403, { error: "accounts are disabled in remote mode" });
         if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
         return sendJson(res, 200, buildAccountsState(ledger, opts.configPath));
+      }
+      if (pathname === "/api/pitches") {
+        // Stored pitch text (model-written) for the local page: token required, never served remotely.
+        if (opts.allowRemote) return sendJson(res, 403, { error: "pitches are disabled in remote mode" });
+        if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
+        return sendJson(res, 200, buildPitchesState(ledger));
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));
