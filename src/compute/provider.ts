@@ -70,6 +70,15 @@ export interface ExposeSpec {
   readyPath?: string;
 }
 
+/** A dependency install, run only by a provider that can sandbox it. */
+export interface InstallSpec {
+  /** The repo's declared install command as an argv. */
+  argv: string[];
+  timeoutMs: number;
+  /** Owner policy (`preview.allowInstallScripts`): let lifecycle scripts run, still inside the sandbox. Default false. */
+  allowScripts?: boolean;
+}
+
 /** A running preview. The URL and handle live in daemon memory only, never in the Ledger. */
 export interface Exposed {
   url: string;
@@ -97,6 +106,8 @@ export interface ComputeProvider {
   destroy(ws: Workspace): void;
   /** Runs the app in the workspace and makes it reachable on a loopback URL. A provider with no sandbox throws. */
   expose(ws: Workspace, spec: ExposeSpec): Promise<Exposed>;
+  /** Installs dependencies in the workspace under a sandbox profile with registry network. A provider with no sandbox throws; there is no unsandboxed install. */
+  install(ws: Workspace, spec: InstallSpec): Promise<ExecResult>;
   /** Preview processes whose id starts with `prefix`, for the orphan sweep. */
   list(prefix: string): Promise<ListedPreview[]>;
 }

@@ -10,7 +10,7 @@ import { stepPoc, type PocState } from "../src/core/poc-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const SHA = "a".repeat(40);
-const preview: WebPreview = { kind: "web", install: ["true"], start: ["node", "server.js"], port: 4000, readyPath: "/", shots: ["/about"] };
+const preview: WebPreview = { kind: "web", install: ["true"], start: ["node", "server.js"], port: 4000, readyPath: "/", shots: ["/about"], allowInstallScripts: false };
 
 function fixture() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "arc-preview-"));

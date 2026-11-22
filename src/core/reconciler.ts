@@ -261,8 +261,8 @@ export class Reconciler {
     }
     if (issueNumber === null) return;
     const abortController = new AbortController();
-    const webPreview = this.workflow.preview?.kind === "web" ? this.workflow.preview : null;
-    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.scoutCompute ?? this.compute, local: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
+    const webPreview = this.previewCompute && this.workflow.preview?.kind === "web" ? this.workflow.preview : null;
+    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.scoutCompute ?? this.compute, local: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, sandbox: this.previewCompute!, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
       .catch((err: unknown) => this.recordFault("poc_build", err, now, issueNumber!))
       .finally(() => {
         this.pocBuild = null;

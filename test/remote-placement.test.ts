@@ -20,6 +20,9 @@ function fakeCompute(remote: boolean, respond: (spec: ExecSpec) => Partial<ExecR
     expose: async () => {
       throw new Error("no");
     },
+    install: async () => {
+      throw new Error("no");
+    },
     list: async () => [],
   };
   return { compute, calls };

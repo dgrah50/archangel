@@ -6,15 +6,16 @@ import os from "node:os";
 import path from "node:path";
 import { killGroup, KILL_GRACE_MS } from "../core/spawn-group.js";
 import { execInGroup } from "./local.js";
-import type { CollectedResult, ComputeProvider, ExecResult, ExecSpec, Exposed, ExposeSpec, ListedPreview, PrepareSpec, Workspace } from "./provider.js";
+import type { CollectedResult, ComputeProvider, ExecResult, ExecSpec, Exposed, ExposeSpec, InstallSpec, ListedPreview, PrepareSpec, Workspace } from "./provider.js";
 
 /**
  * A macOS `sandbox-exec` provider: untrusted agent-written code runs under a generated Seatbelt profile, never as a bare
  * process. The profile denies by default and allows only: reads of the workspace, a tmp dir and the read-only toolchain
  * below; writes to the workspace and the tmp dir; exec of the toolchain; and the network on 127.0.0.1 only.
  *
- * Installs do NOT run here. Seatbelt filters network by IP and port, not by hostname, so "registry hosts for the install
- * step only" cannot be enforced; dependencies must be installed in the build phase, before the sandboxed run.
+ * Installs run under their own profile (`install`), the one place the network leaves the machine. Seatbelt filters network
+ * by IP and port, not by hostname, so registry hosts cannot be allowed alone: egress is open during install. What makes that
+ * acceptable is that the install has no credentials, no home access, and (by default) no lifecycle scripts.
  */
 
 export const PREVIEW_PREFIX = "archangel-preview-";
@@ -51,6 +52,23 @@ export function buildProfile(opts: { workspace: string; tmp: string; toolchain?:
     '(allow network-outbound (remote ip "localhost:*"))',
     "",
   ].join("\n");
+}
+
+/** The install profile: the app profile, except outbound network is open and the package manager's own binary may run and be read. */
+export function buildInstallProfile(opts: { workspace: string; tmp: string; binary: string }): string {
+  const base = buildProfile({ workspace: opts.workspace, tmp: opts.tmp });
+  const bin = q(opts.binary);
+  return [base.replace('(allow network-outbound (remote ip "localhost:*"))\n', ""), `(allow process-exec (literal ${bin}))`, `(allow file-read* (literal ${bin}))`, "(allow network-outbound)", "(allow system-socket)", ""].join("\n");
+}
+
+/** Flags that stop lifecycle scripts. yarn has no flag in every version (berry rejects it), so it gets env switches instead. */
+const NO_SCRIPTS_FLAG: Record<string, string> = { bun: "--ignore-scripts", npm: "--ignore-scripts", pnpm: "--ignore-scripts" };
+
+function resolveBinary(cmd: string, searchPath: string): string {
+  const candidates = path.isAbsolute(cmd) ? [cmd] : searchPath.split(":").map((d) => path.join(d, cmd));
+  const found = candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
+  if (!found) throw new Error(`install command not found: ${cmd}`);
+  return fs.realpathSync(found);
 }
 
 interface Live {
@@ -176,6 +194,38 @@ export class SandboxExecProvider implements ComputeProvider {
         fs.rmSync(tmp, { recursive: true, force: true });
       },
     };
+  }
+
+  /**
+   * Runs the install under the install profile. Never unsandboxed: off macOS it throws. Reads: the workspace, a per-run dir
+   * that is HOME, TMPDIR and the package-manager cache, the toolchain, and the one install binary; nothing else under the
+   * user's home. Writes: the workspace and that dir. Env: PATH, HOME, TMPDIR, the cache dir; nothing inherited. Lifecycle
+   * scripts are off (flag, plus env for yarn) unless the owner's policy allows them.
+   */
+  async install(ws: Workspace, spec: InstallSpec): Promise<ExecResult> {
+    if (process.platform !== "darwin") throw new Error("no sandbox: sandbox-exec exists only on macOS, so dependencies are not installed here");
+    const [cmd, ...rest] = spec.argv;
+    if (!cmd) throw new Error("empty install command");
+    const binary = resolveBinary(cmd, process.env.PATH ?? TOOLCHAIN_PATH);
+    const manager = path.basename(cmd);
+    const flag = NO_SCRIPTS_FLAG[manager];
+    const args = !spec.allowScripts && flag && !rest.includes(flag) ? [...rest, flag] : rest;
+    const id = `${PREVIEW_PREFIX}install-${process.pid}-${randomBytes(4).toString("hex")}`;
+    fs.mkdirSync(this.profileDir, { recursive: true });
+    const workspace = fs.realpathSync(ws.path);
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sbinstall-")));
+    const cache = path.join(home, "cache");
+    fs.mkdirSync(cache);
+    const profile = path.join(this.profileDir, `${id}.sb`);
+    fs.writeFileSync(profile, buildInstallProfile({ workspace, tmp: home, binary }));
+    const env: NodeJS.ProcessEnv = { PATH: TOOLCHAIN_PATH, HOME: home, TMPDIR: home, BUN_INSTALL_CACHE_DIR: cache, npm_config_cache: cache, YARN_CACHE_FOLDER: cache, npm_config_store_dir: cache };
+    if (!spec.allowScripts && manager === "yarn") Object.assign(env, { YARN_ENABLE_SCRIPTS: "false", npm_config_ignore_scripts: "true" });
+    try {
+      return await execInGroup(ws.path, { cmd: "sandbox-exec", args: ["-f", profile, binary, ...args], env, timeoutMs: spec.timeoutMs });
+    } finally {
+      fs.rmSync(profile, { force: true });
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   }
 
   async exec(ws: Workspace, spec: ExecSpec): Promise<ExecResult> {

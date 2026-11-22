@@ -92,6 +92,10 @@ export class LocalProvider implements ComputeProvider {
     throw new Error("no sandbox: LocalProvider runs as the owner and will not serve untrusted code");
   }
 
+  async install(): Promise<ExecResult> {
+    throw new Error("no sandbox: LocalProvider runs as the owner and will not install untrusted dependencies");
+  }
+
   async list(): Promise<ListedPreview[]> {
     return [];
   }
