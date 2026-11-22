@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, primaryWriterVendors, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
@@ -877,7 +877,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

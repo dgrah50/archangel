@@ -64,7 +64,8 @@
       "src/core/host-facts.ts",
       "src/core/ui-doctor.ts",
       "src/core/ui-settings.ts",
-      "src/core/eval-reports.ts"
+      "src/core/eval-reports.ts",
+      "src/core/ui-host-config.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
