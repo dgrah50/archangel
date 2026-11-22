@@ -71,7 +71,7 @@ describe("thread-machine global invariants", () => {
 
   it("restart_recovered ONLY applies to working phases (never touches needs_you/shadow_ready/owner_driving)", () => {
     for (const p of ALL_NON_DONE_PHASES) {
-      const res = stepPhase(p, "autonomous", { t: "restart_recovered" }, META);
+      const res = stepPhase(p, "autonomous", { t: "restart_recovered", now: 5000 }, META);
       if (p.kind === "working") {
         expect(res.ok && res.next.kind).toBe("queued");
       } else {

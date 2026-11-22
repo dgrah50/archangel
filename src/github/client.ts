@@ -170,7 +170,7 @@ export class GitHubAppClient implements GitHubClient {
       },
     );
     if (!res.ok) {
-      throw new Error(`GitHub App token mint failed (${res.status}): ${await res.text()}`);
+      throw new GitHubHttpError(res.status, `GitHub App token mint failed (${res.status}): ${await res.text()}`);
     }
     const body = (await res.json()) as {
       token: string;

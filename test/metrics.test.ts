@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildMetricsBlock } from "../src/core/metrics-block.js";
 import { buildClusterBlockFrom } from "../src/core/failure-clusters.js";
-import type { DoneOutcome } from "../src/core/thread-machine.js";
+import { stepPhase, type DoneOutcome, type EscalationCode } from "../src/core/thread-machine.js";
 import type { AttemptErrorCategory } from "../src/ledger/schema.js";
 import { Ledger } from "../src/ledger/store.js";
 
@@ -34,7 +34,8 @@ function seedOutcome(
 ) {
   const now = o.now ?? 1000;
   const repo = o.repo ?? ledger.forRepo("a/b").repo;
-  const t = ledger.upsertThread({ issueNumber: issue, title: `i${issue}`, bodySha256: `s${issue}`, now, repo });
+  const phase = o.outcome ? ({ kind: "done", outcome: o.outcome } as const) : undefined;
+  ledger.upsertThread({ issueNumber: issue, title: `i${issue}`, bodySha256: `s${issue}`, ...(phase ? { phase } : {}), now, repo });
   for (let i = 0; i < (o.attempts ?? 1); i++) {
     const a = ledger.startAttempt(issue, "implement", now, repo);
     ledger.finishAttempt(a.id, { status: "succeeded", costUsd: o.attemptUsd ?? 0 }, now + (o.attemptMin ?? 1) * MIN);
@@ -44,7 +45,6 @@ function seedOutcome(
   }
   if (o.outcome) {
     ledger.recordMerge({ issueNumber: issue, prNumber: issue, headSha: `h${issue}`, shadowOnly: o.shadow ?? false, mainRequired: ["Test"], now, repo });
-    ledger.transition(issue, t.version, { kind: "done", outcome: o.outcome }, { now, repo });
   }
 }
 
@@ -62,11 +62,14 @@ function fixture() {
   thread(2, "factory/feature-2");
   thread(3, "factory/3"); // filed by the metrics-fed Scout (loop guard)
   thread(4, "factory/4");
-  const raise = (n: number, code: string, at: number) => {
+  const raise = (n: number, code: EscalationCode, at: number) => {
     const t = l.getThread(n)!;
-    l.transition(n, t.version, { kind: "needs_you", code, reason: SECRET, resumeTo: { kind: "queued" } } as never, { now: at });
-    const t2 = l.getThread(n)!;
-    l.transition(n, t2.version, { kind: "queued" } as never, { now: at + 1 });
+    const esc = stepPhase(t.phase, t.mode, { t: "escalate", code, reason: SECRET }, { issueNumber: n, title: t.title, needsYouLabel: "needs-you" });
+    if (!esc.ok) throw new Error(esc.reject);
+    const t2 = l.transition(n, t.version, esc.next, { now: at })!;
+    const ret = stepPhase(t2.phase, t2.mode, { t: "owner_retry", now: at + 1 }, { issueNumber: n, title: t2.title, needsYouLabel: "needs-you" });
+    if (!ret.ok) throw new Error(ret.reject);
+    l.transition(n, t2.version, ret.next, { now: at + 1 });
   };
   raise(1, "gate_failed", NOW - 1 * DAY); // this week
   raise(1, "gate_failed", NOW - 2 * DAY); // this week

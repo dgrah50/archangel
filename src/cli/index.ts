@@ -1010,10 +1010,11 @@ program
         privateKeyPem: cfg.githubPrivateKeyPem,
       });
       const issue = await github.getIssue(issueNumber);
+      const now = Date.now();
       const stepped = stepPhase(
         thread.phase,
         thread.mode,
-        { t: "owner_retry" },
+        { t: "owner_retry", now },
         { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
       );
       if (!stepped.ok) throw new Error(stepped.reject);
@@ -1025,18 +1026,25 @@ program
         sinceMs: thread.updatedAt,
         message: opts.message,
       });
-      if (reply) ledger.setOwnerReply(issueNumber, reply);
-      ledger.grantRetryBudget(issueNumber);
       await github.removeLabel(issueNumber, cfg.labels.needsYou);
       requireTransition(
         ledger.transition(issueNumber, thread.version, stepped.next, {
           bodySha256: sha256(issue.body),
+          ownerReply: reply ?? undefined,
+          grantRetryBudget: true,
           auditTopic: "thread/owner_retried",
+          extraAudits: [
+            {
+              topic: "thread/owner_retry",
+              actor: "owner",
+              payload: { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null },
+            },
+          ],
+          now,
         }),
         repoSlug,
         issueNumber,
       );
-      ledger.appendAudit("thread/owner_retry", issueNumber, "owner", { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null });
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
       ledger.close();

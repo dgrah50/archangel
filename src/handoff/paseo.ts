@@ -215,16 +215,26 @@ export async function handoffThreadToPaseo(
   });
 
   if (thread.phase.kind === "owner_driving") {
-    deps.ledger.transition(
-      issueNumber,
-      thread.version,
+    const attached = stepPhase(
+      thread.phase,
+      thread.mode,
       {
-        ...thread.phase,
+        t: "paseo_attached",
         paseoAgentId: launched.agentId || null,
         paseoWorkspaceId: launched.workspaceId,
       },
-      { auditTopic: "handoff/paseo_launched", auditPayload: launched },
+      { issueNumber, title: thread.title, needsYouLabel: deps.config.labels.needsYou },
     );
+    if (!attached.ok) {
+      throw new Error(`Cannot attach Paseo agent to Thread #${issueNumber}: ${attached.reject}`);
+    }
+    const updated = deps.ledger.transition(issueNumber, thread.version, attached.next, {
+      auditTopic: "handoff/paseo_launched",
+      auditPayload: launched,
+    });
+    if (!updated) {
+      throw new Error(`Concurrent modification while attaching Paseo agent to Thread #${issueNumber}`);
+    }
   }
 
   return {

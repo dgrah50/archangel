@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sendDigestIfDue } from "../src/core/digest.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
+import { stepPhase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const TZ = "America/New_York";
@@ -16,12 +17,9 @@ function ledger() {
 function needsYouThread(l: Ledger, repo: string, issue: number, now: number) {
   const view = l.forRepo(repo);
   const t = view.upsertThread({ issueNumber: issue, title: `Bug ${issue}`, bodySha256: `s${issue}`, now, repo });
-  view.transition(
-    issue,
-    t.version,
-    { kind: "needs_you", code: "review_vetoed", reason: "vetoed", resumeTo: { kind: "queued" } } as never,
-    { now, repo },
-  );
+  const esc = stepPhase(t.phase, t.mode, { t: "escalate", code: "review_vetoed", reason: "vetoed" }, { issueNumber: issue, title: t.title, needsYouLabel: "needs-you" });
+  if (!esc.ok) throw new Error(esc.reject);
+  view.transition(issue, t.version, esc.next, { now, repo });
 }
 
 describe("sendDigestIfDue", () => {

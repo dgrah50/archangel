@@ -123,6 +123,10 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
 export type Phase = z.infer<typeof PhaseSchema>;
 export type PhaseKind = Phase["kind"];
 
+declare const VALIDATED_PHASE: unique symbol;
+export type ValidatedPhase = Phase & { readonly [VALIDATED_PHASE]: true };
+const validated = (phase: Phase): ValidatedPhase => phase as ValidatedPhase;
+
 /** Explicit post-merge watch state machine (Opus Step 5). */
 export const MainWatchSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("watching"), since: z.number().int() }),
@@ -175,16 +179,17 @@ export type MachineEvent =
   | { t: "landed"; mergeId: number }
   | { t: "pr_observed"; status: "merged" | "closed"; mergeId?: number }
   | { t: "escalate"; code: EscalationCode; reason: string }
-  | { t: "owner_retry" }
+  | { t: "owner_retry"; now: number }
   /** The factory spends its one retry: resumes like an owner retry, but posts nothing, removes no label and grants no budget. */
-  | { t: "factory_retry" }
+  | { t: "factory_retry"; now: number }
   | { t: "owner_abandon" }
   | { t: "handoff_started"; paseoAgentId: string | null; paseoWorkspaceId: string | null; now: number }
+  | { t: "paseo_attached"; paseoAgentId: string | null; paseoWorkspaceId: string | null }
   | { t: "owner_resume"; pr: PrRef | null; now: number }
-  | { t: "restart_recovered" };
+  | { t: "restart_recovered"; now: number };
 
 export type StepResult =
-  | { ok: true; next: Phase; nextMode?: Mode; effects: OutboxEffect[] }
+  | { ok: true; next: ValidatedPhase; nextMode?: Mode; effects: OutboxEffect[] }
   | { ok: false; reject: string };
 
 /**
@@ -247,6 +252,9 @@ export function stepPhase(
   ev: MachineEvent,
   meta: { issueNumber: number; title: string; needsYouLabel: string },
 ): StepResult {
+  const ok = (next: Phase, effects: OutboxEffect[] = [], nextMode?: Mode): StepResult =>
+    nextMode ? { ok: true, next: validated(next), nextMode, effects } : { ok: true, next: validated(next), effects };
+
   if (phase.kind === "done") {
     return { ok: false, reject: `Cannot apply ${ev.t} to terminal phase done(${phase.outcome})` };
   }
@@ -255,32 +263,24 @@ export function stepPhase(
   if (ev.t === "pr_observed") {
     const outcome: DoneOutcome = ev.status === "merged" ? "owner_merged" : "pr_closed";
     const pr = extractPrFromPhase(phase);
-    return {
-      ok: true,
-      next: {
-        kind: "done",
-        outcome,
-        mergeId: ev.mergeId,
-        prNumber: pr?.prNumber ?? null,
-        headSha: pr?.headSha ?? null,
-      },
-      effects: [],
-    };
+    return ok({
+      kind: "done",
+      outcome,
+      mergeId: ev.mergeId,
+      prNumber: pr?.prNumber ?? null,
+      headSha: pr?.headSha ?? null,
+    });
   }
 
   // Universal owner abandon exit from any non-done phase.
   if (ev.t === "owner_abandon") {
     const pr = extractPrFromPhase(phase);
-    return {
-      ok: true,
-      next: {
-        kind: "done",
-        outcome: "abandoned",
-        prNumber: pr?.prNumber ?? null,
-        headSha: pr?.headSha ?? null,
-      },
-      effects: [],
-    };
+    return ok({
+      kind: "done",
+      outcome: "abandoned",
+      prNumber: pr?.prNumber ?? null,
+      headSha: pr?.headSha ?? null,
+    });
   }
 
   // Startup crash recovery: ONLY `working` recovers to saved `resumeTo`.
@@ -289,28 +289,23 @@ export function stepPhase(
       return { ok: false, reject: `restart_recovered only applies to working, not ${phase.kind}` };
     }
     if (phase.resumeTo.kind === "awaiting_gate") {
-      return {
-        ok: true,
-        next: {
-          kind: "awaiting_gate",
-          prNumber: phase.resumeTo.prNumber,
-          headSha: phase.resumeTo.headSha,
-          baseSha: phase.resumeTo.baseSha,
-          since: Date.now(),
-          nudgedAt: null,
-        },
-        effects: [],
-      };
+      return ok({
+        kind: "awaiting_gate",
+        prNumber: phase.resumeTo.prNumber,
+        headSha: phase.resumeTo.headSha,
+        baseSha: phase.resumeTo.baseSha,
+        since: ev.now,
+        nudgedAt: null,
+      });
     }
-    return { ok: true, next: { kind: "queued" }, effects: [] };
+    return ok({ kind: "queued" });
   }
 
   // Handoff to Paseo: allowed from any non-done, non-owner_driving phase; switches mode to advisory.
   if (ev.t === "handoff_started") {
     const pr = extractPrFromPhase(phase);
-    return {
-      ok: true,
-      next: {
+    return ok(
+      {
         kind: "owner_driving",
         paseoAgentId: ev.paseoAgentId,
         paseoWorkspaceId: ev.paseoWorkspaceId,
@@ -319,9 +314,9 @@ export function stepPhase(
         headSha: pr?.headSha ?? ("headSha" in phase ? (phase.headSha ?? null) : null),
         baseSha: pr?.baseSha ?? null,
       },
-      nextMode: "advisory",
-      effects: [],
-    };
+      [],
+      "advisory",
+    );
   }
 
   // Escalation to Needs You from any active phase (never from owner_driving or already needs_you).
@@ -330,9 +325,8 @@ export function stepPhase(
       return { ok: false, reject: `Cannot escalate from ${phase.kind}` };
     }
     const pr = extractPrFromPhase(phase);
-    return {
-      ok: true,
-      next: {
+    return ok(
+      {
         kind: "needs_you",
         code: ev.code,
         reason: ev.reason,
@@ -340,7 +334,7 @@ export function stepPhase(
         prNumber: pr?.prNumber ?? ("prNumber" in phase ? (phase.prNumber ?? null) : null),
         headSha: pr?.headSha ?? null,
       },
-      effects: [
+      [
         { kind: "add_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel },
         {
           kind: "notify_needs_you",
@@ -350,7 +344,7 @@ export function stepPhase(
           code: ev.code,
         },
       ],
-    };
+    );
   }
 
   // Start a working Attempt: STRICTLY forbidden in advisory mode (ADR-0006 / Opus R4)!
@@ -361,41 +355,32 @@ export function stepPhase(
     if (!["queued", "awaiting_gate", "reviewing", "landing"].includes(phase.kind)) {
       return { ok: false, reject: `Cannot start working from ${phase.kind}` };
     }
-    return {
-      ok: true,
-      next: {
-        kind: "working",
-        attemptId: ev.attemptId,
-        attempt: ev.attempt,
-        fromSha: ev.fromSha,
-        resumeTo: toResumeTarget(phase),
-        prNumber: ev.prNumber ?? extractPrFromPhase(phase)?.prNumber ?? null,
-      },
-      effects: [],
-    };
+    return ok({
+      kind: "working",
+      attemptId: ev.attemptId,
+      attempt: ev.attempt,
+      fromSha: ev.fromSha,
+      resumeTo: toResumeTarget(phase),
+      prNumber: ev.prNumber ?? extractPrFromPhase(phase)?.prNumber ?? null,
+    });
   }
 
   switch (phase.kind) {
     case "working": {
       if (ev.t === "attempt_pushed") {
-        return {
-          ok: true,
-          next: {
-            kind: "awaiting_gate",
-            prNumber: ev.pr.prNumber,
-            headSha: ev.pr.headSha,
-            baseSha: ev.pr.baseSha,
-            since: ev.now,
-            nudgedAt: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "awaiting_gate",
+          prNumber: ev.pr.prNumber,
+          headSha: ev.pr.headSha,
+          baseSha: ev.pr.baseSha,
+          since: ev.now,
+          nudgedAt: null,
+        });
       }
       if (ev.t === "attempt_aborted") {
         if (ev.cause === "timeout") {
-          return {
-            ok: true,
-            next: {
+          return ok(
+            {
               kind: "needs_you",
               code: "attempt_timeout",
               reason: `Attempt (${phase.attempt}) timed out before finishing`,
@@ -403,7 +388,7 @@ export function stepPhase(
               prNumber: phase.prNumber ?? null,
               headSha: phase.resumeTo.kind === "awaiting_gate" ? phase.resumeTo.headSha : null,
             },
-            effects: [
+            [
               { kind: "add_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel },
               {
                 kind: "notify_needs_you",
@@ -413,29 +398,24 @@ export function stepPhase(
                 code: "attempt_timeout",
               },
             ],
-          };
+          );
         }
         // Control abort (pause/stop) or handoff: return safely to resumeTo without losing state.
         if (phase.resumeTo.kind === "awaiting_gate") {
-          return {
-            ok: true,
-            next: {
-              kind: "awaiting_gate",
-              prNumber: phase.resumeTo.prNumber,
-              headSha: phase.resumeTo.headSha,
-              baseSha: phase.resumeTo.baseSha,
-              since: ev.now,
-              nudgedAt: null,
-            },
-            effects: [],
-          };
+          return ok({
+            kind: "awaiting_gate",
+            prNumber: phase.resumeTo.prNumber,
+            headSha: phase.resumeTo.headSha,
+            baseSha: phase.resumeTo.baseSha,
+            since: ev.now,
+            nudgedAt: null,
+          });
         }
-        return { ok: true, next: { kind: "queued" }, effects: [] };
+        return ok({ kind: "queued" });
       }
       if (ev.t === "attempt_failed") {
-        return {
-          ok: true,
-          next: {
+        return ok(
+          {
             kind: "needs_you",
             code: ev.code,
             reason: ev.reason,
@@ -443,7 +423,7 @@ export function stepPhase(
             prNumber: phase.prNumber ?? null,
             headSha: phase.resumeTo.kind === "awaiting_gate" ? phase.resumeTo.headSha : null,
           },
-          effects: [
+          [
             { kind: "add_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel },
             {
               kind: "notify_needs_you",
@@ -453,137 +433,101 @@ export function stepPhase(
               code: ev.code,
             },
           ],
-        };
+        );
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in working` };
     }
 
     case "awaiting_gate": {
       if (ev.t === "head_moved") {
-        return {
-          ok: true,
-          next: {
-            kind: "awaiting_gate",
-            prNumber: ev.pr.prNumber,
-            headSha: ev.pr.headSha,
-            baseSha: ev.pr.baseSha,
-            since: ev.now,
-            nudgedAt: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "awaiting_gate",
+          prNumber: ev.pr.prNumber,
+          headSha: ev.pr.headSha,
+          baseSha: ev.pr.baseSha,
+          since: ev.now,
+          nudgedAt: null,
+        });
       }
       if (ev.t === "gate_passed") {
-        return {
-          ok: true,
-          next: {
-            kind: "reviewing",
-            prNumber: phase.prNumber,
-            headSha: phase.headSha,
-            baseSha: phase.baseSha,
-            outageSince: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "reviewing",
+          prNumber: phase.prNumber,
+          headSha: phase.headSha,
+          baseSha: phase.baseSha,
+          outageSince: null,
+        });
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in awaiting_gate` };
     }
 
     case "reviewing": {
       if (ev.t === "head_moved") {
-        return {
-          ok: true,
-          next: {
-            kind: "awaiting_gate",
-            prNumber: ev.pr.prNumber,
-            headSha: ev.pr.headSha,
-            baseSha: ev.pr.baseSha,
-            since: ev.now,
-            nudgedAt: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "awaiting_gate",
+          prNumber: ev.pr.prNumber,
+          headSha: ev.pr.headSha,
+          baseSha: ev.pr.baseSha,
+          since: ev.now,
+          nudgedAt: null,
+        });
       }
       if (ev.t === "review_outage") {
-        return {
-          ok: true,
-          next: { ...phase, outageSince: phase.outageSince ?? ev.now },
-          effects: [],
-        };
+        return ok({ ...phase, outageSince: phase.outageSince ?? ev.now });
       }
       if (ev.t === "reviews_approved") {
-        return {
-          ok: true,
-          next: {
-            kind: "landing",
-            prNumber: phase.prNumber,
-            headSha: phase.headSha,
-            baseSha: phase.baseSha,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "landing",
+          prNumber: phase.prNumber,
+          headSha: phase.headSha,
+          baseSha: phase.baseSha,
+        });
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in reviewing` };
     }
 
     case "landing": {
       if (ev.t === "head_moved") {
-        return {
-          ok: true,
-          next: {
-            kind: "awaiting_gate",
-            prNumber: ev.pr.prNumber,
-            headSha: ev.pr.headSha,
-            baseSha: ev.pr.baseSha,
-            since: ev.now,
-            nudgedAt: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "awaiting_gate",
+          prNumber: ev.pr.prNumber,
+          headSha: ev.pr.headSha,
+          baseSha: ev.pr.baseSha,
+          since: ev.now,
+          nudgedAt: null,
+        });
       }
       if (ev.t === "shadow_recorded") {
-        return {
-          ok: true,
-          next: {
-            kind: "shadow_ready",
-            prNumber: phase.prNumber,
-            headSha: phase.headSha,
-            baseSha: phase.baseSha,
-            verdictId: ev.verdictId,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "shadow_ready",
+          prNumber: phase.prNumber,
+          headSha: phase.headSha,
+          baseSha: phase.baseSha,
+          verdictId: ev.verdictId,
+        });
       }
       if (ev.t === "landed") {
-        return {
-          ok: true,
-          next: {
-            kind: "done",
-            outcome: "merged",
-            mergeId: ev.mergeId,
-            prNumber: phase.prNumber,
-            headSha: phase.headSha,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "done",
+          outcome: "merged",
+          mergeId: ev.mergeId,
+          prNumber: phase.prNumber,
+          headSha: phase.headSha,
+        });
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in landing` };
     }
 
     case "shadow_ready": {
       if (ev.t === "head_moved") {
-        return {
-          ok: true,
-          next: {
-            kind: "awaiting_gate",
-            prNumber: ev.pr.prNumber,
-            headSha: ev.pr.headSha,
-            baseSha: ev.pr.baseSha,
-            since: ev.now,
-            nudgedAt: null,
-          },
-          effects: [],
-        };
+        return ok({
+          kind: "awaiting_gate",
+          prNumber: ev.pr.prNumber,
+          headSha: ev.pr.headSha,
+          baseSha: ev.pr.baseSha,
+          since: ev.now,
+          nudgedAt: null,
+        });
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in shadow_ready` };
     }
@@ -597,35 +541,34 @@ export function stepPhase(
                 prNumber: phase.resumeTo.prNumber,
                 headSha: phase.resumeTo.headSha,
                 baseSha: phase.resumeTo.baseSha,
-                since: Date.now(),
+                since: ev.now,
                 nudgedAt: null,
               }
             : { kind: "queued" };
-        return {
-          ok: true,
-          next: nextPhase,
-          effects: [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
-        };
+        return ok(nextPhase, [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }]);
       }
       if (ev.t === "factory_retry") {
-        return {
-          ok: true,
-          next:
-            phase.resumeTo.kind === "awaiting_gate"
-              ? { kind: "awaiting_gate", prNumber: phase.resumeTo.prNumber, headSha: phase.resumeTo.headSha, baseSha: phase.resumeTo.baseSha, since: Date.now(), nudgedAt: null }
-              : { kind: "queued" },
-          effects: [],
-        };
+        return ok(
+          phase.resumeTo.kind === "awaiting_gate"
+            ? { kind: "awaiting_gate", prNumber: phase.resumeTo.prNumber, headSha: phase.resumeTo.headSha, baseSha: phase.resumeTo.baseSha, since: ev.now, nudgedAt: null }
+            : { kind: "queued" },
+        );
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in needs_you` };
     }
 
     case "owner_driving": {
+      if (ev.t === "paseo_attached") {
+        return ok({
+          ...phase,
+          paseoAgentId: ev.paseoAgentId,
+          paseoWorkspaceId: ev.paseoWorkspaceId,
+        });
+      }
       if (ev.t === "owner_resume") {
         if (ev.pr) {
-          return {
-            ok: true,
-            next: {
+          return ok(
+            {
               kind: "awaiting_gate",
               prNumber: ev.pr.prNumber,
               headSha: ev.pr.headSha,
@@ -633,16 +576,15 @@ export function stepPhase(
               since: ev.now,
               nudgedAt: null,
             },
-            nextMode: "advisory",
-            effects: [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
-          };
+            [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
+            "advisory",
+          );
         }
-        return {
-          ok: true,
-          next: { kind: "queued" },
-          nextMode: "advisory",
-          effects: [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
-        };
+        return ok(
+          { kind: "queued" },
+          [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
+          "advisory",
+        );
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in owner_driving` };
     }

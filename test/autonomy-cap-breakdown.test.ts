@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler, describeCapUsage } from "../src/core/reconciler.js";
+import { stepPhase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 
@@ -17,7 +18,9 @@ function seeded() {
   l.startAttempt(3, "rebase", 7);
   l.appendAudit("thread/merged", 3, "archangel", {}, 8);
   const t1 = l.getThread(1)!;
-  l.transition(1, t1.version, { kind: "needs_you", code: "gate_failed", reason: "SECRET REASON", resumeTo: { kind: "queued" } } as never, { now: 9 });
+  const esc = stepPhase(t1.phase, t1.mode, { t: "escalate", code: "gate_failed", reason: "SECRET REASON" }, { issueNumber: 1, title: t1.title, needsYouLabel: "needs-you" });
+  if (!esc.ok) throw new Error(esc.reject);
+  l.transition(1, t1.version, esc.next, { now: 9 });
   return l;
 }
 
