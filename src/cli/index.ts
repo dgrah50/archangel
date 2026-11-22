@@ -1259,20 +1259,45 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
     console.log(`Logs: ${path.join(logDir, "daemon.log")} and ${path.join(logDir, "daemon.err.log")}`);
   });
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 daemonCmd
   .command("restart")
-  .description("Restart the loaded launchd agent (launchctl kickstart -k)")
+  .description("Restart the loaded launchd agent (SIGTERM, wait for the Ledger lock to be released, kickstart)")
   .action(() => {
     if (process.platform !== "darwin") {
       throw new Error("`archangel daemon restart` currently supports macOS (launchd) only.");
     }
     const target = `gui/${process.getuid!()}/${LAUNCHD_LABEL}`;
+    let printed: string;
     try {
-      execFileSync("launchctl", ["print", target], { stdio: "ignore" });
+      printed = execFileSync("launchctl", ["print", target], { encoding: "utf8" });
     } catch (err) {
       throw new Error(`${LAUNCHD_LABEL} is not loaded in launchd (${err instanceof Error ? err.message : String(err)}). Run \`archangel daemon install\` first.`);
     }
-    execFileSync("launchctl", ["kickstart", "-k", target], { stdio: "inherit" });
+    // `kickstart -k` SIGKILLs after launchd's 20 s ExitTimeOut, and a daemon killed mid-shutdown never releases the Ledger
+    // lock: the new one then exits "Another live daemon" and KeepAlive respawns it until the lease goes stale. Instead
+    // stop it gently, wait for the old process to exit (which is when it has released the lock), then start it.
+    const pidMatch = printed.match(/^\s*pid = (\d+)/m);
+    if (pidMatch) {
+      const pid = Number(pidMatch[1]);
+      execFileSync("launchctl", ["kill", "SIGTERM", target], { stdio: "inherit" });
+      const deadline = Date.now() + 30_000;
+      while (isProcessAlive(pid)) {
+        if (Date.now() > deadline) {
+          throw new Error(`Daemon pid ${pid} is still running 30 s after SIGTERM and still holds the Ledger lock; not starting a second one. Stop it by hand, then retry.`);
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      }
+    }
+    execFileSync("launchctl", ["kickstart", target], { stdio: "inherit" });
     console.log(`Restarted ${LAUNCHD_LABEL}.`);
   });
 
