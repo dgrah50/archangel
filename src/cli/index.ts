@@ -321,11 +321,10 @@ pitchCmd
 
 program
   .command("gate")
-  .description("Run the language-agnostic mechanical Gate against a git repository (reads .pre-commit-config.yaml and .agents/archangel.json from base)")
+  .description("Run the language-agnostic mechanical Gate against a git repository (always reads .pre-commit-config.yaml and .agents/archangel.json from the base commit)")
   .option("--repo <dir>", "Path to git repository (normal or bare)", ".")
   .requiredOption("--base <ref>", "Base commit/branch ref (e.g. main)")
   .option("--head <ref>", "Head commit/branch ref", "HEAD")
-  .option("--policy-from-base", "Read .agents/archangel.json strictly from base commit", false)
   .option("--revert-of <sha>", "Verify exact-inverse revert of recorded squash commit SHA")
   .option("--base-runs <n>", "Override red-on-base run count")
   .option("--head-runs <n>", "Override green-on-head run count")
@@ -336,7 +335,6 @@ program
       repo: string;
       base: string;
       head: string;
-      policyFromBase?: boolean;
       revertOf?: string;
       baseRuns?: string;
       headRuns?: string;
@@ -348,7 +346,6 @@ program
           repoDir: opts.repo,
           baseRef: opts.base,
           headRef: opts.head,
-          policyFromBase: Boolean(opts.policyFromBase),
           revertOf: opts.revertOf,
           baseRunsOverride: opts.baseRuns ? Number(opts.baseRuns) : undefined,
           headRunsOverride: opts.headRuns ? Number(opts.headRuns) : undefined,

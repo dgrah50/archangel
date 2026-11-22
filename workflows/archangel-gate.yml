@@ -118,5 +118,4 @@ jobs:
             --repo . \
             --base "$BASE_SHA" \
             --head HEAD \
-            --policy-from-base \
             "${EXTRA_ARGS[@]}"

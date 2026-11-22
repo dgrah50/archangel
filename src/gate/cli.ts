@@ -9,7 +9,6 @@ function parseArgs(argv: string[]): {
   repo: string;
   base: string;
   head: string;
-  policyFromBase: boolean;
   revertOf?: string;
   baseRuns?: number;
   headRuns?: number;
@@ -20,7 +19,6 @@ function parseArgs(argv: string[]): {
   let repo = ".";
   let base = "";
   let head = "HEAD";
-  let policyFromBase = false;
   let revertOf: string | undefined;
   let baseRuns: number | undefined;
   let headRuns: number | undefined;
@@ -33,7 +31,6 @@ function parseArgs(argv: string[]): {
     if (a === "--repo" && argv[i + 1]) repo = argv[++i]!;
     else if (a === "--base" && argv[i + 1]) base = argv[++i]!;
     else if (a === "--head" && argv[i + 1]) head = argv[++i]!;
-    else if (a === "--policy-from-base") policyFromBase = true;
     else if (a === "--revert-of" && argv[i + 1]) revertOf = argv[++i]!;
     else if (a === "--base-runs" && argv[i + 1]) baseRuns = Number(argv[++i]!);
     else if (a === "--head-runs" && argv[i + 1]) headRuns = Number(argv[++i]!);
@@ -47,9 +44,9 @@ function parseArgs(argv: string[]): {
   }
 
   if (!base) {
-    throw new Error("Usage: archangel-gate --repo <dir> --base <ref> [--head <ref>] [--policy-from-base] [--revert-of <sha>]");
+    throw new Error("Usage: archangel-gate --repo <dir> --base <ref> [--head <ref>] [--revert-of <sha>]");
   }
-  return { repo, base, head, policyFromBase, revertOf, baseRuns, headRuns, skipPreCommit, skipTests, workClass };
+  return { repo, base, head, revertOf, baseRuns, headRuns, skipPreCommit, skipTests, workClass };
 }
 
 (async () => {
@@ -59,7 +56,6 @@ function parseArgs(argv: string[]): {
       repoDir: opts.repo,
       baseRef: opts.base,
       headRef: opts.head,
-      policyFromBase: opts.policyFromBase,
       revertOf: opts.revertOf,
       baseRunsOverride: opts.baseRuns,
       headRunsOverride: opts.headRuns,
