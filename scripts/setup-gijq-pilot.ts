@@ -268,7 +268,27 @@ function main(): void {
   }
 
   if (targetRepoDir) {
+    // B3 freshness guard: refuse to pin an unpushed, dirty, or stale Gate bundle.
+    const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
+    if (dirty.length > 0) {
+      throw new Error("Refusing --install-workflow with uncommitted changes in archangel; commit & push first.");
+    }
     const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const remoteBranches = execFileSync("git", ["branch", "-r", "--contains", sha], { encoding: "utf8" }).trim();
+    if (!remoteBranches) {
+      throw new Error(`Refusing --install-workflow: HEAD (${sha.slice(0, 8)}) has not been pushed to origin yet.`);
+    }
+    const beforeBundle = fs.existsSync("bin/archangel-gate.mjs")
+      ? fs.readFileSync("bin/archangel-gate.mjs", "utf8")
+      : "";
+    execFileSync("npm", ["run", "-s", "build:gate-bundle"], { stdio: "inherit" });
+    const afterBundle = fs.readFileSync("bin/archangel-gate.mjs", "utf8");
+    if (beforeBundle !== afterBundle) {
+      throw new Error(
+        "Refusing --install-workflow: bin/archangel-gate.mjs was stale relative to src/gate/. Commit & push the rebuilt bundle first.",
+      );
+    }
+
     const files = installGateWorkflow({
       sourceWorkflowPath: path.resolve("workflows/archangel-gate.yml"),
       targetRepoDir,

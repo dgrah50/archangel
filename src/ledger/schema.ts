@@ -36,6 +36,7 @@ export interface ThreadRecord {
   implementCount: number;
   revisionCount: number;
   rebaseCount: number;
+  implementerVendors: ReviewerVendor[];
   createdAt: number;
   updatedAt: number;
 }
@@ -131,6 +132,7 @@ CREATE TABLE IF NOT EXISTS threads (
   implement_count INTEGER NOT NULL DEFAULT 0,
   revision_count INTEGER NOT NULL DEFAULT 0,
   rebase_count INTEGER NOT NULL DEFAULT 0,
+  implementer_vendors_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)

@@ -257,7 +257,11 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
 
   async reviewAll(req: ReviewRequest): Promise<ReviewBatchOutcome> {
     const skip = new Set<ReviewerVendor>(req.skipVendors ?? []);
-    const excluded = new Set<ReviewerVendor>([this.primaryImplementerVendor, ...(req.excludeVendors ?? [])]);
+    const excluded = new Set<ReviewerVendor>(
+      req.excludeVendors && req.excludeVendors.length > 0
+        ? req.excludeVendors
+        : [this.primaryImplementerVendor],
+    );
 
     // Eligible independent providers in configured preference order (deduped by vendor).
     const eligible: Array<{ entry: ProviderEntry; vendor: ReviewerVendor }> = [];

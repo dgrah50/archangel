@@ -207,13 +207,18 @@ export const HostYamlSchema = z.object({
  */
 export function resolveRequiredReviewers(
   cfg: Pick<ArchangelConfig, "authMode" | "implementerChain" | "reviewerChain">,
-  excludeVendors: ReviewerVendor[] = [],
+  threadImplementerVendors: ReviewerVendor[] = [],
 ): ReviewerVendor[] {
   if (cfg.authMode === "api") {
     return ["openai", "gemini"];
   }
-  const primaryImplVendor = providerToVendor(cfg.implementerChain[0]!.provider);
-  const blocked = new Set<ReviewerVendor>([primaryImplVendor, ...excludeVendors]);
+  // When actual implementer vendor(s) are known for this thread, block ONLY those vendors
+  // (so a provider skipped via cooldown can still review cleanly — Opus B1).
+  const blocked = new Set<ReviewerVendor>(
+    threadImplementerVendors.length > 0
+      ? threadImplementerVendors
+      : [providerToVendor(cfg.implementerChain[0]!.provider)],
+  );
   const chosen: ReviewerVendor[] = [];
   for (const entry of cfg.reviewerChain) {
     const v = providerToVendor(entry.provider);

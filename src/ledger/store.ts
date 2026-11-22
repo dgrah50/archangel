@@ -55,6 +55,10 @@ export class Ledger {
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
       this.db.exec(LEDGER_SCHEMA_SQL);
+      const cols = this.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === "implementer_vendors_json")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN implementer_vendors_json TEXT NOT NULL DEFAULT '[]'");
+      }
     } else {
       this.db.pragma("busy_timeout = 5000");
     }
@@ -880,6 +884,19 @@ export class Ledger {
     }));
   }
 
+  /** Merges implementer vendor(s) durably onto the thread (survives restarts & revisions — Opus B1). */
+  recordImplementerVendors(issueNumber: number, vendors: ReviewerVendor[], now = Date.now()): ReviewerVendor[] {
+    if (vendors.length === 0) return this.getThread(issueNumber)?.implementerVendors ?? [];
+    const current = this.getThread(issueNumber)?.implementerVendors ?? [];
+    const merged = [...new Set<ReviewerVendor>([...current, ...vendors])];
+    this.db
+      .prepare(
+        "UPDATE threads SET implementer_vendors_json = ?, updated_at = ? WHERE repo = ? AND issue_number = ?",
+      )
+      .run(JSON.stringify(merged), now, this.repo, issueNumber);
+    return merged;
+  }
+
   // ---- Provider Rate-Limit Cooldowns (Continuity Optimization) ----
 
   setProviderCooldown(provider: string, durationMs: number, reason: string, now = Date.now()): void {
@@ -1077,6 +1094,9 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
     implementCount: Number(r.implement_count),
     revisionCount: Number(r.revision_count),
     rebaseCount: Number(r.rebase_count),
+    implementerVendors: r.implementer_vendors_json
+      ? (JSON.parse(String(r.implementer_vendors_json)) as ReviewerVendor[])
+      : [],
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };

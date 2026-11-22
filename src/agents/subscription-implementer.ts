@@ -188,6 +188,43 @@ function defaultCliInvoker(input: {
   });
 }
 
+function extractErrorEnvelope(stdout: string): string {
+  const lines = stdout.trim().split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim();
+    if (!line?.startsWith("{")) continue;
+    try {
+      const obj = JSON.parse(line) as {
+        type?: string;
+        is_error?: boolean;
+        status?: string;
+        error?: string | { message?: string };
+        message?: string;
+        result?: string;
+      };
+      if (obj.type === "error" || obj.is_error === true || obj.status === "ERROR") {
+        if (typeof obj.error === "string") return obj.error;
+        if (obj.error && typeof obj.error.message === "string") return obj.error.message;
+        if (typeof obj.message === "string") return obj.message;
+        if (typeof obj.result === "string") return obj.result;
+      }
+      // Only inspect the final JSON object; never scan arbitrary command/test output lines (Opus B2).
+      return "";
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function hasWorkspaceEdits(cloneDir: string): boolean {
+  try {
+    return execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function captureWorkspaceContinuityContext(cloneDir: string): string {
   try {
     const status = execFileSync("git", ["status", "--short"], { cwd: cloneDir, encoding: "utf8" }).trim();
@@ -341,13 +378,20 @@ export class SubscriptionImplementer implements Implementer {
           };
         }
 
-        const combinedErr = `${res.stderr}\n${res.stdout}`.trim();
-        const isQuota = isRateLimitOrQuotaError(combinedErr);
-        errors.push(`${entry.provider} (exit ${res.code}): ${combinedErr.slice(0, 300)}`);
+        // Only inspect stderr + final error envelope — never match test output on stdout (Opus B2).
+        const errorSignal = `${res.stderr}\n${extractErrorEnvelope(res.stdout)}`.trim();
+        const isQuota = isRateLimitOrQuotaError(errorSignal);
+        errors.push(`${entry.provider} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
+
+        // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
+        if (hasWorkspaceEdits(input.cloneDir)) {
+          const vendor = providerToVendor(entry.provider);
+          if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
+        }
 
         // Continuity failover: record cooldown + move to the next configured subscription provider!
         if (isQuota) {
-          this.cooldowns?.recordCooldown(entry.provider, this.cooldownDurationMs, combinedErr.slice(0, 200));
+          this.cooldowns?.recordCooldown(entry.provider, this.cooldownDurationMs, errorSignal.slice(0, 200));
           if (i + 1 < orderedChain.length) {
             this.logger.warn(
               "implementer/continuity_failover",

@@ -50,6 +50,7 @@ export interface Blocker {
     | "check_untrusted_source"
     | "review_missing"
     | "review_vetoed"
+    | "insufficient_independent_reviewers"
     | "merge_conflict"
     | "daily_merge_cap_reached"
     | "shadow_mode_active";
@@ -138,6 +139,13 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
         message: `Check failed: ${reqName} (${match.conclusion ?? "unknown"})`,
       });
     }
+  }
+
+  if (s.requiredReviewers.length < 2) {
+    blockers.push({
+      code: "insufficient_independent_reviewers",
+      message: `Fewer than 2 independent reviewers available (${s.requiredReviewers.length}); owner review required`,
+    });
   }
 
   for (const vendor of s.requiredReviewers) {

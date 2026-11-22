@@ -75,7 +75,6 @@ export class Reconciler {
 
   private isTicking = false;
   private readonly runningTasks = new Map<number, RunningTask>();
-  private readonly shaImplementerVendors = new Map<string, ReviewerVendor[]>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   private effectiveGate: GatePolicy;
   private effectiveRequiredChecks: string[];
@@ -713,6 +712,9 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      if (result.providersUsed && result.providersUsed.length > 0) {
+        this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
+      }
 
       if (result.aborted) {
         const cause = task.abortCause ?? "timeout";
@@ -899,9 +901,6 @@ export class Reconciler {
       const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
       await this.broker.pushFactoryBranch(workingThread.branchName, validation.headSha, freshRemoteUrl);
       this.ledger.recordPushedSha(validation.headSha, workingThread.issueNumber, "broker");
-      if (result.providersUsed && result.providersUsed.length > 0) {
-        this.shaImplementerVendors.set(validation.headSha, result.providersUsed);
-      }
 
       const pr = await this.github.createPr({
         title: `fix(#${issue.number}): ${issue.title}`,
@@ -1066,8 +1065,28 @@ export class Reconciler {
     if (thread.phase.kind !== "reviewing") return;
     const headSha = thread.phase.headSha;
     const existing = this.ledger.getReviewsForSha(thread.issueNumber, headSha);
-    const excludeVendors = this.shaImplementerVendors.get(headSha) ?? [];
+    const excludeVendors = thread.implementerVendors;
     const requiredVendors = resolveRequiredReviewers(this.cfg, excludeVendors);
+    if (requiredVendors.length < 2) {
+      const escalated = this.applyMachineEvent(
+        thread,
+        {
+          t: "escalate",
+          code: "review_outage",
+          reason: `Insufficient independent reviewers (${requiredVendors.length}/2 available; implementer vendors=${excludeVendors.join(",") || "unknown"})`,
+        },
+        { auditTopic: "thread/needs_you", now },
+      );
+      if (escalated) {
+        await this.postRecapSafe(escalated, pr, [
+          {
+            code: "insufficient_independent_reviewers",
+            message: `Only ${requiredVendors.length} independent reviewer(s) available after failover`,
+          },
+        ]);
+      }
+      return;
+    }
     const haveVendors = new Set(existing.map((r) => r.vendor));
     const missingVendors = requiredVendors.filter((v) => !haveVendors.has(v));
 
@@ -1274,10 +1293,7 @@ export class Reconciler {
       requiredChecks: this.effectiveRequiredChecks,
       checks,
       reviewsForHeadSha: reviews,
-      requiredReviewers: resolveRequiredReviewers(
-        this.cfg,
-        this.shaImplementerVendors.get(pr.headSha) ?? [],
-      ),
+      requiredReviewers: resolveRequiredReviewers(this.cfg, thread.implementerVendors),
       mergeTreeClean,
       autoMergesToday: this.ledger.getAutoMergeCountToday(now),
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
