@@ -221,7 +221,7 @@ export async function startUiServer(
         const repo = thread[1]!;
         const issue = Number(thread[2]);
         if (!REPO_SLUG_RE.test(repo) || !Number.isSafeInteger(issue) || issue < 1) return sendJson(res, 400, { error: "repo must be owner/name and issue a positive integer" });
-        const detail = buildThreadDetail(ledger, repo, issue);
+        const detail = buildThreadDetail(ledger, repo, issue, Date.now(), readLimits(opts.configPath));
         return detail ? sendJson(res, 200, detail) : sendJson(res, 404, { error: `no Thread ${repo}#${issue}` });
       }
       const file = path.resolve(uiDir, "." + (pathname === "/" ? "/index.html" : pathname));

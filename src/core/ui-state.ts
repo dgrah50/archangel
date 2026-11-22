@@ -181,12 +181,12 @@ export function formatAge(ms: number): string {
 }
 
 /** The caps in archangel.yaml (daily USD, autonomous steps per repo); null when the file is missing or invalid. Read-only. */
-export function readLimits(configPath: string | undefined): { maxDailyUsd: number; autonomyCaps: Record<string, number> } | null {
+export function readLimits(configPath: string | undefined): { maxDailyUsd: number; autonomyCaps: Record<string, number>; attemptTimeoutMs: number; gateTimeoutMs: number } | null {
   try {
     const host = HostYamlSchema.safeParse(parseYaml(fs.readFileSync(resolveConfigPath(configPath), "utf8")));
     if (!host.success) return null;
     const h = host.data;
-    return { maxDailyUsd: h.maxDailyUsd, autonomyCaps: Object.fromEntries(h.projects.map((p) => [p.repo, p.maxAutonomousStepsWithoutOwner ?? h.maxAutonomousStepsWithoutOwner])) };
+    return { maxDailyUsd: h.maxDailyUsd, attemptTimeoutMs: h.implementTimeoutMs, gateTimeoutMs: h.gateTimeoutMs, autonomyCaps: Object.fromEntries(h.projects.map((p) => [p.repo, p.maxAutonomousStepsWithoutOwner ?? h.maxAutonomousStepsWithoutOwner])) };
   } catch (_err) {
     return null;
   }
