@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { tryParseJson } from "./json.js";
 import { expandHome, type Account } from "../config.js";
 
 /** At most this many account switches (after a limit error) within one Attempt before it fails with the quota error. */
@@ -89,8 +90,10 @@ export function readCodexUsage(home: string | undefined): CodexReading | null {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES") return;
+      throw err;
     }
     for (const e of entries) {
       const p = path.join(dir, e.name);
@@ -107,12 +110,10 @@ export function readCodexUsage(home: string | undefined): CodexReading | null {
   const lines = fs.readFileSync(file, "utf8").split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i]!.includes('"rate_limits"')) continue;
-    try {
-      const found = findRateLimits(JSON.parse(lines[i]!));
-      if (found) return { usedPercent: found.used_percent, windowMinutes: found.window_minutes ?? null, observedAt: mtime };
-    } catch {
-      // a partial last line: keep looking upward
-    }
+    const parsed = tryParseJson(lines[i]!);
+    if (!parsed.ok) continue;
+    const found = findRateLimits(parsed.value);
+    if (found) return { usedPercent: found.used_percent, windowMinutes: found.window_minutes ?? null, observedAt: mtime };
   }
   return null;
 }

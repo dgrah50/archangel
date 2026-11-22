@@ -32,6 +32,7 @@
     "build:ui": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "build:all": "npm run build",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "lint": "tsx scripts/lint.ts",
     "verify:formal": "tsx formal/check.ts",
     "test": "vitest run",
     "test:watch": "vitest",

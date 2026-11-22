@@ -187,7 +187,7 @@ export function readLimits(configPath: string | undefined): { maxDailyUsd: numbe
     if (!host.success) return null;
     const h = host.data;
     return { maxDailyUsd: h.maxDailyUsd, autonomyCaps: Object.fromEntries(h.projects.map((p) => [p.repo, p.maxAutonomousStepsWithoutOwner ?? h.maxAutonomousStepsWithoutOwner])) };
-  } catch {
+  } catch (_err) {
     return null;
   }
 }

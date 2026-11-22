@@ -1,6 +1,7 @@
 import { GATE_PROOF_ANNOTATION_TITLE, type GateProof } from "../gate/gate.js";
 import crypto from "node:crypto";
 import type { CheckStatus } from "../core/blockers.js";
+import { tryParseJson } from "../core/json.js";
 import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
 import { RECAP_MARKER } from "../core/recap.js";
 
@@ -485,21 +486,19 @@ export class GitHubAppClient implements GitHubClient {
     const proofs = annotations.filter((a) => a.title === GATE_PROOF_ANNOTATION_TITLE);
     const ann = proofs.length === 1 ? proofs[0] : undefined;
     if (!ann?.message) return null;
-    try {
-      const parsed = JSON.parse(ann.message) as Record<string, unknown>;
-      if (parsed.head_sha !== headSha) return null;
-      const out: GateProof = {};
-      if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
-      if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
-      const j = parsed.junit as { base_failed?: unknown; head_passed?: unknown } | undefined;
-      if (j && Array.isArray(j.base_failed) && Array.isArray(j.head_passed)) {
-        const ids = (a: unknown[]) => a.filter((x): x is string => typeof x === "string").slice(0, 20).map((x) => x.slice(0, 160));
-        out.junit = { base_failed: ids(j.base_failed), head_passed: ids(j.head_passed) };
-      }
-      return out;
-    } catch {
-      return null;
+    const res = tryParseJson(ann.message);
+    if (!res.ok || typeof res.value !== "object" || res.value === null) return null;
+    const parsed = res.value as Record<string, unknown>;
+    if (parsed.head_sha !== headSha) return null;
+    const out: GateProof = {};
+    if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
+    if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
+    const j = parsed.junit as { base_failed?: unknown; head_passed?: unknown } | undefined;
+    if (j && Array.isArray(j.base_failed) && Array.isArray(j.head_passed)) {
+      const ids = (a: unknown[]) => a.filter((x): x is string => typeof x === "string").slice(0, 20).map((x) => x.slice(0, 160));
+      out.junit = { base_failed: ids(j.base_failed), head_passed: ids(j.head_passed) };
     }
+    return out;
   }
 
   async getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>> {

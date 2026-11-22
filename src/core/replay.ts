@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { tryParseJson } from "./json.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import { REPO_POLICY_PATH, type GatePolicy } from "../config.js";
@@ -157,7 +158,7 @@ async function blob(dir: string, content: string): Promise<{ mode: string; sha: 
 export async function show(dir: string, rev: string, p: string): Promise<string | null> {
   try {
     return await git(dir, ["show", `${rev}:${p}`]);
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -264,12 +265,10 @@ export async function pinnedShas(dir: string, repo: string, issue: number): Prom
 export async function basePolicy(dir: string, base: string): Promise<{ policy: GatePolicy } | { reason: string }> {
   const raw = await show(dir, base, REPO_POLICY_PATH);
   if (raw === null) return { reason: `no ${REPO_POLICY_PATH} at the base commit` };
-  try {
-    const parsed = Workflow.safeParse(JSON.parse(raw));
-    return parsed.success ? { policy: toGatePolicy(parsed.data.gate) } : { reason: "workflow file at the base is not a valid workflow (pre-V4?)" };
-  } catch {
-    return { reason: "workflow file at the base is not valid JSON" };
-  }
+  const json = tryParseJson(raw);
+  if (!json.ok) return { reason: "workflow file at the base is not valid JSON" };
+  const parsed = Workflow.safeParse(json.value);
+  return parsed.success ? { policy: toGatePolicy(parsed.data.gate) } : { reason: "workflow file at the base is not a valid workflow (pre-V4?)" };
 }
 
 /**
@@ -309,7 +308,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayReport> {
       let base: string;
       try {
         base = (await git(dir, ["merge-base", c.headSha, mainRef])).trim();
-      } catch {
+      } catch (_err) {
         skip("no merge base with main");
         continue;
       }

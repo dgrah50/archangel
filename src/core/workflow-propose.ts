@@ -143,8 +143,9 @@ export async function planWorkflowProposal(
       changes = classifyChange(prev, proposed);
       prevScouts = new Set(prev.scouts.map((s) => s.name));
       classified = true;
-    } catch {
+    } catch (_err) {
       // current file is not a valid workflow: nothing to compare against
+      classified = false;
     }
   }
 

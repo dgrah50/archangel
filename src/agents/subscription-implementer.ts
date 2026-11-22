@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { tryParseJson } from "../core/json.js";
 import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
@@ -218,39 +219,33 @@ function extractErrorEnvelope(stdout: string): string {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]?.trim();
     if (!line?.startsWith("{")) continue;
-    try {
-      const obj = JSON.parse(line) as {
-        type?: string;
-        is_error?: boolean;
-        status?: string;
-        error?: string | { message?: string };
-        message?: string;
-        result?: string;
-      };
-      if (obj.type === "error" || obj.is_error === true || obj.status === "ERROR") {
-        if (typeof obj.error === "string") return obj.error;
-        if (obj.error && typeof obj.error.message === "string") return obj.error.message;
-        if (typeof obj.message === "string") return obj.message;
-        if (typeof obj.result === "string") return obj.result;
-      }
-      // Only inspect the final JSON object; never scan arbitrary command/test output lines (Opus B2).
-      return "";
-    } catch {
-      return "";
+    const parsed = tryParseJson(line);
+    if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null) return "";
+    const obj = parsed.value as {
+      type?: string;
+      is_error?: boolean;
+      status?: string;
+      error?: string | { message?: string };
+      message?: string;
+      result?: string;
+    };
+    if (obj.type === "error" || obj.is_error === true || obj.status === "ERROR") {
+      if (typeof obj.error === "string") return obj.error;
+      if (obj.error && typeof obj.error.message === "string") return obj.error.message;
+      if (typeof obj.message === "string") return obj.message;
+      if (typeof obj.result === "string") return obj.result;
     }
+    return "";
   }
   return "";
 }
 
-/**
- * Did this provider touch the workspace? If git cannot be inspected the answer is "yes": a vendor that may have written part of the
- * code must not be treated as clean, because it would then be allowed to review its own work.
- */
 function mayHaveMutated(cloneDir: string, headBefore: string | null): boolean {
   try {
     if (execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0) return true;
     return headBefore === null || execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim() !== headBefore;
-  } catch {
+  } catch (_err) {
+    // Fail closed: an uninspectable workspace may have been mutated, so the vendor must stay disqualified from reviewing.
     return true;
   }
 }
@@ -258,7 +253,7 @@ function mayHaveMutated(cloneDir: string, headBefore: string | null): boolean {
 function headSha(cloneDir: string): string | null {
   try {
     return execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -279,8 +274,8 @@ function captureWorkspaceContinuityContext(cloneDir: string): string {
       "Continue cleanly from this working tree state and finish committing the fix.",
       "--- END CONTINUITY CONTEXT ---",
     ].join("\n");
-  } catch {
-    return "Previous provider hit a rate/quota limit. Continue cleanly from the current workspace.";
+  } catch (err) {
+    return `Previous provider hit a rate/quota limit (${err instanceof Error ? err.message : String(err)}). Continue cleanly from the current workspace.`;
   }
 }
 
@@ -293,13 +288,11 @@ function extractSummary(provider: CliProvider, stdout: string, outputFile: strin
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]?.trim();
     if (!line?.startsWith("{")) continue;
-    try {
-      const parsed = JSON.parse(line) as { response?: string; result?: string };
-      if (typeof parsed.response === "string" && parsed.response.trim()) return parsed.response.trim().slice(0, 4000);
-      if (typeof parsed.result === "string" && parsed.result.trim()) return parsed.result.trim().slice(0, 4000);
-    } catch {
-      // Ignore non-JSON lines
-    }
+    const res = tryParseJson(line);
+    if (!res.ok || typeof res.value !== "object" || res.value === null) continue;
+    const parsed = res.value as { response?: string; result?: string };
+    if (typeof parsed.response === "string" && parsed.response.trim()) return parsed.response.trim().slice(0, 4000);
+    if (typeof parsed.result === "string" && parsed.result.trim()) return parsed.result.trim().slice(0, 4000);
   }
   return `Completed implement attempt via ${provider}.`;
 }

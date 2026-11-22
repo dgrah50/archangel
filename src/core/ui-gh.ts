@@ -1,4 +1,5 @@
 import { REPO_SLUG_RE } from "../config.js";
+import { tryParseJson } from "./json.js";
 import type { OnboardRunner } from "./onboard.js";
 import { ProposeRefusal } from "./ui-propose.js";
 
@@ -26,12 +27,11 @@ export function makeGhReads(deps: { runner: OnboardRunner; now?: () => number })
     } catch (err) {
       throw new ProposeRefusal(502, `gh ${args.slice(0, 2).join(" ")} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(out);
-    } catch {
+    const parsed = tryParseJson(out);
+    if (!parsed.ok) {
       throw new ProposeRefusal(502, `gh ${args.slice(0, 2).join(" ")} returned non-JSON output`);
     }
+    const value = parsed.value;
     cache.set(key, { at: now(), value });
     return value;
   }
