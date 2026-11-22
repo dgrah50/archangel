@@ -52,13 +52,24 @@ export function deriveSteps(f: SetupFacts): Step[] {
   const machineFails = failing(f.machine).length;
   const repoFails = failing(f.repoChecks, f.repo ?? undefined).length;
 
+  const placeholderOwner = (f.machine?.checks ?? []).some((c) => c.id === "config" && c.status !== "pass" && /placeholder/i.test(c.detail));
+  const identityFails = failing(f.repoChecks).filter((c) => /^(github_online|github_app_permissions):/.test(c.id));
+  const identity = f.repoChecks === null ? "unverified" : identityFails.length > 0 ? "failed" : "ok";
+  const prereqDetail =
+    f.machine === null ? "Machine checks have not completed."
+    : machineFails > 0 ? `${machineFails} machine ${machineFails === 1 ? "check fails" : "checks fail"}.`
+    : placeholderOwner ? "ownerUserId in archangel.yaml is still the placeholder 123456. Set it to your GitHub id (`gh api user --jq .id`)."
+    : identity === "failed" ? `The GitHub App identity could not be verified (${identityFails[0]!.detail}). Fix the App id, installation id and private key in .env.`
+    : identity === "unverified" ? "The GitHub App identity has not been verified yet. Check again once the GitHub App is set up in .env."
+    : "No machine check fails, and the GitHub App identity is verified.";
+
   const steps: Array<Omit<Step, "n">> = [
-    { title: "Prerequisites", done: f.machine !== null && machineFails === 0, detail: f.machine === null ? "Machine checks have not completed." : machineFails === 0 ? "No machine check fails." : `${machineFails} machine ${machineFails === 1 ? "check fails" : "checks fail"}.` },
+    { title: "Prerequisites", done: f.machine !== null && machineFails === 0 && !placeholderOwner && identity === "ok", detail: prereqDetail },
     { title: "This machine", done: host?.state === "ok" && host.config.projects.length > 0, detail: host === undefined ? "archangel.yaml has not been read." : host.state === "ok" ? `archangel.yaml is valid with ${host.config.projects.length} ${host.config.projects.length === 1 ? "project" : "projects"}.` : `archangel.yaml is ${host.state}.` },
     { title: "Add a repo", done: project !== undefined && merged, detail: !f.repo ? needRepo : project === undefined ? `${f.repo} is not in archangel.yaml projects.` : merged ? "In projects, and the onboarding PR is merged (or the Gate workflow is on the default branch)." : "In projects, but onboarding is not merged." },
     { title: "Setup PR", done: f.repo !== null && merged, detail: !f.repo ? needRepo : merged ? "Merged." : f.pr ? `The onboarding PR is ${f.pr.state.toLowerCase()}.` : "No onboarding PR was found." },
     { title: "GitHub wiring", done: repoRows.length > 0 && repoFails === 0, detail: !f.repo ? needRepo : repoRows.length === 0 ? "GitHub checks have not completed." : repoFails === 0 ? "No GitHub check fails for this repo." : `${repoFails} GitHub ${repoFails === 1 ? "check fails" : "checks fail"}.` },
-    { title: "Daemon picks it up", done: f.settings?.status.restartPending === false && f.settings.status.reported && wf?.status === "ok" && live, detail: !f.repo ? needRepo : f.settings?.status.restartPending ? "Restart pending: the daemon loaded an older archangel.yaml." : !live ? "No fresh daemon heartbeat." : wf?.status === "ok" ? "The daemon loaded the file and the repo's workflow is ok." : `The repo's workflow is ${wf?.status ?? "unknown"}.` },
+    { title: "Daemon picks it up", done: f.settings?.status.restartPending === false && f.settings.status.reported && wf?.status === "ok" && live, detail: f.state?.ledgerMissing ? "The daemon hasn't run yet. Run `archangel start` once; this page then fills in." : !f.repo ? needRepo : f.settings?.status.restartPending ? "Restart pending: the daemon loaded an older archangel.yaml." : !live ? "No fresh daemon heartbeat." : wf?.status === "ok" ? "The daemon loaded the file and the repo's workflow is ok." : `The repo's workflow is ${wf?.status ?? "unknown"}.` },
     { title: "Verify", done: f.repo !== null && hasActivity, detail: !f.repo ? needRepo : hasActivity ? "The Ledger has a Thread or Scout run for this repo." : "No Thread or Scout run for this repo yet." },
   ];
   const all = steps.map((s, i): Step => ({ n: i + 1, ...s }));
@@ -71,13 +82,25 @@ export function deriveSteps(f: SetupFacts): Step[] {
 export function smokeIssueUrl(repo: string): string {
   const q = new URLSearchParams({
     title: "Archangel smoke test: add a note to the README",
-    body: "A tiny change to confirm Archangel is wired up: add one line to the README saying this repo is managed by Archangel.\n\nAcceptance: README.md has the line; tests pass.",
-    labels: "ready-for-agent",
+    body: "A tiny chore to confirm Archangel is wired up: add one line to the README saying this repo is managed by Archangel.\n\nAcceptance: README.md has the line; existing tests still pass. No new test is needed for this chore.",
+    labels: "ready-for-agent,class:chore",
   });
   return `https://github.com/${repo}/issues/new?${q}`;
 }
 
 /** `/api/gh/protection` answers 502 with gh's 404 message for an unprotected branch: that is a state, not a failure. */
+/** `gh pr view` says this when the onboarding branch has no PR yet: the expected first state, not a failure. */
+export const isNoOnboardingPr = (message: string): boolean => /no pull requests found/i.test(message);
+
+/** One shell word that is safe in zsh and bash: single-quoted, so `[` `]` are never globbed. */
+export const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** The branch-protection PUT for a repo. Every argument is quoted; `checks` is the repo policy's requiredChecks. */
+export function protectionCommand(repo: string, branch: string, checks: string[]): string {
+  const contexts = checks.map((c) => `-f ${shellQuote(`required_status_checks[contexts][]=${c}`)}`).join(" ");
+  return `gh api -X PUT ${shellQuote(`repos/${repo}/branches/${branch}/protection`)} -F ${shellQuote("required_status_checks[strict]=true")} ${contexts} -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`;
+}
+
 export const isNotProtected = (message: string): boolean => /404|not protected/i.test(message);
 
 interface StepGroup {
