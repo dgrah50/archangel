@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 import { parse as parseYaml } from "yaml";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { type LandingSnapshot } from "../src/core/blockers.js";
@@ -85,9 +85,9 @@ describe("the daemon never merges a machine draft", () => {
         github.checks.set(headSha, green);
         if (rename) {
           const live = github.getPrLive.bind(github);
-          vi.spyOn(github, "getPrLive").mockImplementation(async (n: number) => ({ ...(await live(n)), headRef: `${AGENT_DRAFT_PREFIX}x-1` }));
+          spyOn(github, "getPrLive").mockImplementation(async (n: number) => ({ ...(await live(n)), headRef: `${AGENT_DRAFT_PREFIX}x-1` }));
         }
-        const merge = vi.spyOn(github, "squashMergePr");
+        const merge = spyOn(github, "squashMergePr");
         await rec.tick(Date.now(), { waitForAttempts: true });
         await rec.tick(Date.now(), { waitForAttempts: true });
         return { merged: merge.mock.calls.length, phase: ledger.getThread(5)!.phase.kind };

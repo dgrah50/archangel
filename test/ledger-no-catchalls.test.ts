@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { Implementer } from "../src/agents/implementer.js";
 import type { ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
@@ -42,7 +42,7 @@ describe("Ledger read errors are not swallowed", () => {
     const github = new FakeGitHub(remoteBare);
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     // The Reconciler works on a per-repo view of the Ledger, so patch the prototype, not the instance.
-    const spy = vi.spyOn(Ledger.prototype, "getScoutProposal").mockImplementation(() => {
+    const spy = spyOn(Ledger.prototype, "getScoutProposal").mockImplementation(() => {
       throw new Error("SQLITE_BUSY");
     });
     const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });

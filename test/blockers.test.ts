@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { parseStrictVerdict } from "../src/agents/reviewers.js";
 import { computeBlockers, isShadowReady, type LandingSnapshot } from "../src/core/blockers.js";
 

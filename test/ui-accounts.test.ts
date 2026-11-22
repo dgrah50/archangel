@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { startUiServer } from "../src/core/ui-server.js";
 import { Ledger } from "../src/ledger/store.js";
 

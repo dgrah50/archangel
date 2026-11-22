@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { SubscriptionImplementer, type CliInvoker } from "../src/agents/subscription-implementer.js";
 import { defaultReviewerCliInvoker } from "../src/agents/subscription-reviewers.js";
 import { defaultScoutCliInvoker } from "../src/core/scout.js";

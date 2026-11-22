@@ -1,16 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: () =>
     (async function* () {
       yield { type: "result", subtype: "error_max_turns", total_cost_usd: 0.5 };
     })(),
 }));
 
-import { ClaudeSdkImplementer } from "../src/agents/implementer.js";
+const { ClaudeSdkImplementer } = await import("../src/agents/implementer.js");
 
 describe("ClaudeSdkImplementer", () => {
   it("reports a result that is not a success (turn or budget limit, execution error) as a failure, with its cost", async () => {

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitHubAppClient } from "../src/github/client.js";
 
 /** A server that accepts the connection and never answers. */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler, describeCapUsage } from "../src/core/reconciler.js";
 import { stepPhase } from "../src/core/thread-machine.js";

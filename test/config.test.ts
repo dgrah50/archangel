@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { resolveDataDir } from "../src/cli/data-dir.js";
 import { HostYamlSchema, REPO_SLUG_RE, accountHomeProblems, loadProjectConfigs } from "../src/config.js";
 import { loadDotEnv, parseDotEnv } from "../src/env.js";

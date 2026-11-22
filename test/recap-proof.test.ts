@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { renderRecapComment } from "../src/core/recap.js";
 import { PROOF_MAX_CHARS, PROOF_MAX_LINES, runGateForActions, tailOutput, type GateReport } from "../src/gate/gate.js";
 import { GitHubAppClient } from "../src/github/client.js";

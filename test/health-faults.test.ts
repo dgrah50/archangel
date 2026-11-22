@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, spyOn } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -49,7 +49,7 @@ describe("survived errors become explicit health facts", () => {
     const w = await world();
     try {
       w.github.issues.set(5, { number: 5, title: "t", body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: "" });
-      vi.spyOn(w.rec as unknown as { reconcileIntakeIssue: () => Promise<void> }, "reconcileIntakeIssue").mockRejectedValue(new Error("intake boom"));
+      spyOn(w.rec as unknown as { reconcileIntakeIssue: () => Promise<void> }, "reconcileIntakeIssue").mockRejectedValue(new Error("intake boom"));
       const t0 = Date.now();
       await w.rec.tick(t0, { waitForAttempts: true });
       await w.rec.tick(t0 + 1000, { waitForAttempts: true });

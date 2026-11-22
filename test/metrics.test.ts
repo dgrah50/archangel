@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { buildMetricsBlock } from "../src/core/metrics-block.js";
 import { buildClusterBlockFrom } from "../src/core/failure-clusters.js";
 import { stepPhase, type DoneOutcome, type EscalationCode } from "../src/core/thread-machine.js";

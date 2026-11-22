@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { buildScoutPrompt, toScoutWorkflow } from "../src/core/scout.js";
 import { okWorkflow } from "./helpers/workflow.js";
 import { resolveSkills } from "../src/core/skills.js";

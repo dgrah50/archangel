@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { LOOSENS_LABEL, PROPOSE_BRANCH, proposeWorkflow } from "../src/core/workflow-propose.js";
 import { workflowFile } from "./helpers/workflow.js";

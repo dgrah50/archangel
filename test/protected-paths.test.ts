@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { isProtectedPath, isTestOrFixtureFile } from "../src/gate/gate.js";
 
 // Allowlist, not blocklist: every tracked src/ file must be protected unless the owner explicitly

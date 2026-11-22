@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {

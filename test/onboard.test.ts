@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { Workflow } from "../src/core/workflow.js";
 import { buildPlan, onboard, type OnboardRunner } from "../src/core/onboard.js";
 

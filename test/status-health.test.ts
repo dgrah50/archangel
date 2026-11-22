@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { DAEMON_STALE_MS, computeHealth, renderHealth } from "../src/core/status-text.js";
 import { Ledger } from "../src/ledger/store.js";
 

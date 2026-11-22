@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import { sendDigestIfDue } from "../src/core/digest.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
 import { stepPhase } from "../src/core/thread-machine.js";
@@ -28,7 +28,7 @@ describe("sendDigestIfDue", () => {
     needsYouThread(l, "a/b", 1, NOW - 3 * HOUR);
     needsYouThread(l, "c/d", 2, NOW - 30 * HOUR);
     l.forRepo("a/b").recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h", shadowOnly: false, mainRequired: ["Test"], now: YESTERDAY, repo: "a/b" });
-    const sendDigest = vi.fn(async (_t: string) => {});
+    const sendDigest = mock(async (_t: string) => {});
     const opts = { timeZone: TZ, digestHour: 9, openProposals: async () => new Set<string>() };
 
     expect(await sendDigestIfDue(l, { sendDigest }, { ...opts, now: Date.UTC(2026, 2, 10, 12, 0, 0) })).toBe(false); // 08:00 local, too early

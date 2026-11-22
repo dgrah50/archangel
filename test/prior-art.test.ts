@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { buildDigest, sendDigestIfDue } from "../src/core/digest.js";
 import { UNAVAILABLE, buildMetricsBlock, buildMetricsBlockFrom } from "../src/core/metrics-block.js";
 import { Ledger } from "../src/ledger/store.js";

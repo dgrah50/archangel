@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { type OnboardRunner } from "../src/core/onboard.js";
 import { PROPOSE_BRANCH, planWorkflowProposal, proposeWorkflow, readRepoFile } from "../src/core/workflow-propose.js";
 import { workflowFile } from "./helpers/workflow.js";

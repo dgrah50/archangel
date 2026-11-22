@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitHubAppClient } from "../src/github/client.js";
 import { RECAP_MARKER } from "../src/core/recap.js";
 
@@ -13,7 +13,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
   it("mints RS256 installation tokens, paginates Link headers, reuses ETag 304, deduplicates check runs, and upserts recap", async () => {
     const privateKeyPem = generateTestRsaKey();
     let issueHits = 0;
-    let patchedCommentId: number | null = null;
+    let patchedCommentId = null as number | null;
     let mergePayload: Record<string, unknown> | null = null;
 
     const server = http.createServer((req, res) => {
