@@ -107,6 +107,19 @@ export interface StageMetrics {
 /** Consecutive unmerged auto-promoted Threads of one Scout version that revoke its auto-promotion. */
 export const SCOUT_WASTE_STREAK = 3;
 
+export const HEALTH_WINDOW_MS = 86_400_000;
+/** This many survived errors of one class in 24h raise a Needs You. */
+export const HEALTH_FAULT_THRESHOLD = 3;
+export interface HealthFault {
+  repo: string;
+  category: string;
+  firstSeen: number;
+  lastSeen: number;
+  count: number;
+  recent24h: number;
+  lastError: string;
+}
+
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
@@ -138,6 +151,10 @@ export class Ledger {
       }
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!cols.some((c) => c.name === "factory_retries")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN factory_retries INTEGER NOT NULL DEFAULT 0");
+        this.db.exec("ALTER TABLE threads ADD COLUMN factory_guidance TEXT");
       }
       const addCols = (table: string, cols: string[]) => {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
@@ -174,8 +191,36 @@ export class Ledger {
   /** An owner retry grants the Thread one more implement and one more revision Attempt. */
   grantRetryBudget(issueNumber: number, now = Date.now()): void {
     this.db
-      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, updated_at = ? WHERE repo = ? AND issue_number = ?")
+      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, factory_guidance = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?")
       .run(now, this.repo, issueNumber);
+  }
+
+  /**
+   * Spends the Thread's factory retry, atomically: refused when this Thread already used its allowance, when the owner has
+   * acted on it (a reply or a retry ends factory involvement for good), or when the repo already spent its daily allowance.
+   * The audit rows are written by the `factory` actor, which never resets the autonomy cap (only `owner` rows do).
+   */
+  claimFactoryRetry(
+    issueNumber: number,
+    input: { code: string; guidance: string | null; perThread: number; perRepoPerDay: number },
+    now = Date.now(),
+  ): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const row = this.db
+        .prepare("SELECT factory_retries, retry_grants, owner_reply FROM threads WHERE repo = ? AND issue_number = ?")
+        .get(this.repo, issueNumber) as { factory_retries: number; retry_grants: number; owner_reply: string | null } | undefined;
+      if (!row || row.factory_retries >= input.perThread || row.retry_grants > 0 || row.owner_reply !== null) return false;
+      const today = this.db
+        .prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?")
+        .get(this.repo, now - 86_400_000) as { n: number };
+      if (today.n >= input.perRepoPerDay) return false;
+      this.db
+        .prepare("UPDATE threads SET factory_retries = factory_retries + 1, factory_guidance = ?, updated_at = ? WHERE repo = ? AND issue_number = ?")
+        .run(input.guidance, now, this.repo, issueNumber);
+      this.appendAudit("factory/retry", issueNumber, "factory", { code: input.code }, now);
+      return true;
+    });
+    return tx.immediate();
   }
 
   forRepo(repo: string): Ledger {
@@ -693,6 +738,11 @@ export class Ledger {
     return row ? mapAttempt(row) : null;
   }
 
+  /** Every Attempt for one Thread, oldest first (the dashboard's Thread timeline). */
+  listAttemptsFor(issueNumber: number, repo = this.repo): AttemptRecord[] {
+    return (this.db.prepare(`SELECT * FROM attempts WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapAttempt);
+  }
+
   // --- Recorded Pushed SHAs (INSERT OR IGNORE preserves broker provenance — Opus R14) ---
 
   recordPushedSha(
@@ -802,6 +852,14 @@ export class Ledger {
       )
       .all(repo, issueNumber, headSha) as Record<string, unknown>[];
     return rows.map(mapReview);
+  }
+
+  listReviewsFor(issueNumber: number, repo = this.repo): ReviewRecord[] {
+    return (this.db.prepare(`SELECT * FROM reviews WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapReview);
+  }
+
+  listMergesFor(issueNumber: number, repo = this.repo): MergeRecord[] {
+    return (this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapMerge);
   }
 
   // --- Merges & Shadow Mode ---
@@ -1326,6 +1384,39 @@ export class Ledger {
       .prepare("SELECT until_ts, reason FROM provider_cooldowns WHERE provider = ? AND until_ts > ?")
       .get(provider, now) as { until_ts: number; reason: string } | undefined;
     return row ? { untilTs: Number(row.until_ts), reason: String(row.reason) } : null;
+  }
+
+  /** Records one survived error of a class. Returns how many of this class were seen in the last 24h (including this one). */
+  recordHealthFault(category: string, error: string, now = Date.now(), repo = this.repo): number {
+    const tx = this.db.transaction(() => {
+      const row = this.db.prepare("SELECT recent_json FROM health_faults WHERE repo = ? AND category = ?").get(repo, category) as { recent_json: string } | undefined;
+      const prior = row ? (JSON.parse(row.recent_json) as number[]) : [];
+      const recent = [...prior.filter((t) => t > now - HEALTH_WINDOW_MS), now];
+      this.db
+        .prepare(
+          `INSERT INTO health_faults (repo, category, first_seen, last_seen, count, last_error, recent_json) VALUES (?, ?, ?, ?, 1, ?, ?)
+           ON CONFLICT(repo, category) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1, last_error = excluded.last_error, recent_json = excluded.recent_json`,
+        )
+        .run(repo, category, now, now, error.slice(0, 500), JSON.stringify(recent));
+      return recent.length;
+    });
+    return tx.immediate();
+  }
+
+  /** Health facts seen in the last 24h (all repos, or one), newest first. */
+  listHealthFaults(now = Date.now(), repo?: string): HealthFault[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM health_faults WHERE last_seen > ? ${repo ? "AND repo = ?" : ""} ORDER BY last_seen DESC`)
+      .all(...(repo ? [now - HEALTH_WINDOW_MS, repo] : [now - HEALTH_WINDOW_MS])) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      repo: String(r.repo),
+      category: String(r.category),
+      firstSeen: Number(r.first_seen),
+      lastSeen: Number(r.last_seen),
+      count: Number(r.count),
+      recent24h: (JSON.parse(String(r.recent_json)) as number[]).filter((t) => t > now - HEALTH_WINDOW_MS).length,
+      lastError: String(r.last_error),
+    }));
   }
 
   listActiveCooldowns(now = Date.now()): Array<{ provider: string; untilTs: number; reason: string }> {
@@ -1862,6 +1953,7 @@ export class Ledger {
           .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
       ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name })),
     );
+    const faults = attempt(() => this.listHealthFaults(now).map((f) => ({ repo: f.repo, category: f.category, recent24h: f.recent24h, lastError: f.lastError })));
     const pitches = attempt(() => this.listOpenPitches().map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, scoutName: p.scoutName, since: p.filedAt })));
     return {
       now,
@@ -1874,6 +1966,7 @@ export class Ledger {
       },
       proposals,
       pitches,
+      faults,
     };
   }
 
@@ -2225,6 +2318,8 @@ export class Ledger {
       topErrors: Array<{ error: string; count: number }>;
       /** Failed attempts bucketed into fixed categories (never contains error text). */
       errorCategories: Record<string, number>;
+      /** Per role (implement, revise, rebase): is the cheap tier good enough? `models` counts finished Attempts by provider/model. */
+      byRole: Record<string, { attempts: number; succeeded: number; failed: number; aborted: number; costUsd: number; models: Record<string, number> }>;
     };
     reviews: {
       byVendor: Record<string, { approve: number; veto: number }>;
@@ -2268,8 +2363,12 @@ export class Ledger {
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
-      .prepare(`SELECT status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
+      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
       .all(...attParams) as Array<{
+      kind: string;
+      cost_usd: number;
+      provider: string | null;
+      model: string | null;
       status: string;
       started_at: number;
       finished_at: number | null;
@@ -2282,8 +2381,17 @@ export class Ledger {
     const durationsSec: number[] = [];
     const errorCounts = new Map<string, number>();
     const errorCategories: Record<string, number> = {};
+    const byRole: Record<string, { attempts: number; succeeded: number; failed: number; aborted: number; costUsd: number; models: Record<string, number> }> = {};
 
     for (const a of attemptRows) {
+      const role = (byRole[a.kind] ??= { attempts: 0, succeeded: 0, failed: 0, aborted: 0, costUsd: 0, models: {} });
+      role.attempts++;
+      role.costUsd = Number((role.costUsd + a.cost_usd).toFixed(4));
+      if (a.status === "succeeded" || a.status === "failed" || a.status === "aborted") role[a.status]++;
+      if (a.provider) {
+        const key = `${a.provider}/${a.model ?? "default"}`;
+        role.models[key] = (role.models[key] ?? 0) + 1;
+      }
       if (a.status === "succeeded") succeeded++;
       else if (a.status === "failed") failed++;
       else if (a.status === "aborted") aborted++;
@@ -2356,6 +2464,7 @@ export class Ledger {
         p95DurationSec: percentile(durationsSec, 0.95),
         topErrors,
         errorCategories,
+        byRole,
       },
       reviews: {
         byVendor,
@@ -2464,6 +2573,8 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
       : [],
     ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
     retryGrants: Number(r.retry_grants ?? 0),
+    factoryRetries: Number(r.factory_retries ?? 0),
+    factoryGuidance: r.factory_guidance === null || r.factory_guidance === undefined ? null : String(r.factory_guidance),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),

@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { providerToVendor, type CliProvider, type ProviderEntry } from "../config.js";
+import { providerToVendor, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
@@ -59,7 +59,8 @@ export type CliInvoker = (input: {
 }) => Promise<CliExecResult>;
 
 export interface SubscriptionImplementerOptions {
-  chain: ProviderEntry[];
+  /** Provider chain per writing role; an Attempt uses the chain of its role. */
+  chains: Pick<Chains, WriterRole>;
   transcriptsDir: string;
   invoker?: CliInvoker;
   cooldowns?: ProviderCooldownStore;
@@ -309,7 +310,7 @@ function extractSummary(provider: CliProvider, stdout: string, outputFile: strin
  * - Preserves workspace progress across failovers by injecting Continuity git context.
  */
 export class SubscriptionImplementer implements Implementer {
-  private readonly chain: ProviderEntry[];
+  private readonly chains: Pick<Chains, WriterRole>;
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly cooldowns?: ProviderCooldownStore;
@@ -317,10 +318,10 @@ export class SubscriptionImplementer implements Implementer {
   private readonly logger: Logger;
 
   constructor(opts: SubscriptionImplementerOptions) {
-    if (opts.chain.length === 0) {
-      throw new Error("SubscriptionImplementer requires at least one provider in chain");
+    for (const role of ["implement", "revise", "rebase"] as const) {
+      if (opts.chains[role].length === 0) throw new Error(`SubscriptionImplementer requires at least one provider in the ${role} chain`);
     }
-    this.chain = opts.chain;
+    this.chains = opts.chains;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.cooldowns = opts.cooldowns;
@@ -341,13 +342,14 @@ export class SubscriptionImplementer implements Implementer {
     const providersUsed: ReviewerVendor[] = [];
     const errors: string[] = [];
 
+    const chain: ProviderEntry[] = this.chains[input.role];
     // Prefer vendors that already implemented this thread, while retaining configured order within each group.
     const preferred = input.preferVendors?.length
-      ? this.chain.filter((e) => input.preferVendors!.includes(providerToVendor(e.provider)))
+      ? chain.filter((e) => input.preferVendors!.includes(providerToVendor(e.provider)))
       : [];
     const remaining = input.preferVendors?.length
-      ? this.chain.filter((e) => !input.preferVendors!.includes(providerToVendor(e.provider)))
-      : this.chain;
+      ? chain.filter((e) => !input.preferVendors!.includes(providerToVendor(e.provider)))
+      : chain;
     const preferredChain = [...preferred, ...remaining];
     // Reorder chain so providers currently in rate-limit cooldown are tried last (Continuity cooldown memory).
     const now = Date.now();

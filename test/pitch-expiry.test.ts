@@ -29,6 +29,38 @@ function openOnGitHub(gh: FakeGitHub, ...issues: number[]) {
 }
 const fake = () => new FakeGitHub("/nonexistent");
 
+describe("pitch expiry isolation", () => {
+  it("one pitch failing to expire does not block the others, and the failure is logged", async () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    const gh = fake();
+    pitch(l, 1, 20);
+    pitch(l, 2, 20);
+    openOnGitHub(gh, 1, 2);
+    const real = gh.closeIssue.bind(gh);
+    gh.closeIssue = async (n: number) => {
+      if (n === 1) throw new Error("boom");
+      await real(n);
+    };
+    const logs: string[] = [];
+    expect(await expireStalePitches(l, gh, cfg, NOW, (e, m) => void logs.push(`${e} ${m}`))).toEqual([2]);
+    expect(l.getPitch(1)!.state.kind).toBe("open");
+    expect(logs.some((x) => x.startsWith("pitch/expiry_failed #1"))).toBe(true);
+  });
+
+  it("a lost decline reason is logged", async () => {
+    const { syncPitchDecisions } = await import("../src/core/pitch-expiry.js");
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    const gh = fake();
+    pitch(l, 1, 3); // its issue is not open on GitHub: declined
+    gh.listOwnerCommentsSince = async () => {
+      throw new Error("comments down");
+    };
+    const logs: string[] = [];
+    await syncPitchDecisions(l, gh, cfg, NOW, (e, m) => void logs.push(`${e} ${m}`));
+    expect(logs.some((x) => x.includes("pitch/decline_reason_failed") && x.includes("comments down"))).toBe(true);
+  });
+});
+
 describe("pitch expiry", () => {
   it("closes an open pitch nobody decided in 14 days with a short comment, and records it as expired", async () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
@@ -70,7 +102,9 @@ describe("pitch expiry", () => {
     gh.closeIssue = async () => {
       throw new Error("github down");
     };
-    await expect(expireStalePitches(l, gh, cfg, NOW)).rejects.toThrow(/github down/);
+    const logs: string[] = [];
+    expect(await expireStalePitches(l, gh, cfg, NOW, (e, m) => void logs.push(`${e} ${m}`))).toEqual([]);
+    expect(logs[0]).toContain("github down");
     expect(l.getPitch(1)!.state.kind).toBe("open");
     expect(l.listAudit({ topicPrefix: "pitch/expired" })).toHaveLength(0);
   });
@@ -162,7 +196,7 @@ describe("pitch metrics", () => {
 });
 
 describe("digest", () => {
-  const base = { now: NOW, needsYou: [], proposals: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } };
+  const base = { now: NOW, needsYou: [], proposals: [], faults: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } };
   it("lists open pitches awaiting the owner, and an open pitch keeps an otherwise quiet digest alive", () => {
     expect(buildDigest({ ...base, pitches: [] })).toBeNull();
     const text = buildDigest({ ...base, pitches: [{ repo: "a/b", issueNumber: 7, scoutName: "pitch", since: NOW - 3 * DAY }] })!;

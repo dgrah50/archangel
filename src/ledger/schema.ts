@@ -42,6 +42,10 @@ export interface ThreadRecord {
   ownerReply: string | null;
   /** Owner retries so far; each grants one more implement and one more revision Attempt. */
   retryGrants: number;
+  /** Factory retries spent on this Thread (kernel allows one, for life). */
+  factoryRetries: number;
+  /** Machine-written note for the factory retry's Attempt: kept apart from `ownerReply`, shown to the implementer only, cleared by an owner retry. */
+  factoryGuidance: string | null;
   /** sha256 of the workflow file (`.agents/archangel.json`) in force when the Thread was created. */
   workflowSha256: string | null;
   createdAt: number;
@@ -171,6 +175,8 @@ CREATE TABLE IF NOT EXISTS threads (
   implementer_vendors_json TEXT NOT NULL DEFAULT '[]',
   owner_reply TEXT,
   retry_grants INTEGER NOT NULL DEFAULT 0,
+  factory_retries INTEGER NOT NULL DEFAULT 0,
+  factory_guidance TEXT,
   workflow_sha256 TEXT,
   /** The issue text as it was at intake (replay and eval show it to the reviewers). Null for Threads from before it was kept. */
   issue_body TEXT,
@@ -294,6 +300,18 @@ CREATE TABLE IF NOT EXISTS system_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+-- Explicit per-repo health facts: a subsystem error class the daemon survived (log-and-continue) is counted here, never only logged.
+CREATE TABLE IF NOT EXISTS health_faults (
+  repo TEXT NOT NULL,
+  category TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  last_error TEXT NOT NULL,
+  recent_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (repo, category)
 );
 
 CREATE TABLE IF NOT EXISTS provider_cooldowns (

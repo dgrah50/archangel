@@ -1,7 +1,11 @@
 import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
+import type { HostStatus } from "../../src/core/host-facts.js";
+import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
+import { HealthPage } from "./HealthPage";
+import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
@@ -76,12 +80,18 @@ export function AppView({
   route,
   state,
   workflows,
+  host,
+  thread,
+  logs,
   now,
   onRetry,
 }: {
   route: Route;
   state: Feed<UiState>;
   workflows: Feed<WorkflowsState>;
+  host: Feed<HostStatus>;
+  thread: Feed<ThreadDetail>;
+  logs: Feed<LogsPayload>;
   now: number;
   onRetry: () => void;
 }) {
@@ -100,7 +110,7 @@ export function AppView({
     );
   }
   return (
-    <Shell route={route} state={state.data}>
+    <Shell route={route} state={state.data} host={host}>
       <Box pt="4" px="6">
         {bannersFor(state, now).map((b) => (
           <Notice key={b.text} tone={b.tone}>
@@ -111,6 +121,8 @@ export function AppView({
       {route.page === "overview" ? <Dashboard state={state.data} /> : null}
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
+      {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
+      {route.page === "health" ? <HealthPage /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
