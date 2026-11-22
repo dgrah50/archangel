@@ -1852,17 +1852,6 @@ export class Ledger {
       .run(cacheKey, caseId, JSON.stringify(result), now);
   }
 
-  saveEvalReport(kind: string, report: unknown, now = Date.now()): number {
-    return Number(this.db.prepare("INSERT INTO eval_reports (kind, created_at, report_json) VALUES (?, ?, ?)").run(kind, now, JSON.stringify(report)).lastInsertRowid);
-  }
-
-  listEvalReports(kind?: string, limit = 20): Array<{ id: number; kind: string; createdAt: number; report: unknown }> {
-    const rows = this.db
-      .prepare(`SELECT id, kind, created_at, report_json FROM eval_reports ${kind ? "WHERE kind = ?" : ""} ORDER BY id DESC LIMIT ?`)
-      .all(...(kind ? [kind, limit] : [limit])) as Array<{ id: number; kind: string; created_at: number; report_json: string }>;
-    return rows.map((r) => ({ id: r.id, kind: r.kind, createdAt: r.created_at, report: JSON.parse(r.report_json) }));
-  }
-
   getEvalResult(promptHash: string, caseId: string): { verdict: "approve" | "veto"; vendors: string } | null {
     return (this.db.prepare(`SELECT verdict, vendors FROM eval_results WHERE prompt_hash = ? AND case_id = ?`).get(promptHash, caseId) as { verdict: "approve" | "veto"; vendors: string } | undefined) ?? null;
   }

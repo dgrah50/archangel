@@ -809,7 +809,7 @@ evalCmd
         runTests: opts.runTests,
         maxCases,
       });
-      ledger.saveEvalReport("bench-tiers", report);
+      saveReport(host.dataDir, "bench-tiers", report);
       console.log(opts.json ? JSON.stringify(report, null, 2) : renderBench(report));
       process.exitCode = report.verdict === "insufficient" ? 2 : report.verdict === "worse" ? 1 : 0;
     } finally {

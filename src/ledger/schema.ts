@@ -394,12 +394,4 @@ CREATE TABLE IF NOT EXISTS bench_results (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (cache_key, case_id)
 );
-
--- Saved eval-family reports (model-tier benchmarks), for the dashboard's Evals page.
-CREATE TABLE IF NOT EXISTS eval_reports (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  report_json TEXT NOT NULL
-);
 `;

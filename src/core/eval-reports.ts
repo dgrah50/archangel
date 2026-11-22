@@ -1,18 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { BenchReport } from "./bench-tiers.js";
 import type { EvalReport } from "./eval.js";
 import type { ReplayReport } from "./replay.js";
 
 export const REPORTS_KEEP = 20;
-export type ReportKind = "eval" | "replay";
-const FILE_RE = /^(eval|replay)-(\d{13})\.json$/;
+export type ReportKind = "eval" | "replay" | "bench-tiers";
+const FILE_RE = /^(eval|replay|bench-tiers)-(\d{13})\.json$/;
 
 export const reportsDir = (dataDir: string) => path.join(dataDir, "evals");
 
 /** Writes `evals/<kind>-<ms>.json` atomically (temp file in the same directory, then rename) and keeps the newest REPORTS_KEEP of that kind. */
 export function saveReport(dataDir: string, kind: "eval", report: EvalReport, now?: number): string;
 export function saveReport(dataDir: string, kind: "replay", report: ReplayReport[], now?: number): string;
-export function saveReport(dataDir: string, kind: ReportKind, report: EvalReport | ReplayReport[], now = Date.now()): string {
+export function saveReport(dataDir: string, kind: "bench-tiers", report: BenchReport, now?: number): string;
+export function saveReport(dataDir: string, kind: ReportKind, report: EvalReport | ReplayReport[] | BenchReport, now = Date.now()): string {
   const dir = reportsDir(dataDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${kind}-${now}.json`);
@@ -26,6 +28,7 @@ export function saveReport(dataDir: string, kind: ReportKind, report: EvalReport
 
 export type RunSummary =
   | { file: string; kind: "eval"; savedAt: number; unreadable: false; verdict: "pass" | "fail" | "INSUFFICIENT DATA"; candidate: string; files: string[]; split: string; scored: number; newFalseApprovals: number; newFalseVetoes: number; reasons: string[]; cases: number; milestone: { current: number; next: number | null } }
+  | { file: string; kind: "bench-tiers"; savedAt: number; unreadable: false; verdict: "pass" | "fail" | "INSUFFICIENT DATA"; role: string; current: string; candidate: string; comparable: number; matchedOrBeat: number; verdictLine: string }
   | { file: string; kind: "replay"; savedAt: number; unreadable: false; verdict: "pass" | "fail"; repos: string[]; replayed: number; regressions: number; mutants: number }
   | { file: string; kind: ReportKind; savedAt: number; unreadable: true; error: string };
 
@@ -55,6 +58,12 @@ function summarize(file: string, kind: ReportKind, savedAt: number, raw: unknown
     if (!verdict || !files || !nfa || !nfv || !reasons || typeof r.candidate.patchSha256 !== "string" || Number.isNaN(cases) || Number.isNaN(cur)) return bad("unexpected eval report shape");
     const next = r.milestones.next === null ? null : num(r.milestones.next);
     return { file, kind, savedAt, unreadable: false, verdict, candidate: r.candidate.patchSha256.slice(0, 12), files, split: String(r.split), scored: num(r.scored.good) + num(r.scored.bad), newFalseApprovals: nfa.length, newFalseVetoes: nfv.length, reasons, cases, milestone: { current: cur, next: next === null || Number.isNaN(next) ? null : next } };
+  }
+  if (kind === "bench-tiers") {
+    if (!obj(r) || !obj(r.current) || !obj(r.candidate) || typeof r.current.chain !== "string" || typeof r.candidate.chain !== "string" || typeof r.role !== "string" || typeof r.verdictLine !== "string" || Number.isNaN(num(r.comparable)) || Number.isNaN(num(r.matchedOrBeat))) return bad("unexpected bench-tiers report shape");
+    const verdict = r.verdict === "matched_or_beat" ? "pass" : r.verdict === "worse" ? "fail" : r.verdict === "insufficient" ? "INSUFFICIENT DATA" : null;
+    if (!verdict) return bad("unexpected bench-tiers report shape");
+    return { file, kind, savedAt, unreadable: false, verdict, role: r.role, current: r.current.chain, candidate: r.candidate.chain, comparable: num(r.comparable), matchedOrBeat: num(r.matchedOrBeat), verdictLine: r.verdictLine };
   }
   if (!Array.isArray(r) || !r.every((x) => obj(x) && typeof x.repo === "string" && Array.isArray(x.mutants) && !Number.isNaN(num(x.replayed)) && !Number.isNaN(num(x.regressions)))) return bad("unexpected replay report shape");
   const reports = r as unknown as ReplayReport[];

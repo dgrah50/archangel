@@ -6,7 +6,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { BENCH, parseChain, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
+import { saveReport } from "../src/core/eval-reports.js";
+import { startUiServer } from "../src/core/ui-server.js";
 import { Ledger } from "../src/ledger/store.js";
+import type { AddressInfo } from "node:net";
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -173,7 +176,7 @@ describe("bench-tiers", () => {
     }
   });
 
-  it("never edits archangel.yaml or the live Broker repo, and the report is saved for the dashboard", async () => {
+  it("never edits archangel.yaml or the live Broker repo, and the report is listed by /api/evals", async () => {
     const w = await world(5);
     try {
       const cfg = path.join(w.root, "archangel.yaml");
@@ -184,8 +187,20 @@ describe("bench-tiers", () => {
       const r = await runBenchTiers(base(w, { counts }));
       expect(fs.readFileSync(cfg, "utf8")).toBe(before);
       expect(git(w.bare, ["for-each-ref"])).toBe(refsBefore);
-      const id = w.ledger.saveEvalReport("bench-tiers", r);
-      expect(w.ledger.listEvalReports("bench-tiers")[0]).toMatchObject({ id, kind: "bench-tiers", report: { verdict: "matched_or_beat" } });
+      // saved through the shared report store, so the Evals page lists it
+      const dataDir = path.join(w.root, "data");
+      saveReport(dataDir, "bench-tiers", r, 1_800_000_000_000);
+      const ui = path.join(w.root, "ui");
+      fs.mkdirSync(ui);
+      fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
+      const server = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, dataDir });
+      try {
+        const body = (await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/evals`)).json()) as { runs: Array<Record<string, unknown>> };
+        expect(body.runs).toHaveLength(1);
+        expect(body.runs[0]).toMatchObject({ kind: "bench-tiers", unreadable: false, verdict: "pass", role: "implement", comparable: 5, matchedOrBeat: 5, verdictLine: r.verdictLine });
+      } finally {
+        server.close();
+      }
     } finally {
       cleanup(w);
     }

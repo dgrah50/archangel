@@ -34,7 +34,7 @@ function Run({ r, now }: { r: RunSummary; now: number }) {
       <Card.Body py="3">
         <Flex gap="2" align="center" wrap="wrap">
           <Badge colorPalette={TONE[r.verdict]}>{r.verdict}</Badge>
-          <Text fontWeight="medium">{r.kind === "eval" ? `Eval, candidate ${r.candidate}` : `Replay, ${r.repos.join(", ")}`}</Text>
+          <Text fontWeight="medium">{r.kind === "eval" ? `Eval, candidate ${r.candidate}` : r.kind === "bench-tiers" ? `Tier benchmark, ${r.role}: ${r.candidate} vs ${r.current}` : `Replay, ${r.repos.join(", ")}`}</Text>
           {when}
         </Flex>
         {r.kind === "eval" ? (
@@ -47,6 +47,8 @@ function Run({ r, now }: { r: RunSummary; now: number }) {
             </Text>
             {r.reasons.length > 0 ? <Text textStyle="sm">{r.reasons.join("; ")}</Text> : null}
           </>
+        ) : r.kind === "bench-tiers" ? (
+          <Text textStyle="sm" mt="1">{r.verdictLine}</Text>
         ) : (
           <Text textStyle="sm" mt="1">
             {r.replayed} cases replayed, {r.regressions} regressions, {r.mutants} seeded corruptions
