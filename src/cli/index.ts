@@ -27,6 +27,7 @@ import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { saveReport } from "../core/eval-reports.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
+import { bump, bumpRunner } from "../core/bump.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { computeHealth, renderHealth, renderStages } from "../core/status-text.js";
 import { recordDaemonFacts } from "../core/host-facts.js";
@@ -855,6 +856,35 @@ program
   .option("--dry-run", "Print the plan and change nothing")
   .action(async (repo: string, opts: { dryRun?: boolean }) => {
     await onboard(execRunner, repo, { dryRun: opts.dryRun });
+  });
+
+program
+  .command("bump <repo> [pkgs...]")
+  .description("Bump a repo's dependencies in a throwaway clone with install scripts disabled, audit, run its testCmd, and open an owner-authored PR (never merged; never run by the daemon)")
+  .option("--patch", "Patch releases only for direct dependencies (the default)")
+  .option("--minor", "Allow minor releases")
+  .option("--yes", "Skip the confirmation prompt", false)
+  .action(async (repo: string, pkgs: string[], opts: { patch?: boolean; minor?: boolean; yes?: boolean }) => {
+    try {
+      if (opts.patch && opts.minor) throw new Error("Choose --patch or --minor, not both.");
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const url = await bump(bumpRunner, {
+          repo,
+          level: opts.minor ? "minor" : "patch",
+          pkgs,
+          yes: Boolean(opts.yes),
+          confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
+          log: (s) => console.log(s),
+        });
+        console.log(`Opened ${url}`);
+      } finally {
+        rl.close();
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
   });
 
 program
