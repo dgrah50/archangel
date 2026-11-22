@@ -29,6 +29,8 @@ export interface GitHubPr {
   labels: string[];
   changedFiles: string[];
   mergeableState?: string;
+  /** GitHub's verdict on merging into base: false = conflicts, null = still being computed, undefined = not reported. */
+  mergeable?: boolean | null;
 }
 
 export interface InstallationTokenMeta {
@@ -429,6 +431,7 @@ export class GitHubAppClient implements GitHubClient {
       labels,
       changedFiles: files.map((f) => f.filename),
       mergeableState: pr.mergeable_state ? String(pr.mergeable_state) : undefined,
+      mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : pr.mergeable === null ? null : undefined,
     };
   }
 
