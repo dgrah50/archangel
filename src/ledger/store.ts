@@ -309,7 +309,6 @@ export class Ledger {
     this.db.close();
   }
 
-  // --- Single Daemon Lock (Opus Step 4 / R9) ---
 
   acquireDaemonLock(ownerId: string, staleMs: number, now = Date.now()): boolean {
     const tx = this.db.transaction((): boolean => {
@@ -380,7 +379,6 @@ export class Ledger {
     return now - at < staleMs;
   }
 
-  // --- Threads & Compare-And-Set Transitions ---
 
   upsertThread(input: {
     issueNumber: number;
@@ -621,7 +619,6 @@ export class Ledger {
     return recovered;
   }
 
-  // --- Durable Outbox (Opus L3) ---
 
   /** Deliverable rows: not dead-lettered and past their backoff. Least-failed first, so rows that keep failing cannot starve newer effects out of the batch limit. */
   listDueOutbox(now = Date.now(), repo = this.repo, limit = 50): OutboxRecord[] {
@@ -710,7 +707,6 @@ export class Ledger {
     if (cols.includes("status")) this.db.exec("DROP TABLE daemon_commands");
   }
 
-  // --- Daemon Commands Queue (Handoff across CLI <-> Daemon, Opus Step 6 / R5) ---
 
   enqueueCommand(issueNumber: number, kind: "handoff", now = Date.now(), repo = this.repo): number {
     const info = this.db
@@ -774,7 +770,6 @@ export class Ledger {
     return this.stepCommandState(id, { t: "cancel", reason }, now);
   }
 
-  // --- Attempts ---
 
   startAttempt(issueNumber: number, kind: AttemptKind, now = Date.now(), repo = this.repo): AttemptRecord {
     const info = this.db
@@ -886,7 +881,6 @@ export class Ledger {
     return (this.db.prepare(`SELECT * FROM attempts WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapAttempt);
   }
 
-  // --- Recorded Pushed SHAs (INSERT OR IGNORE preserves broker provenance — Opus R14) ---
 
   recordPushedSha(
     sha: string,
@@ -916,7 +910,6 @@ export class Ledger {
     return row ? { known: true, origin: row.origin } : { known: false, origin: null };
   }
 
-  // --- Reviews ---
 
   recordReview(input: {
     issueNumber: number;
@@ -1008,7 +1001,6 @@ export class Ledger {
     return (this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapMerge);
   }
 
-  // --- Merges & Shadow Mode ---
 
   recordMerge(input: {
     issueNumber: number;
@@ -1251,7 +1243,6 @@ export class Ledger {
     };
   }
 
-  // --- Hard Daily Spend Cap with Atomic Budget Reservation (Codex #10 & Opus R8) ---
 
   getSpendBreakdown(now = Date.now()): { spentUsd: number; reservedUsd: number; committedUsd: number } {
     const dayKey = formatDayKey(now, this.timeZone);
@@ -1331,7 +1322,6 @@ export class Ledger {
     return this.getSpendToday(now);
   }
 
-  // --- Per-Repo Circuit Breaker ---
 
   setCircuitBreaker(tripped: boolean, reason?: string, now = Date.now(), repo = this.repo): void {
     const current = this.getCircuitBreaker(repo);
@@ -1373,7 +1363,6 @@ export class Ledger {
     return row?.value ?? null;
   }
 
-  // --- Append-Only Audit Log ---
 
   appendAudit(
     topic: string,
@@ -1547,7 +1536,6 @@ export class Ledger {
     return merged;
   }
 
-  // ---- Per-account rate-limit cooldowns ----
 
   /** Cools one account down after a limit error. The audit row keeps the count and total cooldown time for metrics. */
   setAccountCooldown(accountId: string, durationMs: number, reason: string, now = Date.now()): void {
@@ -1644,7 +1632,6 @@ export class Ledger {
     }));
   }
 
-  // ---- Scout Proposals & Atomic Daily Run Caps (V2.0 / Opus H2, M3, M5) ----
 
   recordScoutProposal(input: {
     issueNumber: number;
@@ -1848,7 +1835,6 @@ export class Ledger {
     return tx();
   }
 
-  // ---- Pitches: owner-decided proposals from pitch Scouts, an explicit state machine (core/pitch-machine.ts) ----
 
   recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
@@ -1984,7 +1970,6 @@ export class Ledger {
     return this.stepPitchState(issueNumber, { t: "slices_promoted", slices: [...slices], total }, now, repo).ok;
   }
 
-  // ---- Eval vault and result cache (V6) ----
 
   /**
    * Adds a case to the vault, or updates an existing one. A new case goes to dev or held-out by `splitOf`; an owner dispute is
@@ -2092,7 +2077,6 @@ export class Ledger {
     );
   }
 
-  // ---- Daily digest ----
 
   dayKeyOf(ts: number): string {
     return formatDayKey(ts, this.timeZone);
@@ -2362,7 +2346,6 @@ export class Ledger {
     return series;
   }
 
-  // ---- Operational Metrics & Self-Improvement Telemetry ----
 
   /**
    * Outcome metrics over the merged fixes among `threads` (the window and repo filters are applied by the caller, on Thread creation time).

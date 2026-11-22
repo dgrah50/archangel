@@ -337,7 +337,6 @@ export class GitBroker {
     // while a PR branch was in flight never masquerade as agent edits to protected files!
     const effectiveBase = await this.resolveEffectiveBase(baseSha, headSha);
 
-    // Use Gate's NUL-delimited `-z` diff parser so non-ASCII/quoted paths cannot dodge protection (Opus S1).
     const stats = await getDiffStats(this.bareRepoPath, effectiveBase, headSha, {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: os.tmpdir(),

@@ -211,7 +211,6 @@ export class Reconciler {
   }
 
   private async runTickInternal(now: number): Promise<void> {
-    // 0. Flush durable outbox side effects (retries any labels/notifications lost on crash).
     await this.flushOutbox();
 
     const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -269,13 +268,10 @@ export class Reconciler {
     }
     if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
 
-    // 1. Process pending CLI -> Daemon handoff commands (Opus Step 6 / R5).
     await this.processPendingCommands(mainSha, now);
 
-    // 2. Monitor post-merge main CI health & circuit breaker (isolated per merge — Opus S13).
     await this.reconcilePostMergeMain(mainSha, now);
 
-    // 3. Intake eligible owner-authored, owner-labeled issues.
     const readyIssues = await this.github.listOpenIssuesByLabel(this.cfg.labels.readyForAgent);
     const issueMap = new Map<number, GitHubIssue>();
     for (const issue of readyIssues) {
@@ -288,7 +284,6 @@ export class Reconciler {
       }
     }
 
-    // 4. Reconcile all non-done Threads — in-progress BEFORE queued (prevents slot-lending stampedes).
     const openThreads = this.ledger
       .listThreads()
       .filter((t) => t.phase.kind !== "done");
@@ -320,7 +315,6 @@ export class Reconciler {
       }
     }
 
-    // 5. Run scheduled daily Scout workflows when repo queue is idle (V2.0).
     if (this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0) {
       try {
         await runScoutsForProject({
@@ -641,7 +635,6 @@ export class Reconciler {
     const isOwnerAuthored =
       issue.authorId === this.cfg.ownerUserId && issue.authorAssociation === "OWNER";
 
-    // Explicit separate path for owner-promoted Scout proposals (Opus H2, H3, M1, M2):
     // NEVER weakens the owner check above; requires configured bot ID (>0), local scout_proposals
     // record, exact content hash match (blocks post-filing edits), AND owner label actor below.
     let isVerifiedBotProposal = false;
@@ -1104,7 +1097,6 @@ export class Reconciler {
       pr = await this.github.getPrLive(thread.phase.prNumber);
     }
 
-    // 1. Universal PR closed/merged observation (fixes Opus S7, S8, S9 & Neon P0.3!).
     if (pr && pr.state === "closed") {
       const running = this.runningTasks.get(thread.issueNumber);
       if (running) {
@@ -1124,7 +1116,6 @@ export class Reconciler {
       return;
     }
 
-    // 2. Sync Shadow Mode disagreement label idempotently (fixes Opus O4).
     const combinedLabels = [...new Set([...(issue?.labels ?? []), ...(pr?.labels ?? [])])];
     if (thread.phase.kind === "shadow_ready") {
       let disagreed = false;
@@ -1144,7 +1135,6 @@ export class Reconciler {
       this.ledger.markDisagree(thread.issueNumber, disagreed);
     }
 
-    // 3. Derive live owner Control from combined labels (NEVER stored as a Phase — fixes O1, O2, S2, S3!).
     const control = deriveControl(combinedLabels, this.cfg.labels);
     if (control !== "run") {
       const running = this.runningTasks.get(thread.issueNumber);
@@ -1155,12 +1145,10 @@ export class Reconciler {
       return;
     }
 
-    // 4. Owner-driving (Paseo Handoff) stays parked until explicit `archangel resume`.
     if (thread.phase.kind === "owner_driving") {
       return;
     }
 
-    // 5. `needs_you`: an owner comment command or clearing the `needs-you` label resumes cleanly & re-snapshots bodySha (fixes S4, S15!).
     if (thread.phase.kind === "needs_you") {
       const afterCommands = await this.processOwnerCommands(thread, issue, now);
       if (afterCommands === "stop") return;
@@ -1229,7 +1217,6 @@ export class Reconciler {
       return;
     }
 
-    // 7. If PR head moved externally (e.g., owner pushed to factory/<n>), restart Gate wait on the live headSha (Opus Step 5).
     if (
       pr &&
       (thread.phase.kind === "awaiting_gate" ||
@@ -1247,7 +1234,6 @@ export class Reconciler {
       thread = moved;
     }
 
-    // 8. Dispatch by explicit Phase!
     switch (thread.phase.kind) {
       case "working":
         // Single-flight background runner is already handling it.
@@ -1359,7 +1345,6 @@ export class Reconciler {
       return false;
     }
     if (thread.mode === "advisory") {
-      // Structurally forbidden in advisory mode (ADR-0006 / Opus R4).
       return false;
     }
     if (await this.autonomyCapReached(now)) {
@@ -1378,7 +1363,6 @@ export class Reconciler {
       return false;
     }
 
-    // Atomic budget reservation BEFORE launching paid work (Codex #10 & Opus R8 — no $0.50 overshoot floor!).
     const desiredReserve = Math.min(this.cfg.maxDailyUsd, 5.0);
     const reservedUsd = this.ledger.reserveBudget(this.cfg.maxDailyUsd, desiredReserve, 0.05, now);
     if (reservedUsd === null) {
@@ -1653,7 +1637,6 @@ export class Reconciler {
         return;
       }
 
-      // Local `archangel-gate` pre-push verification (Neon P1).
       if (validation.gateReport && !validation.gateReport.passed) {
         const rep = validation.gateReport;
         this.ledger.finishAttempt(attemptId, {
@@ -1756,7 +1739,6 @@ export class Reconciler {
         return;
       }
 
-      // Re-check live GitHub kill-switch & CAS version right before pushing (Opus R6!).
       const liveIssue = await this.github.getIssue(issue.number);
       if (deriveControl(liveIssue.labels, this.cfg.labels) !== "run") {
         this.ledger.finishAttempt(attemptId, {
@@ -1776,7 +1758,6 @@ export class Reconciler {
         return;
       }
 
-      // Freshly mint push token immediately before pushing (fixes Opus R7 token expiry mid-attempt!).
       const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
       await this.broker.pushFactoryBranch(workingThread.branchName, validation.headSha, freshRemoteUrl);
       this.ledger.recordPushedSha(validation.headSha, workingThread.issueNumber, "broker");
@@ -2005,7 +1986,6 @@ export class Reconciler {
     const missingVendors = requiredVendors.filter((v) => !haveVendors.has(v));
 
     if (missingVendors.length > 0) {
-      // Reserve daily budget BEFORE paid reviewer calls (Codex #10).
       const reservedUsd = this.ledger.reserveBudget(
         this.cfg.maxDailyUsd,
         REVIEW_RESERVATION_USD,
@@ -2025,7 +2005,6 @@ export class Reconciler {
 
       let reviewCostTotal = 0;
       try {
-        // Fail CLOSED on diff retrieval failure — NEVER feed an empty diff to reviewers (Codex #4 & Opus L6!).
         const { diffText, touchedFiles } = await this.broker.getDiffAndTouchedFiles(
           pr.baseSha,
           headSha,
@@ -2046,7 +2025,6 @@ export class Reconciler {
           excludeVendors,
         });
 
-        // Persist EVERY settled vendor result immediately even if the other vendor failed (Opus L4/M5!).
         for (const r of batch.results) {
           reviewCostTotal += r.costUsd;
           this.ledger.recordReview({
@@ -2262,7 +2240,6 @@ export class Reconciler {
   ): Promise<void> {
     if (thread.phase.kind !== "landing") return;
 
-    // Live re-read right before landing (ADR-0004 / B7 TOCTOU defense).
     const pr = await this.github.getPrLive(thread.phase.prNumber);
     if (pr.state === "closed") {
       this.applyMachineEvent(
@@ -2276,7 +2253,6 @@ export class Reconciler {
     const checks = await this.github.getCheckRunsForRef(pr.headSha);
     const mainChecks = await this.github.getCheckRunsForRef(mainSha);
 
-    // Fail CLOSED on missing/untrusted main checks (Codex #2 & Neon P0.5 — no hardcoded "Test ("!).
     const mainRequired = this.effectiveRequiredChecks.filter((n) => n !== "Gate");
     const mainTipGreen =
       mainRequired.length > 0 &&
@@ -2298,7 +2274,6 @@ export class Reconciler {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const cb = this.ledger.getCircuitBreaker();
 
-    // Strict branch freshness: PR base SHA MUST match current main tip (Codex #3 — never substitute mergeTreeClean!).
     const branchUpToDateWithMain = pr.baseSha === mainSha;
 
     // Feature Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
@@ -2330,7 +2305,6 @@ export class Reconciler {
     });
 
     // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
-    // record the shadow verdict with a note so owner can inspect/merge directly (Opus review).
     const shadowReadyWithBehind =
       ownerMergesOnlyNow &&
       blockers.every((b) => b.code === "shadow_mode_active" || b.code === "branch_behind_main") &&
@@ -2403,7 +2377,6 @@ export class Reconciler {
       );
       squashSha = mergedRes.squashSha;
     } catch (err) {
-      // Re-read PR to recover if merge actually succeeded before a network error/timeout (Opus S10).
       const after = await this.github.getPrLive(pr.number).catch(() => null);
       if (!after?.merged || !after.mergeCommitSha) {
         throw err;
@@ -2534,7 +2507,6 @@ export class Reconciler {
           await this.github.rerunCheckRun(f.id);
           runIds.push(f.id);
         } catch (err) {
-          // Only "forbidden" means the App cannot rerun (ADR-0004 least privilege: checks:read, no checks:write), which is a
           // permanent answer: confirm red main now. Any other error is transient: leave the watch as it is and retry next tick.
           if (!(err instanceof GitHubHttpError && err.status === 403)) throw err;
           rerunPermitted = false;

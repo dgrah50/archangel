@@ -8,6 +8,19 @@ export interface CheckStatus {
   appSlug?: string | null;
 }
 
+export const TRUSTED_CHECK_APP_SLUG = "github-actions" as const;
+
+export function dedupeChecksByLatestId<T extends CheckStatus>(checks: readonly T[]): Map<string, T> {
+  const latestByName = new Map<string, T>();
+  for (const c of checks) {
+    const prev = latestByName.get(c.name);
+    if (!prev || (c.id ?? 0) >= (prev.id ?? 0)) {
+      latestByName.set(c.name, c);
+    }
+  }
+  return latestByName;
+}
+
 export interface LandingSnapshot {
   prOpen: boolean;
   prDraft: boolean;
@@ -19,7 +32,6 @@ export interface LandingSnapshot {
   stopLabel: string;
   circuitBreakerTripped: boolean;
   mainTipGreen: boolean;
-  /** Strictly requires PR base SHA == current main SHA (never satisfied by mergeTreeClean alone). */
   branchUpToDateWithMain: boolean;
   protectedFilesTouched: string[];
   requiredChecks: string[];
@@ -30,9 +42,7 @@ export interface LandingSnapshot {
   autoMergesToday: number;
   maxAutoMergesPerDay: number;
   shadowMode: boolean;
-  /** Feature Threads: the owner merges, so the blocker explains that instead of Shadow Mode. */
   featureThread?: boolean;
-  /** The PR is a machine-drafted `agent-draft/*` change: only the owner merges it, by hand. */
   agentDraft?: boolean;
 }
 
@@ -62,12 +72,6 @@ export interface Blocker {
   message: string;
 }
 
-/**
- * Single deterministic blockers(pr) function (Polaris pattern) shared by the Lander,
- * `archangel status`, and in-place PR Recaps.
- * Fails CLOSED on missing/null `appSlug`, duplicate checks (uses latest by highest `id`),
- * stale base SHA, and missing main CI checks.
- */
 export function computeBlockers(s: LandingSnapshot): Blocker[] {
   const blockers: Blocker[] = [];
 
@@ -117,14 +121,7 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
     });
   }
 
-  // Deduplicate check runs by name, taking the latest execution (highest id).
-  const latestByName = new Map<string, CheckStatus>();
-  for (const c of s.checks) {
-    const prev = latestByName.get(c.name);
-    if (!prev || (c.id ?? 0) >= (prev.id ?? 0)) {
-      latestByName.set(c.name, c);
-    }
-  }
+  const latestByName = dedupeChecksByLatestId(s.checks);
 
   for (const reqName of s.requiredChecks) {
     const match = latestByName.get(reqName);
@@ -132,8 +129,7 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
       blockers.push({ code: "check_missing", message: `Required check missing: ${reqName}` });
       continue;
     }
-    // Fail CLOSED if appSlug is absent or anything other than `github-actions` (Codex #7).
-    if (match.appSlug !== "github-actions") {
+    if (match.appSlug !== TRUSTED_CHECK_APP_SLUG) {
       blockers.push({
         code: "check_untrusted_source",
         message: `Check ${reqName} came from untrusted or missing app (${match.appSlug ?? "none"})`,
@@ -197,9 +193,6 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
   return blockers;
 }
 
-/**
- * Returns true if the ONLY blocker preventing landing is Shadow Mode (i.e. ready for "would merge").
- */
 export function isShadowReady(blockers: Blocker[]): boolean {
   return blockers.length === 1 && blockers[0]?.code === "shadow_mode_active";
 }

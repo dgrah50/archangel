@@ -245,7 +245,6 @@ export async function startUiServer(
       const data = fs.readFileSync(file);
       res.writeHead(200, headers).end(data);
     } catch (err) {
-      // Bodies are built before any header is written, so a failure here can still answer with an error.
       const message = err instanceof Error ? err.message : "error";
       const behind = isSchemaBehind(err);
       const status = err instanceof URIError ? 400 : behind ? 503 : 500;
