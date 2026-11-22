@@ -63,12 +63,12 @@ export function PrStatusCard({ repo, url }: { repo: string; url: string }) {
   useEffect(() => {
     void refresh();
   }, [repo, n]);
-  if (n === null) return <Text role="alert" color="red.fg" textStyle="sm">Cannot read PR status: the PR URL has no number ({url}).</Text>;
+  if (n === null) return <Text role="alert" color="owner" textStyle="sm">Cannot read PR status: the PR URL has no number ({url}).</Text>;
   const c = pr ? summarizeChecks(pr.statusCheckRollup) : null;
   return (
     <Box borderTopWidth="1px" borderColor="fg" py="3" aria-label={`PR status ${repo}#${n}`}>
       <Text fontWeight="medium">PR #{n}</Text>
-      {error ? <Text role="alert" color="red.fg" textStyle="sm">PR status read failed: {error}</Text> : null}
+      {error ? <Text role="alert" color="owner" textStyle="sm">PR status read failed: {error}</Text> : null}
       {pr ? (
         <Text textStyle="sm">
           {pr.state}{pr.isDraft ? " (draft)" : ""} · mergeable: {pr.mergeable} · review: {pr.reviewDecision || "none"} · checks: {c!.pass} passing, {c!.fail} failing, {c!.pending} pending
@@ -94,7 +94,7 @@ function SkillsPicker({ selected, available, onChange, dirty }: { selected: stri
         </label>
       ))}
       {selected.filter((r) => !available.includes(r)).map((r) => (
-        <Text key={r} textStyle="xs" color={unknown.includes(r) ? "red.fg" : "fg.muted"}>
+        <Text key={r} textStyle="xs" color={unknown.includes(r) ? "owner" : "fg.muted"}>
           {r}{unknown.includes(r) ? " does not resolve" : " (folder wildcard)"}
         </Text>
       ))}
@@ -309,7 +309,7 @@ export function StageEditor({ stage, d, builtIn }: { stage: "gate" | "review" | 
       {stage === "scouts" ? (
         <>
           {d.skills && "error" in d.skills ? (
-            <Text role="alert" color="red.fg" textStyle="body13">
+            <Text role="alert" color="owner" textStyle="body13">
               Skill list unavailable: {d.skills.error}. Scouts that use skills cannot be previewed.
             </Text>
           ) : null}
@@ -385,7 +385,7 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
       </Box>
       {d.stale ? <StaleNotice onReload={d.reload} /> : null}
       {d.live && "error" in d.live ? (
-        <Text role="alert" color="red.fg" textStyle="body13">
+        <Text role="alert" color="owner" textStyle="body13">
           {d.live.error}
         </Text>
       ) : null}
@@ -430,7 +430,7 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
         </Button>
       </Flex>
       {d.message ? (
-        <Text role="alert" color="red.fg" textStyle="body13">
+        <Text role="alert" color="owner" textStyle="body13">
           {d.message}
         </Text>
       ) : null}

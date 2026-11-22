@@ -873,7 +873,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

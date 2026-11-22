@@ -316,7 +316,6 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
   const project = repo ? projects.find((p) => p.repo.toLowerCase() === repo.toLowerCase()) : undefined;
   const reloadAll = () => { onRetry(); reloadPr(); runRepo(); reloadProtections(); };
   const checkAgain = () => { runMachine(); reloadAll(); };
-  const defaultBranch = project?.defaultBranch ?? (repos.state === "ok" ? repos.value.find((r) => r.nameWithOwner.toLowerCase() === repo?.toLowerCase())?.defaultBranchRef?.name : undefined);
 
   const todo = groups.filter((g) => !g.done).length;
   const first = host?.state !== "ok";
