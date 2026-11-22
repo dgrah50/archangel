@@ -218,3 +218,32 @@ describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
     }
   });
 });
+
+describe("Scout autoPromote label failure", () => {
+  it("audits a failed ready-for-agent label and still files the run's remaining findings", async () => {
+    const { root, mainSha, broker } = await fixture(AUTO_SCOUT);
+    try {
+      const ledger = new Ledger(":memory:", { repo: "acme/app" });
+      const { gh, labelsAdded } = fakeScoutGitHub();
+      let calls = 0;
+      (gh as unknown as { addLabels: (n: number, l: string[]) => Promise<void> }).addLabels = async (n, labels) => {
+        calls++;
+        if (calls === 1) throw new Error("GitHub 502");
+        labelsAdded.push({ n, labels });
+      };
+      const res = await runScoutsForProject({
+        config: makeConfig({ scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 2 } }),
+        ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings,
+      });
+      expect(res[0]?.filedIssues).toEqual([60, 61]);
+      expect(labelsAdded).toEqual([{ n: 61, labels: ["ready-for-agent"] }]);
+      expect(ledger.getScoutProposal(60)).toMatchObject({ autoPromoted: true });
+      const failures = ledger.listAudit({ topicPrefix: "scout/auto_promote_label_failed" });
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.issueNumber).toBe(60);
+      ledger.close();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

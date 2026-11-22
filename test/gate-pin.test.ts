@@ -84,6 +84,18 @@ describe("drift detection", () => {
     expect((await assessPinDrift(execRunner, wf(c3), c1, { root, template: TEMPLATE })).drifted).toBe(false);
   });
 
+  it("flags a pin on a divergent line that is neither older nor newer than the latest gate commit", async () => {
+    const { root, c1, c3 } = checkout();
+    git(root, "checkout", "-q", "-b", "side", c1);
+    fs.writeFileSync(path.join(root, "src/gate/g.ts"), "weakened");
+    git(root, "add", "-A"); git(root, "commit", "-qm", "side");
+    const side = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "-q", "main");
+    const res = await assessPinDrift(execRunner, withPin(TEMPLATE, side), c3, { root, template: TEMPLATE });
+    expect(res.drifted).toBe(true);
+    expect(res.reasons[0]).toContain("divergent history");
+  });
+
   it("ignores the pin when diffing the template but flags any other difference or a missing pin", async () => {
     const { root, c3 } = checkout();
     const same = await assessPinDrift(execRunner, withPin(TEMPLATE, c3), c3, { root, template: TEMPLATE });
