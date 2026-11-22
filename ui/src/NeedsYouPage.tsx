@@ -24,10 +24,10 @@ export function nextItem(queue: Item[], current: Item | null): Item | null {
 const clock = (ts: number, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ts);
 
 /** Decisions answered today (local day per `dailyTimezone`): plain grey rows, the ref in mono. */
-function AnsweredToday({ answered }: { answered: UiState["answeredToday"] }) {
+function AnsweredToday({ answered, inQueue }: { answered: UiState["answeredToday"]; inQueue?: boolean }) {
   if (answered.items.length === 0) return null;
   return (
-    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border">
+    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border" {...(inQueue ? { pl: { base: "6", md: "56px" }, pr: "6", pb: "5" } : {})}>
       <Text textStyle="meta" color="fg.muted">
         Answered today
       </Text>
@@ -112,7 +112,7 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
               </li>
             );
           })}
-          <AnsweredToday answered={state.answeredToday} />
+          <AnsweredToday answered={state.answeredToday} inQueue />
         </Flex>
         <Box flex="1" minW="0" px={{ base: "6", md: "10" }} py="7">
           {selected === null ? (
