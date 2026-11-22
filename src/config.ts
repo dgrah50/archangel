@@ -309,6 +309,11 @@ export function resolvePaths(
   };
 }
 
+/** The host config path the daemon reads: the explicit option, else `ARCHANGEL_CONFIG`, else `./archangel.yaml`. */
+export function resolveConfigPath(configPath?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.resolve(configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml");
+}
+
 /**
  * Loads multi-project host config from `archangel.yaml` merged with secrets strictly from `env`.
  * A missing file is an error: there is no environment-only configuration.
@@ -318,8 +323,7 @@ export function loadProjectConfigs(opts: {
   env?: NodeJS.ProcessEnv;
 } = {}): ArchangelConfig[] {
   const env = opts.env ?? process.env;
-  const candidatePath = opts.configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
-  const resolvedConfig = path.resolve(candidatePath);
+  const resolvedConfig = resolveConfigPath(opts.configPath, env);
 
   if (!fs.existsSync(resolvedConfig)) {
     throw new Error(`Host config not found: ${resolvedConfig} (copy archangel.example.yaml to archangel.yaml)`);

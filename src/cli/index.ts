@@ -26,6 +26,7 @@ import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { computeHealth, renderHealth, renderStages } from "../core/status-text.js";
+import { recordDaemonFacts } from "../core/host-facts.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
@@ -128,6 +129,8 @@ program
       rootLedger.close();
       throw new Error("Another live Archangel daemon already holds the Ledger lock.");
     }
+
+    recordDaemonFacts(rootLedger, { configPath: opts.config });
 
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
@@ -785,7 +788,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl") });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
