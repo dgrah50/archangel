@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { ArchangelConfig } from "../config.js";
+import { CliProviderSchema, providerToPaseo, type ArchangelConfig } from "../config.js";
 import { tryParseJson } from "../core/json.js";
 import type { GitBroker } from "../broker/git-broker.js";
 import { renderRecapComment } from "../core/recap.js";
@@ -18,6 +18,8 @@ export interface PaseoRunner {
     branchName: string;
     title: string;
     prompt: string;
+    /** Paseo `--provider` value, `provider` or `provider/model`; omitted for Paseo's default agent. */
+    provider?: string;
     themeLabel: string | null;
     repoDir?: string;
   }): Promise<{ agentId: string; workspaceId: string | null }>;
@@ -44,6 +46,7 @@ export class PaseoCliRunner implements PaseoRunner {
     branchName: string;
     title: string;
     prompt: string;
+    provider?: string;
     themeLabel: string | null;
     repoDir?: string;
   }): Promise<{ agentId: string; workspaceId: string | null }> {
@@ -63,6 +66,9 @@ export class PaseoCliRunner implements PaseoRunner {
       "--label",
       "origin=archangel",
     ];
+    if (input.provider) {
+      args.push("--provider", input.provider);
+    }
     if (input.themeLabel) {
       args.push("--label", `theme=${input.themeLabel}`);
     }
@@ -191,16 +197,29 @@ export async function handoffThreadToPaseo(
     blockers: [{ code: "paused", message: "Handed off to owner in Paseo" }],
   });
 
+  const attempts = deps.ledger.listAttemptsFor(issueNumber);
+  const failed = attempts.findLast((a) => a.status === "failed");
+  const writer = attempts.findLast((a) => CliProviderSchema.safeParse(a.provider).success);
+  const provider = writer
+    ? `${providerToPaseo(CliProviderSchema.parse(writer.provider))}${writer.model ? `/${writer.model}` : ""}`
+    : undefined;
+  const context = [
+    failed ? `Latest failed Attempt${failed.errorCategory ? ` (${failed.errorCategory})` : ""}: ${(failed.errorMessage ?? "no message").slice(0, 500)}` : null,
+    attempts.at(-1)?.transcriptPath ? `Transcript of the latest Attempt: ${attempts.at(-1)!.transcriptPath}` : null,
+  ].filter((l): l is string => l !== null);
+
   const launched = await deps.paseo.checkoutBranchAndSeed({
     branchName: thread.branchName,
     title: `Archangel #${issueNumber}: ${thread.title}`,
     themeLabel: thread.themeLabel,
     repoDir: deps.localRepoDir,
+    provider,
     prompt: [
       `Taking over Archangel Thread #${issueNumber} on branch \`${thread.branchName}\`.`,
       "Review the latest recap and findings below, then await my instructions:",
       "",
       recap,
+      ...(context.length ? ["", ...context] : []),
     ].join("\n"),
   });
 
@@ -220,7 +239,7 @@ export async function handoffThreadToPaseo(
     }
     const updated = deps.ledger.transition(issueNumber, thread.version, attached.next, {
       auditTopic: "handoff/paseo_launched",
-      auditPayload: launched,
+      auditPayload: { ...launched, provider: provider ?? null },
     });
     if (!updated) {
       throw new Error(`Concurrent modification while attaching Paseo agent to Thread #${issueNumber}`);
