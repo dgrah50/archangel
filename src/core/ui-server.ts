@@ -123,13 +123,15 @@ export async function startUiServer(
     try {
       const pathname = decodeURIComponent((req.url ?? "/").split("?")[0]!);
       if (pathname === "/api/state") {
+        const body = JSON.stringify(buildUiState(ledger));
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(buildUiState(ledger)));
+        res.end(body);
         return;
       }
       if (pathname === "/api/workflows") {
+        const body = JSON.stringify(buildWorkflowsState(ledger));
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(buildWorkflowsState(ledger)));
+        res.end(body);
         return;
       }
       const file = path.resolve(uiDir, "." + (pathname === "/" ? "/index.html" : pathname));
@@ -137,16 +139,20 @@ export async function startUiServer(
         res.writeHead(404).end("not found");
         return;
       }
-      res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" });
+      const headers = { "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" };
       if (path.basename(file) === "index.html") {
         // The token only ever reaches this page: a cross-origin page cannot read the response.
         const meta = proposeEnabled ? `<meta name="archangel-token" content="${token}" />` : "";
-        res.end(fs.readFileSync(file, "utf8").replace("</head>", `${meta}</head>`));
+        const html = fs.readFileSync(file, "utf8").replace("</head>", `${meta}</head>`);
+        res.writeHead(200, headers).end(html);
         return;
       }
-      res.end(fs.readFileSync(file));
+      const data = fs.readFileSync(file);
+      res.writeHead(200, headers).end(data);
     } catch (err) {
-      res.writeHead(500).end(err instanceof Error ? err.message : "error");
+      // Bodies are built before any header is written, so a failure here can still answer 500.
+      if (!res.headersSent) res.writeHead(500).end(err instanceof Error ? err.message : "error");
+      else res.destroy();
     }
   });
   return new Promise((resolve, reject) => {
