@@ -24,6 +24,19 @@ reviewerOutageMaxMs: 21600000       # how long to wait for reviewers before esca
 # Native CLI subscriptions with fallback chains (no API keys required),
 # or switch to `authMode: api` for metered API keys in .env.
 authMode: subscription
+# Subscription accounts (optional). Without this list there is one implicit account per provider on the CLI's default home.
+# Log each account in by hand with its own home, then list it here; Archangel never reads or copies a token:
+#   claude: CLAUDE_CONFIG_DIR=<home> claude        codex: CODEX_HOME=<home> codex login        agy: HOME=<home> agy
+# (agy has no per-login setting, so its home is passed as HOME; check `archangel doctor --smoke` shows the right account.)
+# A chain entry may pin `accounts: [ids]`; by default it uses every account of its provider.
+# accounts:
+#   - { id: claude-a, provider: claude, home: ~/.archangel/accounts/claude-a }
+#   - { id: claude-b, provider: claude, home: ~/.archangel/accounts/claude-b, maxAttemptsPerDay: 12 }
+#   - { id: codex-a,  provider: codex,  home: ~/.archangel/accounts/codex-a }
+#   - { id: codex-b,  provider: codex,  home: ~/.archangel/accounts/codex-b }
+#   - { id: agy-a,    provider: agy,    home: ~/.archangel/accounts/agy-a }
+#   - { id: agy-b,    provider: agy,    home: ~/.archangel/accounts/agy-b }
+
 # One chain per role, so menial work can run on cheaper models than the first implementation.
 # Each entry is { provider, model? }; the first entry that is not cooling down runs, the rest are failover.
 # Vendor independence applies across implement, revise and rebase: no reviewer shares a vendor with any of them.
