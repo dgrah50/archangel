@@ -142,6 +142,7 @@ export class Ledger {
       }
       const pitchCols = this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>;
       if (!pitchCols.some((c) => c.name === "decline_reason")) this.db.exec("ALTER TABLE pitches ADD COLUMN decline_reason TEXT");
+      if (!cols.some((c) => c.name === "issue_body")) this.db.exec("ALTER TABLE threads ADD COLUMN issue_body TEXT");
       if (!pitchCols.some((c) => c.name === "expired_at")) this.db.exec("ALTER TABLE pitches ADD COLUMN expired_at INTEGER");
       if (!pitchCols.some((c) => c.name === "promoted_slices")) this.db.exec("ALTER TABLE pitches ADD COLUMN promoted_slices TEXT NOT NULL DEFAULT '[]'");
       if (!pitchCols.some((c) => c.name === "pitch_json")) this.db.exec("ALTER TABLE pitches ADD COLUMN pitch_json TEXT NOT NULL DEFAULT ''");
@@ -253,6 +254,8 @@ export class Ledger {
     phase?: Phase;
     mode?: Mode;
     workflowSha256?: string | null;
+    /** The issue text at intake, kept for replay and eval. */
+    issueBody?: string | null;
     now?: number;
   }): ThreadRecord {
     const repo = input.repo ?? this.repo;
@@ -272,8 +275,8 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO threads (
-          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, workflow_sha256, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, workflow_sha256, issue_body, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -285,6 +288,7 @@ export class Ledger {
         input.mode ?? "autonomous",
         branchName,
         input.workflowSha256 ?? null,
+        input.issueBody ?? null,
         now,
         now,
       );
@@ -805,6 +809,9 @@ export class Ledger {
     updatedAt: number;
     merges: Array<{ headSha: string; shadowOnly: boolean; disagreed: boolean; mainWatch: string }>;
     failedAttempts: Array<{ headSha: string; errorMessage: string }>;
+    title: string;
+    /** The issue text kept at intake, or null for Threads from before it was kept. */
+    issueBody: string | null;
     /** The most recent head any Attempt produced (the head an owner-closed Thread ended with). */
     lastHead: string | null;
   }> {
@@ -820,10 +827,15 @@ export class Ledger {
          WHERE repo = ? AND status = 'failed' AND head_sha IS NOT NULL AND error_message IS NOT NULL ORDER BY id`,
       )
       .all(repo) as Array<Record<string, unknown>>;
+    const bodies = new Map(
+      (this.db.prepare(`SELECT issue_number, issue_body FROM threads WHERE repo = ?`).all(repo) as Array<{ issue_number: number; issue_body: string | null }>).map((r) => [Number(r.issue_number), r.issue_body]),
+    );
     return this.listThreads(undefined, repo)
       .filter((t) => t.updatedAt >= sinceMs)
       .map((t) => ({
         issueNumber: t.issueNumber,
+        title: t.title,
+        issueBody: bodies.get(t.issueNumber) ?? null,
         branchName: t.branchName,
         phase: t.phase,
         updatedAt: t.updatedAt,
@@ -1489,6 +1501,38 @@ export class Ledger {
       lastDecided: decided.length,
       lastDecidedPromoted: decided.filter((r) => r.status === "promoted").length,
     };
+  }
+
+  // ---- Eval vault and result cache (V6) ----
+
+  /**
+   * Adds a case to the vault, or updates an existing one. A new case goes to dev or held-out by `splitOf`; an owner dispute is
+   * always held-out; and a held-out case never moves back to dev.
+   */
+  upsertEvalCase(
+    c: { caseId: string; repo: string; issueNumber: number; kind: string; label: "good" | "bad"; dispute: boolean; headSha: string },
+    splitOf: (caseId: string) => "dev" | "heldout",
+    now = Date.now(),
+  ): "dev" | "heldout" {
+    const existing = this.db.prepare(`SELECT split FROM eval_vault WHERE case_id = ?`).get(c.caseId) as { split: "dev" | "heldout" } | undefined;
+    const split = c.dispute || existing?.split === "heldout" ? "heldout" : (existing?.split ?? splitOf(c.caseId));
+    this.db
+      .prepare(
+        `INSERT INTO eval_vault (case_id, repo, issue_number, kind, label, dispute, split, head_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(case_id) DO UPDATE SET label = excluded.label, dispute = MAX(dispute, excluded.dispute), split = excluded.split`,
+      )
+      .run(c.caseId, c.repo, c.issueNumber, c.kind, c.label, c.dispute ? 1 : 0, split, c.headSha, now);
+    return split;
+  }
+
+  getEvalResult(promptHash: string, caseId: string): { verdict: "approve" | "veto"; vendors: string } | null {
+    return (this.db.prepare(`SELECT verdict, vendors FROM eval_results WHERE prompt_hash = ? AND case_id = ?`).get(promptHash, caseId) as { verdict: "approve" | "veto"; vendors: string } | undefined) ?? null;
+  }
+
+  putEvalResult(promptHash: string, caseId: string, verdict: "approve" | "veto", vendors: string, now = Date.now()): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO eval_results (prompt_hash, case_id, verdict, vendors, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(promptHash, caseId, verdict, vendors, now);
   }
 
   setPitchDeclineReason(issueNumber: number, reason: string, repo = this.repo): void {
