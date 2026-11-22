@@ -232,7 +232,12 @@ export class Reconciler {
     const issueMap = new Map<number, GitHubIssue>();
     for (const issue of readyIssues) {
       issueMap.set(issue.number, issue);
-      await this.reconcileIntakeIssue(issue, now, mainSha);
+      try {
+        await this.reconcileIntakeIssue(issue, now, mainSha);
+      } catch (err) {
+        // Fail closed for this issue and this tick (no Thread); the other issues still go through and the next tick retries.
+        this.logger.warn("intake/error", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: issue.number });
+      }
     }
 
     // 4. Reconcile all non-done Threads — in-progress BEFORE queued (prevents slot-lending stampedes).
