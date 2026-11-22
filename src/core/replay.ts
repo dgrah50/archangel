@@ -33,10 +33,6 @@ export interface ReplayCase {
   note: string;
 }
 
-/** The Attempt error messages that come from the Gate's static checks (diff bounds, protected and binary files). */
-const STATIC_REJECTION_RE =
-  /^(protected path modified|binary file modified|diff is empty|changed files \d+ exceeds|non-test changed lines|total changed lines)/;
-
 /** Pure: turns Ledger seeds into labelled cases. Threads or heads that are not finished or not labelled are left out. */
 export function deriveCases(seeds: ReturnType<Ledger["listReplaySeeds"]>): ReplayCase[] {
   const cases: ReplayCase[] = [];
@@ -60,7 +56,8 @@ export function deriveCases(seeds: ReturnType<Ledger["listReplaySeeds"]>): Repla
       cases.push({ issueNumber: t.issueNumber, workClass, kind: "owner_closed", label: "bad", headSha: t.lastHead, recorded: null, note: outcome });
     }
     for (const a of t.failedAttempts) {
-      if (!STATIC_REJECTION_RE.test(a.errorMessage)) continue;
+      // Only the Broker's pre-push static checks (diff bounds, protected and binary files) can be re-run offline.
+      if (a.errorCategory !== "static_rejection") continue;
       cases.push({
         issueNumber: t.issueNumber,
         workClass,

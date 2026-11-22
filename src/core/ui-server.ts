@@ -9,6 +9,7 @@ import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doctor.js";
 import { buildHostStatus } from "./host-facts.js";
+import { listReports } from "./eval-reports.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
@@ -71,7 +72,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; doctor?: DoctorRunner },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; dataDir?: string; doctor?: DoctorRunner },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -153,6 +154,7 @@ export async function startUiServer(
         }
         return sendJson(res, 200, await doctor(scope as DoctorScope, smoke));
       }
+      if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));
       if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
       const url = new URL(req.url ?? "/", "http://localhost");

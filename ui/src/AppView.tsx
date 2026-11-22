@@ -4,6 +4,8 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
+import { EvalsPage } from "./EvalsPage";
+import type { EvalsState } from "../../src/core/eval-reports.js";
 import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import { HealthPage } from "./HealthPage";
@@ -85,6 +87,7 @@ export function AppView({
   route,
   state,
   workflows,
+  evals,
   settings,
   host,
   thread,
@@ -95,6 +98,7 @@ export function AppView({
   route: Route;
   state: Feed<UiState>;
   workflows: Feed<WorkflowsState>;
+  evals: Feed<EvalsState>;
   settings: Feed<SettingsState>;
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
@@ -130,6 +134,7 @@ export function AppView({
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
       {route.page === "health" ? <HealthPage /> : null}
+      {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
           <PipelinePage workflows={workflows} onRetry={onRetry} />

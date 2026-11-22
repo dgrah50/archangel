@@ -49,7 +49,7 @@ function seed(l: Ledger) {
   mk(6, "factory/6", null, NOW - 30 * DAY); // outside the window
   for (const n of [1, 1, 3]) {
     const a = l.startAttempt(n, "implement", NOW - DAY);
-    l.finishAttempt(a.id, { status: n === 3 ? "failed" : "succeeded" });
+    l.finishAttempt(a.id, n === 3 ? { status: "failed", errorMessage: "x", errorCategory: "other" } : { status: "succeeded" });
   }
   l.recordReview({ issueNumber: 1, headSha: "h", vendor: "openai", verdict: "approve", findings: [], costUsd: 0, now: NOW - DAY });
   l.recordReview({ issueNumber: 1, headSha: "h", vendor: "gemini", verdict: "veto", findings: [], costUsd: 0, now: NOW - DAY });

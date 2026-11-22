@@ -68,7 +68,7 @@ async function world() {
   ledger.recordMerge({ issueNumber: 1, prNumber: 1, headSha: fix, squashSha: "s", shadowOnly: false, mainRequired: ["Test"], now: 1 });
   thread(2, { kind: "needs_you", code: "gate_failed", reason: "r", resumeTo: { kind: "queued" } });
   const a2 = ledger.startAttempt(2, "implement", 1);
-  ledger.finishAttempt(a2.id, { status: "failed", headSha: protectedTouch, errorMessage: "protected path modified: lock.json" }, 2);
+  ledger.finishAttempt(a2.id, { status: "failed", headSha: protectedTouch, errorMessage: "protected path modified: lock.json", errorCategory: "static_rejection" }, 2);
   thread(3, { kind: "done", outcome: "merged" });
   ledger.recordMerge({ issueNumber: 3, prNumber: 3, headSha: unpinned, squashSha: "s3", shadowOnly: false, mainRequired: ["Test"], now: 1 });
   thread(4, { kind: "done", outcome: "pr_closed" });
@@ -89,7 +89,7 @@ describe("deriveCases (labels come only from the Ledger)", () => {
       seed(2, { kind: "done", outcome: "owner_merged" }, [{ headSha: "b", shadowOnly: true, disagreed: true, mainWatch: "green" }]),
       seed(3, { kind: "done", outcome: "reverted" }, [{ headSha: "c", shadowOnly: false, disagreed: false, mainWatch: "red" }]),
       seed(4, { kind: "done", outcome: "pr_closed" }, [], [], "d"),
-      seed(5, { kind: "queued" }, [], [{ headSha: "e", errorMessage: "protected path modified: x" }, { headSha: "f", errorMessage: "some model error" }]),
+      seed(5, { kind: "queued" }, [], [{ headSha: "e", errorMessage: "protected path modified: x", errorCategory: "static_rejection" }, { headSha: "f", errorMessage: "some model error", errorCategory: "other" }, { headSha: "g", errorMessage: "no new test file added; protected path modified: y", errorCategory: "gate_or_policy" }]),
     ]);
     expect(cases.map((c) => [c.issueNumber, c.kind, c.label])).toEqual([
       [1, "merged_fix", "good"], [2, "merged_fix", "bad"], [3, "merged_fix", "bad"], [4, "owner_closed", "bad"], [5, "rejected_attempt", "bad"],
