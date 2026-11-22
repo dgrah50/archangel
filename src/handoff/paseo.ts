@@ -24,9 +24,6 @@ export interface PaseoRunner {
   isAgentRunning(agentId: string): Promise<boolean>;
 }
 
-/**
- * Default Paseo CLI runner + optional `@getpaseo/client` workspace-label assignment.
- */
 export class PaseoCliRunner implements PaseoRunner {
   private readonly host?: string;
   private readonly home?: string;
@@ -122,7 +119,6 @@ export class PaseoCliRunner implements PaseoRunner {
     const parsed = raw.value as { Status?: string; status?: string; Archived?: boolean };
     if (parsed.Archived) return false;
     const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
-    // Explicit allowlist for stopped statuses (Opus Step 6 / S16).
     return !STOPPED_PASEO_STATUSES.has(st);
   }
 }
@@ -137,13 +133,6 @@ export interface HandoffDeps {
   daemonWaitTimeoutMs?: number;
 }
 
-/**
- * Transfers active ownership of a factory Thread to Paseo (ADR-0006 + Opus Step 6):
- * - If a live daemon holds the lock, enqueues a `handoff` command in SQLite and waits for the
- *   daemon (which owns the AbortController & clone) to abort, push, and transition to `owner_driving`.
- * - Otherwise applies `factory:paused` and CAS-transitions directly.
- * - Launches Paseo on `factory/<issue>` tagged with the Theme label and seeded with Recap + findings.
- */
 export async function handoffThreadToPaseo(
   issueNumber: number,
   deps: HandoffDeps,
@@ -245,13 +234,6 @@ export async function handoffThreadToPaseo(
   };
 }
 
-/**
- * Resumes advisory Gate + Review tracking after owner finishes in Paseo (ADR-0006 + Opus Step 6):
- * - Allowed ONLY from `owner_driving`.
- * - Verifies Paseo session is stopped (prevents two active owners; 404/archived counts as stopped).
- * - Pins owner-authorized head SHA with `INSERT OR IGNORE` (preserving broker provenance).
- * - Re-snapshots issue `bodySha256`, clears `factory:paused` + `needs-you`, and keeps `mode: "advisory"`.
- */
 export async function resumeThreadFromPaseo(
   issueNumber: number,
   deps: Pick<HandoffDeps, "config" | "ledger" | "github" | "paseo">,
@@ -318,7 +300,6 @@ export async function resumeThreadFromPaseo(
 
 type CommandOutcome = { kind: "pending" } | { kind: "claimed" } | { kind: "completed" } | { kind: "failed"; error: string } | { kind: "cancelled" };
 
-/** Polls a command until it is finished or the deadline passes; returns its last observed state (`pending` or `claimed` on timeout). */
 async function waitForCommand(ledger: Ledger, id: number, deadline: number): Promise<CommandOutcome> {
   for (;;) {
     const s = ledger.getCommand(id)?.state;

@@ -1,17 +1,10 @@
 import { z } from "zod";
 
-/**
- * The CLI -> daemon command lifecycle (handoff) as an explicit state machine, like thread-machine.ts: zod states, a pure transition
- * function, and compare-and-set in the Ledger. The point is the claim: once the daemon has claimed a command the CLI can no longer
- * cancel it, and a cancelled command can never be claimed, so a CLI timeout and the daemon cannot both win.
- */
 export const CommandStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pending") }),
-  /** The daemon took it and is working; only it can finish it. */
   z.object({ kind: z.literal("claimed"), at: z.number().int() }),
   z.object({ kind: z.literal("completed"), result: z.unknown() }),
   z.object({ kind: z.literal("failed"), error: z.string() }),
-  /** The CLI gave up before the daemon claimed it; the daemon will never run it. */
   z.object({ kind: z.literal("cancelled"), reason: z.string() }),
 ]);
 export type CommandState = z.infer<typeof CommandStateSchema>;
