@@ -716,6 +716,9 @@ export class Ledger {
   }): MergeRecord {
     const repo = input.repo ?? this.repo;
     const now = input.now ?? Date.now();
+    if (!input.shadowOnly && (input.mainRequired ?? []).length === 0) {
+      throw new Error("recordMerge: an autonomous merge must record mainRequired (the non-Gate checks to watch on main)");
+    }
     const dayKey = formatDayKey(now, this.timeZone);
     const initialWatch: MainWatch = input.shadowOnly
       ? { kind: "green" }

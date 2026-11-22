@@ -40,6 +40,14 @@ describe("Recap reproduction-test proof", () => {
     expect(body).not.toContain("not captured");
   });
 
+  it("lists the JUnit test IDs matched by the Gate, in fenced blocks", () => {
+    const body = render({ base_output: "x", head_output: "y", junit: { base_failed: ["tests/neg.test.mjs::negative"], head_passed: ["tests/neg.test.mjs::negative", "tests/neg.test.mjs::positive"] } });
+    expect(body).toContain("Test cases matched in the JUnit report");
+    expect(body).toContain("Failed on base:\n```text\ntests/neg.test.mjs::negative\n```");
+    expect(body).toContain("Passed on head:\n```text\ntests/neg.test.mjs::negative\ntests/neg.test.mjs::positive\n```");
+    expect(render({ base_output: "x", head_output: "y" })).not.toContain("JUnit");
+  });
+
   it("says 'not captured' explicitly for missing output, per side", () => {
     expect(render()).toContain("**On base (expected to fail):**\n_not captured_");
     expect(render()).toContain("**On head (expected to pass):**\n_not captured_");

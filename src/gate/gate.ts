@@ -6,7 +6,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { GatePolicySchema, REPO_POLICY_PATH, type GatePolicy } from "../config.js";
-import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, Workflow } from "../core/workflow.js";
+import { attributableTo, capIds, clearReports, readReports } from "./junit.js";
+import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, Workflow, toGatePolicy } from "../core/workflow.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -128,6 +129,8 @@ export interface GateReport {
 export interface GateProof {
   base_output?: string;
   head_output?: string;
+  /** Test IDs matched in the JUnit report (only when `gate.junitReport` is set). */
+  junit?: { base_failed: string[]; head_passed: string[] };
 }
 
 export const GATE_PROOF_ANNOTATION_TITLE = "archangel-gate-proof";
@@ -567,20 +570,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         );
         return report;
       }
-      const g = parsed.data.gate;
-      policy = GatePolicySchema.parse({
-        maxNonTestLines: g.maxNonTestLines,
-        maxTotalLines: g.maxTotalLines,
-        maxFiles: g.maxFiles,
-        extraProtectedPaths: g.protectedPaths,
-        testFileGlobs: g.testFileGlobs,
-        testDataGlobs: g.testDataGlobs,
-        testBuildCmd: g.testBuildCmd,
-        baseTestCmd: g.baseTestCmd,
-        testCmd: g.testCmd,
-        baseTestRuns: g.baseTestRuns,
-        headTestRuns: g.headTestRuns,
-      });
+      policy = GatePolicySchema.parse(toGatePolicy(parsed.data.gate));
     }
 
     const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;
@@ -710,6 +700,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     // 4. Language-agnostic Pristine-Base-Green -> Overlaid-Base-Red -> Head-Green verification.
     if (!opts.skipTests && policy.testCmd) {
       const testEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: newTestFiles.join(" ") };
+      const junitRe = policy.junitReport ? globToRegExp(policy.junitReport) : null;
+      /** Test IDs of the new test files' cases from the red base run: every one must pass on head. */
+      let expectedIds: string[] | null = null;
       // Feature work has no bug to reproduce: skip the red-on-base proof. Everything else (new test file,
       // bounds, protected paths, hooks, head tests) is enforced above and below exactly as for bugfixes.
       if (opts.workClass !== "feature") {
@@ -751,9 +744,38 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         }
 
         for (let i = 1; i <= baseRuns; i++) {
+          if (junitRe) clearReports(baseDir, junitRe);
           const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
           if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
-          if (baseTestRes.ok) {
+          // With a JUnit report, "red" means a test case from a NEW test file failed; any other failure is not proof.
+          let red = !baseTestRes.ok;
+          if (junitRe) {
+            const jr = readReports(baseDir, junitRe);
+            if ("error" in jr) {
+              report.violations.push(`base JUnit report unusable (failing closed): ${jr.error}`);
+              return report;
+            }
+            const mine = jr.cases.filter((c) => attributableTo(c, newTestFiles));
+            if (mine.length === 0) {
+              report.violations.push(
+                `no test cases in the base JUnit report are attributable to the new test files (${newTestFiles.join(", ")}); failing closed`,
+              );
+              return report;
+            }
+            const failedIds = mine.filter((c) => c.status === "failed").map((c) => c.id);
+            red = failedIds.length > 0;
+            if (!red && !baseTestRes.ok) {
+              report.violations.push(
+                `base failed for reasons unrelated to the new tests: no test case from ${newTestFiles.join(", ")} failed (run ${i}/${baseRuns})`,
+              );
+              return report;
+            }
+            if (i === 1) {
+              expectedIds = mine.map((c) => c.id);
+              report.proof = { ...report.proof, junit: { base_failed: capIds(failedIds), head_passed: [] } };
+            }
+          }
+          if (!red) {
             report.already_fixed = true;
             report.violations.push(
               `reproduction test already passed on base (run ${i}/${baseRuns}) — issue may already be fixed or test does not reproduce the bug`,
@@ -766,6 +788,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
       // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
+        if (junitRe) clearReports(headDir, junitRe);
         const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, testEnv);
         report.proof = { ...report.proof, head_output: tailOutput(headTestRes.output) };
         if (!headTestRes.ok) {
@@ -776,6 +799,27 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
               .join(" | ")}`,
           );
           return report;
+        }
+        if (junitRe) {
+          const jr = readReports(headDir, junitRe);
+          if ("error" in jr) {
+            report.violations.push(`head JUnit report unusable (failing closed): ${jr.error}`);
+            return report;
+          }
+          const mine = jr.cases.filter((c) => attributableTo(c, newTestFiles));
+          // Bugfix: every case that was red on base must be present and passed. Feature (no base run): all attributable cases pass.
+          const expected = expectedIds ?? mine.map((c) => c.id);
+          const passed = new Set(mine.filter((c) => c.status === "passed").map((c) => c.id));
+          const missing = expected.filter((id) => !passed.has(id));
+          if (expected.length === 0 || missing.length > 0) {
+            report.violations.push(
+              expected.length === 0
+                ? `no test cases in the head JUnit report are attributable to the new test files (${newTestFiles.join(", ")}); failing closed`
+                : `head JUnit report lacks a passing result for new test case(s): ${capIds(missing).join(", ")}`,
+            );
+            return report;
+          }
+          report.proof = { ...report.proof, junit: { base_failed: report.proof?.junit?.base_failed ?? [], head_passed: capIds(expected) } };
         }
       }
     }

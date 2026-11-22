@@ -32,6 +32,8 @@ export const GatePolicySchema = z.object({
   testBuildCmd: z.string().min(1).optional(),
   baseTestCmd: z.string().min(1).optional(),
   testCmd: z.string().min(1).optional(),
+  /** Opt-in: glob (relative to the repo) of the JUnit XML the test command writes; enables test-ID diffing in the Gate. */
+  junitReport: z.string().min(1).optional(),
   baseTestRuns: z.number().int().min(1).default(3),
   headTestRuns: z.number().int().min(1).default(2),
 });
