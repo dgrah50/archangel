@@ -405,6 +405,13 @@ export class Ledger {
     }));
   }
 
+  /** True while an `add_label` for this label on this issue is still queued (not yet delivered to GitHub). */
+  hasPendingLabelAdd(issueNumber: number, label: string, repo = this.repo): boolean {
+    return this.listOutbox(repo, 1000).some(
+      (o) => o.effect.kind === "add_label" && o.effect.issueNumber === issueNumber && o.effect.label === label,
+    );
+  }
+
   completeOutbox(id: number): void {
     this.db.prepare(`DELETE FROM outbox WHERE id = ?`).run(id);
   }
