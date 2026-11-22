@@ -219,6 +219,7 @@ export class Reconciler {
       this.abortAllActive("control");
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
+      await this.flushOutbox(); // effects queued by the aborts above, and any already waiting, still go out while halted
       return;
     }
     if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
