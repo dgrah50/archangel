@@ -4,7 +4,7 @@ Archangel is pre-alpha and built around a small, strict Trust Kernel. Contributi
 
 ## Development Setup
 
-**Prerequisites:** Bun 1.4.5, Node.js 22+ (the Gate bundle runs on Node), `git >= 2.38`.
+**Prerequisites:** Bun 1.4.5, Node.js 22+ (only the Gate bundle runs on Node, in target repos' Actions), `git >= 2.38`.
 
 ```bash
 git clone https://github.com/dgrah50/archangel.git

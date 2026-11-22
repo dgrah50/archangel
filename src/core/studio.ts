@@ -33,7 +33,7 @@ export function buildStudioSpawnSpec(opts: {
 
   const port = opts.port ?? 4111;
   const localBin = path.resolve("node_modules/.bin/mastra");
-  const command = fs.existsSync(localBin) ? localBin : "npx";
+  const command = fs.existsSync(localBin) ? localBin : "bunx";
   const baseArgs = fs.existsSync(localBin) ? [] : ["mastra"];
 
   return {

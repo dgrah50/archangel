@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { tryParseJson } from "../core/json.js";
@@ -1165,9 +1165,9 @@ daemonCmd
       throw new Error("`archangel daemon install` currently supports macOS (launchd) only.");
     }
     const workDir = process.cwd();
-    const entryJs = path.resolve(workDir, "dist/cli/index.js");
-    if (!fs.existsSync(entryJs)) {
-      throw new Error(`Built CLI not found at ${entryJs}. Run \`bun run build\` first.`);
+    const entryTs = path.resolve(workDir, "src/cli/index.ts");
+    if (!fs.existsSync(entryTs)) {
+      throw new Error(`CLI entry not found at ${entryTs}. Run \`daemon install\` from the Archangel checkout.`);
     }
     const configPath = path.resolve(workDir, opts.config ?? "archangel.yaml");
     const logDir = path.resolve(workDir, ".archangel");
@@ -1175,11 +1175,10 @@ daemonCmd
     const plistPath = launchdPlistPath();
     fs.mkdirSync(path.dirname(plistPath), { recursive: true });
 
-    // Capture current PATH so launchd can locate node, git, go, codex, claude, and agy.
+    // Capture current PATH so launchd can locate bun, git, go, codex, claude, and agy.
     // Never write secrets into the plist; Archangel loads `.env` (chmod 600) at runtime.
     const capturedPath = process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
-    const nodeBin = process.execPath;
-    const args = [nodeBin, entryJs, "start", "--config", configPath];
+    const args = [process.execPath, entryTs, "start", "--config", configPath];
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
