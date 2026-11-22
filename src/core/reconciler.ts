@@ -715,7 +715,13 @@ export class Reconciler {
       if (afterCommands) thread = afterCommands;
     }
     if (thread.phase.kind === "needs_you") {
-      if (issue && !combinedLabels.includes(this.cfg.labels.needsYou)) {
+      // A missing label only means "owner removed it" once our own add_label has been delivered; while it is
+      // still queued (GitHub error, or a race inside this tick) the Thread must keep waiting.
+      if (
+        issue &&
+        !combinedLabels.includes(this.cfg.labels.needsYou) &&
+        !this.ledger.hasPendingLabelAdd(thread.issueNumber, this.cfg.labels.needsYou)
+      ) {
         const retried = await this.ownerRetry(thread, issue, "label_removed", now);
         if (retried) {
           thread = retried;
