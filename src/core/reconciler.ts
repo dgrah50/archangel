@@ -17,7 +17,7 @@ import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
-import { runScoutsForProject, scoutContentHash } from "./scout.js";
+import { loadScoutsFromMain, runScoutsForProject, scoutContentHash } from "./scout.js";
 import {
   classifyGate,
   deriveControl,
@@ -181,7 +181,7 @@ export class Reconciler {
     const issueMap = new Map<number, GitHubIssue>();
     for (const issue of readyIssues) {
       issueMap.set(issue.number, issue);
-      await this.reconcileIntakeIssue(issue, now);
+      await this.reconcileIntakeIssue(issue, now, mainSha);
     }
 
     // 4. Reconcile all non-done Threads — in-progress BEFORE queued (prevents slot-lending stampedes).
@@ -324,7 +324,30 @@ export class Reconciler {
     };
   }
 
-  private async reconcileIntakeIssue(issue: GitHubIssue, now: number): Promise<void> {
+  /**
+   * A bot-applied `ready-for-agent` counts only for a proposal recorded as auto-promoted whose
+   * Scout file at `mainSha` still says `autoPromote: true`, is byte-identical to the file that
+   * filed it, and has not had its trust revoked. Anything else needs the owner's label.
+   */
+  private async isValidAutoPromotion(issueNumber: number, mainSha: string): Promise<boolean> {
+    const proposal = this.ledger.getScoutProposal(issueNumber);
+    if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
+    let workflows: Awaited<ReturnType<typeof loadScoutsFromMain>>;
+    try {
+      workflows = await loadScoutsFromMain(this.broker, mainSha);
+    } catch {
+      return false;
+    }
+    const wf = workflows.find((w) => w.name === proposal.scoutName);
+    return Boolean(
+      wf &&
+        wf.autoPromote &&
+        wf.fileSha256 === proposal.fileSha256 &&
+        !this.ledger.isScoutAutoPromoteRevoked(wf.name, wf.fileSha256),
+    );
+  }
+
+  private async reconcileIntakeIssue(issue: GitHubIssue, now: number, mainSha: string): Promise<void> {
     const isOwnerAuthored =
       issue.authorId === this.cfg.ownerUserId && issue.authorAssociation === "OWNER";
 
@@ -395,7 +418,9 @@ export class Reconciler {
       this.cfg.labels.readyForAgent,
       this.cfg.ownerUserId,
     );
-    if (!ownerLabeled) {
+    const autoPromoted =
+      !ownerLabeled && isVerifiedBotProposal && (await this.isValidAutoPromotion(issue.number, mainSha));
+    if (!ownerLabeled && !autoPromoted) {
       this.rejectedIssueCache.set(issue.number, issue.updatedAt);
       this.ledger.appendAudit(
         "intake/rejected_label_actor",

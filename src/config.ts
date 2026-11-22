@@ -74,6 +74,8 @@ export const ScoutsConfigSchema = z.object({
   enabled: z.boolean().default(false),
   maxRunsPerDay: z.number().int().min(1).max(10).default(2),
   maxOpenProposals: z.number().int().min(1).max(10).default(3),
+  /** Hard host cap on Scout proposals promoted without the owner (only for Scouts with `autoPromote: true`). */
+  maxAutoPromotionsPerDay: z.number().int().min(0).max(5).default(1),
 });
 
 export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
@@ -147,6 +149,7 @@ export const ConfigSchema = z.object({
     enabled: false,
     maxRunsPerDay: 2,
     maxOpenProposals: 3,
+    maxAutoPromotionsPerDay: 1,
   }),
 
   // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
@@ -207,6 +210,7 @@ const HostProjectYamlSchema = z.object({
     enabled: false,
     maxRunsPerDay: 2,
     maxOpenProposals: 3,
+    maxAutoPromotionsPerDay: 1,
   }),
 });
 

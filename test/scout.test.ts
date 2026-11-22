@@ -52,7 +52,7 @@ function makeConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConfig {
     githubPrivateKeyPem: "fake",
     githubAppBotUserId: 777,
     authMode: "subscription",
-    scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3 },
+    scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
     ...overrides,
   });
 }
@@ -91,7 +91,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
         githubAppId: "123",
         githubInstallationId: 456,
         githubPrivateKeyPem: "fake",
-        scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3 },
+        scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
       }),
     ).toThrow(/githubAppBotUserId/);
   });
@@ -292,7 +292,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
 
       const rec = new Reconciler({
         config: makeConfig({
-          scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3 },
+          scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
           maxConcurrentThreads: 1,
         }),
         ledger,

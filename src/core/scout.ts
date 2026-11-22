@@ -17,6 +17,7 @@ export const ScoutFrontmatterSchema = z
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,48}$/, "name must be a lowercase slug"),
     schedule: z.enum(["daily", "manual"]).default("manual"),
     maxProposals: z.number().int().min(1).max(3).default(2),
+    autoPromote: z.boolean().default(false),
     skills: z.array(z.string().regex(SKILL_REF_RE, "skill must be '<folder>/<name>' or '<folder>/*'")).max(12).default([]),
   })
   .strict();
@@ -26,6 +27,9 @@ export interface ScoutWorkflow {
   filePath: string;
   schedule: "daily" | "manual";
   maxProposals: number;
+  /** Owner opt-in (repo file under protected `.agents/`): proposals may skip the owner's label. */
+  autoPromote: boolean;
+  fileSha256: string;
   skills: Skill[];
   prompt: string;
 }
@@ -89,6 +93,8 @@ export function parseScoutMarkdown(raw: string, filePath: string): ScoutWorkflow
     filePath,
     schedule: fm.schedule,
     maxProposals: fm.maxProposals,
+    autoPromote: fm.autoPromote,
+    fileSha256: crypto.createHash("sha256").update(raw).digest("hex"),
     skills,
     prompt,
   };
@@ -468,13 +474,23 @@ export async function runScoutsForProject(opts: {
           body,
           labels: [opts.config.labels.agentProposed],
         });
+        const autoPromote =
+          wf.autoPromote &&
+          !opts.ledger.isScoutAutoPromoteRevoked(wf.name, wf.fileSha256) &&
+          opts.ledger.countRecentAutoPromotions(now) < opts.config.scouts.maxAutoPromotionsPerDay;
         opts.ledger.recordScoutProposal({
           issueNumber: created.number,
           scoutName: wf.name,
           contentSha256: scoutContentHash(created.title, created.body),
           titleFp,
+          fileSha256: wf.fileSha256,
+          autoPromoted: autoPromote,
           now,
         });
+        if (autoPromote) {
+          await opts.github.addLabels(created.number, [opts.config.labels.readyForAgent]);
+          opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { fileSha256: wf.fileSha256.slice(0, 12) }, now);
+        }
         filedIssues.push(created.number);
         openTrackedCount++;
       }
