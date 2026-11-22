@@ -113,6 +113,11 @@ export function formatDecisionClass(c: DecisionClass): string {
 
 /** Escalations raised by project-level monitors (autonomy cap, post-merge main) rather than by a Thread. */
 export const MAIN_ESCALATION_POLICY = {
+  health_fault_repeated: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "A subsystem keeps failing and the daemon keeps surviving it (see the Health block in `archangel status` for the last error). Fix the cause (GitHub access, permissions, the Scout output); this notice repeats at most once a day per error class.",
+  },
   correction_repeated: {
     decisionClass: "owner_signoff",
     recommendation:

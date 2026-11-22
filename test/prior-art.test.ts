@@ -56,7 +56,7 @@ const thread: ThreadRecord = {
   issueNumber: 7, repo: "acme/app", title: "Example", themeLabel: null, bodySha256: "x",
   phase: { kind: "awaiting_gate", prNumber: 10, headSha: "abcdef1234567890", baseSha: "b1", since: 0, nudgedAt: null },
   state: "awaiting_gate", version: 1, mode: "autonomous", branchName: "factory/7", lastSummary: null,
-  implementCount: 1, revisionCount: 0, rebaseCount: 0, implementerVendors: [], ownerReply: null, retryGrants: 0,
+  implementCount: 1, revisionCount: 0, rebaseCount: 0, implementerVendors: [], ownerReply: null, retryGrants: 0, factoryRetries: 0, factoryGuidance: null,
   workflowSha256: null, createdAt: 0, updatedAt: 0,
 };
 const recap = (summary: string | null) => renderRecapComment({ thread, reviews: [], blockers: [], summary });
@@ -99,7 +99,7 @@ describe("unavailable is not empty: metrics block", () => {
 });
 
 describe("unavailable is not empty: digest", () => {
-  const known = { needsYou: [], proposals: [], pitches: [], now: 0 };
+  const known = { needsYou: [], proposals: [], pitches: [], faults: [], now: 0 };
   it("a known zero stays quiet, an unavailable figure is shown and keeps the digest alive", () => {
     expect(buildDigest({ ...known, yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } })).toBeNull();
     const text = buildDigest({ ...known, yesterday: { autonomousMerges: 0, ownerMerges: null, reverts: 0, spendUsd: null } })!;

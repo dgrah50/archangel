@@ -54,7 +54,10 @@
       "src/core/corrections.ts",
       "src/core/pitch-machine.ts",
       "src/core/eval.ts",
-      "src/core/eval-candidate.ts"
+      "src/core/eval-candidate.ts",
+      "src/core/ui-thread.ts",
+      "src/core/host-facts.ts",
+      "src/core/ui-doctor.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

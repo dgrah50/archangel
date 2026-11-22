@@ -2,7 +2,7 @@ import { Badge, Box, Button, Card, Flex, Link, Stack, Text } from "@chakra-ui/re
 import { useState } from "react";
 import type { UiState } from "../../src/core/ui-state.js";
 import { GhLink, age } from "./common";
-import { itemHash, type ItemRef } from "./route";
+import { itemHash, threadHash, type ItemRef } from "./route";
 
 type Item = UiState["needsYou"][number];
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
@@ -97,6 +97,9 @@ export function NeedsYouPage({ state, item }: { state: UiState; item: ItemRef | 
                   </Button>
                 ) : null}
                 <CopyButton text="/archangel retry" />
+                <Button asChild size="sm" variant="outline">
+                  <a href={threadHash({ repo: selected.repo, issue: selected.issueNumber })}>Timeline</a>
+                </Button>
                 {next ? (
                   <Button asChild size="sm" variant="outline">
                     <a href={itemHash({ repo: next.repo, issue: next.issueNumber })}>Next</a>

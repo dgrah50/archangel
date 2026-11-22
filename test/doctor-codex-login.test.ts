@@ -25,7 +25,7 @@ describe("codex subscription login check", () => {
     const pem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
     fs.writeFileSync(
       configPath,
-      `ownerUserId: 999\nauthMode: subscription\ndataDir: ${path.join(tmp, "data")}\nimplementerChain:\n  - provider: codex\nreviewerChain:\n  - provider: codex\n  - provider: claude\nprojects:\n  - repo: acme/app\n`,
+      `ownerUserId: 999\nauthMode: subscription\ndataDir: ${path.join(tmp, "data")}\nchains:\n  implement:\n    - provider: codex\nreviewerChain:\n  - provider: codex\n  - provider: claude\nprojects:\n  - repo: acme/app\n`,
     );
     const env = {
       ARCHANGEL_GITHUB_APP_ID: "123",

@@ -1,3 +1,5 @@
+import type { HostStatus } from "../../src/core/host-facts.js";
+import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
 const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -25,6 +27,18 @@ export function isUiState(v: unknown): v is UiState {
 
 export function isWorkflowsState(v: unknown): v is WorkflowsState {
   return obj(v) && typeof v.generatedAt === "number" && typeof v.windowDays === "number" && Array.isArray(v.repos) && v.repos.every((r) => obj(r) && typeof r.repo === "string" && Array.isArray(r.stages));
+}
+
+export function isThreadDetail(v: unknown): v is ThreadDetail {
+  return obj(v) && typeof v.repo === "string" && typeof v.issueNumber === "number" && typeof v.title === "string" && Array.isArray(v.events) && v.events.every((e) => obj(e) && typeof e.ts === "number" && typeof e.title === "string" && Array.isArray(e.details));
+}
+
+export function isHostStatus(v: unknown): v is HostStatus {
+  return obj(v) && typeof v.reported === "boolean" && typeof v.restartPending === "boolean" && typeof v.disk === "string";
+}
+
+export function isLogs(v: unknown): v is LogsPayload {
+  return obj(v) && typeof v.missing === "boolean" && Array.isArray(v.entries);
 }
 
 /** One feed polled independently of the others, validated before it is trusted. */
