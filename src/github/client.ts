@@ -406,7 +406,9 @@ export class GitHubAppClient implements GitHubClient {
       `/repos/${this.cfg.owner}/${this.cfg.repo}/check-runs/${checkRunId}/annotations?per_page=100`,
       { useEtag: false },
     );
-    const ann = annotations.find((a) => a.title === GATE_PROOF_ANNOTATION_TITLE);
+    // Exactly one proof annotation, or it is ambiguous (possible forgery) and treated as not captured.
+    const proofs = annotations.filter((a) => a.title === GATE_PROOF_ANNOTATION_TITLE);
+    const ann = proofs.length === 1 ? proofs[0] : undefined;
     if (!ann?.message) return null;
     try {
       const parsed = JSON.parse(ann.message) as Record<string, unknown>;

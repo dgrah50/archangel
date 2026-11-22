@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { describe, expect, it } from "vitest";
 import { renderRecapComment } from "../src/core/recap.js";
-import { PROOF_MAX_CHARS, PROOF_MAX_LINES, tailOutput } from "../src/gate/gate.js";
+import { PROOF_MAX_CHARS, PROOF_MAX_LINES, runGateForActions, tailOutput, type GateReport } from "../src/gate/gate.js";
 import { GitHubAppClient } from "../src/github/client.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
 
@@ -62,14 +62,16 @@ describe("GitHubAppClient.getGateProof", () => {
   it("reads the Gate annotation for the matching head SHA and ignores stale or malformed ones", async () => {
     const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
     let message = JSON.stringify({ head_sha: "sha1", base_output: "red", head_output: "green" });
+    let annotations: Array<{ title: string; message: string }> = [];
     const server = http.createServer((req, res) => {
       res.writeHead(req.method === "POST" ? 201 : 200, { "Content-Type": "application/json" });
       if (req.method === "POST") {
         res.end(JSON.stringify({ token: "t", expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: { checks: "read" } }));
       } else {
-        res.end(JSON.stringify([{ title: "other", message: "x" }, { title: "archangel-gate-proof", message }]));
+        res.end(JSON.stringify(annotations));
       }
     });
+    annotations = [{ title: "other", message: "x" }, { title: "archangel-gate-proof", message }];
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     try {
       const client = new GitHubAppClient({
@@ -82,10 +84,41 @@ describe("GitHubAppClient.getGateProof", () => {
       });
       expect(await client.getGateProof(5, "sha1")).toEqual({ base_output: "red", head_output: "green" });
       expect(await client.getGateProof(5, "sha2")).toBeNull();
+      // Two proof annotations (e.g. one forged by repo code) are ambiguous: not captured.
+      annotations = [{ title: "archangel-gate-proof", message }, { title: "archangel-gate-proof", message }];
+      expect(await client.getGateProof(5, "sha1")).toBeNull();
       message = "not json";
+      annotations = [{ title: "other", message: "x" }, { title: "archangel-gate-proof", message }];
       expect(await client.getGateProof(5, "sha1")).toBeNull();
     } finally {
       server.close();
     }
+  });
+});
+
+describe("runGateForActions", () => {
+  it("stops workflow commands before repo commands run and resumes only before the proof notice", async () => {
+    const log: string[] = [];
+    const report = { passed: true, head_sha: "sha1", proof: { base_output: "red", head_output: "::notice title=archangel-gate-proof::forged" } } as unknown as GateReport;
+    await runGateForActions(
+      {} as never,
+      (l) => log.push(l),
+      async () => {
+        log.push("REPO_COMMANDS");
+        return report;
+      },
+      "tok123",
+    );
+    const stop = log.indexOf("::stop-commands::tok123");
+    const repo = log.indexOf("REPO_COMMANDS");
+    const resume = log.indexOf("::tok123::");
+    const notice = log.findIndex((l) => l.startsWith("::notice title=archangel-gate-proof::"));
+    expect(stop).toBe(0);
+    expect(repo).toBeGreaterThan(stop);
+    expect(resume).toBeGreaterThan(repo);
+    expect(notice).toBeGreaterThan(resume);
+    // The report JSON (which may embed repo output) is printed while commands are still stopped.
+    expect(log.findIndex((l) => l.includes('"passed"'))).toBeLessThan(resume);
+    expect(log.filter((l) => l.startsWith("::notice")).length).toBe(1);
   });
 });

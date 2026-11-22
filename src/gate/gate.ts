@@ -154,6 +154,31 @@ export const GATE_PROOF_ANNOTATION_TITLE = "archangel-gate-proof";
 export const PROOF_MAX_LINES = 40;
 export const PROOF_MAX_CHARS = 3000;
 
+/**
+ * Runs the Gate for GitHub Actions with workflow commands disabled while any repo-authored code
+ * (setup, build, tests, hooks) runs, so nothing it prints can forge an annotation. Commands are
+ * resumed with a random token only after every repo command has finished, then the proof is emitted.
+ */
+export async function runGateForActions(
+  opts: GateRunOptions,
+  log: (line: string) => void,
+  run: (o: GateRunOptions) => Promise<GateReport> = runGate,
+  token: string = crypto.randomBytes(16).toString("hex"),
+): Promise<GateReport> {
+  log(`::stop-commands::${token}`);
+  const report = await run(opts);
+  log(JSON.stringify(report, null, 2));
+  log(`::${token}::`);
+  if (report.proof) {
+    const message = JSON.stringify({ head_sha: report.head_sha, ...report.proof })
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A");
+    log(`::notice title=${GATE_PROOF_ANNOTATION_TITLE}::${message}`);
+  }
+  return report;
+}
+
 /** Last ~40 lines, capped at 3,000 chars (keeping the end, where failures and summaries are). */
 export function tailOutput(text: string): string {
   const tail = text.trim().split("\n").slice(-PROOF_MAX_LINES).join("\n");
