@@ -68,6 +68,8 @@ export const LabelsSchema = z.object({
   needsYou: z.string().default("needs-you"),
   disagree: z.string().default("factory:disagree"),
   agentProposed: z.string().default("agent-proposed"),
+  /** Owner-applied label that makes a Thread a feature (owner merges; no red-on-base proof). */
+  feature: z.string().default("class:feature"),
 });
 
 export const ScoutsConfigSchema = z.object({
@@ -144,6 +146,7 @@ export const ConfigSchema = z.object({
     needsYou: "needs-you",
     disagree: "factory:disagree",
     agentProposed: "agent-proposed",
+    feature: "class:feature",
   }),
   scouts: ScoutsConfigSchema.default({
     enabled: false,

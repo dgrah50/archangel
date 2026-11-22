@@ -15,6 +15,7 @@ function parseArgs(argv: string[]): {
   headRuns?: number;
   skipPreCommit: boolean;
   skipTests: boolean;
+  workClass: "bugfix" | "feature";
 } {
   let repo = ".";
   let base = "";
@@ -25,6 +26,7 @@ function parseArgs(argv: string[]): {
   let headRuns: number | undefined;
   let skipPreCommit = false;
   let skipTests = false;
+  let workClass: "bugfix" | "feature" = "bugfix";
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -37,12 +39,17 @@ function parseArgs(argv: string[]): {
     else if (a === "--head-runs" && argv[i + 1]) headRuns = Number(argv[++i]!);
     else if (a === "--skip-pre-commit") skipPreCommit = true;
     else if (a === "--skip-tests") skipTests = true;
+    else if (a === "--work-class" && argv[i + 1]) {
+      const v = argv[++i]!;
+      if (v !== "bugfix" && v !== "feature") throw new Error(`--work-class must be bugfix or feature (got ${v})`);
+      workClass = v;
+    }
   }
 
   if (!base) {
     throw new Error("Usage: archangel-gate --repo <dir> --base <ref> [--head <ref>] [--policy-from-base] [--revert-of <sha>]");
   }
-  return { repo, base, head, policyFromBase, revertOf, baseRuns, headRuns, skipPreCommit, skipTests };
+  return { repo, base, head, policyFromBase, revertOf, baseRuns, headRuns, skipPreCommit, skipTests, workClass };
 }
 
 (async () => {
@@ -58,6 +65,7 @@ function parseArgs(argv: string[]): {
       headRunsOverride: opts.headRuns,
       skipPreCommit: opts.skipPreCommit,
       skipTests: opts.skipTests,
+      workClass: opts.workClass,
     };
     let report;
     if (process.env.GITHUB_ACTIONS === "true") {

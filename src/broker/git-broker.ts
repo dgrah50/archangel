@@ -1,3 +1,4 @@
+import type { WorkClass } from "../core/work-class.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,7 +33,7 @@ const HARDENED_GIT_FLAGS = [
   "protocol.file.allow=always",
 ];
 
-const FACTORY_BRANCH_RE = /^factory\/(?:revert-)?\d+$/;
+const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-)?\d+$/;
 
 export interface BrokerFetchValidation {
   headSha: string;
@@ -260,8 +261,10 @@ export class GitBroker {
     baseSha: string,
     headSha: string,
     bounds?: ValidationBounds,
+    workClass?: WorkClass,
   ): Promise<LocalGateReport> {
     return runGate({
+      workClass,
       repoDir: this.bareRepoPath,
       baseRef: baseSha,
       headRef: headSha,
@@ -292,6 +295,7 @@ export class GitBroker {
     issueNumber: number,
     baseSha: string,
     bounds?: ValidationBounds,
+    workClass?: WorkClass,
   ): Promise<BrokerFetchValidation> {
     const maxNonTestLines = bounds?.maxNonTestLines ?? this.maxNonTestLines;
     const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
@@ -388,7 +392,7 @@ export class GitBroker {
 
     let gateReport: LocalGateReport | undefined;
     if (this.enableLocalGate && protectedViolations.length === 0) {
-      gateReport = await this.runLocalGate(effectiveBase, headSha, bounds);
+      gateReport = await this.runLocalGate(effectiveBase, headSha, bounds, workClass);
     }
 
     return {

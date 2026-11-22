@@ -82,8 +82,11 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
 };
 
-export function describeEscalation(code: EscalationCode): EscalationPolicy {
-  return ESCALATION_POLICY[code];
+export function describeEscalation(code: EscalationCode, workClass: "bugfix" | "feature" = "bugfix"): EscalationPolicy {
+  const policy = ESCALATION_POLICY[code];
+  return workClass === "feature"
+    ? { ...policy, recommendation: `${policy.recommendation} This is a feature Thread: the owner merges it.` }
+    : policy;
 }
 
 export function formatDecisionClass(c: DecisionClass): string {
