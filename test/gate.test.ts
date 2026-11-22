@@ -97,7 +97,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix add"]);
 
-      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(rep.passed).toBe(true);
       expect(rep.new_test_files).toEqual(["tests/issue1.test.mjs"]);
       expect(rep.hooks_run).toEqual(["no-banned-marker"]);
@@ -125,7 +125,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "weaken existing test + golden"]);
-      const r1 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const r1 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(r1.passed).toBe(false);
       expect(r1.violations.some((v) => v.includes("existing test file modified"))).toBe(true);
       expect(r1.violations.some((v) => v.includes("existing test fixture modified"))).toBe(true);
@@ -140,7 +140,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "banned marker"]);
-      const r2 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const r2 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(r2.passed).toBe(false);
       expect(r2.violations.some((v) => v.includes("pre-commit hook 'no-banned-marker' failed"))).toBe(true);
 
@@ -155,7 +155,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "tamper"]);
-      const r3 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const r3 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(r3.passed).toBe(false);
       expect(r3.violations.some((v) => v.includes(".pre-commit-config.yaml"))).toBe(true);
       expect(r3.violations.some((v) => v.includes("lock.json"))).toBe(true);
@@ -166,7 +166,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "tests/issue5.test.mjs", "// uses NONEXISTENT_API\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "new api"]);
-      const r4 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const r4 = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(r4.passed).toBe(false);
       expect(r4.violations.some((v) => v.includes("base build failed"))).toBe(true);
 
@@ -180,7 +180,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "tests/issue6.test.mjs", 'import assert from "node:assert/strict";\nassert.equal(1, 1);\n');
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "trivial test on red base"]);
-      const r5 = await runGate({ repoDir, baseRef: redBase, headRef: "HEAD", policyFromBase: true });
+      const r5 = await runGate({ repoDir, baseRef: redBase, headRef: "HEAD" });
       expect(r5.passed).toBe(false);
       expect(r5.violations.some((v) => v.includes("pristine base testCmd failed"))).toBe(true);
     } finally {
@@ -191,7 +191,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
   it("fails closed on missing/typo'd archangel.json, unsupported pre-commit keys, and mutating hooks (H3)", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {
-      // Missing archangel.json fails closed under policyFromBase
+      // Missing archangel.json fails closed
       git(repoDir, ["checkout", "-b", "no-landing", baseSha]);
       fs.rmSync(path.join(repoDir, ".agents/archangel.json"));
       git(repoDir, ["add", "-A"]);
@@ -200,7 +200,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "calc.mjs", "export function add(a, b) { return a + b; }\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix"]);
-      const rMissing = await runGate({ repoDir, baseRef: noLandingBase, headRef: "HEAD", policyFromBase: true });
+      const rMissing = await runGate({ repoDir, baseRef: noLandingBase, headRef: "HEAD" });
       expect(rMissing.passed).toBe(false);
       expect(rMissing.violations.some((v) => v.includes("missing .agents/archangel.json"))).toBe(true);
 
@@ -213,7 +213,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "tests/t.test.mjs", "export {};\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "test"]);
-      const rTypo = await runGate({ repoDir, baseRef: typoBase, headRef: "HEAD", policyFromBase: true });
+      const rTypo = await runGate({ repoDir, baseRef: typoBase, headRef: "HEAD" });
       expect(rTypo.passed).toBe(false);
       expect(rTypo.violations.some((v) => v.includes("not a valid workflow"))).toBe(true);
 
@@ -228,7 +228,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "tests/l.test.mjs", "export {};\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "test"]);
-      const rLoose = await runGate({ repoDir, baseRef: looseBase, headRef: "HEAD", policyFromBase: true });
+      const rLoose = await runGate({ repoDir, baseRef: looseBase, headRef: "HEAD" });
       expect(rLoose.passed).toBe(false);
       expect(rLoose.violations.some((v) => v.includes("gate.maxFiles"))).toBe(true);
 
@@ -262,7 +262,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix"]);
-      const rHook = await runGate({ repoDir, baseRef: badHookBase, headRef: "HEAD", policyFromBase: true });
+      const rHook = await runGate({ repoDir, baseRef: badHookBase, headRef: "HEAD" });
       expect(rHook.passed).toBe(false);
       expect(rHook.violations.some((v) => v.includes("unsupported key(s) [args]"))).toBe(true);
       expect(rHook.violations.some((v) => v.includes("mutated file"))).toBe(true);
@@ -326,7 +326,6 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
         baseRef: squashSha,
         headRef: revertHead,
         revertOf: squashSha,
-        policyFromBase: true,
       });
       expect(okRev.passed).toBe(true);
       expect(okRev.revert_exempt).toBe(true);
@@ -337,7 +336,6 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
         baseRef: laterMain,
         headRef: revertHead,
         revertOf: squashSha,
-        policyFromBase: true,
       });
       expect(badRev.passed).toBe(false);
       expect(badRev.violations.some((v) => v.includes("must match base tip"))).toBe(true);
@@ -359,14 +357,14 @@ describe("Gate work classes", () => {
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "feature"]);
 
-      const bugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      const bugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
       expect(bugfix.passed).toBe(false);
       expect(bugfix.already_fixed).toBe(true);
 
-      const explicitBugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true, workClass: "bugfix" });
+      const explicitBugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", workClass: "bugfix" });
       expect(explicitBugfix.passed).toBe(false);
 
-      const feature = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true, workClass: "feature" });
+      const feature = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", workClass: "feature" });
       expect(feature.violations).toEqual([]);
       expect(feature.passed).toBe(true);
       expect(feature.new_test_files).toEqual(["tests/feature.test.mjs"]);
@@ -378,7 +376,7 @@ describe("Gate work classes", () => {
   it("feature still fails on a missing new test, protected paths, bounds, and a failing head test", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     const feature = (name: string) =>
-      runGate({ repoDir, baseRef: baseSha, headRef: name, policyFromBase: true, workClass: "feature" });
+      runGate({ repoDir, baseRef: baseSha, headRef: name, workClass: "feature" });
     try {
       git(repoDir, ["checkout", "-b", "no-test", baseSha]);
       writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
@@ -412,6 +410,32 @@ describe("Gate work classes", () => {
       const redHead = await feature("red-head");
       expect(redHead.passed).toBe(false);
       expect(redHead.violations.some((v) => v.includes("head testCmd failed"))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});
+
+describe("Gate cannot be run fail-open", () => {
+  it("always reads policy from base: a diff with no new test fails even without any flag", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix without a test"]);
+      const rep = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD" });
+      expect(rep.passed).toBe(false);
+      expect(rep.violations.join(" ")).toContain("new test");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("rejects a run-count override of %s instead of running zero times", async (n) => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      await expect(runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", baseRunsOverride: n })).rejects.toThrow(/integer >= 1/);
+      await expect(runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", headRunsOverride: n })).rejects.toThrow(/integer >= 1/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

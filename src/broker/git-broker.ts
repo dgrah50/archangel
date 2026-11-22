@@ -269,7 +269,6 @@ export class GitBroker {
       repoDir: this.bareRepoPath,
       baseRef: baseSha,
       headRef: headSha,
-      policyFromBase: true,
       skipTests: this.localGateSkipTests,
       baseRunsOverride: 1,
       headRunsOverride: 1,

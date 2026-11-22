@@ -172,8 +172,6 @@ export interface GateRunOptions {
   repoDir: string;
   baseRef: string;
   headRef: string;
-  policy?: Partial<GatePolicy>;
-  policyFromBase?: boolean;
   revertOf?: string;
   baseRunsOverride?: number;
   headRunsOverride?: number;
@@ -518,7 +516,7 @@ async function runRepoPreCommit(
 /**
  * Language-agnostic Archangel Mechanical Gate (ADR-0003 + Opus review hardening):
  * - Throwaway per-run HOME and fresh per-run GOCACHE (no shared cache poisoning / real HOME exposure).
- * - Fail-closed under `--policy-from-base`: requires strict `.agents/archangel.json`, non-empty `testFileGlobs`,
+ * - Always fail-closed on the base policy: requires strict `.agents/archangel.json`, non-empty `testFileGlobs`,
  *   non-empty `testCmd` (unless `skipTests`), and `.pre-commit-config.yaml` (unless `skipPreCommit`).
  * - Enforces diff bounds, protected paths, and pre-existing test-file AND test-fixture immutability.
  * - Executes repo-owned `.pre-commit-config.yaml` strictly from `base` (fail-closed on unsupported keys or file mutation).
@@ -546,33 +544,34 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       file_stats: stats,
     };
 
-    let policy = GatePolicySchema.parse(opts.policy ?? {});
-    if (opts.policyFromBase) {
-      const repoPolicyRaw = await readGitFileStrict(opts.repoDir, baseSha, REPO_POLICY_PATH, env);
-      if (!repoPolicyRaw) {
-        report.violations.push("missing .agents/archangel.json on base commit (failing closed)");
-        return report;
-      }
-      // Strict schema: a missing, unknown or out-of-kernel-bounds value fails closed; there is no other format.
-      let json: unknown;
-      try {
-        json = JSON.parse(repoPolicyRaw);
-      } catch (err) {
-        report.violations.push(`.agents/archangel.json on base is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
-        return report;
-      }
-      const parsed = Workflow.safeParse(json);
-      if (!parsed.success) {
-        report.violations.push(
-          `.agents/archangel.json on base is not a valid workflow: ${parsed.error.issues
-            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-            .join("; ")}`,
-        );
-        return report;
-      }
-      policy = GatePolicySchema.parse(toGatePolicy(parsed.data.gate));
+    const repoPolicyRaw = await readGitFileStrict(opts.repoDir, baseSha, REPO_POLICY_PATH, env);
+    if (!repoPolicyRaw) {
+      report.violations.push("missing .agents/archangel.json on base commit (failing closed)");
+      return report;
     }
+    // Strict schema: a missing, unknown or out-of-kernel-bounds value fails closed; there is no other format.
+    let json: unknown;
+    try {
+      json = JSON.parse(repoPolicyRaw);
+    } catch (err) {
+      report.violations.push(`.agents/archangel.json on base is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+      return report;
+    }
+    const parsed = Workflow.safeParse(json);
+    if (!parsed.success) {
+      report.violations.push(
+        `.agents/archangel.json on base is not a valid workflow: ${parsed.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      );
+      return report;
+    }
+    const policy = GatePolicySchema.parse(toGatePolicy(parsed.data.gate));
+  
 
+    for (const [name, v] of [["baseRunsOverride", opts.baseRunsOverride], ["headRunsOverride", opts.headRunsOverride]] as const) {
+      if (v !== undefined && !(Number.isInteger(v) && v >= 1)) throw new Error(`${name} must be an integer >= 1 (got ${v})`);
+    }
     const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;
     const headRuns = opts.headRunsOverride ?? policy.headTestRuns;
 
@@ -680,10 +679,8 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       const preCommitName = yamlPrimary ? ".pre-commit-config.yaml" : ".pre-commit-config.yml";
 
       if (!preCommitYaml) {
-        if (opts.policyFromBase) {
-          report.violations.push("missing .pre-commit-config.yaml on base commit (failing closed)");
-          return report;
-        }
+        report.violations.push("missing .pre-commit-config.yaml on base commit (failing closed)");
+        return report;
       } else {
         fs.writeFileSync(path.join(headDir, preCommitName), preCommitYaml, "utf8");
         const nonDeleted = stats.filter((s) => s.status !== "D").map((s) => s.path);
