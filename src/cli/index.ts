@@ -7,6 +7,7 @@ import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
+import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
@@ -921,10 +922,14 @@ program
       if (reply) ledger.setOwnerReply(issueNumber, reply);
       ledger.grantRetryBudget(issueNumber);
       await github.removeLabel(issueNumber, cfg.labels.needsYou);
-      ledger.transition(issueNumber, thread.version, stepped.next, {
-        bodySha256: sha256(issue.body),
-        auditTopic: "thread/owner_retried",
-      });
+      requireTransition(
+        ledger.transition(issueNumber, thread.version, stepped.next, {
+          bodySha256: sha256(issue.body),
+          auditTopic: "thread/owner_retried",
+        }),
+        repoSlug,
+        issueNumber,
+      );
       ledger.appendAudit("thread/owner_retry", issueNumber, "owner", { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null });
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
@@ -953,9 +958,11 @@ program
         { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
       );
       if (!stepped.ok) throw new Error(stepped.reject);
-      ledger.transition(issueNumber, thread.version, stepped.next, {
-        auditTopic: "thread/owner_abandoned",
-      });
+      requireTransition(
+        ledger.transition(issueNumber, thread.version, stepped.next, { auditTopic: "thread/owner_abandoned" }),
+        repoSlug,
+        issueNumber,
+      );
       console.log(`Abandoned ${repoSlug}#${issueNumber}.`);
     } finally {
       ledger.close();
