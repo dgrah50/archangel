@@ -81,7 +81,7 @@ function fixture(o: Opts = {}) {
     git(repo, ["add", "-A"]);
     git(repo, ["commit", "-m", "change"]);
   };
-  const gate = () => runGate({ repoDir: repo, baseRef: base, headRef: "HEAD", policyFromBase: true, skipPreCommit: true, baseRunsOverride: 1, headRunsOverride: 1 });
+  const gate = () => runGate({ repoDir: repo, baseRef: base, headRef: "HEAD", skipPreCommit: true, baseRunsOverride: 1, headRunsOverride: 1 });
   return { root, commit, gate };
 }
 
