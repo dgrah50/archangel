@@ -56,9 +56,9 @@ describe("an implementer that did not finish is a failed Attempt", () => {
     await failedAttempt(
       {
           async run(input) {
-            fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
-            git(input.cloneDir, ["add", "-A"]);
-            git(input.cloneDir, ["commit", "-qm", "half a fix"]);
+            fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
+            git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+            git((await input.workspaces.local.workspace()).path, ["commit", "-qm", "half a fix"]);
             return { summary: "", costUsd: 0.7, transcriptPath: null, aborted: false, failure: "error_max_turns" };
           },
         },
