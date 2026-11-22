@@ -19,6 +19,30 @@ export const execRunner: OnboardRunner = {
   },
 };
 
+/** `gh api` reports a missing resource as HTTP 404 / Not Found; anything else (rate limit, 5xx, auth) is a real failure. */
+export function isNotFound(err: unknown): boolean {
+  return /\b404\b|Not Found/i.test(err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Points `branch` at `sha`, creating it or force-resetting a leftover one. A branch from an earlier run (merged or closed PR,
+ * auto-delete off, or a run that failed midway) must not wedge every later proposal with "Reference already exists".
+ */
+export async function createOrResetBranch(runner: OnboardRunner, repo: string, branch: string, sha: string): Promise<void> {
+  let exists = true;
+  try {
+    await runner.run("gh", ["api", `repos/${repo}/git/ref/heads/${branch}`, "--jq", ".object.sha"]);
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    exists = false;
+  }
+  if (exists) {
+    await runner.run("gh", ["api", "-X", "PATCH", `repos/${repo}/git/refs/heads/${branch}`, "-f", `sha=${sha}`, "-F", "force=true"]);
+  } else {
+    await runner.run("gh", ["api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/heads/${branch}`, "-f", `sha=${sha}`]);
+  }
+}
+
 export type Stack = "go" | "node";
 
 /** Tiny hardcoded table: a root file implies a stack. */
@@ -224,7 +248,7 @@ export async function applyPlan(runner: OnboardRunner, plan: OnboardPlan, log: (
   }
   const baseSha = (await runner.run("gh", ["api", `repos/${repo}/git/ref/heads/${plan.defaultBranch}`, "--jq", ".object.sha"])).trim();
   log(`Creating branch ${ONBOARD_BRANCH}`);
-  await runner.run("gh", ["api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/heads/${ONBOARD_BRANCH}`, "-f", `sha=${baseSha}`]);
+  await createOrResetBranch(runner, repo, ONBOARD_BRANCH, baseSha);
   for (const f of plan.files) {
     log(`Adding ${f.path}`);
     await runner.run("gh", [
