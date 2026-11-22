@@ -81,7 +81,7 @@ export interface PreviewResult {
   rawDiff: DiffLine[];
 }
 
-export type ProposeOutcome = { preview: PreviewResult } | { url: string } | { error: string };
+type ProposeOutcome = { preview: PreviewResult } | { url: string } | { error: string };
 
 export function csrfToken(): string {
   return document.querySelector<HTMLMetaElement>('meta[name="archangel-token"]')?.content ?? "";

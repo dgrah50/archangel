@@ -1,4 +1,4 @@
-import { Box, Checkbox, Flex, Text } from "@chakra-ui/react";
+import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
 import { useState } from "react";
 import type { PitchRow, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
@@ -26,9 +26,9 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
       <Page>
         <Notice tone="red">
           <Text textStyle="sm">{pitches.error}</Text>
-          <Text as="button" textStyle="sm" textDecoration="underline" onClick={onRetry}>
+          <Button size="sm" mt="2" onClick={onRetry}>
             Retry
-          </Text>
+          </Button>
         </Notice>
       </Page>
     );

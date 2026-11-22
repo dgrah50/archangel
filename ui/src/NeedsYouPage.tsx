@@ -124,7 +124,7 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
           <Box as="span" color="owner">
             {cap(i.decisionClass)}
           </Box>
-          {" · "}Waiting {gap(now - i.since)} · <Box as="span" fontFamily="mono">{i.code}</Box>
+          {" · "}Waiting {gap(now - i.since)} · <Text as="span" textStyle="ref">{i.code}</Text>
         </Text>
       </Flex>
       <Flex direction="column" gap="2" p="6" rounded="20px" bg="bg.muted">

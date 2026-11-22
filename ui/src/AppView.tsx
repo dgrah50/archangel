@@ -10,7 +10,7 @@ import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
-import { Page, PageHeadline } from "./page";
+import { Page } from "./page";
 import { PitchesPage } from "./PitchesPage";
 import type { PitchesState } from "../../src/core/ui-pitches.js";
 import { Pipeline } from "./Pipeline";
