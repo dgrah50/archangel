@@ -60,6 +60,8 @@ export interface GitHubClient {
   listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]>;
   getIssue(issueNumber: number): Promise<GitHubIssue>;
   verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean>;
+  /** True only if the most recent `unlabeled` event for this label on the issue was made by `expectedOwnerId`. */
+  verifyLabelRemovedBy(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean>;
   getBranchTipSha(branch: string): Promise<string>;
   fileExistsAtRef?(ref: string, filePath: string): Promise<boolean>;
   listRepoLabels?(): Promise<string[]>;
@@ -279,6 +281,19 @@ export class GitHubAppClient implements GitHubClient {
       { useEtag: true },
     );
     return mapIssue(item);
+  }
+
+  async verifyLabelRemovedBy(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean> {
+    const events = await this.requestAllPages<Record<string, unknown>>(
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueNumber}/timeline?per_page=100`,
+      { useEtag: false },
+    );
+    let lastActorId: number | null = null;
+    for (const ev of events) {
+      if (ev.event !== "unlabeled") continue;
+      if (((ev.label ?? {}) as { name?: string }).name === labelName) lastActorId = Number(((ev.actor ?? {}) as { id?: number }).id ?? 0);
+    }
+    return lastActorId === expectedOwnerId;
   }
 
   async verifyLabelActor(
