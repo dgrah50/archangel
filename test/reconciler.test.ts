@@ -569,6 +569,8 @@ describe("Work classes (owner-labelled features)", () => {
       expect(h.github.prs.get(100)?.merged).toBe(false);
       const recap = (h.github.comments.get(100) ?? []).at(-1) ?? "";
       expect(recap).toContain("Feature: owner merges");
+      expect(recap).not.toContain("WOULD MERGE");
+      expect(h.ledger.getShadowStats().total).toBe(0);
     } finally {
       h.cleanup();
     }
