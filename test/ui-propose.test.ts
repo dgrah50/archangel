@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective } from "../src/core/ui-propose.js";
+import { listAllSkills } from "../src/core/skills.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
