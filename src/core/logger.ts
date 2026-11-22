@@ -32,6 +32,7 @@ export const NOOP_LOGGER: Logger = {
  */
 export class ArchangelLogger implements Logger {
   private readonly logFilePath?: string;
+  private lastSinkWarnAt = 0;
   private readonly consoleOutput: boolean;
 
   constructor(opts: { logFilePath?: string; consoleOutput?: boolean } = {}) {
@@ -89,8 +90,13 @@ export class ArchangelLogger implements Logger {
     if (this.logFilePath) {
       try {
         fs.appendFileSync(this.logFilePath, `${JSON.stringify(record)}\n`, "utf8");
-      } catch {
-        // Never crash reconciler on log disk write error
+      } catch (err) {
+        // Never crash the reconciler on a log disk write error, but do not drop the JSONL sink silently: warn on stderr at most once a minute.
+        const at = Date.now();
+        if (at - this.lastSinkWarnAt >= 60_000) {
+          this.lastSinkWarnAt = at;
+          console.error(`[archangel] log file write failed (${this.logFilePath}): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   }

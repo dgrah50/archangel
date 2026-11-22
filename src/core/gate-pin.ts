@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { REPO_SLUG_RE } from "../config.js";
 import path from "node:path";
-import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } from "./onboard.js";
+import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, exitedOne, pinnedSha, type OnboardRunner } from "./onboard.js";
 import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
@@ -51,8 +51,9 @@ export async function assessPinDrift(
   } else if (pin !== latest) {
     let known = true;
     try {
-      await runner.run("git", ["cat-file", "-e", `${pin}^{commit}`], { cwd: root });
-    } catch {
+      await runner.run("git", ["rev-parse", "--verify", "--quiet", `${pin}^{commit}`], { cwd: root });
+    } catch (err) {
+      if (!exitedOne(err)) throw err;
       known = false;
     }
     if (!known) {
@@ -61,12 +62,14 @@ export async function assessPinDrift(
       try {
         await runner.run("git", ["merge-base", "--is-ancestor", pin, latest], { cwd: root });
         reasons.push(`pin ${pin.slice(0, 10)} is older than the latest gate-relevant commit ${latest.slice(0, 10)}`);
-      } catch {
+      } catch (err) {
+        if (!exitedOne(err)) throw err;
         // Not older than latest. It must also descend from latest: a pin on a divergent (unmerged) line
         // is unreviewed gate code, not "newer".
         try {
           await runner.run("git", ["merge-base", "--is-ancestor", latest, pin], { cwd: root });
-        } catch {
+        } catch (err2) {
+          if (!exitedOne(err2)) throw err2;
           reasons.push(`pin ${pin.slice(0, 10)} is not a descendant of the latest gate-relevant commit ${latest.slice(0, 10)} (divergent history)`);
         }
       }
