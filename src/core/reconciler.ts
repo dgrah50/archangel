@@ -1308,12 +1308,46 @@ export class Reconciler {
       blockers.every((b) => b.code === "shadow_mode_active" || b.code === "branch_behind_main") &&
       blockers.some((b) => b.code === "shadow_mode_active");
 
-    // Handle merge conflicts or stale base with 1 automated rebase Attempt (autonomous non-shadow mode only!).
+    // Handle merge conflicts or stale base: prefer deterministic Broker rebase when merge-tree is clean (0 LLM tokens!).
     if (
       !shadowReadyWithBehind &&
       blockers.some((b) => b.code === "merge_conflict" || b.code === "branch_behind_main") &&
       thread.mode === "autonomous"
     ) {
+      if (
+        mergeTreeClean &&
+        !blockers.some((b) => b.code === "merge_conflict") &&
+        thread.rebaseCount < this.cfg.maxRebasesPerThread
+      ) {
+        const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
+        if (rebased.ok) {
+          const remoteUrl = await this.github.getRemoteUrlWithToken();
+          await this.broker.pushFactoryBranch(thread.branchName, rebased.headSha, remoteUrl);
+          this.ledger.recordPushedSha(rebased.headSha, thread.issueNumber, "broker", now);
+          const moved = this.applyMachineEvent(
+            thread,
+            {
+              t: "head_moved",
+              pr: { prNumber: pr.number, headSha: rebased.headSha, baseSha: mainSha },
+              now,
+            },
+            {
+              incRebase: true,
+              auditTopic: "broker/deterministic_rebase",
+              auditPayload: { oldSha: pr.headSha, newSha: rebased.headSha, mainSha },
+              now,
+            },
+          );
+          if (moved) {
+            this.logger?.info(
+              "broker/deterministic_rebase",
+              `Rebased ${thread.branchName} onto ${mainSha.slice(0, 8)} -> ${rebased.headSha.slice(0, 8)} (0 LLM tokens)`,
+              { repo: this.ledger.repo, issue: thread.issueNumber },
+            );
+          }
+          return;
+        }
+      }
       if (
         issue &&
         thread.rebaseCount < this.cfg.maxRebasesPerThread &&
