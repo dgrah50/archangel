@@ -277,7 +277,16 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       expect(github.rerunCalls).toEqual([77]);
       expect(ledger.getCircuitBreaker().tripped).toBe(false);
 
-      // Tick 4: still failing -> trips circuit breaker + opens exact-inverse revert PR + notifies!
+      // Tick 3b: GitHub still shows the run we asked to rerun (same id): that is not a verdict yet.
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getCircuitBreaker().tripped).toBe(false);
+      expect(github.prs.size).toBe(1); // only the merged PR, no revert yet
+
+      // Tick 4: the rerun produced a NEW run that also failed -> trips circuit breaker + opens exact-inverse revert PR + notifies!
+      github.checks.set(mainAfter, [
+        { id: 79, name: "Test (ubuntu-latest)", status: "completed", conclusion: "failure", appSlug: "github-actions" },
+        { id: 78, name: "Test (macos-latest)", status: "completed", conclusion: "success", appSlug: "github-actions" },
+      ]);
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getCircuitBreaker().tripped).toBe(true);
       const revertPr = [...github.prs.values()].find((p) => p.headRef === "factory/revert-5");
@@ -560,6 +569,8 @@ describe("Work classes (owner-labelled features)", () => {
       expect(h.github.prs.get(100)?.merged).toBe(false);
       const recap = (h.github.comments.get(100) ?? []).at(-1) ?? "";
       expect(recap).toContain("Feature: owner merges");
+      expect(recap).not.toContain("WOULD MERGE");
+      expect(h.ledger.getShadowStats().total).toBe(0);
     } finally {
       h.cleanup();
     }
