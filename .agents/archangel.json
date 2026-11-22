@@ -81,7 +81,8 @@
       "src/core/ui-accounts.ts",
       "src/core/plan.ts",
       "src/core/signals.ts",
-      "src/core/signal-kinds.ts"
+      "src/core/signal-kinds.ts",
+      "src/core/signal-rules.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

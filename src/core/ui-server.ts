@@ -18,7 +18,7 @@ import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
 import { listAllSkills } from "./skills.js";
 import { makeGhReads, type GhRead } from "./ui-gh.js";
-import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits } from "./ui-state.js";
+import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits, readSignalRules } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -161,7 +161,7 @@ export async function startUiServer(
         return;
       }
       if (pathname === "/api/workflows") {
-        const body = JSON.stringify(buildWorkflowsState(ledger));
+        const body = JSON.stringify(buildWorkflowsState(ledger, Date.now(), readSignalRules(opts.configPath)));
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;
