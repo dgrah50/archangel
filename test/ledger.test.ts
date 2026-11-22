@@ -106,3 +106,22 @@ describe("Ledger (CAS transitions, daemon lock, budget reservations, multi-proje
     }
   });
 });
+
+describe("Ledger outbox ordering", () => {
+  it("keeps delivering new effects when 50 older effects keep failing", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
+      const effects = Array.from({ length: 51 }, (_, i) => ({ kind: "add_label" as const, issueNumber: i + 1, label: "needs-you" }));
+      const t = ledger.getThread(1)!;
+      ledger.transition(1, t.version, { kind: "queued" }, { effects });
+      const first = ledger.listOutbox();
+      expect(first).toHaveLength(50);
+      for (const row of first) ledger.failOutbox(row.id, "poison");
+      const next = ledger.listOutbox().map((r) => r.effect);
+      expect(next[0]).toMatchObject({ issueNumber: 51 });
+    } finally {
+      ledger.close();
+    }
+  });
+});
