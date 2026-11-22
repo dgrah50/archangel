@@ -1,6 +1,8 @@
 import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 import { Dashboard } from "./Dashboard";
+import { NeedsYouPage } from "./NeedsYouPage";
+import { ThreadsPage } from "./ThreadsPage";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
 import { Shell } from "./Shell";
@@ -107,6 +109,8 @@ export function AppView({
         ))}
       </Box>
       {route.page === "overview" ? <Dashboard state={state.data} /> : null}
+      {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
+      {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
