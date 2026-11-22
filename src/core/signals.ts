@@ -9,6 +9,8 @@ import { actionAllowed, ruleKey, type SignalRule, type SignalsConfig } from "./s
 
 /** Signals older than this are never actioned, and an adapter with no watermark reads back this far. */
 export const SIGNAL_LOOKBACK_MS = 7 * 86_400_000;
+/** The research fetcher runs at most this often. */
+const RESEARCH_EVERY_MS = 86_400_000;
 /** An adapter polls GitHub at most this often. */
 export const SIGNAL_POLL_MS = 10 * 60_000;
 
@@ -23,6 +25,7 @@ const PAYLOADS = {
       ghsaId: z.string().regex(/^GHSA(-[a-z0-9]{4}){3}$/),
     })
     .strict(),
+  research: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), results: z.number().int().min(1).max(1000) }).strict(),
   schedule: z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/), slot: z.string().regex(/^[0-9a-zA-Z-]{1,20}$/) }).strict(),
   telemetry_anomaly: z
     .object({
@@ -67,6 +70,8 @@ export async function ingestSignals(opts: {
   /** Kinds somebody listens to: the others are not polled. */
   wanted: ReadonlySet<SignalKind>;
   schedules: ReadonlyArray<{ name: string; every: "daily" | "weekly" }>;
+  /** The research fetcher (O1), present only when the owner wrote topics. Resolves to how many new results it stored. */
+  research?: () => Promise<number>;
   now: number;
   onError: (adapter: string, err: unknown) => void;
 }): Promise<void> {
@@ -103,6 +108,24 @@ export async function ingestSignals(opts: {
       ledger.setSignalWatermark("telemetry:anomaly", now, now);
     } catch (err) {
       opts.onError("telemetry:anomaly", err);
+    }
+  }
+
+  // Research runs once a day, and only when a rule listens for it. Whatever happens, the next try is tomorrow: the daily fetch cap is not a retry budget.
+  if (opts.research && wanted.has("research")) {
+    const mark = ledger.getSignalWatermark("research:fetch");
+    if (!mark || now - mark.polledAt >= RESEARCH_EVERY_MS) {
+      try {
+        const stored = await opts.research();
+        if (stored > 0) {
+          const day = formatDayKey(now, ledger.dayTimeZone);
+          recordSignal(ledger, "research", day, { day, results: Math.min(stored, 1000) }, now);
+        }
+      } catch (err) {
+        opts.onError("research:fetch", err);
+      } finally {
+        ledger.setSignalWatermark("research:fetch", mark?.watermark ?? now, now);
+      }
     }
   }
 

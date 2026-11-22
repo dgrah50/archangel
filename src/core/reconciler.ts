@@ -37,6 +37,7 @@ import { capturePrShots, getPrShots, setPrShots } from "./pr-shots.js";
 import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
+import { fetchResearch } from "./research.js";
 import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadRepoInstructions, loadWorkflow, workflowError } from "./workflow-load.js";
@@ -431,6 +432,10 @@ export class Reconciler {
           defaultBranch: this.cfg.defaultBranch,
           wanted: wantedKinds(this.cfg.signals, this.ledger.repo),
           schedules: this.cfg.signals.schedules,
+          research:
+            this.cfg.research.topics.length > 0
+              ? () => fetchResearch({ ledger: this.ledger, github: this.github, cfg: this.cfg.research, now })
+              : undefined,
           now,
           onError: (adapter, err) => this.recordFault(`signals:${adapter}`, err, now),
         });

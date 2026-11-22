@@ -205,6 +205,18 @@ export interface AuditLogEntry {
 
 export type SignalTaint = "owner" | "mechanical" | "untrusted";
 
+export interface ResearchRow {
+  id: number;
+  source: string;
+  template: number;
+  topic: string;
+  title: string;
+  url: string;
+  date: string;
+  snippet: string;
+  fetchedAt: number;
+}
+
 export interface SignalRecord {
   id: number;
   repo: string;
@@ -549,6 +561,29 @@ CREATE TABLE IF NOT EXISTS signal_watermarks (
   polled_at INTEGER NOT NULL,
   PRIMARY KEY (repo, adapter)
 );
+
+-- Research (O1): public-internet results the host fetched. Closed shape; every field is sanitized and secret-scanned before it lands here.
+CREATE TABLE IF NOT EXISTS research_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,
+  template INTEGER NOT NULL,
+  topic TEXT NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  date TEXT NOT NULL,
+  snippet TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  UNIQUE (repo, url)
+);
+-- One row per outbound research request: the daily fetch cap counts these.
+CREATE TABLE IF NOT EXISTS research_fetches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_fetches_day ON research_fetches(repo, day_key);
 
 -- Telemetry: the factory's own measurements, local only. name and tags are closed enums (see core/telemetry-events.ts); never free text.
 CREATE TABLE IF NOT EXISTS telemetry (
