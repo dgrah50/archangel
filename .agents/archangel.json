@@ -59,5 +59,8 @@
         "typescript/type-holes"
       ]
     }
-  ]
+  ],
+  "landing": {
+    "bugfix": "autonomous"
+  }
 }
