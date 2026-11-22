@@ -1199,7 +1199,11 @@ export class Reconciler {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
 
+      // The implementer said it did not finish (budget or turn limit, an execution error): an explicit failed Attempt, with its cost.
+      if (result.failure && !result.aborted) throw new Error(`implementer ended with ${result.failure}`);
+
       // The repo may have been halted while the implementer ran: treat that like a control abort.
+
       if (result.aborted || !this.workflow) {
         const cause = task.abortCause ?? (this.workflow ? "timeout" : "control");
         this.ledger.finishAttempt(attemptId, {
