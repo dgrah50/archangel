@@ -40,7 +40,9 @@
       "src/core/workflow-load.ts",
       "src/core/gate-pin.ts",
       "src/core/workflow-propose.ts",
-      "src/core/ui-propose.ts"
+      "src/core/ui-propose.ts",
+      "src/core/pitch.ts",
+      "test/protected-paths.test.ts"
     ]
   },
   "requiredChecks": [
