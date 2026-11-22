@@ -23,10 +23,12 @@ import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
-import { runScoutsForProject, scoutContentHash } from "./scout.js";
+import { defaultScoutCliInvoker, runScoutsForProject, scanForSecrets, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
+import { shouldAutoOff } from "./factory-retry.js";
+import { buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
 import {
   classifyGate,
   deriveControl,
@@ -53,6 +55,8 @@ export interface ReconcilerDeps {
   notifier: Notifier;
   logger?: Logger;
   workerId?: string;
+  /** Runs the read-only triage CLI; defaults to the Scout sandbox invoker. Tests pass a fake. */
+  triageInvoker?: ScoutCliInvoker;
 }
 
 interface RunningTask {
@@ -108,6 +112,7 @@ export class Reconciler {
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
+  private readonly triageInvoker: ScoutCliInvoker;
 
   /** The resolved workflow, or an error when the repo is halted: nothing falls back to defaults. */
   private requireWorkflow(): OkWorkflow {
@@ -134,6 +139,7 @@ export class Reconciler {
     this.notifier = deps.notifier;
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.workerId = deps.workerId ?? `archangel-${process.pid}`;
+    this.triageInvoker = deps.triageInvoker ?? defaultScoutCliInvoker;
   }
 
   activeTaskCount(): number {
@@ -211,6 +217,7 @@ export class Reconciler {
     this.workflow = resolved.status === "ok" ? resolved : null;
 
     if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
+    if (resolved.status === "ok") await this.checkFactoryAutoOff(resolved, now);
 
     const noticeKey = `policy_error_notified:${this.ledger.repo}`;
     if (policyError) {
@@ -672,6 +679,7 @@ export class Reconciler {
       incImplement?: boolean;
       incRevision?: boolean;
       incRebase?: boolean;
+      factoryTriage?: "pending" | "done";
       auditTopic?: string;
       auditPayload?: unknown;
       now?: number;
@@ -685,9 +693,17 @@ export class Reconciler {
     if (!stepped.ok) {
       return null;
     }
+    // Hold back the Needs You for an escalation triage may still resolve: no label and no notification until triage says escalate.
+    const hold =
+      (ev.t === "escalate" || ev.t === "attempt_failed") &&
+      stepped.next.kind === "needs_you" &&
+      isTriageEligible(ev.code) &&
+      this.triageCandidate(thread);
     const updated = this.ledger.transition(thread.issueNumber, thread.version, stepped.next, {
       nextMode: stepped.nextMode,
-      effects: stepped.effects,
+      effects: hold ? stepped.effects.filter((e) => e.kind !== "notify_needs_you" && e.kind !== "add_label") : stepped.effects,
+      // An owner answering a held-back escalation ends triage for this Thread.
+      ...(hold ? { factoryTriage: "pending" as const } : (ev.t === "owner_retry" || ev.t === "owner_abandon") && thread.factoryTriage === "pending" ? { factoryTriage: "done" as const } : {}),
       ...extra,
     });
     if (updated && updated.phase.kind !== thread.phase.kind) {
@@ -705,6 +721,154 @@ export class Reconciler {
       );
     }
     return updated;
+  }
+
+  /** The repo opted in (`escalations.factoryRetry: "once"`), the host allows it, and the repo's auto-off has not tripped. */
+  private factoryRetryOn(): boolean {
+    if (this.workflow?.factoryRetry.value !== "once") return false;
+    const off = this.ledger.lastFactoryAutoOff();
+    return !(off && off.workflowSha === this.workflow.fileSha256);
+  }
+
+  /** May this Thread still use its factory retry, and does the repo still have daily allowance? Owner action ends it for good. */
+  private triageCandidate(thread: ThreadRecord): boolean {
+    return (
+      this.factoryRetryOn() &&
+      thread.mode === "autonomous" &&
+      thread.factoryTriage === null &&
+      thread.factoryRetries < KERNEL.factoryRetriesPerThread &&
+      thread.retryGrants === 0 &&
+      thread.ownerReply === null &&
+      this.ledger.factoryRetriesInLast24h() < KERNEL.factoryRetriesPerRepoPerDay
+    );
+  }
+
+  /** Ends a held-back escalation: the Needs You goes out now, with triage's reason attached. */
+  private releaseTriage(thread: ThreadRecord, why: string, cause: string, now: number): void {
+    if (thread.phase.kind !== "needs_you") return;
+    const reason = `${thread.phase.reason} Triage: ${why}`.slice(0, 1500);
+    this.ledger.releaseFactoryTriage(
+      thread.issueNumber,
+      [
+        { kind: "add_label", issueNumber: thread.issueNumber, label: this.cfg.labels.needsYou },
+        { kind: "notify_needs_you", issueNumber: thread.issueNumber, title: thread.title, reason, code: thread.phase.code },
+      ],
+      { code: thread.phase.code, cause, why },
+      now,
+    );
+  }
+
+  /**
+   * One read-only triage pass for a held-back escalation. Guidance spends the Thread's single factory retry and runs one Attempt
+   * with the guidance as a labelled machine note; anything else (an escalate answer, an invalid or unsafe answer, a failed run, no
+   * eligible vendor) releases the Needs You. Triage never approves, overrules a veto, grants budget or merges.
+   */
+  private async runTriage(thread: ThreadRecord, issue: GitHubIssue | undefined, mainSha: string, now: number): Promise<void> {
+    if (thread.phase.kind !== "needs_you" || thread.factoryTriage !== "pending") return;
+    const phase = thread.phase;
+    if (!isTriageEligible(phase.code) || !issue || !this.factoryRetryOn() || thread.mode !== "autonomous") {
+      this.releaseTriage(thread, "factory retry is not available for this Thread.", "unavailable", now);
+      return;
+    }
+    if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: stay held, do not escalate
+    if (await this.autonomyCapReached(now)) {
+      this.releaseTriage(thread, "the autonomy cap is reached.", "autonomy_cap", now);
+      return;
+    }
+    const code: TriageEligibleCode = phase.code;
+    const headSha = phase.headSha ?? null;
+    const reviews = headSha ? this.ledger.getReviewsForSha(thread.issueNumber, headSha) : [];
+    const reviewFacts = reviews.map((r) => ({ vendor: r.vendor, verdict: r.verdict, findings: JSON.parse(r.findingsJson) as ReviewFinding[] }));
+    const vetoes = reviews.filter((r) => r.verdict !== "approve");
+    const choice = pickTriageProvider(this.cfg.chains.triage, {
+      code,
+      vetoers: vetoes.map((r) => r.vendor),
+      implementerVendors: thread.implementerVendors,
+    });
+    if (!choice) {
+      this.releaseTriage(thread, "no triage vendor is eligible (it must not be the implementer's, and for a veto must be one that vetoed).", "no_vendor", now);
+      return;
+    }
+    let verdict: Awaited<ReturnType<typeof validateTriage>>;
+    let cloneDir = "";
+    try {
+      const diffText = headSha ? (await this.broker.getDiffAndTouchedFiles(mainSha, headSha)).diffText : "";
+      cloneDir = await this.broker.createThrowawayClone(thread.issueNumber, headSha ?? mainSha);
+      const raw = await this.triageInvoker({
+        provider: choice.provider,
+        model: choice.model,
+        cloneDir,
+        prompt: buildTriagePrompt({ issueNumber: issue.number, title: issue.title, body: issue.body, code, reason: phase.reason, diffText, summary: thread.lastSummary, reviews: reviewFacts }),
+        maxProposals: 0,
+        timeoutMs: TRIAGE_TIMEOUT_MS,
+        outputSchema: TRIAGE_JSON_SCHEMA,
+      });
+      const at = headSha ?? mainSha;
+      verdict = await validateTriage(
+        raw,
+        {
+          isProtected: (p) => isProtectedPath(p, this.effectiveGate.extraProtectedPaths),
+          existsAtHead: async (p) => (await this.broker.readFileAtRef(at, p)) !== null,
+          isExistingTest: async (p) => isTestFile(p, this.effectiveGate) && (await this.broker.readFileAtRef(mainSha, p)) !== null,
+          scanSecrets: scanForSecrets,
+        },
+        choice.vendor,
+      );
+    } catch (err) {
+      this.releaseTriage(thread, `the triage run failed (${err instanceof Error ? err.message : String(err)}).`.slice(0, 600), "run_failed", now);
+      return;
+    } finally {
+      if (cloneDir) this.broker.removeClone(cloneDir);
+    }
+    this.ledger.appendAudit("factory/triage", thread.issueNumber, "factory", { code, vendor: choice.vendor, action: verdict.action, cause: verdict.cause }, now);
+    if (verdict.action === "escalate") {
+      this.releaseTriage(thread, `${verdict.cause}: ${verdict.reason}`, verdict.cause, now);
+      return;
+    }
+    const claimed = this.ledger.claimFactoryRetry(
+      thread.issueNumber,
+      { code, guidance: verdict.note, perThread: KERNEL.factoryRetriesPerThread, perRepoPerDay: KERNEL.factoryRetriesPerRepoPerDay },
+      now,
+    );
+    if (!claimed) {
+      this.releaseTriage(thread, "the factory retry is no longer available.", "retry_unavailable", now);
+      return;
+    }
+    const resumed = this.applyMachineEvent(thread, { t: "factory_retry" }, { factoryTriage: "done", auditTopic: "factory/resumed", now });
+    if (!resumed) return; // lost the compare-and-set: the next tick finds the retry spent and escalates
+    await this.spawnAttempt(
+      resumed,
+      issue,
+      code === "attempt_failed" ? "implement" : "revise",
+      mainSha,
+      code === "gate_failed" ? [phase.reason] : [],
+      vetoes.map((r) => ({ vendor: r.vendor, findings: JSON.parse(r.findingsJson) as ReviewFinding[] })),
+      now,
+      undefined,
+      true,
+    );
+  }
+
+  /** Switches factory retry off for this repo (one Needs You) when its recent retries say it is doing harm. */
+  private async checkFactoryAutoOff(wf: OkWorkflow, now: number): Promise<void> {
+    if (wf.factoryRetry.value !== "once") return;
+    const last = this.ledger.lastFactoryAutoOff();
+    if (last && last.workflowSha === wf.fileSha256) return; // already off for this version of the workflow file
+    const verdict = shouldAutoOff(this.ledger.factoryRetryOutcomes({ afterAuditId: last?.auditId ?? 0 }));
+    if (!verdict.off) return;
+    const policy = MAIN_ESCALATION_POLICY.factory_retry_disabled;
+    try {
+      await this.notifier.notifyNeedsYou({
+        issueNumber: null,
+        title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: factory retry switched off`,
+        reason: verdict.why,
+        decisionClass: formatDecisionClass(policy.decisionClass),
+        recommendation: policy.recommendation,
+      });
+      this.ledger.recordFactoryAutoOff(wf.fileSha256, verdict.why, now);
+    } catch (err) {
+      this.logger.warn("factory/auto_off_notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+    }
   }
 
   /**
@@ -905,6 +1069,10 @@ export class Reconciler {
       const afterCommands = await this.processOwnerCommands(thread, issue, now);
       if (afterCommands === "stop") return;
       if (afterCommands) thread = afterCommands;
+    }
+    if (thread.phase.kind === "needs_you" && thread.factoryTriage === "pending") {
+      await this.runTriage(thread, issue, mainSha, now);
+      return;
     }
     if (thread.phase.kind === "needs_you") {
       // A missing label only means "owner removed it" once our own add_label has been delivered; while it is
@@ -1149,7 +1317,7 @@ export class Reconciler {
       },
       {
         incImplement: !factoryRetry,
-        incRevision: kind === "revise",
+        incRevision: kind === "revise" && !factoryRetry,
         incRebase: kind === "rebase",
         auditTopic: "thread/working",
         now,
@@ -1935,7 +2103,7 @@ export class Reconciler {
     mainSha: string,
     now: number,
   ): Promise<boolean> {
-    if (this.workflow?.factoryRetry.value !== "once" || thread.mode !== "autonomous") return false;
+    if (!this.factoryRetryOn() || thread.mode !== "autonomous") return false;
     if (thread.factoryRetries >= KERNEL.factoryRetriesPerThread || thread.retryGrants > 0 || thread.ownerReply !== null) return false;
     if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return true; // all slots busy: wait, do not escalate
     if (await this.autonomyCapReached(now)) return true;

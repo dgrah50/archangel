@@ -26,6 +26,7 @@ const thread: ThreadRecord = {
   retryGrants: 0,
   factoryRetries: 0,
   factoryGuidance: null,
+  factoryTriage: null,
   workflowSha256: null,
   createdAt: 0,
   updatedAt: 0,

@@ -53,6 +53,8 @@
       "src/core/pitch-expiry.ts",
       "src/core/corrections.ts",
       "src/core/pitch-machine.ts",
+      "src/core/triage.ts",
+      "src/core/factory-retry.ts",
       "src/core/eval.ts",
       "src/core/eval-candidate.ts",
       "src/core/ui-thread.ts",

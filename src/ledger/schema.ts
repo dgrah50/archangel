@@ -46,6 +46,8 @@ export interface ThreadRecord {
   factoryRetries: number;
   /** Machine-written note for the factory retry's Attempt: kept apart from `ownerReply`, shown to the implementer only, cleared by an owner retry. */
   factoryGuidance: string | null;
+  /** `pending`: escalated to Needs You but held back (no label, no notification) while triage decides; `done`: triage has run. */
+  factoryTriage: "pending" | "done" | null;
   /** sha256 of the workflow file (`.agents/archangel.json`) in force when the Thread was created. */
   workflowSha256: string | null;
   createdAt: number;
@@ -177,6 +179,7 @@ CREATE TABLE IF NOT EXISTS threads (
   retry_grants INTEGER NOT NULL DEFAULT 0,
   factory_retries INTEGER NOT NULL DEFAULT 0,
   factory_guidance TEXT,
+  factory_triage TEXT CHECK (factory_triage IN ('pending', 'done')),
   workflow_sha256 TEXT,
   /** The issue text as it was at intake (replay and eval show it to the reviewers). Null for Threads from before it was kept. */
   issue_body TEXT,
