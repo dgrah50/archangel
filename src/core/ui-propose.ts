@@ -31,6 +31,7 @@ export function draftFromEffective(wf: OkWorkflow): Workflow {
       testCmd: g.testCmd,
       baseTestCmd: g.baseTestCmd,
       testBuildCmd: g.testBuildCmd,
+      junitReport: g.junitReport,
       protectedPaths: g.extraProtectedPaths,
     },
     requiredChecks: wf.requiredChecks,
@@ -38,6 +39,7 @@ export function draftFromEffective(wf: OkWorkflow): Workflow {
     landing: { bugfix: wf.landingBugfix.declared ?? wf.landingBugfix.value },
     scouts: wf.scouts.map((s) => ({
       name: s.name,
+      kind: s.kind,
       schedule: s.schedule,
       maxProposals: s.maxProposals,
       skills: s.skills,

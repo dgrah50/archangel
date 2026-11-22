@@ -11,7 +11,7 @@ import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective, lineDiff, previewDraft } from "../src/core/ui-propose.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { buildWorkflowsState } from "../src/core/ui-state.js";
-import { resolveWorkflow } from "../src/core/workflow.js";
+import { Workflow, resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
 import { PreviewView, WorkflowEditor } from "../ui/src/WorkflowEditor.js";
 import { fromForm, toForm } from "../ui/src/workflow-draft.js";
@@ -242,5 +242,52 @@ describe("workflow editor UI", () => {
     d.review = { rubric: "<script>alert(1)</script>" };
     const out = html(createElement(WorkflowEditor, { repo: "a/b", initial: d, baseFileSha256: "0".repeat(64) }));
     expect(out).not.toContain("<script>alert(1)</script>");
+  });
+});
+
+describe("the editor's draft keeps every field of the current workflow", () => {
+  it("carries gate.junitReport and a Scout's kind, so saving an unrelated edit neither drops the JUnit proof nor turns a pitch Scout into a bug Scout", () => {
+    const wf = resolveWorkflow(hostInput(), {
+      repo: "a/b",
+      mainSha: "m".repeat(40),
+      fileRaw: JSON.stringify(
+        workflowFile([{ name: "weekly-pitch", kind: "pitch", schedule: "weekly", maxProposals: 1 }], {
+          gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", junitReport: "reports/*.xml" },
+        }),
+      ),
+      scoutPrompts: { "weekly-pitch": "p" },
+    });
+    if (wf.status !== "ok") throw new Error("not ok");
+    const d = draftFromEffective(wf);
+    expect(d.gate.junitReport).toBe("reports/*.xml");
+    expect(d.scouts[0]!.kind).toBe("pitch");
+    // an edit to an unrelated field must classify as exactly that change, never a silent drop
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    l.setSystemState("workflow:a/b", JSON.stringify(wf));
+    const next = structuredClone(d) as any;
+    next.gate.maxFiles = 3;
+    expect(previewDraft(l, "a/b", next, wf.fileSha256).changes.map((c) => c.field)).toEqual(["gate.maxFiles"]);
+    // and dropping the report in the draft is visible as a loosening
+    const dropped = structuredClone(d) as any;
+    delete dropped.gate.junitReport;
+    expect(previewDraft(l, "a/b", dropped, wf.fileSha256).changes).toEqual([{ field: "gate.junitReport", direction: "loosen" }]);
+  });
+
+  it("round-trips a workflow that sets every optional field (a guard against new schema fields being dropped)", () => {
+    const file = {
+      version: 1,
+      gate: {
+        maxNonTestLines: 100, maxTotalLines: 200, maxFiles: 4, baseTestRuns: 4, headTestRuns: 3,
+        testFileGlobs: ["t/**"], testDataGlobs: ["fx/**"], testCmd: "x", baseTestCmd: "y", testBuildCmd: "z",
+        junitReport: "r/*.xml", protectedPaths: ["p/**"],
+      },
+      requiredChecks: ["Gate", "Test"],
+      review: { rubric: "be careful" },
+      landing: { bugfix: "autonomous" },
+      scouts: [{ name: "s1", kind: "bug", schedule: "daily", maxProposals: 3, skills: ["general/bug-hunt"], includeMetrics: true, promotion: "auto" }],
+    };
+    const wf = resolveWorkflow(hostInput(), { repo: "a/b", mainSha: "m".repeat(40), fileRaw: JSON.stringify(file), scoutPrompts: { s1: "p" } });
+    if (wf.status !== "ok") throw new Error("not ok");
+    expect(draftFromEffective(wf)).toEqual(Workflow.parse(file));
   });
 });
