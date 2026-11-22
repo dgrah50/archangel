@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killGroup } from "./spawn-group.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { tryParseJson } from "./json.js";
@@ -291,27 +292,22 @@ export async function defaultScoutCliInvoker(input: {
       cwd: input.cloneDir,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
-    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, 2000);
+      killGroup(child);
     }, input.timeoutMs);
     child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
     child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
     child.on("error", (err) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       reject(err);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       try {
         if (code !== 0) {
           reject(new Error(`${input.provider} scout exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));

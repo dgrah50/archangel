@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { killGroup } from "../core/spawn-group.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -153,20 +154,18 @@ function defaultCliInvoker(input: {
       cwd: input.cloneDir,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
 
     let stdout = "";
     let stderr = "";
     let settled = false;
 
+    let killSent = false;
     const killChild = () => {
-      if (!child.killed) {
-        child.kill("SIGTERM");
-        // `child.killed` only says a signal was sent, not that the process exited: escalate unless it really has exited.
-        setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        }, 3000).unref();
-      }
+      if (killSent) return;
+      killSent = true;
+      killGroup(child, 3000);
     };
 
     const onAbort = () => killChild();

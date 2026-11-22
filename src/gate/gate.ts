@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
+import { execFileGroup } from "../core/spawn-group.js";
 import { GatePolicySchema, REPO_POLICY_PATH, type GatePolicy } from "../config.js";
 import type { WorkClass } from "../core/work-class.js";
 import { attributableTo, capIds, clearReports, readReports } from "./junit.js";
@@ -354,7 +355,7 @@ async function runShellCmd(
   env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; output: string; status: "passed" | "failed" | "timed_out" | "exec_error" }> {
   try {
-    const { stdout, stderr } = await execFileAsync("/bin/sh", ["-eu", "-c", cmd], {
+    const { stdout, stderr } = await execFileGroup("/bin/sh", ["-eu", "-c", cmd], {
       cwd,
       env,
       timeout: timeoutMs,
@@ -382,7 +383,7 @@ async function runLocalPreCommitHook(
   try {
     const cmd = passFilenames ? `${hook.entry} "$@"` : hook.entry;
     const args = passFilenames ? ["-eu", "-c", cmd, "--", ...files] : ["-eu", "-c", cmd];
-    const { stdout, stderr } = await execFileAsync("/bin/sh", args, {
+    const { stdout, stderr } = await execFileGroup("/bin/sh", args, {
       cwd,
       env,
       timeout: timeoutMs,
@@ -518,7 +519,7 @@ async function runRepoPreCommit(
     try {
       await execFileAsync("git", ["init", "-q"], { cwd: worktreeDir, env });
       await execFileAsync("git", ["add", "-A"], { cwd: worktreeDir, env });
-      await execFileAsync(
+      await execFileGroup(
         "pre-commit",
         ["run", "--config", remoteConfigPath, "--files", ...changedFiles],
         { cwd: worktreeDir, env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },

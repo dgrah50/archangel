@@ -451,10 +451,11 @@ describe("Gate red-on-base proof", () => {
     try {
       writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
       // On base (buggy add) this test hangs forever; on head it passes at once.
+      const pidFile = path.join(root, "hang.pid");
       writeFile(
         repoDir,
         "tests/hang.test.mjs",
-        'import { add } from "../calc.mjs";\nif (add(2, -5) !== -3) setInterval(() => {}, 1000);\n',
+        `import fs from "node:fs";\nimport { add } from "../calc.mjs";\nif (add(2, -5) !== -3) { fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000); }\n`,
       );
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "fix with a test that hangs on base"]);
@@ -462,6 +463,10 @@ describe("Gate red-on-base proof", () => {
       expect(rep.passed).toBe(false);
       expect(rep.violations.join(" ")).toContain("timed out");
       expect(rep.already_fixed).toBe(false);
+      // The timeout must kill the whole process group, not just the shell: the runner the shell started is dead too.
+      const pid = Number(fs.readFileSync(pidFile, "utf8"));
+      await new Promise((r) => setTimeout(r, 500));
+      expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

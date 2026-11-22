@@ -24,6 +24,7 @@
       "src/core/thread-machine.ts",
       "src/core/reconciler.ts",
       "src/core/scout.ts",
+      "src/core/spawn-group.ts",
       "templates/**",
       "workflows/**",
       "formal/**",
