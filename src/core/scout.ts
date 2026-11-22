@@ -15,6 +15,8 @@ import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
 import type { Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { buildClusterBlockFrom } from "./failure-clusters.js";
+import { FLEET_MINER_NAME } from "./fleet-scouts.js";
+import { FLEET_MINER_WINDOW_DAYS, buildFleetMinerBlock, provisionalLine, readSeeds, shortSha } from "./fleet-miner.js";
 import { syncPitchDecisions } from "./pitch-expiry.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
@@ -609,6 +611,13 @@ async function runPitchScout(opts: {
 
   const recent = ledger.recentPitchTitles(PITCH_DECLINE_WINDOW_DAYS, now);
   const metricsGiven = wf.includeMetrics ? new Set<string>(METRIC_KEYS) : new Set<string>();
+  // The fleet miner reads fleet-wide Ledger data and this repo's merged history; its loop guard excludes every metrics-fed Scout's Threads.
+  const miner = wf.name === FLEET_MINER_NAME;
+  const excludeScouts = opts.includeMetricsFrom.filter((w) => w.includeMetrics).map((w) => w.name);
+  const commits = miner ? await opts.broker.listRecentCommits(opts.mainSha, FLEET_MINER_WINDOW_DAYS, 40) : [];
+  const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
+  const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
+  const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
   const cloneDir = await opts.broker.createThrowawayClone(900_000 + Math.floor(Math.random() * 90_000), opts.mainSha);
   try {
     opts.logger?.info("scout/start", `Running pitch scout '${wf.name}' via ${opts.providerChoice.provider}`, { repo: ledger.repo });
@@ -623,14 +632,17 @@ async function runPitchScout(opts: {
         prompt: wf.prompt,
         declined: recent.map((r) => ({ title: r.title, reason: r.declineReason })),
         metricsBlock: wf.includeMetrics
-          ? buildMetricsBlockFrom(() =>
-              ledger.computeMetrics({
-                repo: ledger.repo,
-                sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,
-                now,
-                excludeScouts: opts.includeMetricsFrom.filter((w) => w.includeMetrics).map((w) => w.name),
-              }),
-            )
+          ? [
+              buildMetricsBlockFrom(() =>
+                ledger.computeMetrics({
+                  repo: miner ? null : ledger.repo,
+                  sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,
+                  now,
+                  excludeScouts,
+                }),
+              ),
+              ...(miner ? [buildClusterBlockFrom(ledger, { repo: null, now, excludeScouts }), minerBlock!] : []),
+            ].join("\n\n")
           : undefined,
       }),
       maxProposals: 1,
@@ -656,7 +668,11 @@ async function runPitchScout(opts: {
         ledger.appendAudit("pitch/dropped", null, wf.name, { reason: reason.slice(0, 200), title: pitch.title.slice(0, 60) }, now);
         continue;
       }
-      const body = renderPitchBody(pitch);
+      if (miner && !pitch.evidence.some((e) => (e.note.match(/\b[0-9a-f]{10}\b/g) ?? []).some((sha) => minedShas.has(sha)))) {
+        ledger.appendAudit("pitch/dropped", null, wf.name, { reason: "cites no mined commit", title: pitch.title.slice(0, 60) }, now);
+        continue;
+      }
+      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch)}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {
         ledger.appendAudit("pitch/vetoed", null, wf.name, { reason: veto.slice(0, 300), title: pitch.title.slice(0, 60) }, now);

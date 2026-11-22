@@ -242,6 +242,29 @@ export class GitBroker {
   }
 
   /**
+   * Commits reachable from `ref` over the last `sinceDays`, newest first, as SHA plus changed paths only (no subjects,
+   * bodies or diffs: those are free text). Capped at `max` commits.
+   */
+  async listRecentCommits(ref: string, sinceDays: number, max: number): Promise<Array<{ sha: string; paths: string[] }>> {
+    const out = await this.runGit(this.bareRepoPath, [
+      "log",
+      "--first-parent",
+      "--name-only",
+      "--no-renames",
+      `--since=${Math.floor(sinceDays)}.days.ago`,
+      `--max-count=${Math.floor(max)}`,
+      "--format=@@%H",
+      ref,
+    ]);
+    const commits: Array<{ sha: string; paths: string[] }> = [];
+    for (const line of out.split("\n")) {
+      if (line.startsWith("@@")) commits.push({ sha: line.slice(2), paths: [] });
+      else if (line.trim() && commits.length > 0) commits[commits.length - 1]!.paths.push(line.trim());
+    }
+    return commits;
+  }
+
+  /**
    * Runs the repository's `.agents/setup` script inside a fresh throwaway clone,
    * reading the script bytes strictly from `mainSha` (never from a PR branch)
    * under a throwaway HOME and scrubbed environment with no credentials.

@@ -177,7 +177,7 @@ export function buildClusterBlock(rows: ClusterRows | null, now: number): string
 /** Reads the Ledger and renders the block; if the read fails every figure reads `unavailable`, never an empty value. */
 export function buildClusterBlockFrom(
   ledger: Pick<Ledger, "listClusterRows">,
-  opts: { repo: string; now: number; excludeScouts: string[] },
+  opts: { repo: string | null; now: number; excludeScouts: string[] },
 ): string {
   let rows: ClusterRows;
   try {
