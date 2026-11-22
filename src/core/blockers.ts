@@ -6,6 +6,8 @@ export interface CheckStatus {
   status: "queued" | "in_progress" | "completed";
   conclusion: string | null;
   appSlug?: string | null;
+  /** The check's own title, summary and text as GitHub reports them (untrusted: anyone who can run CI writes it). */
+  output?: string;
 }
 
 export const TRUSTED_CHECK_APP_SLUG = "github-actions" as const;

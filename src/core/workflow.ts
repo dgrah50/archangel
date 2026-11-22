@@ -128,7 +128,14 @@ export const Workflow = z
     /** Must name `Gate` and at least one other CI check, or landing could never see main green. */
     requiredChecks: z.array(NonBlank),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
-    landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
+    landing: z
+      .object({
+        bugfix: z.enum(["owner", "autonomous"]).default("owner"),
+        /** `race`: when main goes red, one bounded fix-forward Attempt runs beside the automatic revert (which stays the default and the winner); the owner decides. `off` can only tighten. */
+        fixForward: z.enum(["off", "race"]).default("off"),
+      })
+      .strict()
+      .default({ bugfix: "owner", fixForward: "off" }),
     /** `owner`: a feature waits, after a machine-written plan, for the owner's `plan:approved` label before it is implemented. Bugfixes and chores never plan. `off` can only loosen. */
     features: z.object({ planApproval: z.enum(["off", "owner"]).default("off") }).strict().default({ planApproval: "off" }),
     /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
@@ -245,6 +252,7 @@ export type EffectiveWorkflow =
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
       planApproval: "off" | "owner";
+      fixForward: "off" | "race";
       preview: Preview | null;
       scouts: EffectiveScout[];
       /** Fleet Scouts this repo opted out of in its workflow file. */
@@ -343,6 +351,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     landingBugfix,
     factoryRetry,
     planApproval: wf.features.planApproval,
+    fixForward: wf.landing.fixForward,
     preview: wf.preview ?? null,
     scouts,
     fleetOptOut,
@@ -400,6 +409,10 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   if (!eq(prev.review.rubric, next.review.rubric)) add("review.rubric", "changed");
   if (prev.landing.bugfix !== next.landing.bugfix) {
     add("landing.bugfix", next.landing.bugfix === "autonomous" ? "loosen" : "tighten");
+  }
+
+  if (prev.landing.fixForward !== next.landing.fixForward) {
+    add("landing.fixForward", next.landing.fixForward === "race" ? "loosen" : "tighten");
   }
 
   if (prev.escalations.factoryRetry !== next.escalations.factoryRetry) {

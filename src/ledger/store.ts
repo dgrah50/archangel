@@ -265,6 +265,34 @@ export class Ledger {
     ).n;
   }
 
+  /**
+   * Claims the one fix-forward of a red-main incident (the merge that turned main red), atomically: refused when the incident
+   * already has one, or when the repo spent its daily factory-retry allowance. The claim is a `factory/retry` audit row (so it counts
+   * against that allowance) with no escalation code, which keeps it out of factory-retry outcomes and auto-off.
+   */
+  claimFixForward(mergeId: number, perRepoPerDay: number, now = Date.now()): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const key = `fix_forward:${this.repo}:${mergeId}`;
+      if (this.getSystemState(key) !== null) return false;
+      const today = this.db
+        .prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?")
+        .get(this.repo, now - 86_400_000) as { n: number };
+      if (today.n >= perRepoPerDay) return false;
+      this.setSystemState(key, "claimed", now);
+      this.appendAudit("factory/retry", null, "factory", { fixForward: true, mergeId }, now);
+      return true;
+    });
+    return tx.immediate();
+  }
+
+  /** The red merge a fix-forward Thread (by issue number) races a revert for, or null when the Thread is not a fix-forward. */
+  fixForwardMergeId(issueNumber: number, repo = this.repo): number | null {
+    const row = this.listAudit({ repo, topicPrefix: "fix_forward/started", issueNumber, limit: 1 })[0];
+    if (!row) return null;
+    const id = (JSON.parse(row.payloadJson) as { mergeId?: unknown }).mergeId;
+    return typeof id === "number" ? id : null;
+  }
+
   /** The latest auto-off of factory retry for this repo: the audit row id and the workflow file version it tripped under. */
   lastFactoryAutoOff(repo = this.repo): { auditId: number; workflowSha: string } | null {
     const r = this.db

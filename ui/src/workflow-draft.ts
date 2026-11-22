@@ -70,7 +70,7 @@ export function fromForm(form: DraftForm, original: Workflow): Workflow {
     },
     requiredChecks: unlines(form.requiredChecks),
     review: form.rubric.trim() ? { ...reviewRest, rubric: form.rubric } : reviewRest,
-    landing: { bugfix: form.landing },
+    landing: { ...original.landing, bugfix: form.landing },
     scouts: original.scouts.map((s) => ({ ...s, ...(byName.get(s.name) ?? {}) })),
   };
 }
