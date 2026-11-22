@@ -111,14 +111,14 @@ describe("onboard", () => {
     const f = fake({ tree: ["go.mod"] });
     await onboard(f.runner, "o/r", { log: () => {} });
     const m = f.mutating();
-    expect(m.filter((c) => c.includes("label create"))).toHaveLength(7);
+    expect(m.filter((c) => c.includes("label create"))).toHaveLength(8);
     expect(m.filter((c) => c.includes("-X PUT"))).toHaveLength(3);
     expect(m.filter((c) => c.includes("pr create"))).toHaveLength(1);
     expect(f.calls.some((c) => c.startsWith("gh pr merge"))).toBe(false);
   });
 
   it("is idempotent when the onboarding PR is already open", async () => {
-    const f = fake({ tree: ["go.mod"], labels: ["ready-for-agent", "factory:paused", "factory:stop", "needs-you", "factory:disagree", "agent-proposed", "class:feature"], openPr: "https://github.com/o/r/pull/9" });
+    const f = fake({ tree: ["go.mod"], labels: ["ready-for-agent", "factory:paused", "factory:stop", "needs-you", "factory:disagree", "agent-proposed", "agent-pitch", "class:feature"], openPr: "https://github.com/o/r/pull/9" });
     await onboard(f.runner, "o/r", { log: () => {} });
     expect(f.mutating()).toEqual([]);
   });

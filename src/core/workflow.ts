@@ -49,7 +49,9 @@ const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,48}$/);
 export const ScoutSpec = z
   .object({
     name: Slug,
-    schedule: z.enum(["daily", "manual"]).default("manual"),
+    /** `bug` Scouts file reproducible bugs; `pitch` Scouts file at most one owner-decided proposal a week. */
+    kind: z.enum(["bug", "pitch"]).default("bug"),
+    schedule: z.enum(["daily", "weekly", "manual"]).default("manual"),
     maxProposals: z.number().int().min(1).max(3).default(2),
     skills: z.array(z.string().regex(SKILL_REF_RE)).max(12).default([]),
     includeMetrics: z.boolean().default(false),
@@ -94,6 +96,12 @@ export const Workflow = z
     wf.scouts.forEach((s, i) => {
       if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["scouts", i, "name"], message: `duplicate scout name '${s.name}'` });
       seen.add(s.name);
+      // Kernel rules for pitch Scouts: no config can make one auto-promote, file more than one a run, or run daily.
+      if (s.kind === "pitch") {
+        if (s.promotion !== "owner") ctx.addIssue({ code: "custom", path: ["scouts", i, "promotion"], message: "a pitch Scout is never auto-promoted (promotion must be 'owner')" });
+        if (s.maxProposals !== 1) ctx.addIssue({ code: "custom", path: ["scouts", i, "maxProposals"], message: "a pitch Scout files at most 1 pitch per run (maxProposals must be 1)" });
+        if (s.schedule === "daily") ctx.addIssue({ code: "custom", path: ["scouts", i, "schedule"], message: "a pitch Scout must be 'weekly' or 'manual'" });
+      }
     });
   });
 export type Workflow = z.infer<typeof Workflow>;
@@ -117,7 +125,10 @@ function canonicalJson(value: unknown): string {
 
 /** sha256(canonical(spec) + "\n" + prompt): changes only when this Scout's own entry or prompt changes. */
 export function trustHash(spec: ScoutSpec, prompt: string): string {
-  return crypto.createHash("sha256").update(`${canonicalJson(spec)}\n${prompt}`, "utf8").digest("hex");
+  // `kind: "bug"` is the default: leaving it out keeps every existing Scout's hash (and its revocation state) unchanged.
+  const { kind, ...rest } = spec;
+  const hashed = kind === "bug" ? rest : spec;
+  return crypto.createHash("sha256").update(`${canonicalJson(hashed)}\n${prompt}`, "utf8").digest("hex");
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +312,7 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
     }
     if (old.promotion !== s.promotion) add(`scouts.${name}.promotion`, s.promotion === "auto" ? "loosen" : "tighten");
     if (old.includeMetrics !== s.includeMetrics) add(`scouts.${name}.includeMetrics`, s.includeMetrics ? "loosen" : "tighten");
-    for (const k of ["schedule", "maxProposals", "skills"] as const) {
+    for (const k of ["kind", "schedule", "maxProposals", "skills"] as const) {
       if (!eq(old[k], s[k])) add(`scouts.${name}.${k}`, "changed");
     }
   }
