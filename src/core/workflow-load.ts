@@ -62,6 +62,23 @@ export async function loadWorkflow(
   return resolved;
 }
 
+const INSTRUCTION_FILE_CAP = 32_768;
+
+/**
+ * The repo's AGENTS.md and CLAUDE.md at `ref` (the default branch tip, never the factory branch), each capped, or null if there is nothing to say.
+ * A CLAUDE.md made only of `@` imports adds nothing and is left out.
+ */
+export async function loadRepoInstructions(reader: WorkflowFileReader, ref: string): Promise<string | null> {
+  const sections: string[] = [];
+  for (const file of ["AGENTS.md", "CLAUDE.md"]) {
+    const raw = (await reader.readFileAtRef(ref, file))?.trim();
+    if (!raw || raw.split("\n").every((l) => !l.trim() || l.trim().startsWith("@"))) continue;
+    const body = raw.length > INSTRUCTION_FILE_CAP ? `${raw.slice(0, INSTRUCTION_FILE_CAP)}\n[truncated: ${file} is longer than ${INSTRUCTION_FILE_CAP} characters]` : raw;
+    sections.push(`### ${file}\n${body}`);
+  }
+  return sections.length > 0 ? sections.join("\n\n") : null;
+}
+
 export function workflowError(wf: EffectiveWorkflow): string | null {
   return wf.status === "ok" ? null : wf.status === "missing" ? `${REPO_POLICY_PATH} is missing on the default branch` : wf.error;
 }

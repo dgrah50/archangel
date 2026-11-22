@@ -1,3 +1,4 @@
+import type { AttemptErrorCategory } from "../ledger/schema.js";
 import type { EscalationCode } from "./thread-machine.js";
 import type { WorkClass } from "./work-class.js";
 
@@ -100,7 +101,7 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     decisionClass: "product_decision",
     short: "recommends commenting what it missed, then retry",
     recommendation:
-      "The implementer could not produce a valid fix. Read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
+      "The implementer could not produce a valid fix. If the reason names a cause (login, CLI, permissions, network, context size), fix that first. Otherwise read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
   },
   dependency_unmet: {
     decisionClass: "owner_signoff",
@@ -119,6 +120,15 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     short: "recommends retry for a fresh budget, or close",
     recommendation: "The Attempt cap is used up. Retry to grant a fresh budget, or close the issue if it is not worth more runs.",
   },
+};
+
+/** What the owner should do about a failed Attempt whose cause was recorded; categories not listed have no cause-specific advice. */
+export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string>> = {
+  provider_network: "The CLI lost its connection twice; check the network, then retry.",
+  auth: "A CLI login is invalid or expired: re-login the account named in the reason (its CLI's login, with that account's config dir), then retry.",
+  permission_denied: "The CLI denied a tool in headless mode and did no work: check that provider's permission flags, then retry.",
+  cli_missing: "The provider CLI is not installed or not on PATH: install it or run `archangel doctor`, then retry.",
+  context_overflow: "The prompt exceeded the model's context: narrow the issue, then retry.",
 };
 
 /** One-tap answers the owner can post as a comment on the Thread's issue or PR. */

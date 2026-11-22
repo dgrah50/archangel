@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isRateLimitOrQuotaError } from "../src/agents/subscription-implementer.js";
+import { classifyCliFailure, isRateLimitOrQuotaError } from "../src/agents/subscription-implementer.js";
 
 describe("isRateLimitOrQuotaError", () => {
   it("does not mistake ordinary tool or test output for a quota error", () => {
@@ -15,4 +15,10 @@ describe("isRateLimitOrQuotaError", () => {
     }
   });
 
+  it("classifies the cause from stderr and the result envelope, and ignores status-like numbers inside other tokens", () => {
+    expect(classifyCliFailure({ stdout: '{"type":"result","is_error":true,"terminal_reason":"prompt_too_long","result":"Prompt is too long"}', stderr: "" })).toBe("context_overflow");
+    expect(classifyCliFailure({ stdout: "", stderr: "Not logged in. Please run /login" })).toBe("auth");
+    expect(classifyCliFailure({ stdout: "", stderr: "API Error: 503 service unavailable" })).toBe("provider_network");
+    expect(classifyCliFailure({ stdout: "FAIL: ECONNRESET in test output", stderr: "foo_test.go:429 took 15290ms at c401f4b" })).toBe("unknown");
+  });
 });
