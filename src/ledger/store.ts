@@ -1438,6 +1438,20 @@ export class Ledger {
     return r ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json } : null;
   }
 
+  /**
+   * Gives back the budget an Attempt consumed when it ended without doing real work (an owner pause/stop or a policy halt):
+   * a flapping control label or workflow must not exhaust `max*AttemptsPerThread` with nothing built.
+   */
+  refundAttemptCounts(issueNumber: number, kind: AttemptKind, repo = this.repo): void {
+    this.db
+      .prepare(
+        `UPDATE threads SET implement_count = MAX(0, implement_count - 1),
+           revision_count = MAX(0, revision_count - ?), rebase_count = MAX(0, rebase_count - ?)
+         WHERE repo = ? AND issue_number = ?`,
+      )
+      .run(kind === "revise" ? 1 : 0, kind === "rebase" ? 1 : 0, repo, issueNumber);
+  }
+
   /** Only `archangel pitch promote` (the owner's `gh`) sets this. */
   markPitchPromoted(issueNumber: number, now = Date.now(), repo = this.repo): void {
     this.db.prepare(`UPDATE pitches SET status = 'promoted', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, issueNumber);
