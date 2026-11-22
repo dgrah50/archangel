@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { GitBroker } from "../broker/git-broker.js";
 import { killGroup, KILL_GRACE_MS } from "../core/spawn-group.js";
 import { startPeakRssPoll } from "./peak-rss.js";
-import type { CollectedResult, ComputeProvider, ExecResult, ExecSpec, PrepareSpec, Workspace } from "./provider.js";
+import type { CollectedResult, ComputeProvider, ExecResult, ExecSpec, Exposed, ExposeSpec, ListedPreview, PrepareSpec, Workspace } from "./provider.js";
 
 export const RSS_POLL_MS = 3000;
 
@@ -86,5 +86,13 @@ export class LocalProvider implements ComputeProvider {
 
   destroy(ws: Workspace): void {
     this.broker.removeClone(ws.path);
+  }
+
+  async expose(): Promise<Exposed> {
+    throw new Error("no sandbox: LocalProvider runs as the owner and will not serve untrusted code");
+  }
+
+  async list(): Promise<ListedPreview[]> {
+    return [];
   }
 }

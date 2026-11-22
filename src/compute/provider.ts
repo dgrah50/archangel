@@ -53,6 +53,37 @@ export interface CollectedResult {
   path: string;
 }
 
+/** What `expose` runs and how long it may live. */
+export interface ExposeSpec {
+  /** The port the app listens on (given to it as PORT); 0 picks a random free loopback port. */
+  port: number;
+  /** Hard lifetime from start. */
+  ttlMs: number;
+  /** Stop after this long without a connection; the provider's default when absent. */
+  idleMs?: number;
+  /** The command that starts the app, run in the workspace. */
+  cmd: string;
+  args: string[];
+  /** Polled for a response before `expose` resolves; default "/". */
+  readyPath?: string;
+}
+
+/** A running preview. The URL and handle live in daemon memory only, never in the Ledger. */
+export interface Exposed {
+  url: string;
+  /** Idempotent: stops the app's whole process group. */
+  close(): void;
+  /** Settles when the preview has stopped, for any reason (close, TTL, idle, the app exiting). */
+  closed: Promise<void>;
+}
+
+/** A preview process found by `list`. */
+export interface ListedPreview {
+  id: string;
+  /** Process group id. */
+  pgid: number;
+}
+
 export interface ComputeProvider {
   prepare(spec: PrepareSpec): Promise<Workspace>;
   /** Rejects only when the command cannot be started; a non-zero exit, a timeout and an abort are results. */
@@ -60,4 +91,8 @@ export interface ComputeProvider {
   collect(ws: Workspace): Promise<CollectedResult>;
   /** Safe to call twice, and on a workspace that never finished preparing. */
   destroy(ws: Workspace): void;
+  /** Runs the app in the workspace and makes it reachable on a loopback URL. A provider with no sandbox throws. */
+  expose(ws: Workspace, spec: ExposeSpec): Promise<Exposed>;
+  /** Preview processes whose id starts with `prefix`, for the orphan sweep. */
+  list(prefix: string): Promise<ListedPreview[]>;
 }
