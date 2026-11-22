@@ -407,8 +407,13 @@ export class Reconciler {
     const proposal = this.ledger.getScoutProposal(issueNumber);
     if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
     const scout = this.workflow?.scouts.find((s) => s.name === proposal.scoutName);
+    // Revocation is re-read live: it can land (red main, `archangel disagree`) after this tick's snapshot was resolved.
     return Boolean(
-      scout && scout.promotionEffective.value === "auto" && scout.trustHash === proposal.fileSha256 && !scout.revoked,
+      scout &&
+        scout.promotionEffective.value === "auto" &&
+        scout.trustHash === proposal.fileSha256 &&
+        !scout.revoked &&
+        !this.ledger.isScoutAutoPromoteRevoked(scout.name, scout.trustHash),
     );
   }
 
