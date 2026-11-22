@@ -11,7 +11,8 @@ import type { Ledger } from "../ledger/store.js";
 import { CANDIDATE_ALLOWED, patchFiles } from "./eval-candidate.js";
 import { renderEval, type EvalReport } from "./eval.js";
 import type { OnboardRunner } from "./onboard.js";
-import { scanForSecrets, selectScoutProvider, type ScoutCliInvoker } from "./scout.js";
+import { scanForSecrets } from "./secrets.js";
+import { selectScoutProvider, type ScoutCliInvoker } from "./scout.js";
 
 const execFileP = promisify(execFile);
 

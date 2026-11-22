@@ -44,6 +44,19 @@ describe("Recap proof output is untrusted", () => {
   });
 });
 
+describe("Recap agent text", () => {
+  it("withholds a secret in the implementer summary and a reviewer finding, keeping the rest of the comment", () => {
+    const token = `ghp_${"a".repeat(30)}`;
+    const reviews = [{ vendor: "claude", headSha: "abcdef123456", verdict: "block", findingsJson: JSON.stringify([{ severity: "high", file: "a.ts", summary: `leaks ${token}` }]) }] as never;
+    const hits: string[] = [];
+    const out = renderRecapComment({ thread: { ...thread, lastSummary: `done, key is ${token}\nAssumptions: none` }, reviews, blockers: [], onWithheld: (p) => hits.push(p) });
+    expect(out).not.toContain("ghp_");
+    expect(out).toContain("_Withheld: possible secret (github_token)");
+    expect(out).toContain("Reproduction Test Proof");
+    expect(hits).toEqual(["github_token", "github_token"]);
+  });
+});
+
 describe("GitHubAppClient.getGateProof", () => {
   it("reads the Gate annotation for the matching head SHA and ignores stale or malformed ones", async () => {
     const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
