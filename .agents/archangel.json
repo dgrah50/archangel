@@ -43,7 +43,8 @@
       "src/core/workflow-propose.ts",
       "src/core/ui-propose.ts",
       "src/core/pitch.ts",
-      "test/protected-paths.test.ts"
+      "test/protected-paths.test.ts",
+      "src/core/failure-clusters.ts"
     ]
   },
   "requiredChecks": [

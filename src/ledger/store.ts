@@ -375,6 +375,10 @@ export class Ledger {
       if (opts.auditTopic) {
         this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
       }
+      // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
+      if (validated.kind === "needs_you") {
+        this.appendAudit("escalation/raised", issueNumber, "archangel", { code: validated.code }, now, repo);
+      }
 
       return this.getThread(issueNumber, repo);
     });
@@ -1741,6 +1745,80 @@ export class Ledger {
     };
   }
 
+  /** Issue numbers filed by any of these Scouts (the includeMetrics loop guard). */
+  private issuesFiledByScouts(scouts: string[], repo: string | null): Set<number> {
+    const out = new Set<number>();
+    for (const scout of scouts) {
+      const rows = this.db
+        .prepare(`SELECT issue_number FROM scout_proposals WHERE scout_name = ? ${repo ? "AND repo = ?" : ""}`)
+        .all(...(repo ? [scout, repo] : [scout])) as Array<{ issue_number: number }>;
+      for (const r of rows) out.add(Number(r.issue_number));
+    }
+    return out;
+  }
+
+  /** Raw rows for failure clustering (the module that reads them keeps only fixed categories). Read-only. */
+  listClusterRows(opts: { repo?: string | null; sinceMs: number; excludeScouts?: string[] }): {
+    escalations: Array<{ ts: number; repo: string; issueNumber: number; code: string | null }>;
+    openNeedsYou: Array<{ repo: string; issueNumber: number; code: string; updatedAt: number }>;
+    branchByThread: Record<string, string>;
+    attempts: Array<{ ts: number; repo: string; issueNumber: number; status: string; errorMessage: string | null }>;
+    reviews: Array<{ ts: number; repo: string; issueNumber: number; vendor: string; verdict: string; findingsJson: string }>;
+  } {
+    const repo = opts.repo ?? null;
+    const excluded = this.issuesFiledByScouts(opts.excludeScouts ?? [], repo);
+    const keep = (issue: number | null) => issue === null || !excluded.has(issue);
+    const scope = repo ? " AND repo = ?" : "";
+    const args = (...a: unknown[]) => (repo ? [...a, repo] : a);
+    const escalations = (
+      this.db
+        .prepare(`SELECT ts, repo, issue_number, payload_json FROM audit_log WHERE topic = 'escalation/raised' AND ts >= ?${scope}`)
+        .all(...args(opts.sinceMs)) as Array<Record<string, unknown>>
+    )
+      .filter((r) => keep(r.issue_number === null ? null : Number(r.issue_number)))
+      .map((r) => ({
+        ts: Number(r.ts),
+        repo: String(r.repo),
+        issueNumber: Number(r.issue_number),
+        code: ((JSON.parse(String(r.payload_json)) as { code?: unknown }).code as string | undefined) ?? null,
+      }));
+    const threads = repo ? this.listThreads(undefined, repo) : this.listAllThreads();
+    return {
+      escalations,
+      openNeedsYou: threads
+        .filter((t) => t.phase.kind === "needs_you" && t.updatedAt >= opts.sinceMs && keep(t.issueNumber))
+        .map((t) => ({ repo: t.repo, issueNumber: t.issueNumber, code: (t.phase as { code: string }).code, updatedAt: t.updatedAt })),
+      branchByThread: Object.fromEntries(threads.map((t) => [`${t.repo}#${t.issueNumber}`, t.branchName])),
+      attempts: (
+        this.db
+          .prepare(`SELECT started_at, repo, issue_number, status, error_message FROM attempts WHERE started_at >= ?${scope}`)
+          .all(...args(opts.sinceMs)) as Array<Record<string, unknown>>
+      )
+        .filter((r) => keep(Number(r.issue_number)))
+        .map((r) => ({
+          ts: Number(r.started_at),
+          repo: String(r.repo),
+          issueNumber: Number(r.issue_number),
+          status: String(r.status),
+          errorMessage: r.error_message === null ? null : String(r.error_message),
+        })),
+      reviews: (
+        this.db
+          .prepare(`SELECT created_at, repo, issue_number, vendor, verdict, findings_json FROM reviews WHERE created_at >= ?${scope}`)
+          .all(...args(opts.sinceMs)) as Array<Record<string, unknown>>
+      )
+        .filter((r) => keep(Number(r.issue_number)))
+        .map((r) => ({
+          ts: Number(r.created_at),
+          repo: String(r.repo),
+          issueNumber: Number(r.issue_number),
+          vendor: String(r.vendor),
+          verdict: String(r.verdict),
+          findingsJson: String(r.findings_json),
+        })),
+    };
+  }
+
   computeMetrics(
     opts: {
       repo?: string | null;
@@ -1781,13 +1859,7 @@ export class Ledger {
     const since = opts.sinceMs ?? 0;
     const repoFilter = opts.repo ?? null;
 
-    const excludedIssues = new Set<number>();
-    for (const scout of opts.excludeScouts ?? []) {
-      const rows = this.db
-        .prepare(`SELECT issue_number FROM scout_proposals WHERE scout_name = ? ${repoFilter ? "AND repo = ?" : ""}`)
-        .all(...(repoFilter ? [scout, repoFilter] : [scout])) as Array<{ issue_number: number }>;
-      for (const r of rows) excludedIssues.add(Number(r.issue_number));
-    }
+    const excludedIssues = this.issuesFiledByScouts(opts.excludeScouts ?? [], repoFilter);
     const excludedList = [...excludedIssues].join(",");
     const notExcluded = (col: string) => (excludedList ? ` AND (${col} IS NULL OR ${col} NOT IN (${excludedList}))` : "");
 
