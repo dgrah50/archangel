@@ -1,5 +1,6 @@
 import { REPO_POLICY_PATH, type ArchangelConfig } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
+import { tryParseJson } from "./json.js";
 import { resolveSkills } from "./skills.js";
 import { resolveWorkflow, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 
@@ -23,11 +24,10 @@ export async function loadWorkflow(
   const scoutPrompts: Record<string, string> = {};
   if (fileRaw) {
     let names: unknown[] = [];
-    try {
-      const parsed = JSON.parse(fileRaw) as { scouts?: Array<{ name?: unknown }> };
+    const parsedRaw = tryParseJson(fileRaw);
+    if (parsedRaw.ok && typeof parsedRaw.value === "object" && parsedRaw.value !== null) {
+      const parsed = parsedRaw.value as { scouts?: Array<{ name?: unknown }> };
       names = Array.isArray(parsed.scouts) ? parsed.scouts.map((s) => s?.name) : [];
-    } catch {
-      // resolveWorkflow reports the invalid JSON
     }
     for (const name of names) {
       if (typeof name !== "string" || !SLUG.test(name)) continue;

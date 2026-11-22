@@ -74,7 +74,7 @@ export function buildMetricsBlockFrom(compute: () => Metrics): string {
   let m: Metrics;
   try {
     m = compute();
-  } catch {
+  } catch (_err) {
     return buildMetricsBlock(null);
   }
   return buildMetricsBlock(m);

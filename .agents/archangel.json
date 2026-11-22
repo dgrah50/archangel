@@ -28,6 +28,8 @@
       "templates/**",
       "workflows/**",
       "formal/**",
+      "scripts/lint.ts",
+      "src/core/json.ts",
       "bin/**",
       "skills/**",
       "src/core/work-class.ts",

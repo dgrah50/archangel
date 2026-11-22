@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { tryParseJson } from "../core/json.js";
 import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type CliProvider, type ProviderEntry } from "../config.js";
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
@@ -84,18 +85,12 @@ export function parseJsonEnvelope(stdout: string): unknown {
         return obj.structured_output;
       }
       if (typeof obj.response === "string") {
-        try {
-          return JSON.parse(obj.response);
-        } catch {
-          // fall through
-        }
+        const inner = tryParseJson(obj.response);
+        if (inner.ok) return inner.value;
       }
       if (typeof obj.result === "string") {
-        try {
-          return JSON.parse(obj.result);
-        } catch {
-          // fall through
-        }
+        const inner = tryParseJson(obj.result);
+        if (inner.ok) return inner.value;
       }
       return obj;
     } catch (err) {

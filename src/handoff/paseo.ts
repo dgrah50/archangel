@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ArchangelConfig } from "../config.js";
+import { tryParseJson } from "../core/json.js";
 import type { GitBroker } from "../broker/git-broker.js";
 import { renderRecapComment } from "../core/recap.js";
 import { sha256 } from "../core/reconciler.js";
@@ -94,8 +95,9 @@ export class PaseoCliRunner implements PaseoRunner {
         } finally {
           await client.close();
         }
-      } catch {
+      } catch (_err) {
         // Non-fatal: CLI agent labels are already applied even if workspace label RPC is unavailable.
+        void _err;
       }
     }
 
@@ -113,12 +115,11 @@ export class PaseoCliRunner implements PaseoRunner {
       if (/not found|no such|unknown agent|\b404\b/i.test(`${e.message ?? ""} ${e.stderr ?? ""}`)) return false;
       throw new Error(`Could not verify whether Paseo agent ${agentId} is running: ${(e.stderr || e.message || String(err)).slice(0, 200)}`);
     }
-    let parsed: { Status?: string; status?: string; Archived?: boolean };
-    try {
-      parsed = JSON.parse(stdout) as typeof parsed;
-    } catch {
+    const raw = tryParseJson(stdout);
+    if (!raw.ok || typeof raw.value !== "object" || raw.value === null) {
       throw new Error(`Could not read the state of Paseo agent ${agentId} (unparseable inspect output)`);
     }
+    const parsed = raw.value as { Status?: string; status?: string; Archived?: boolean };
     if (parsed.Archived) return false;
     const st = String(parsed.Status ?? parsed.status ?? "").toLowerCase();
     // Explicit allowlist for stopped statuses (Opus Step 6 / S16).

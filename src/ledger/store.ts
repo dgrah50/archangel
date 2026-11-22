@@ -1,3 +1,4 @@
+import { tryParseJson } from "../core/json.js";
 import {
   EscalationCodeSchema,
   OUTBOX_BACKOFF_BASE_MS,
@@ -221,14 +222,11 @@ export class Ledger {
     );
     const out: FactoryRetryOutcome[] = [];
     for (const r of rows) {
-      let code: EscalationCode;
-      try {
-        const parsed = EscalationCodeSchema.safeParse((JSON.parse(r.payload_json) as { code?: unknown }).code);
-        if (!parsed.success) continue;
-        code = parsed.data;
-      } catch {
-        continue;
-      }
+      const rawPayload = tryParseJson(r.payload_json);
+      if (!rawPayload.ok || typeof rawPayload.value !== "object" || rawPayload.value === null) continue;
+      const parsed = EscalationCodeSchema.safeParse((rawPayload.value as { code?: unknown }).code);
+      if (!parsed.success) continue;
+      const code = parsed.data;
       const thread = this.getThread(r.issue_number, repo);
       if (!thread) continue;
       const merges = this.listMergesFor(r.issue_number, repo).filter((m) => !m.shadowOnly || m.disagreed);
@@ -264,11 +262,9 @@ export class Ledger {
       .prepare(`SELECT id, payload_json FROM audit_log WHERE repo = ? AND topic = 'factory/auto_off' ORDER BY id DESC LIMIT 1`)
       .get(repo) as { id: number; payload_json: string } | undefined;
     if (!r) return null;
-    try {
-      return { auditId: r.id, workflowSha: String((JSON.parse(r.payload_json) as { workflowSha?: unknown }).workflowSha ?? "") };
-    } catch {
-      return { auditId: r.id, workflowSha: "" };
-    }
+    const raw = tryParseJson(r.payload_json);
+    if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return { auditId: r.id, workflowSha: "" };
+    return { auditId: r.id, workflowSha: String((raw.value as { workflowSha?: unknown }).workflowSha ?? "") };
   }
 
   recordFactoryAutoOff(workflowSha: string, why: string, now = Date.now()): void {
@@ -319,12 +315,9 @@ export class Ledger {
     const tx = this.db.transaction((): boolean => {
       const existing = this.getSystemState("daemon_lock");
       if (existing) {
-        let parsed: { ownerId?: unknown; heartbeatAt?: unknown };
-        try {
-          parsed = JSON.parse(existing) as { ownerId?: unknown; heartbeatAt?: unknown };
-        } catch {
-          return false;
-        }
+        const raw = tryParseJson(existing);
+        if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return false;
+        const parsed = raw.value as { ownerId?: unknown; heartbeatAt?: unknown };
         if (typeof parsed.heartbeatAt !== "number" || !Number.isFinite(parsed.heartbeatAt)) {
           return false;
         }
@@ -343,12 +336,9 @@ export class Ledger {
     const tx = this.db.transaction((): boolean => {
       const existing = this.getSystemState("daemon_lock");
       if (!existing) return false;
-      let owner: unknown;
-      try {
-        owner = (JSON.parse(existing) as { ownerId?: unknown }).ownerId;
-      } catch {
-        return false;
-      }
+      const raw = tryParseJson(existing);
+      if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return false;
+      const owner = (raw.value as { ownerId?: unknown }).ownerId;
       if (owner !== ownerId) return false;
       this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
       return true;
@@ -360,13 +350,11 @@ export class Ledger {
     const tx = this.db.transaction(() => {
       const existing = this.getSystemState("daemon_lock");
       if (!existing) return;
-      try {
-        const parsed = JSON.parse(existing) as { ownerId?: unknown };
-        if (parsed.ownerId === ownerId) {
-          this.db.prepare(`DELETE FROM system_state WHERE key = 'daemon_lock'`).run();
-        }
-      } catch {
-        // Leave an unreadable lock row in place rather than deleting a live daemon's lock.
+      const raw = tryParseJson(existing);
+      if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return;
+      const parsed = raw.value as { ownerId?: unknown };
+      if (parsed.ownerId === ownerId) {
+        this.db.prepare(`DELETE FROM system_state WHERE key = 'daemon_lock'`).run();
       }
     });
     tx.immediate();
@@ -376,25 +364,20 @@ export class Ledger {
   daemonHeartbeatAt(): number | null {
     const existing = this.getSystemState("daemon_lock");
     if (!existing) return null;
-    try {
-      const at = (JSON.parse(existing) as { heartbeatAt?: unknown }).heartbeatAt;
-      return typeof at === "number" ? at : null;
-    } catch {
-      return null;
-    }
+    const raw = tryParseJson(existing);
+    if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return null;
+    const at = (raw.value as { heartbeatAt?: unknown }).heartbeatAt;
+    return typeof at === "number" ? at : null;
   }
 
   isDaemonActive(staleMs: number, now = Date.now()): boolean {
     const existing = this.getSystemState("daemon_lock");
     if (!existing) return false;
-    try {
-      const at = (JSON.parse(existing) as { heartbeatAt?: unknown }).heartbeatAt;
-      // An unreadable lock must read as "a daemon may be live": handoff must not mutate the DB under it.
-      if (typeof at !== "number") return true;
-      return now - at < staleMs;
-    } catch {
-      return true;
-    }
+    const raw = tryParseJson(existing);
+    if (!raw.ok || typeof raw.value !== "object" || raw.value === null) return true;
+    const at = (raw.value as { heartbeatAt?: unknown }).heartbeatAt;
+    if (typeof at !== "number") return true;
+    return now - at < staleMs;
   }
 
   // --- Threads & Compare-And-Set Transitions ---
@@ -1840,15 +1823,15 @@ export class Ledger {
       let todayCount = 0;
       let ranThisScoutToday = false;
       for (const r of rows) {
-        try {
-          const p = JSON.parse(r.payload_json) as { dayKey?: string };
-          if (p.dayKey === dayKey) {
-            todayCount++;
-            if (r.actor === scoutName) ranThisScoutToday = true;
-          }
-        } catch {
-          // A row we cannot read may be today's run: count it against the cap (fail closed).
+        const raw = tryParseJson(r.payload_json);
+        if (!raw.ok || typeof raw.value !== "object" || raw.value === null) {
           todayCount++;
+          continue;
+        }
+        const p = raw.value as { dayKey?: string };
+        if (p.dayKey === dayKey) {
+          todayCount++;
+          if (r.actor === scoutName) ranThisScoutToday = true;
         }
       }
       if (todayCount >= maxRunsPerDay) return false;
@@ -2137,7 +2120,7 @@ export class Ledger {
     const attempt = <T>(f: () => T): T | null => {
       try {
         return f();
-      } catch {
+      } catch (_err) {
         return null;
       }
     };
@@ -2206,12 +2189,8 @@ export class Ledger {
   listCachedWorkflows(): Array<{ repo: string; workflow: unknown }> {
     const rows = this.db.prepare(`SELECT key, value FROM system_state WHERE key LIKE 'workflow:%'`).all() as Array<{ key: string; value: string }>;
     return rows.map((r) => {
-      let workflow: unknown = null;
-      try {
-        workflow = JSON.parse(r.value);
-      } catch {
-        // corrupt cache row: reported as unreadable by the dashboard
-      }
+      const parsedWf = tryParseJson(r.value);
+      const workflow: unknown = parsedWf.ok ? parsedWf.value : null;
       return { repo: r.key.slice("workflow:".length), workflow };
     });
   }
@@ -2756,12 +2735,9 @@ export class Ledger {
       .prepare(`SELECT issue_number, payload_json FROM audit_log WHERE topic = 'thread/owner_retry' AND actor = 'owner' AND ts >= ?${repoClause}`)
       .all(since, ...rp) as Array<{ issue_number: number | null; payload_json: string }>) {
       if (r.issue_number !== null && skip.has(r.issue_number)) continue;
-      let code: unknown;
-      try {
-        code = (JSON.parse(r.payload_json) as { code?: unknown }).code;
-      } catch {
-        continue;
-      }
+      const raw = tryParseJson(r.payload_json);
+      if (!raw.ok || typeof raw.value !== "object" || raw.value === null) continue;
+      const code = (raw.value as { code?: unknown }).code;
       if (typeof code === "string" && (EscalationCodeSchema.options as readonly string[]).includes(code)) {
         ownerRetriesByCode[code] = (ownerRetriesByCode[code] ?? 0) + 1;
       }
@@ -2781,14 +2757,9 @@ export class Ledger {
       .prepare(`SELECT issue_number, findings_json FROM reviews WHERE verdict != 'approve' AND created_at >= ?${repoClause}`)
       .all(since, ...rp) as Array<{ issue_number: number; findings_json: string }>) {
       if (skip.has(r.issue_number)) continue;
-      let list: unknown;
-      try {
-        list = JSON.parse(r.findings_json);
-      } catch {
-        continue;
-      }
-      if (!Array.isArray(list)) continue;
-      for (const f of list as ReviewFinding[]) {
+      const raw = tryParseJson(r.findings_json);
+      if (!raw.ok || !Array.isArray(raw.value)) continue;
+      for (const f of raw.value as ReviewFinding[]) {
         const key = f && typeof f === "object" ? findingCategory(f) : null;
         if (key) findings[key] = (findings[key] ?? 0) + 1;
       }
@@ -2917,13 +2888,9 @@ function migrateOutbox(db: Database.Database): void {
 }
 
 function outboxRecord(r: Record<string, unknown>): OutboxRecord {
-  let parsed: OutboxEffect | null = null;
-  try {
-    const res = OutboxEffectSchema.safeParse(JSON.parse(String(r.effect_json)));
-    parsed = res.success ? res.data : null;
-  } catch {
-    parsed = null;
-  }
+  const raw = tryParseJson(String(r.effect_json));
+  const res = raw.ok ? OutboxEffectSchema.safeParse(raw.value) : null;
+  const parsed: OutboxEffect | null = res?.success ? res.data : null;
   return {
     id: Number(r.id),
     repo: String(r.repo),
