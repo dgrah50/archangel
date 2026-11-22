@@ -64,3 +64,12 @@ Optional repo-specific focus, e.g. "pay attention to the history store".
 ```
 
 Skills live in this repo under `skills/<folder>/<name>.md` (`general/`, `go/`, `typescript/`) and are protected paths. Unknown skills fail the Scout instead of running a weaker one.
+
+### Closing the loop: `autoPromote`
+
+By default every Scout proposal waits for the owner to add `ready-for-agent`. An owner can opt a single Scout into promoting its own proposals by adding `autoPromote: true` to that Scout's frontmatter (an owner-merged change, since `.agents/` is protected). Limits:
+
+- at most `scouts.maxAutoPromotionsPerDay` per repo (host config, default 1);
+- the fix still has to pass the mechanical Gate (a new test failing on `main`), protected-path rules and two-vendor review;
+- intake re-checks that the Scout file on `main` is byte-identical to the one that filed the proposal and still says `autoPromote: true`;
+- if any auto-promoted fix from that Scout file is disagreed with (`archangel disagree`), reverted, or turns main red, auto-promotion stops for that file version. Editing the Scout file (owner-merged) starts it again.
