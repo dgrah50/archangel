@@ -32,6 +32,8 @@ export interface LandingSnapshot {
   shadowMode: boolean;
   /** Feature Threads: the owner merges, so the blocker explains that instead of Shadow Mode. */
   featureThread?: boolean;
+  /** The PR is a machine-drafted `agent-draft/*` change: only the owner merges it, by hand. */
+  agentDraft?: boolean;
 }
 
 export interface Blocker {
@@ -55,7 +57,8 @@ export interface Blocker {
     | "insufficient_independent_reviewers"
     | "merge_conflict"
     | "daily_merge_cap_reached"
-    | "shadow_mode_active";
+    | "shadow_mode_active"
+    | "agent_draft_owner_only";
   message: string;
 }
 
@@ -67,6 +70,10 @@ export interface Blocker {
  */
 export function computeBlockers(s: LandingSnapshot): Blocker[] {
   const blockers: Blocker[] = [];
+
+  if (s.agentDraft) {
+    blockers.push({ code: "agent_draft_owner_only", message: "Machine-drafted change (agent-draft/*): only the owner merges it, by hand" });
+  }
 
   if (!s.prOpen) blockers.push({ code: "pr_not_open", message: "PR is not open" });
   if (s.prDraft) blockers.push({ code: "pr_draft", message: "PR is still a draft" });
