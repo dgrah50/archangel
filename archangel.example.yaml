@@ -119,6 +119,12 @@ reviewerChain:
 #     #   on: telemetry_anomaly
 #     #   do: { action: run_pitch, scout: fleet-pr-miner }
 
+# Prompt proposer (O7): `archangel eval propose` drafts one reviewer prompt or rubric change from dev-set failure counts, scores it on
+# the held-out set and opens an agent-draft PR (owner merges) only if it beats the baseline. Bounded to 1 run per week by the command
+# itself, so a weekly schedule is safe, e.g. a launchd or cron entry (Mondays 09:00):
+#   0 9 * * 1  cd ~/Projects/archangel-deploy && bun src/cli/index.ts eval propose -c archangel.yaml
+# Needs authMode: subscription and Archangel's own repo (dgrah50/archangel) listed under projects.
+
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767
 

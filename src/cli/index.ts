@@ -14,6 +14,7 @@ import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePat
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
+import type { ReviewPromptBuilders } from "../agents/reviewers.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
@@ -21,11 +22,13 @@ import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
-import { renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
-import { prepareCandidates } from "../core/eval-candidate.js";
+import { devFailures, renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
+import { loadReviewPrompts, prepareCandidates } from "../core/eval-candidate.js";
 import { BENCH, parseChain, renderBench, runBenchTiers } from "../core/bench-tiers.js";
 import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { saveReport } from "../core/eval-reports.js";
+import { proposePrompt } from "../core/prompt-proposer.js";
+import { buildClusterBlockFrom } from "../core/failure-clusters.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { bump, bumpRunner } from "../core/bump.js";
@@ -935,6 +938,61 @@ evalCmd
       process.exitCode = report.result === "pass" ? 0 : report.result === "fail" ? 1 : 2;
     } finally {
       candidate.cleanup();
+      ledger.close();
+    }
+  });
+
+evalCmd
+  .command("propose")
+  .description("Draft one prompt or rubric change from dev-set failure counts, score it on the held-out set and, only if it beats the baseline, open an agent-draft PR as the App (never merged by the daemon). At most one per week; safe to run from a weekly schedule")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action(async (opts: { config?: string }) => {
+    const host = resolveHostSettings(opts);
+    if (host.authMode !== "subscription") throw new Error("eval propose uses the subscription CLIs; set authMode: subscription");
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), ARCHANGEL_REPO);
+    const dataDir = host.dataDir;
+    const root = resolvePaths({ dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+    const paths = resolvePaths(cfg);
+    const ledger = new Ledger(root.ledgerDbPath, { repo: ARCHANGEL_REPO, timeZone: cfg.dailyTimezone });
+    const now = Date.now();
+    const suiteFor = (prompts: ReviewPromptBuilders) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts });
+    try {
+      const outcome = await proposePrompt({
+        ledger,
+        chain: host.chains.scout,
+        invoker: defaultScoutCliInvoker,
+        cwd: ARCHANGEL_ROOT,
+        clusterBlock: buildClusterBlockFrom(ledger, { repo: null, now, excludeScouts: [] }),
+        failures: async () => {
+          return devFailures({ ledger, sources: evalSources(ledger, dataDir), suiteFor, baseline: await loadReviewPrompts(ARCHANGEL_ROOT) });
+        },
+        evaluate: async (patchFile) => {
+          const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+          try {
+            const report = await runEval({ ledger, sources: evalSources(ledger, dataDir), suiteFor, baseline: baseline.prompts, candidate, heldout: true });
+            saveReport(dataDir, "eval", report);
+            return report;
+          } finally {
+            candidate.cleanup();
+          }
+        },
+        openPr: (draft, body, ctx) =>
+          openDraftPr(
+            {
+              github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }),
+              broker: new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch, repo: ARCHANGEL_REPO }),
+              defaultBranch: cfg.defaultBranch,
+            },
+            draft,
+            body,
+            ctx,
+          ),
+      }, now);
+      const detail = outcome.kind === "skipped" ? outcome.why : outcome.kind === "pr_opened" ? outcome.url : outcome.kind === "not_better" ? outcome.report.reasons.join("; ") || outcome.report.result : outcome.reason;
+      ledger.appendAudit(`prompt_proposer/${outcome.kind}`, null, "archangel", { detail: detail.slice(0, 500) }, now);
+      console.log(outcome.kind === "pr_opened" ? `Opened ${outcome.url}` : `No PR (${outcome.kind}): ${detail}`);
+    } finally {
       ledger.close();
     }
   });
