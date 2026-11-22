@@ -47,6 +47,7 @@ import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
 import { promotePitch } from "../core/pitch-promote.js";
+import { selfBuild } from "../core/self-build.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
@@ -421,14 +422,33 @@ pitchCmd
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--slice <n>", "Promote only slice N, or several as a comma list such as 1,3 (default: every slice)")
   .option("--chain", "Make the created slices linear: each waits for the one before it to merge", false)
+  .option("--build", "Instead of opening a daemon issue, build ONE slice here (needs --slice) with the implementer, show the diff, and open an owner-authored PR on selfbuild/* that you merge yourself", false)
   .option("--yes", "Skip the confirmation prompt", false)
-  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; yes?: boolean }) => {
+  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; build?: boolean; yes?: boolean }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
     const paths = resolvePaths(cfg);
     const ledger = new Ledger(paths.ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
     try {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       try {
+        if (opts.build) {
+          if (!opts.slice) throw new Error("--build needs --slice <n>");
+          if (opts.chain) throw new Error("--build cannot be combined with --chain");
+          if (cfg.authMode !== "subscription") throw new Error("--build runs the subscription implementer; set authMode: subscription");
+          const url = await selfBuild(execRunner, ledger, {
+            repo,
+            issue: Number(issueArg),
+            slice: opts.slice,
+            yes: Boolean(opts.yes),
+            labels: cfg.labels,
+            cfg,
+            implementer: new SubscriptionImplementer({ chains: cfg.chains, accounts: cfg.accounts, transcriptsDir: paths.transcriptsDir }),
+            confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
+            log: (s) => console.log(s),
+          });
+          console.log(`Opened ${url}. Merging it is up to you; Archangel never merges it.`);
+          return;
+        }
         const created = await promotePitch(execRunner, ledger, {
           repo,
           issue: Number(issueArg),
