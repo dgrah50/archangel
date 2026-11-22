@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { tryParseJson } from "./json.js";
 import { scanForSecrets } from "./scout.js";
 
 /**
@@ -62,10 +63,8 @@ export function captureAttemptInput(
 
 /** A stored input back into its type; anything that does not validate is not replayable. */
 export function parseAttemptInput(json: string): AttemptInput | null {
-  try {
-    const parsed = AttemptInputSchema.safeParse(JSON.parse(json));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
+  const raw = tryParseJson(json);
+  if (!raw.ok) return null;
+  const parsed = AttemptInputSchema.safeParse(raw.value);
+  return parsed.success ? parsed.data : null;
 }

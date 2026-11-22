@@ -1,6 +1,7 @@
 import { GATE_PROOF_ANNOTATION_TITLE, type GateProof } from "../gate/gate.js";
 import crypto from "node:crypto";
-import type { CheckStatus } from "../core/blockers.js";
+import { dedupeChecksByLatestId, type CheckStatus } from "../core/blockers.js";
+import { tryParseJson } from "../core/json.js";
 import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
 import { RECAP_MARKER } from "../core/recap.js";
 
@@ -89,7 +90,6 @@ export interface GitHubClient {
   ): Promise<{ squashSha: string }>;
 }
 
-/** A non-2xx GitHub answer, with its status, so callers can tell "forbidden" from "GitHub had a bad moment". */
 export class GitHubHttpError extends Error {
   constructor(
     readonly status: number,
@@ -119,11 +119,6 @@ interface EtagEntry {
 
 const MAX_PAGES = 20;
 
-/**
- * Pure Node GitHub App REST client with RS256 JWT minting, cached installation tokens,
- * full `Link: rel="next"` pagination, check-run deduplication by highest `id`,
- * and ETag conditional requests (`304 Not Modified` consumes zero rate limit).
- */
 export class GitHubAppClient implements GitHubClient {
   private readonly cfg: GitHubAppConfig;
   private readonly apiBase: string;
@@ -485,21 +480,19 @@ export class GitHubAppClient implements GitHubClient {
     const proofs = annotations.filter((a) => a.title === GATE_PROOF_ANNOTATION_TITLE);
     const ann = proofs.length === 1 ? proofs[0] : undefined;
     if (!ann?.message) return null;
-    try {
-      const parsed = JSON.parse(ann.message) as Record<string, unknown>;
-      if (parsed.head_sha !== headSha) return null;
-      const out: GateProof = {};
-      if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
-      if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
-      const j = parsed.junit as { base_failed?: unknown; head_passed?: unknown } | undefined;
-      if (j && Array.isArray(j.base_failed) && Array.isArray(j.head_passed)) {
-        const ids = (a: unknown[]) => a.filter((x): x is string => typeof x === "string").slice(0, 20).map((x) => x.slice(0, 160));
-        out.junit = { base_failed: ids(j.base_failed), head_passed: ids(j.head_passed) };
-      }
-      return out;
-    } catch {
-      return null;
+    const res = tryParseJson(ann.message);
+    if (!res.ok || typeof res.value !== "object" || res.value === null) return null;
+    const parsed = res.value as Record<string, unknown>;
+    if (parsed.head_sha !== headSha) return null;
+    const out: GateProof = {};
+    if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
+    if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
+    const j = parsed.junit as { base_failed?: unknown; head_passed?: unknown } | undefined;
+    if (j && Array.isArray(j.base_failed) && Array.isArray(j.head_passed)) {
+      const ids = (a: unknown[]) => a.filter((x): x is string => typeof x === "string").slice(0, 20).map((x) => x.slice(0, 160));
+      out.junit = { base_failed: ids(j.base_failed), head_passed: ids(j.head_passed) };
     }
+    return out;
   }
 
   async getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>> {
@@ -512,23 +505,17 @@ export class GitHubAppClient implements GitHubClient {
       },
     );
 
-    // Deduplicate by name, keeping the latest execution (highest check-run id — Codex #7 & Neon P0.4).
-    const latestByName = new Map<string, CheckStatus & { id: number }>();
-    for (const cr of runs) {
+    const parsed = runs.map((cr) => {
       const app = (cr.app ?? {}) as { slug?: string };
-      const parsed: CheckStatus & { id: number } = {
+      return {
         id: Number(cr.id),
         name: String(cr.name ?? ""),
         status: String(cr.status ?? "queued") as CheckStatus["status"],
         conclusion: cr.conclusion === null ? null : String(cr.conclusion),
         appSlug: app.slug ?? null,
       };
-      const prev = latestByName.get(parsed.name);
-      if (!prev || parsed.id >= prev.id) {
-        latestByName.set(parsed.name, parsed);
-      }
-    }
-    return [...latestByName.values()];
+    });
+    return [...dedupeChecksByLatestId(parsed).values()];
   }
 
   async rerunCheckRun(checkRunId: number): Promise<void> {

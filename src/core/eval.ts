@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { ReviewPromptBuilders, ReviewRequest, ReviewerSuite } from "../agents/reviewers.js";
 import { REPO_POLICY_PATH } from "../config.js";
+import { tryParseJson } from "./json.js";
 import type { Ledger } from "../ledger/store.js";
 import {
   MUTATORS,
@@ -93,12 +94,10 @@ async function diffOf(dir: string, base: string, head: string): Promise<{ diffTe
 async function rubricAt(dir: string, base: string): Promise<string | undefined> {
   const raw = await show(dir, base, REPO_POLICY_PATH);
   if (raw === null) return undefined;
-  try {
-    const parsed = Workflow.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data.review.rubric : undefined;
-  } catch {
-    return undefined;
-  }
+  const json = tryParseJson(raw);
+  if (!json.ok) return undefined;
+  const parsed = Workflow.safeParse(json.value);
+  return parsed.success ? parsed.data.review.rubric : undefined;
 }
 
 /**
@@ -121,7 +120,7 @@ export async function collectEvalCases(ledger: Ledger, sources: EvalSource[], no
         let base: string;
         try {
           base = (await git(clone.dir, ["merge-base", c.headSha, clone.mainRef])).trim();
-        } catch {
+        } catch (_err) {
           skipped++;
           continue;
         }
@@ -220,7 +219,7 @@ async function verdictsFor(
       const verdict = batch.results.every((r) => r.verdict === "approve") ? "approve" : "veto";
       ledger.putEvalResult(key, c.id, verdict, batch.results.map((r) => `${r.vendor}:${r.verdict}`).join(","));
       out.byCase.set(c.id, verdict);
-    } catch {
+    } catch (_err) {
       out.errors++;
     }
   }

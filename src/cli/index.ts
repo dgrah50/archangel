@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { tryParseJson } from "../core/json.js";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -656,12 +657,10 @@ workflowCmd
     const promptsDir = path.resolve(opts.prompts ?? path.join(path.dirname(opts.file), "scouts"));
     const scoutPrompts: Record<string, string> = {};
     const names = (() => {
-      try {
-        const scouts = (JSON.parse(proposedRaw) as { scouts?: Array<{ name?: unknown }> }).scouts;
-        return Array.isArray(scouts) ? scouts.map((s) => s?.name) : [];
-      } catch {
-        return [];
-      }
+      const parsed = tryParseJson(proposedRaw);
+      if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null) return [];
+      const scouts = (parsed.value as { scouts?: Array<{ name?: unknown }> }).scouts;
+      return Array.isArray(scouts) ? scouts.map((s) => s?.name) : [];
     })();
     for (const name of names) {
       if (typeof name !== "string" || !/^[a-z0-9][a-z0-9-]{0,48}$/.test(name)) continue;
@@ -1221,8 +1220,9 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
     const uid = typeof process.getuid === "function" ? process.getuid() : 501;
     try {
       execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
-    } catch {
-      // Not previously loaded
+    } catch (_err) {
+      // launchctl bootout exits non-zero when the agent is not currently loaded.
+      void _err;
     }
     execFileSync("launchctl", ["bootstrap", `gui/${uid}`, plistPath], { stdio: "inherit" });
     console.log(`Installed & loaded ${LAUNCHD_LABEL} (${plistPath}).`);
@@ -1239,8 +1239,8 @@ daemonCmd
     const target = `gui/${process.getuid!()}/${LAUNCHD_LABEL}`;
     try {
       execFileSync("launchctl", ["print", target], { stdio: "ignore" });
-    } catch {
-      throw new Error(`${LAUNCHD_LABEL} is not loaded in launchd. Run \`archangel daemon install\` first.`);
+    } catch (err) {
+      throw new Error(`${LAUNCHD_LABEL} is not loaded in launchd (${err instanceof Error ? err.message : String(err)}). Run \`archangel daemon install\` first.`);
     }
     execFileSync("launchctl", ["kickstart", "-k", target], { stdio: "inherit" });
     console.log(`Restarted ${LAUNCHD_LABEL}.`);
@@ -1257,8 +1257,9 @@ daemonCmd
     const uid = typeof process.getuid === "function" ? process.getuid() : 501;
     try {
       execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
-    } catch {
-      // Already unloaded
+    } catch (_err) {
+      // launchctl bootout exits non-zero when the agent is already unloaded.
+      void _err;
     }
     if (fs.existsSync(plistPath)) {
       fs.rmSync(plistPath);
@@ -1283,7 +1284,7 @@ daemonCmd
         });
         const stateLine = out.split("\n").find((l) => l.includes("state =") || l.includes("pid ="));
         console.log(stateLine?.trim() ?? "Loaded");
-      } catch {
+      } catch (_err) {
         console.log("Not loaded in launchd.");
       }
     }

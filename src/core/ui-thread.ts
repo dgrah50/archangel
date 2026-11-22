@@ -1,4 +1,5 @@
 import type { Ledger } from "../ledger/store.js";
+import { tryParseJson } from "./json.js";
 
 /** Read-only views for the Thread detail page. Every string here is untrusted text: the UI renders it only as React children. */
 
@@ -33,16 +34,13 @@ export const AUDIT_LIMIT = 500;
 const clip = (s: string, n = 400) => (s.length > n ? `${s.slice(0, n)}...` : s);
 
 function reviewFindings(json: string, limit = 1): string[] {
-  try {
-    const parsed: unknown = JSON.parse(json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, limit).map((f) => {
-      const o = (typeof f === "object" && f !== null ? f : {}) as Record<string, unknown>;
-      return clip(`${String(o.severity ?? "?")} ${String(o.file ?? "")}: ${String(o.summary ?? "")}`, 300);
-    });
-  } catch {
-    return ["findings unreadable"];
-  }
+  const parsed = tryParseJson(json);
+  if (!parsed.ok) return ["findings unreadable"];
+  if (!Array.isArray(parsed.value)) return [];
+  return parsed.value.slice(0, limit).map((f) => {
+    const o = (typeof f === "object" && f !== null ? f : {}) as Record<string, unknown>;
+    return clip(`${String(o.severity ?? "?")} ${String(o.file ?? "")}: ${String(o.summary ?? "")}`, 300);
+  });
 }
 
 /** Pure read; null when the Ledger has no such Thread. */
@@ -58,11 +56,10 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
   if (lastGate?.topic === "gate/passed") gate = [{ label: "Gate passed", passed: true }];
   else if (lastGate) {
     let violations: unknown[] = [];
-    try {
-      const v = (JSON.parse(lastGate.payloadJson) as { violations?: unknown }).violations;
+    const parsedGate = tryParseJson(lastGate.payloadJson);
+    if (parsedGate.ok && typeof parsedGate.value === "object" && parsedGate.value !== null) {
+      const v = (parsedGate.value as { violations?: unknown }).violations;
       if (Array.isArray(v)) violations = v;
-    } catch {
-      // unreadable payload: reported below as a bare failure
     }
     gate = violations.length > 0 ? violations.slice(0, 10).map((v) => ({ label: clip(String(v), 200), passed: false })) : [{ label: "Gate failed", passed: false }];
   }

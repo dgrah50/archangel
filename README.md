@@ -25,7 +25,7 @@
 
 - **Finds its own work.** Read-only agents (*Scouts*) scan your repos on schedule to catch real bugs and pitch features, speedups, and cleanups—or pick up any GitHub issue you label.
 - **Runs on the subscriptions you already pay for.** Uses your native `claude`, `codex`, and `agy` CLIs with automatic failover when one hits a rate limit. `$0` API bills.
-- **Proves every change mechanically.** Bug fixes must ship a brand-new test that fails on `main` and passes on the fix. Features must clear your full test suite. No edited tests, no shortcuts.
+- **Proves every change mechanically.** Bug fixes must ship a brand-new test that fails on `main` and passes on the fix. Features need no new test but must clear your full test suite. No edited tests, no shortcuts.
 - **Reviewed by two rival AIs.** If Codex writes the code, Claude and Gemini review it. Models can only veto—never waive a failing check.
 - **Steer from GitHub, even on mobile.** Leave normal inline PR review comments or reply `/archangel retry`, `/archangel close`, or `/archangel handoff`. Get a quiet daily digest on Telegram.
 - **Watches `main` after landing.** If a merged fix ever turns CI red, Archangel halts the repo and opens an exact revert PR automatically.

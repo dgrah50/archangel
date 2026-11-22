@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { tryParseJson } from "./json.js";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -239,14 +240,15 @@ export async function applyDraftPatch(file: string, before: string | null, diff:
 
 /** A rubric draft may change `review.rubric` and nothing else in `.agents/archangel.json`. */
 export function rubricOnlyChange(before: string, after: string): boolean {
-  try {
-    const a = JSON.parse(before) as { review?: Record<string, unknown> };
-    const b = JSON.parse(after) as { review?: Record<string, unknown> };
-    const strip = (o: { review?: Record<string, unknown> }) => ({ ...o, review: { ...(o.review ?? {}), rubric: undefined } });
-    return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
-  } catch {
+  const pa = tryParseJson(before);
+  const pb = tryParseJson(after);
+  if (!pa.ok || !pb.ok || typeof pa.value !== "object" || pa.value === null || typeof pb.value !== "object" || pb.value === null) {
     return false;
   }
+  const a = pa.value as { review?: Record<string, unknown> };
+  const b = pb.value as { review?: Record<string, unknown> };
+  const strip = (o: { review?: Record<string, unknown> }) => ({ ...o, review: { ...(o.review ?? {}), rubric: undefined } });
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }
 
 /** The only branch prefix draft PRs use. The Gate classifies it, and neither the Gate path nor the Lander ever merges it. */
@@ -341,7 +343,7 @@ export async function measureDrafts(
     let st: PrStatus;
     try {
       st = await prStatus(p.url);
-    } catch {
+    } catch (_err) {
       continue; // unknown right now: look again next tick, never guess
     }
     if (st.state === "closed") {

@@ -1,5 +1,6 @@
 import type { Blocker } from "./blockers.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
@@ -87,7 +88,7 @@ export function renderRecapComment(input: {
     "",
     "**On base (expected to fail):**",
     ...(workClassOfBranch(thread.branchName) === "feature"
-      ? ["_not applicable: feature Threads add tests for new behaviour, with no red-on-base proof_"]
+      ? ["_not applicable: feature Threads need no new test, so there is no red-on-base proof_"]
       : proofBlock(input.gateProof?.base_output)),
     "",
     "**On head (expected to pass):**",
@@ -163,10 +164,6 @@ function fencedOutput(output: string | undefined): string[] {
 }
 
 function parseFindings(json: string): ReviewFinding[] {
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? (parsed as ReviewFinding[]) : [];
-  } catch {
-    return [];
-  }
+  const parsed = tryParseJson(json);
+  return parsed.ok && Array.isArray(parsed.value) ? (parsed.value as ReviewFinding[]) : [];
 }

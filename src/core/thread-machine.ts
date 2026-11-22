@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CheckStatus } from "./blockers.js";
+import { TRUSTED_CHECK_APP_SLUG, dedupeChecksByLatestId, type CheckStatus } from "./blockers.js";
 
 export const AttemptKindSchema = z.enum(["implement", "revise", "rebase"]);
 export type AttemptKind = z.infer<typeof AttemptKindSchema>;
@@ -7,7 +7,6 @@ export type AttemptKind = z.infer<typeof AttemptKindSchema>;
 export const ModeSchema = z.enum(["autonomous", "advisory"]);
 export type Mode = z.infer<typeof ModeSchema>;
 
-/** Derived freshly from GitHub issue+PR labels every tick — never stored as a Phase. */
 export type Control = "run" | "paused" | "stopped";
 
 export const PrRefSchema = z.object({
@@ -92,7 +91,6 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
     prNumber: z.number().int().positive(),
     headSha: z.string().min(1),
     baseSha: z.string().min(1),
-    /** The Shadow Mode verdict row; null for a feature Thread, which is owner-merge by class and never a Shadow verdict. */
     verdictId: z.number().int().positive().nullable(),
   }),
   z.object({
@@ -127,7 +125,6 @@ declare const VALIDATED_PHASE: unique symbol;
 export type ValidatedPhase = Phase & { readonly [VALIDATED_PHASE]: true };
 const validated = (phase: Phase): ValidatedPhase => phase as ValidatedPhase;
 
-/** Explicit post-merge watch state machine (Opus Step 5). */
 export const MainWatchSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("watching"), since: z.number().int() }),
   z.object({
@@ -145,7 +142,6 @@ export const MainWatchSchema = z.discriminatedUnion("kind", [
 ]);
 export type MainWatch = z.infer<typeof MainWatchSchema>;
 
-/** Side effects the Reconciler delivers from the outbox. Validated when read back: a row that does not parse is dead-lettered, never delivered or dropped. */
 export const OutboxEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("add_label"), issueNumber: z.number().int(), label: z.string().min(1) }),
   z.object({ kind: z.literal("remove_label"), issueNumber: z.number().int(), label: z.string().min(1) }),
@@ -159,7 +155,6 @@ export const OutboxEffectSchema = z.discriminatedUnion("kind", [
 ]);
 export type OutboxEffect = z.infer<typeof OutboxEffectSchema>;
 
-/** `pending` (never tried) -> `retrying` (failed, waits for `next_attempt_at`) -> `dead_letter` (gave up; kept for the owner to see). Delivery deletes the row. */
 export const OUTBOX_STATES = ["pending", "retrying", "dead_letter"] as const;
 export type OutboxState = (typeof OUTBOX_STATES)[number];
 export const OUTBOX_MAX_ATTEMPTS = 10;
@@ -180,7 +175,6 @@ export type MachineEvent =
   | { t: "pr_observed"; status: "merged" | "closed"; mergeId?: number }
   | { t: "escalate"; code: EscalationCode; reason: string }
   | { t: "owner_retry"; now: number }
-  /** The factory spends its one retry: resumes like an owner retry, but posts nothing, removes no label and grants no budget. */
   | { t: "factory_retry"; now: number }
   | { t: "owner_abandon" }
   | { t: "handoff_started"; paseoAgentId: string | null; paseoWorkspaceId: string | null; now: number }
@@ -192,10 +186,6 @@ export type StepResult =
   | { ok: true; next: ValidatedPhase; nextMode?: Mode; effects: OutboxEffect[] }
   | { ok: false; reject: string };
 
-/**
- * Derives live owner Control from combined issue + PR labels.
- * Precedence: `stop` ALWAYS beats `paused` (eliminates O1 oscillation).
- */
 export function deriveControl(
   labels: Iterable<string>,
   cfgLabels: { stop: string; paused: string },
@@ -238,14 +228,6 @@ export function toResumeTarget(phase: Phase): ResumeTarget {
   return { kind: "queued" };
 }
 
-/**
- * Pure, exhaustive Thread state-machine transition function (Opus Step 2).
- * Enforces:
- * - `mode === "advisory"` NEVER transitions to `working` (no revise/rebase force-push over owner commits).
- * - `pr_observed` (`merged` | `closed`) from ANY non-`done` phase cleanly reaches `done`.
- * - Every non-`done` phase has an explicit owner-reachable exit (`owner_abandon`, `owner_retry`, `owner_resume`, `pr_observed`).
- * - `restart_recovered` ONLY transforms `working` phases back to their saved `resumeTo`.
- */
 export function stepPhase(
   phase: Phase,
   mode: Mode,
@@ -259,7 +241,6 @@ export function stepPhase(
     return { ok: false, reject: `Cannot apply ${ev.t} to terminal phase done(${phase.outcome})` };
   }
 
-  // Universal exit: PR observed merged or closed from ANY non-done phase -> done.
   if (ev.t === "pr_observed") {
     const outcome: DoneOutcome = ev.status === "merged" ? "owner_merged" : "pr_closed";
     const pr = extractPrFromPhase(phase);
@@ -272,7 +253,6 @@ export function stepPhase(
     });
   }
 
-  // Universal owner abandon exit from any non-done phase.
   if (ev.t === "owner_abandon") {
     const pr = extractPrFromPhase(phase);
     return ok({
@@ -283,7 +263,6 @@ export function stepPhase(
     });
   }
 
-  // Startup crash recovery: ONLY `working` recovers to saved `resumeTo`.
   if (ev.t === "restart_recovered") {
     if (phase.kind !== "working") {
       return { ok: false, reject: `restart_recovered only applies to working, not ${phase.kind}` };
@@ -301,7 +280,6 @@ export function stepPhase(
     return ok({ kind: "queued" });
   }
 
-  // Handoff to Paseo: allowed from any non-done, non-owner_driving phase; switches mode to advisory.
   if (ev.t === "handoff_started") {
     const pr = extractPrFromPhase(phase);
     return ok(
@@ -319,7 +297,6 @@ export function stepPhase(
     );
   }
 
-  // Escalation to Needs You from any active phase (never from owner_driving or already needs_you).
   if (ev.t === "escalate") {
     if (phase.kind === "owner_driving" || phase.kind === "needs_you") {
       return { ok: false, reject: `Cannot escalate from ${phase.kind}` };
@@ -347,7 +324,6 @@ export function stepPhase(
     );
   }
 
-  // Start a working Attempt: STRICTLY forbidden in advisory mode (ADR-0006 / Opus R4)!
   if (ev.t === "start_working") {
     if (mode === "advisory") {
       return { ok: false, reject: `Advisory mode forbids starting ${ev.attempt} attempt` };
@@ -400,7 +376,6 @@ export function stepPhase(
             ],
           );
         }
-        // Control abort (pause/stop) or handoff: return safely to resumeTo without losing state.
         if (phase.resumeTo.kind === "awaiting_gate") {
           return ok({
             kind: "awaiting_gate",
@@ -602,28 +577,15 @@ export type GateClassification =
   | { status: "failed"; failed: Array<{ name: string; conclusion: string }> }
   | { status: "green" };
 
-/**
- * Pure Gate classifier (Opus Step 5 + Codex #7):
- * - Deduplicates checks by highest `id` if provided.
- * - Fails CLOSED on missing or non-`github-actions` `appSlug` (including `null`/`undefined`).
- */
 export function classifyGate(input: {
   requiredChecks: string[];
   checks: Array<CheckStatus & { id?: number }>;
   since: number;
   now: number;
-  /** A required check that has not appeared at all by this point stops the wait. */
   graceMs: number;
-  /** Required checks that appeared but are still pending by this point stop the wait. */
   timeoutMs: number;
 }): GateClassification {
-  const byName = new Map<string, CheckStatus & { id?: number }>();
-  for (const c of input.checks) {
-    const prev = byName.get(c.name);
-    if (!prev || (c.id ?? 0) >= (prev.id ?? 0)) {
-      byName.set(c.name, c);
-    }
-  }
+  const byName = dedupeChecksByLatestId(input.checks);
 
   const waitMs = input.now - input.since;
   const missing: string[] = [];
@@ -637,8 +599,7 @@ export function classifyGate(input: {
       missing.push(req);
       continue;
     }
-    // Fail closed: require explicit `github-actions` appSlug (never allow null/undefined!).
-    if (run.appSlug !== "github-actions") {
+    if (run.appSlug !== TRUSTED_CHECK_APP_SLUG) {
       untrusted.push(`${req} (app=${run.appSlug ?? "missing"})`);
       continue;
     }

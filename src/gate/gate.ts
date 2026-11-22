@@ -188,7 +188,7 @@ export interface GateRunOptions {
   skipPreCommit?: boolean;
   skipTests?: boolean;
   commandTimeoutMs?: number;
-  /** `feature` skips the red-on-base requirement only. Defaults to `bugfix` (full reproduction proof). */
+  /** `feature` skips the red-on-base and new-test-file requirements only. Defaults to `bugfix` (full reproduction proof). */
   workClass?: "bugfix" | "feature";
   /**
    * Commit to read `.agents/archangel.json` and the pre-commit config from (default: `baseRef`). The daemon passes the current main tip
@@ -459,7 +459,6 @@ async function runRepoPreCommit(
     beforeHashes.set(rel, hashFileIfExists(path.join(worktreeDir, rel)));
   }
 
-  // 1. Strictly run `repo: local` + `language: system` hooks natively; fail closed on unsupported keys/languages.
   for (const repo of localRepos) {
     for (const hook of repo.hooks ?? []) {
       const lang = hook.language ?? "system";
@@ -512,7 +511,6 @@ async function runRepoPreCommit(
     }
   }
 
-  // 2. Delegate remote hook repos strictly to the official `pre-commit` CLI (fail closed if absent).
   if (remoteRepos.length > 0 && changedFiles.length > 0) {
     const remoteConfigPath = path.join(worktreeDir, ".archangel-remote-pre-commit.yaml");
     fs.writeFileSync(remoteConfigPath, JSON.stringify({ repos: remoteRepos }, null, 2), "utf8");
@@ -542,7 +540,6 @@ async function runRepoPreCommit(
     }
   }
 
-  // 3. Reject hooks that mutated the checked-out HEAD tree (e.g. `gofmt -w` hiding unformatted code).
   for (const [rel, before] of beforeHashes.entries()) {
     const after = hashFileIfExists(path.join(worktreeDir, rel));
     if (after !== before) {
@@ -618,7 +615,6 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;
     const headRuns = opts.headRunsOverride ?? policy.headTestRuns;
 
-    // 1. Exact-inverse revert exemption (H5: require revert target === baseSha so later commits can never be silently dropped).
     if (opts.revertOf) {
       const revertSha = (await runGit(opts.repoDir, ["rev-parse", `${opts.revertOf}^{commit}`], env)).trim();
       if (revertSha !== baseSha) {
@@ -647,7 +643,6 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       return report;
     }
 
-    // 2. Diff budget, protected paths, and pre-existing test-file & test-fixture immutability.
     if (stats.length === 0) {
       report.violations.push("diff is empty");
       return report;
@@ -701,14 +696,14 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     if (totalLines > policy.maxTotalLines) {
       report.violations.push(`total changed lines ${totalLines} exceeds limit ${policy.maxTotalLines}`);
     }
-    if (policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
+    // Bugfixes must prove the bug with a new test; features need none (the full suite must still be green on head).
+    if (opts.workClass !== "feature" && policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
       report.violations.push(`no new test file added matching ${policy.testFileGlobs.join(", ")}`);
     }
     if (report.violations.length > 0) {
       return report;
     }
 
-    // 3. Extract HEAD and run repo-owned `.pre-commit-config.yaml` strictly from `baseSha`.
     const headDir = path.join(tmpRoot, "head");
     const baseDir = path.join(tmpRoot, "base");
     await extractCommitTree(opts.repoDir, headSha, headDir, env);
@@ -737,19 +732,17 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       return report;
     }
 
-    // 4. Language-agnostic Pristine-Base-Green -> Overlaid-Base-Red -> Head-Green verification.
     if (!opts.skipTests && policy.testCmd) {
       const testEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: newTestFiles.join(" ") };
       const junitRe = policy.junitReport ? globToRegExp(policy.junitReport) : null;
       /** Test IDs of the new test files' cases from the red base run: every one must pass on head. */
       let expectedIds: string[] | null = null;
-      // Feature work has no bug to reproduce: skip the red-on-base proof. Everything else (new test file,
-      // bounds, protected paths, hooks, head tests) is enforced above and below exactly as for bugfixes.
+      // Feature work has no bug to reproduce: skip the red-on-base proof and the new-test requirement. Everything else
+      // (bounds, protected paths, hooks, full head suite) is enforced above and below exactly as for bugfixes.
       if (opts.workClass !== "feature") {
         const baseCmd = policy.baseTestCmd ?? policy.testCmd;
         await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
 
-        // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
         const pristineEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: "" };
         const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, pristineEnv);
         if (!pristineRes.ok) {
@@ -762,7 +755,6 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
           return report;
         }
 
-        // 4b. Overlay newly added test files + fixtures onto baseDir.
         for (const rel of overlayFiles) {
           const dest = path.join(baseDir, rel);
           fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -832,7 +824,6 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
       }
 
-      // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
         if (junitRe) clearReports(headDir, junitRe);
         const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, testEnv);
@@ -846,7 +837,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
           );
           return report;
         }
-        if (junitRe) {
+        if (junitRe && !(opts.workClass === "feature" && newTestFiles.length === 0)) {
           const jr = readReports(headDir, junitRe);
           if ("error" in jr) {
             report.violations.push(`head JUnit report unusable (failing closed): ${jr.error}`);

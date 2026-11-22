@@ -140,7 +140,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           const { stdout } = await execFileAsync(p, ["--version"], { env });
           verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
         }
-      } catch {
+      } catch (_err) {
         missingBins.push(`${label} (not found in PATH)`);
       }
     }
@@ -277,7 +277,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         detail: `${stdout.trim()} is below 2.38 (needed for git merge-tree --write-tree)`,
       });
     }
-  } catch {
+  } catch (_err) {
     checks.push({ id: "git", name: "Git Version", status: "fail", detail: "git not found in PATH" });
   }
 
@@ -285,7 +285,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   try {
     const { stdout } = await execFileAsync("pre-commit", ["--version"]);
     checks.push({ id: "pre_commit", name: "pre-commit CLI (optional)", status: "pass", detail: stdout.trim() });
-  } catch {
+  } catch (_err) {
     checks.push({
       id: "pre_commit",
       name: "pre-commit CLI (optional)",
@@ -298,7 +298,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   try {
     const { stdout } = await execFileAsync("paseo", ["--version"]);
     checks.push({ id: "paseo", name: "Paseo CLI (Handoff)", status: "pass", detail: stdout.trim() });
-  } catch {
+  } catch (_err) {
     checks.push({
       id: "paseo",
       name: "Paseo CLI (Handoff)",
@@ -311,7 +311,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   try {
     await execFileAsync("gh", ["auth", "status"]);
     checks.push({ id: "gh_auth", name: "Owner gh login", status: "pass", detail: "gh is authenticated" });
-  } catch {
+  } catch (_err) {
     checks.push({
       id: "gh_auth",
       name: "Owner gh login",

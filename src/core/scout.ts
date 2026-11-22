@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { tryParseJson } from "./json.js";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -235,11 +236,8 @@ export function parseEnvelope(stdout: string): unknown {
         return obj.structured_output;
       }
       if (typeof obj.result === "string") {
-        try {
-          return JSON.parse(obj.result);
-        } catch {
-          // continue
-        }
+        const inner = tryParseJson(obj.result);
+        if (inner.ok) return inner.value;
       }
       return obj;
     } catch (err) {
