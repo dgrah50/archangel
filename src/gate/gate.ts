@@ -141,6 +141,23 @@ export interface GateReport {
   hooks_run: string[];
   violations: string[];
   file_stats: GateFileStat[];
+  /** Trimmed reproduction-test output (machine output, for the Recap). Absent if the run never got that far. */
+  proof?: GateProof;
+}
+
+export interface GateProof {
+  base_output?: string;
+  head_output?: string;
+}
+
+export const GATE_PROOF_ANNOTATION_TITLE = "archangel-gate-proof";
+export const PROOF_MAX_LINES = 40;
+export const PROOF_MAX_CHARS = 3000;
+
+/** Last ~40 lines, capped at 3,000 chars (keeping the end, where failures and summaries are). */
+export function tailOutput(text: string): string {
+  const tail = text.trim().split("\n").slice(-PROOF_MAX_LINES).join("\n");
+  return tail.length > PROOF_MAX_CHARS ? tail.slice(-PROOF_MAX_CHARS) : tail;
 }
 
 export interface GateRunOptions {
@@ -706,6 +723,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
       for (let i = 1; i <= baseRuns; i++) {
         const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
+        if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
         if (baseTestRes.ok) {
           report.already_fixed = true;
           report.violations.push(
@@ -718,6 +736,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
         const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, testEnv);
+        report.proof = { ...report.proof, head_output: tailOutput(headTestRes.output) };
         if (!headTestRes.ok) {
           report.violations.push(
             `head testCmd failed (run ${i}/${headRuns}): ${headTestRes.output

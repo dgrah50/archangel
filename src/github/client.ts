@@ -1,3 +1,4 @@
+import { GATE_PROOF_ANNOTATION_TITLE, type GateProof } from "../gate/gate.js";
 import crypto from "node:crypto";
 import type { CheckStatus } from "../core/blockers.js";
 import { RECAP_MARKER } from "../core/recap.js";
@@ -54,6 +55,8 @@ export interface GitHubClient {
   getPrLive(prNumber: number): Promise<GitHubPr>;
   getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>>;
   rerunCheckRun(checkRunId: number): Promise<void>;
+  /** Reproduction-test output the Gate emitted as an annotation on its check run for `headSha`, or null. */
+  getGateProof(checkRunId: number, headSha: string): Promise<GateProof | null>;
   upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void>;
   postComment(issueOrPrNumber: number, body: string): Promise<void>;
   addLabels(issueNumber: number, labels: string[]): Promise<void>;
@@ -396,6 +399,25 @@ export class GitHubAppClient implements GitHubClient {
       changedFiles: files.map((f) => f.filename),
       mergeableState: pr.mergeable_state ? String(pr.mergeable_state) : undefined,
     };
+  }
+
+  async getGateProof(checkRunId: number, headSha: string): Promise<GateProof | null> {
+    const annotations = await this.requestAllPages<{ title?: string; message?: string }>(
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/check-runs/${checkRunId}/annotations?per_page=100`,
+      { useEtag: false },
+    );
+    const ann = annotations.find((a) => a.title === GATE_PROOF_ANNOTATION_TITLE);
+    if (!ann?.message) return null;
+    try {
+      const parsed = JSON.parse(ann.message) as Record<string, unknown>;
+      if (parsed.head_sha !== headSha) return null;
+      const out: GateProof = {};
+      if (typeof parsed.base_output === "string") out.base_output = parsed.base_output;
+      if (typeof parsed.head_output === "string") out.head_output = parsed.head_output;
+      return out;
+    } catch {
+      return null;
+    }
   }
 
   async getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>> {

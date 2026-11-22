@@ -10,6 +10,7 @@ import {
 } from "../agents/prompts.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
+import type { GateProof } from "../gate/gate.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
@@ -1698,6 +1699,18 @@ export class Reconciler {
     opts: { wouldMerge?: boolean } = {},
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
+    let gateProof: GateProof | null = null;
+    try {
+      const gate = (await this.github.getCheckRunsForRef(pr.headSha)).find(
+        (c) => c.name === "Gate" && c.appSlug === "github-actions" && c.status === "completed",
+      );
+      if (gate) gateProof = await this.github.getGateProof(gate.id, pr.headSha);
+    } catch (err) {
+      this.logger.warn("recap/gate_proof_unavailable", err instanceof Error ? err.message : String(err), {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+    }
     await this.github.upsertRecapComment(
       pr.number,
       renderRecapComment({
@@ -1705,6 +1718,7 @@ export class Reconciler {
         reviews,
         blockers,
         wouldMerge: opts.wouldMerge,
+        gateProof,
       }),
     );
   }
