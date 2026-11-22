@@ -15,6 +15,7 @@ import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { scoutDeps } from "./helpers/scout-deps.js";
 import { goWorkflowJson, okWorkflow, workflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -53,7 +54,7 @@ describe("Ledger read errors are not swallowed", () => {
       githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
       githubPrivateKeyPem: "fake", githubAppBotUserId: 777,
     });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     try {
       // A bot-authored proposal (needs the failing lookup) and an ordinary owner issue.
       github.issues.set(2, { number: 2, title: "Proposal", body: "b", state: "open", authorId: 777, authorLogin: "app[bot]", authorAssociation: "NONE", labels: ["ready-for-agent"], updatedAt: "" });

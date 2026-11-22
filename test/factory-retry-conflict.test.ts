@@ -9,6 +9,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson, okWorkflow } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 type Priv = {
@@ -37,7 +38,7 @@ function world(factoryRetry: "off" | "once") {
   const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
   const notes: string[] = [];
   const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-  const rec = new Reconciler({
+  const rec = new Reconciler({ triageInvoker: noCli,
     config: cfg, ledger, github, broker,
     implementer: { run: (async () => { throw new Error("no clone in this test"); }) as never },
     reviewers: { async reviewAll() { return { results: [], errors: [] }; } },

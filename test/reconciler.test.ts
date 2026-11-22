@@ -16,6 +16,7 @@ import { handoffThreadToPaseo, resumeThreadFromPaseo, type PaseoRunner } from ".
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -101,7 +102,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     };
 
     const cfg = makeTestConfig({ shadowMode: true });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
 
     try {
       // Untrusted external issue ignored
@@ -238,7 +239,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     };
 
     const cfg = makeTestConfig({ shadowMode: false });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
 
     try {
       github.issues.set(5, {
@@ -365,7 +366,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     };
 
     const cfg = makeTestConfig({ shadowMode: true, maxDailyUsd: 20 });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
 
     try {
       const mainSha = await github.getBranchTipSha("main");
@@ -502,7 +503,7 @@ describe("Work classes (owner-labelled features)", () => {
       },
     };
     const cfg = makeTestConfig(cfgOverrides);
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     const cleanup = () => {
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -586,7 +587,7 @@ describe("Owner comment commands", () => {
     };
     const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
     const make = () =>
-      new Reconciler({ config: makeTestConfig(), ledger, github, broker, implementer, reviewers, notifier });
+      new Reconciler({ triageInvoker: noCli, config: makeTestConfig(), ledger, github, broker, implementer, reviewers, notifier });
     const t0 = Date.now() - 60_000;
     github.issues.set(7, {
       number: 7, title: "Bug", body: "b", state: "open", authorId: OWNER, authorLogin: "o",

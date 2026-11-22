@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
@@ -84,36 +84,33 @@ const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> 
 });
 
 describe("bench-tiers", () => {
+  // One world and one Ledger for both tests: the second reuses the first's cached Gate scores instead of replaying the same cases.
+  const worldP = world(5);
+  afterAll(async () => cleanup(await worldP));
+
   it("scores each chain mechanically with the Gate, and recommends a candidate that matches or beats the current chain", async () => {
-    const w = await world(5);
-    try {
-      const counts = { runs: {} as Record<string, number> };
-      const r = await runBenchTiers(base(w, { counts }));
-      expect(r.comparable).toBe(5);
-      expect(r.current).toMatchObject({ scored: 5, passRate: 0 }); // no new test: the static Gate rejects it
-      expect(r.candidate).toMatchObject({ scored: 5, passRate: 1 });
-      expect(r.verdict).toBe("matched_or_beat");
-      expect(r.snippet).toContain("provider: agy");
-      expect(r.perCase[0]!.current!.violations.join(" ")).toMatch(/no new test file/i);
-    } finally {
-      cleanup(w);
-    }
+    const w = await worldP;
+    const counts = { runs: {} as Record<string, number> };
+    const r = await runBenchTiers(base(w, { counts }));
+    expect(r.comparable).toBe(5);
+    expect(r.current).toMatchObject({ scored: 5, passRate: 0 }); // no new test: the static Gate rejects it
+    expect(r.candidate).toMatchObject({ scored: 5, passRate: 1 });
+    expect(r.verdict).toBe("matched_or_beat");
+    expect(r.snippet).toContain("provider: agy");
+    expect(r.perCase[0]!.current!.violations.join(" ")).toMatch(/no new test file/i);
   });
 
   it("says insufficient data below 5 comparable cases, and leaves out a case where a chain errored", async () => {
-    const w = await world(4);
-    try {
-      const counts = { runs: {} as Record<string, number> };
-      const few = await runBenchTiers(base(w, { counts }));
-      expect(few.verdict).toBe("insufficient");
-      expect(few.verdictLine).toContain("at least 5 are required");
-      expect(few.snippet).toBeNull();
-      const down = await runBenchTiers(base(w, { counts, candidateChain: [{ provider: "claude" }] }));
-      expect(down.candidate).toMatchObject({ scored: 0, errors: 4 });
-      expect(down.comparable).toBe(0);
-    } finally {
-      cleanup(w);
-    }
+    const w = await worldP;
+    const counts = { runs: {} as Record<string, number> };
+    const [few, down] = await Promise.all([
+      runBenchTiers(base(w, { counts, maxCases: 4 })),
+      runBenchTiers(base(w, { counts, maxCases: 4, candidateChain: [{ provider: "claude" }] })),
+    ]);
+    expect(few.verdict).toBe("insufficient");
+    expect(few.verdictLine).toContain("at least 5 are required");
+    expect(few.snippet).toBeNull();
+    expect(down.candidate).toMatchObject({ scored: 0, errors: 4 });
+    expect(down.comparable).toBe(0);
   });
-
 });

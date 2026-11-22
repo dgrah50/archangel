@@ -9,6 +9,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -50,7 +51,7 @@ describe("a main commit that lands between the fetch and the tip lookup", () => 
         return git(remoteBare, ["rev-parse", `refs/heads/${branch}`]);
       };
       const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
-      const rec = new Reconciler({
+      const rec = new Reconciler({ triageInvoker: noCli,
         config: cfg, ledger, github, broker,
         implementer: { async run() { return { summary: "", costUsd: 0, transcriptPath: null, aborted: true }; } },
         reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
