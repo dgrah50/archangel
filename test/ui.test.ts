@@ -34,6 +34,8 @@ describe("buildUiState", () => {
     expect(s.stages["Needs you"]).toHaveLength(1);
     expect(s.stages.Queued.map((i) => i.issueNumber)).toEqual([2]);
     expect(s.stages["Done in last 7 days"].map((i) => i.issueNumber)).toEqual([3]);
+    expect(s.stages["Done in last 7 days"][0]!.phase).toBe("merged");
+    expect(s.stages.Queued[0]!.phase).toBe("queued");
     expect(s.outcomes.mergedFixes).toBe(2);
     expect(s.autonomySteps["a/b"]).toBeTypeOf("number");
     expect(s.scouts.find((p) => p.issueNumber === 2)).toMatchObject({ autoPromoted: true, hasThread: true });
