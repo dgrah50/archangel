@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { GatePolicySchema } from "../src/config.js";
-import { runGate } from "../src/gate/gate.js";
+import { runGate, runGateForActions } from "../src/gate/gate.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -496,4 +496,125 @@ describe("Gate red-on-base proof", () => {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 60_000);
+});
+
+describe("Gate fail-closed error handling (B18)", () => {
+  it("runGateForActions resumes workflow commands and emits no proof when run() throws", async () => {
+    const log: string[] = [];
+    const validSha = "a".repeat(40);
+    await expect(
+      runGateForActions(
+        {} as never,
+        (line) => log.push(line),
+        async () => {
+          throw new Error("boom inside gate");
+        },
+        "tok-err",
+        validSha,
+      ),
+    ).rejects.toThrow("boom inside gate");
+
+    const stopIdx = log.indexOf("::stop-commands::tok-err");
+    const resumeIdx = log.indexOf("::tok-err::");
+    expect(stopIdx).toBe(0);
+    expect(resumeIdx).toBeGreaterThan(stopIdx);
+    expect(log.some((l) => l.startsWith("::notice"))).toBe(false);
+  });
+
+  it("throws instead of misreporting corrupt git objects as missing policy or pre-commit files", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      writeFile(
+        repoDir,
+        "tests/issue-corrupt.test.mjs",
+        'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix add"]);
+
+      // Corrupt the loose tree object for .agents on baseSha so resolving .agents/archangel.json fails with a git error.
+      const agentsTree = git(repoDir, ["rev-parse", `${baseSha}:.agents`]);
+      const objPath = path.join(repoDir, ".git", "objects", agentsTree.slice(0, 2), agentsTree.slice(2));
+      fs.chmodSync(objPath, 0o644);
+      fs.writeFileSync(objPath, "corrupted-zlib-bytes");
+
+      await expect(
+        runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", skipPreCommit: true, skipTests: true }),
+      ).rejects.toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("fails closed with a clear violation when .pre-commit-config.yaml has an invalid regex", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      // 1) Top-level Python-flavor regex `(?x)` (SyntaxError in JS RegExp)
+      git(repoDir, ["checkout", "-b", "bad-top-regex", baseSha]);
+      writeFile(
+        repoDir,
+        ".pre-commit-config.yaml",
+        [
+          "exclude: '(?x)\\n  ^vendor/'",
+          "repos:",
+          "  - repo: local",
+          "    hooks:",
+          "      - id: ok-hook",
+          "        entry: 'true'",
+          "        language: system",
+        ].join("\n") + "\n",
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "top-level python regex"]);
+      const topBadBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      writeFile(
+        repoDir,
+        "tests/issue-re1.test.mjs",
+        'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix"]);
+
+      const topRep = await runGate({ repoDir, baseRef: topBadBase, headRef: "HEAD", skipTests: true });
+      expect(topRep.passed).toBe(false);
+      expect(topRep.violations.some((v) => /regex/i.test(v) && v.includes("exclude"))).toBe(true);
+
+      // 2) Hook-level invalid / Python-flavor regex
+      git(repoDir, ["checkout", "-b", "bad-hook-regex", baseSha]);
+      writeFile(
+        repoDir,
+        ".pre-commit-config.yaml",
+        [
+          "repos:",
+          "  - repo: local",
+          "    hooks:",
+          "      - id: python-re-hook",
+          "        entry: 'true'",
+          "        language: system",
+          "        files: '(?P<ext>\\.mjs)$'",
+        ].join("\n") + "\n",
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "hook python regex"]);
+      const hookBadBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      writeFile(
+        repoDir,
+        "tests/issue-re2.test.mjs",
+        'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(2, -5), -3);\n',
+      );
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "fix"]);
+
+      const hookRep = await runGate({ repoDir, baseRef: hookBadBase, headRef: "HEAD", skipTests: true });
+      expect(hookRep.passed).toBe(false);
+      expect(
+        hookRep.violations.some((v) => /regex/i.test(v) && v.includes("python-re-hook") && v.includes("files")),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });

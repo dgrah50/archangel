@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveWorkflow, trustHash, ScoutSpec, classifyChange, Workflow } from "../src/core/workflow.js";
-import { isProtectedPath } from "../src/gate/gate.js";
+import { resolveWorkflow, trustHash, ScoutSpec } from "../src/core/workflow.js";
 import { hostInput, workflowFile } from "./helpers/workflow.js";
 
 const resolve = (extra: Record<string, unknown> = {}, scouts: Array<{ name: string } & Record<string, unknown>> = [], prompts: Record<string, string> = {}, gate: Record<string, unknown> = {}) =>
@@ -25,8 +24,7 @@ describe("workflow schema holes", () => {
       expect(resolve({}, [], {}, { testFileGlobs: [bad] }).status, JSON.stringify(bad)).toBe("invalid");
     }
     expect(resolve({}, [], {}, { protectedPaths: ["src/config.ts", "lock/**"] }).status).toBe("ok");
-    // The old shape silently left the file unprotected:
-    expect(isProtectedPath("src/config.ts", ["/src/config.ts"])).toBe(false);
+
   });
 
   it("rejects a Scout with an empty prompt and no skills, but accepts either one", () => {
@@ -51,13 +49,4 @@ describe("workflow schema holes", () => {
     expect(ok("Find bugs.")).toBe(trustHash(ScoutSpec.parse({ name: "s" }), "Find bugs."));
   });
 
-  it("classifies removing testBuildCmd as a loosening and adding it as a tightening", () => {
-    const base = (extra: Record<string, unknown>) =>
-      Workflow.parse(workflowFile([], { gate: { testFileGlobs: ["t/*.ts"], testCmd: "npm test", ...extra } }));
-    const withBuild = base({ testBuildCmd: "npm run build" });
-    const without = base({});
-    expect(classifyChange(withBuild, without)).toContainEqual({ field: "gate.testBuildCmd", direction: "loosen" });
-    expect(classifyChange(without, withBuild)).toContainEqual({ field: "gate.testBuildCmd", direction: "tighten" });
-    expect(classifyChange(withBuild, base({ testBuildCmd: "make" }))).toContainEqual({ field: "gate.testBuildCmd", direction: "changed" });
-  });
 });

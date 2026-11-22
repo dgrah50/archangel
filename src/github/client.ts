@@ -1,6 +1,7 @@
 import { GATE_PROOF_ANNOTATION_TITLE, type GateProof } from "../gate/gate.js";
 import crypto from "node:crypto";
 import type { CheckStatus } from "../core/blockers.js";
+import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
 import { RECAP_MARKER } from "../core/recap.js";
 
 export interface GitHubIssue {
@@ -665,6 +666,15 @@ export class GitHubAppClient implements GitHubClient {
     expectedHeadSha: string,
     commitTitle: string,
   ): Promise<{ squashSha: string }> {
+    const pr = await this.request<{ head?: { ref?: string } }>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}`,
+      { useEtag: false },
+    );
+    const headRef = String(pr.head?.ref ?? "");
+    if (headRef.startsWith(AGENT_DRAFT_PREFIX)) {
+      throw new Error(`Refusing to merge PR #${prNumber}: head ref ${headRef} is a machine draft (${AGENT_DRAFT_PREFIX}*); only the owner merges it, by hand`);
+    }
     const res = await this.request<{ sha: string; merged: boolean }>(
       "PUT",
       `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}/merge`,

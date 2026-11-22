@@ -34,6 +34,19 @@ const HARDENED_GIT_FLAGS = [
 ];
 
 const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-)?\d+$/;
+/** Machine-drafted owner-review PRs (correction loop): never `factory/*`, so the daemon's own Lander can never merge them. */
+const AGENT_DRAFT_BRANCH_RE = /^agent-draft\/[a-z0-9-]{1,60}-\d+$/;
+
+function exitedOne(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === 1;
+}
+
+/** `git merge-tree --write-tree` exits 1 with a tree OID on stdout on conflicts; exit 1 with empty stdout (e.g. missing commit) or any other code is an error. */
+function isMergeTreeConflict(err: unknown): boolean {
+  if (!exitedOne(err)) return false;
+  const stdout = (err as { stdout?: unknown }).stdout;
+  return typeof stdout === "string" && /^[0-9a-f]{40,64}(?:\r?\n|$)/.test(stdout);
+}
 
 export interface BrokerFetchValidation {
   headSha: string;
@@ -131,8 +144,7 @@ export class GitBroker {
    */
   async pinEvalRef(repo: string, issueNumber: number, sha: string): Promise<string | null> {
     if (!REPO_SLUG_RE.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`pinEvalRef: bad repo or sha (${repo}, ${sha})`);
-    const has = await this.runGit(this.bareRepoPath, ["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
-    if (!has) return null;
+    if (!(await this.hasCommit(sha))) return null;
     const prefix = `refs/archangel/eval/${repo}/${issueNumber}/`;
     const existing = (await this.runGit(this.bareRepoPath, ["for-each-ref", "--format=%(refname) %(objectname)", prefix]))
       .split("\n")
@@ -159,9 +171,7 @@ export class GitBroker {
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
     // Ensure unpushed staging refs (`refs/archangel/staging/<n>`) are reachable before checkout.
-    const hasStart = await this.runGit(cloneDir, ["cat-file", "-e", `${startRef}^{commit}`])
-      .then(() => true)
-      .catch(() => false);
+    const hasStart = await this.hasCommitIn(cloneDir, startRef);
     if (!hasStart) {
       await this.runGit(cloneDir, [
         "fetch",
@@ -189,9 +199,27 @@ export class GitBroker {
     return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
   }
 
+  private async hasCommitIn(repoDir: string, ref: string): Promise<boolean> {
+    try {
+      await this.runGit(repoDir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      return true;
+    } catch (err) {
+      if (exitedOne(err)) return false;
+      throw err;
+    }
+  }
+
+  private async resolveEffectiveBase(baseSha: string, headSha: string): Promise<string> {
+    const mergeBase = (await this.runGit(this.bareRepoPath, ["merge-base", baseSha, headSha])).trim();
+    if (!mergeBase) {
+      throw new Error(`git merge-base returned empty output for ${baseSha}..${headSha}`);
+    }
+    return mergeBase;
+  }
+
   /** True when `sha` names a commit in the bare repo. */
   async hasCommit(sha: string): Promise<boolean> {
-    return this.runGit(this.bareRepoPath, ["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
+    return this.hasCommitIn(this.bareRepoPath, sha);
   }
 
 
@@ -199,22 +227,18 @@ export class GitBroker {
    * Lists tracked file paths under `dirPath` directly from the broker's bare repo at `ref`.
    */
   async listFilesAtRef(ref: string, dirPath: string): Promise<string[]> {
-    try {
-      const out = await this.runGit(this.bareRepoPath, [
-        "ls-tree",
-        "-r",
-        "--name-only",
-        ref,
-        "--",
-        dirPath,
-      ]);
-      return out
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean);
-    } catch {
-      return [];
-    }
+    const out = await this.runGit(this.bareRepoPath, [
+      "ls-tree",
+      "-r",
+      "--name-only",
+      ref,
+      "--",
+      dirPath,
+    ]);
+    return out
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
 
   /**
@@ -311,10 +335,7 @@ export class GitBroker {
 
     // Compare against merge-base(baseSha, headSha) so unrelated commits that landed on `main`
     // while a PR branch was in flight never masquerade as agent edits to protected files!
-    const effectiveBase =
-      (
-        await this.runGit(this.bareRepoPath, ["merge-base", baseSha, headSha]).catch(() => baseSha)
-      ).trim() || baseSha;
+    const effectiveBase = await this.resolveEffectiveBase(baseSha, headSha);
 
     // Use Gate's NUL-delimited `-z` diff parser so non-ASCII/quoted paths cannot dodge protection (Opus S1).
     const stats = await getDiffStats(this.bareRepoPath, effectiveBase, headSha, {
@@ -367,15 +388,12 @@ export class GitBroker {
     ]);
 
     const touchedFiles: Record<string, string> = {};
-    for (const filePath of changedFiles.slice(0, 10)) {
-      try {
-        touchedFiles[filePath] = await this.runGit(this.bareRepoPath, [
-          "show",
-          `${headSha}:${filePath}`,
-        ]);
-      } catch {
-        // File may have been deleted; omit content.
-      }
+    for (const st of stats.slice(0, 10)) {
+      if (st.status === "D") continue;
+      touchedFiles[st.path] = await this.runGit(this.bareRepoPath, [
+        "show",
+        `${headSha}:${st.path}`,
+      ]);
     }
 
     let gateReport: LocalGateReport | undefined;
@@ -412,39 +430,64 @@ export class GitBroker {
   }
 
   /**
+   * Commits one file's new content on top of `baseSha` and pushes it strictly to `agent-draft/<slug>-<n>`. Plumbing only: nothing is
+   * checked out, and the commit exists only in the broker's bare repo until pushed. Returns the commit sha.
+   */
+  async pushDraftBranch(branchName: string, baseSha: string, file: string, content: string, message: string, remoteUrl: string): Promise<string> {
+    if (!AGENT_DRAFT_BRANCH_RE.test(branchName)) throw new Error(`Broker refused push to non-draft branch: ${branchName}`);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-draft-blob-"));
+    try {
+      const blobFile = path.join(tmp, "blob");
+      fs.writeFileSync(blobFile, content);
+      const blob = (await this.runGit(this.bareRepoPath, ["hash-object", "-w", blobFile])).trim();
+      const env = { GIT_INDEX_FILE: path.join(tmp, "index"), GIT_AUTHOR_NAME: "Archangel", GIT_AUTHOR_EMAIL: "archangel@users.noreply.github.com", GIT_COMMITTER_NAME: "Archangel", GIT_COMMITTER_EMAIL: "archangel@users.noreply.github.com" };
+      await this.runGit(this.bareRepoPath, ["read-tree", baseSha], env);
+      await this.runGit(this.bareRepoPath, ["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`], env);
+      const tree = (await this.runGit(this.bareRepoPath, ["write-tree"], env)).trim();
+      const sha = (await this.runGit(this.bareRepoPath, ["commit-tree", tree, "-p", baseSha, "-m", message], env)).trim();
+      await this.runGit(this.bareRepoPath, ["push", "--force", remoteUrl, `${sha}:refs/heads/${branchName}`]);
+      await this.runGit(this.bareRepoPath, ["update-ref", `refs/heads/${branchName}`, sha]);
+      return sha;
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }
+
+  /**
    * Reads unified diff and full touched file contents directly from the broker's bare repo.
    */
   async getDiffAndTouchedFiles(
     baseSha: string,
     headSha: string,
   ): Promise<{ diffText: string; touchedFiles: Record<string, string> }> {
-    const effectiveBase =
-      (
-        await this.runGit(this.bareRepoPath, ["merge-base", baseSha, headSha]).catch(() => baseSha)
-      ).trim() || baseSha;
+    const effectiveBase = await this.resolveEffectiveBase(baseSha, headSha);
     const diffText = await this.runGit(this.bareRepoPath, [
       "diff",
       "--no-color",
       effectiveBase,
       headSha,
     ]);
-    const filesRaw = await this.runGit(this.bareRepoPath, [
+    const statusRaw = await this.runGit(this.bareRepoPath, [
       "diff",
-      "--name-only",
+      "--name-status",
       "--no-renames",
+      "-z",
       effectiveBase,
       headSha,
     ]);
+    const tokens = statusRaw.split("\0");
     const touchedFiles: Record<string, string> = {};
-    for (const filePath of filesRaw.trim().split("\n").filter(Boolean).slice(0, 10)) {
-      try {
-        touchedFiles[filePath] = await this.runGit(this.bareRepoPath, [
-          "show",
-          `${headSha}:${filePath}`,
-        ]);
-      } catch {
-        // Deleted file
-      }
+    let seen = 0;
+    for (let i = 0; i + 1 < tokens.length && seen < 10; i += 2) {
+      const status = tokens[i];
+      const filePath = tokens[i + 1];
+      if (!status || !filePath) continue;
+      seen++;
+      if (status === "D") continue;
+      touchedFiles[filePath] = await this.runGit(this.bareRepoPath, [
+        "show",
+        `${headSha}:${filePath}`,
+      ]);
     }
     return { diffText, touchedFiles };
   }
@@ -456,14 +499,15 @@ export class GitBroker {
     try {
       await this.runGit(this.bareRepoPath, ["merge-tree", "--write-tree", baseSha, headSha]);
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (isMergeTreeConflict(err)) return false;
+      throw err;
     }
   }
 
   /**
    * Deterministically rebases `headSha` onto `mainSha` inside an isolated Broker clone
-   * (0 LLM tokens, hooks disabled). Returns `{ ok: false }` on any conflict so caller can fall back.
+   * (0 LLM tokens, hooks disabled). Returns `{ ok: false }` on rebase conflict so caller can fall back.
    */
   async rebaseCleanOntoMain(
     issueNumber: number,
@@ -476,9 +520,7 @@ export class GitBroker {
     try {
       await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, tmpDir]);
       // Ensure both commits are reachable inside the temp clone.
-      const hasHead = await this.runGit(tmpDir, ["cat-file", "-e", `${headSha}^{commit}`])
-        .then(() => true)
-        .catch(() => false);
+      const hasHead = await this.hasCommitIn(tmpDir, headSha);
       if (!hasHead) {
         await this.runGit(tmpDir, ["fetch", this.bareRepoPath, headSha]);
       }
@@ -486,13 +528,18 @@ export class GitBroker {
       await this.runGit(tmpDir, ["config", "user.name", "Archangel Worker"]);
       await this.runGit(tmpDir, ["config", "user.email", "archangel-worker@users.noreply.github.com"]);
       const oldBase = (await this.runGit(tmpDir, ["merge-base", mainSha, headSha])).trim();
-      await this.runGit(tmpDir, ["rebase", "--onto", mainSha, oldBase]);
+      try {
+        await this.runGit(tmpDir, ["rebase", "--onto", mainSha, oldBase]);
+      } catch (err) {
+        if (exitedOne(err)) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        throw err;
+      }
       const stagingRef = `refs/archangel/staging/${issueNumber}`;
       await this.runGit(this.bareRepoPath, ["fetch", tmpDir, `+HEAD:${stagingRef}`]);
       const rebasedSha = await this.resolveRef(stagingRef);
       return { ok: true, headSha: rebasedSha };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     } finally {
       this.removeClone(tmpDir);
     }

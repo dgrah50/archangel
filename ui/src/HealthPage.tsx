@@ -12,7 +12,7 @@ export type Ladder = { state: "idle" } | { state: "running" } | { state: "error"
 /** The first `backticked` command in a remediation, if any. */
 export const commandIn = (text: string): string | null => /`([^`]+)`/.exec(text)?.[1] ?? null;
 
-function CopyCommand({ text }: { text: string }) {
+export function CopyCommand({ text }: { text: string }) {
   const [done, setDone] = useState(false);
   return (
     <Button size="2xs" variant="outline" ml="2" onClick={() => void navigator.clipboard.writeText(text).then(() => setDone(true))}>
@@ -80,9 +80,9 @@ export function LadderView({ title, hint, ladder, onRun, runLabel, disabledReaso
   );
 }
 
-const tokenOf = () => typeof document === "undefined" ? null : document.querySelector('meta[name="archangel-token"]')?.getAttribute("content") ?? null;
+export const tokenOf = () => typeof document === "undefined" ? null : document.querySelector('meta[name="archangel-token"]')?.getAttribute("content") ?? null;
 
-function useLadder(scope: "machine" | "repo", smoke: boolean, auto: boolean): [Ladder, () => void] {
+export function useLadder(scope: "machine" | "repo", smoke: boolean, auto: boolean): [Ladder, () => void] {
   const [ladder, setLadder] = useState<Ladder>({ state: "idle" });
   const run = useCallback(() => {
     setLadder({ state: "running" });

@@ -56,7 +56,7 @@ const STACK_MARKERS: Array<[string, Stack]> = [
   ["package.json", "node"],
 ];
 
-export function detectStack(paths: string[]): Stack | null {
+function detectStack(paths: string[]): Stack | null {
   for (const [file, stack] of STACK_MARKERS) if (paths.includes(file)) return stack;
   return null;
 }

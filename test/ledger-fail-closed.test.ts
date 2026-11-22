@@ -21,7 +21,7 @@ describe("ledger reads fail closed on unreadable state", () => {
 
   it("a cooldown read error propagates instead of showing none", () => {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    (ledger as unknown as { db: { exec: (q: string) => void } }).db.exec("DROP TABLE provider_cooldowns");
+    (ledger as unknown as { db: { exec: (q: string) => void } }).db.exec("DROP TABLE account_cooldowns");
     expect(() => ledger.listActiveCooldowns()).toThrow();
   });
 });

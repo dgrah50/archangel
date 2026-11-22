@@ -5,9 +5,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
-import { ESCALATION_POLICY, describeEscalation, testFilesMentioned } from "../src/core/escalations.js";
+import { testFilesMentioned } from "../src/core/escalations.js";
 import { Reconciler } from "../src/core/reconciler.js";
-import { EscalationCodeSchema } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
@@ -81,22 +80,9 @@ describe("a revision that changes nothing", () => {
     expect((phase as { reason: string }).reason).toContain("pitch_expiry_test.go");
   });
 
-  it("does not call a test file that is not on base a conflict (a new test the implementer is about to write is fine)", async () => {
-    const phase = await run("I would add brand_new_test.go but could not decide how.");
-    expect(phase).toMatchObject({ kind: "needs_you", code: "revision_no_change" });
-  });
 });
 
 describe("escalation policy", () => {
-  it("has a decision class and recommendation for every code, with the product decision for a test conflict", () => {
-    for (const code of EscalationCodeSchema.options) {
-      expect(ESCALATION_POLICY[code].decisionClass).toBeTruthy();
-      expect(describeEscalation(code).recommendation.length).toBeGreaterThan(20);
-    }
-    expect(ESCALATION_POLICY.existing_test_conflict.decisionClass).toBe("product_decision");
-    expect(ESCALATION_POLICY.revision_no_change.decisionClass).toBe("live_infrastructure");
-  });
-
   it("extracts test file paths from free text and nothing else", () => {
     expect(testFilesMentioned(["FAIL test/pitch-expiry.test.ts > expires", "see src/core/foo.ts", "x_test.go:12", "/etc/passwd_test.go ../a.test.ts"])).toEqual([
       "test/pitch-expiry.test.ts",

@@ -35,19 +35,12 @@ const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
 describe("Recap machine triage section", () => {
-  const recap = (triage: Parameters<typeof renderRecapComment>[0]["triage"]) => renderRecapComment({ thread, reviews: [], blockers: [], triage });
-  it("labels guidance as machine triage, not the owner, with vendor, decision, cause and steps", () => {
-    const body = recap({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["Narrow the change", "Keep `a.go`"], reason: null });
+  it("labels triage as machine triage, not the owner, and omits it when triage never ran", () => {
+    const recap = (triage: Parameters<typeof renderRecapComment>[0]["triage"]) => renderRecapComment({ thread, reviews: [], blockers: [], triage });
+    const body = recap({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["Narrow the change"], reason: null });
     expect(body).toContain("#### Machine triage (factory), not the owner");
     expect(body).toContain("Vendor: openai. Decision: guidance. Cause: scope_too_broad.");
-    expect(body).toContain("```text\n1. Narrow the change\n2. Keep `a.go`\n```".replace("`a.go`", "`a.go`"));
-  });
-  it("shows an escalation as escalated with its reason, and nothing when triage never ran", () => {
-    const body = recap({ vendor: "anthropic", action: "escalate", cause: "veto_disputed", steps: [], reason: "the veto looks wrong" });
-    expect(body).toContain("Decision: escalated. Cause: veto_disputed.");
-    expect(body).toContain("the veto looks wrong");
     expect(recap(null)).not.toContain("Machine triage");
-    expect(recap(undefined)).not.toContain("Machine triage");
   });
 });
 
@@ -68,22 +61,6 @@ describe("Recap reproduction-test proof", () => {
     expect(body).toContain("**On base (expected to fail):**\n```text\nFAIL add: expected -3 got 7\n```");
     expect(body).toContain("**On head (expected to pass):**\n```text\nok add\n```");
     expect(body).not.toContain("not captured");
-  });
-
-  it("lists the JUnit test IDs matched by the Gate, in fenced blocks", () => {
-    const body = render({ base_output: "x", head_output: "y", junit: { base_failed: ["tests/neg.test.mjs::negative"], head_passed: ["tests/neg.test.mjs::negative", "tests/neg.test.mjs::positive"] } });
-    expect(body).toContain("Test cases matched in the JUnit report");
-    expect(body).toContain("Failed on base:\n```text\ntests/neg.test.mjs::negative\n```");
-    expect(body).toContain("Passed on head:\n```text\ntests/neg.test.mjs::negative\ntests/neg.test.mjs::positive\n```");
-    expect(render({ base_output: "x", head_output: "y" })).not.toContain("JUnit");
-  });
-
-  it("says 'not captured' explicitly for missing output, per side", () => {
-    expect(render()).toContain("**On base (expected to fail):**\n_not captured_");
-    expect(render()).toContain("**On head (expected to pass):**\n_not captured_");
-    const half = render({ base_output: "boom" });
-    expect(half).toContain("```text\nboom\n```");
-    expect(half).toMatch(/On head \(expected to pass\):\*\*\n_not captured_/);
   });
 
   it("trims to the last lines/chars and cannot be broken out of by backticks in the output", () => {

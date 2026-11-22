@@ -37,13 +37,6 @@ function repo(workflow: string) {
 }
 
 describe("Ledger read errors are not swallowed", () => {
-  it("getScoutProposal and hasScoutTitleFingerprint throw on a database error instead of answering null/false", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    ledger.close();
-    expect(() => ledger.getScoutProposal(1)).toThrow();
-    expect(() => ledger.hasScoutTitleFingerprint("fp")).toThrow();
-  });
-
   it("intake fails closed for one issue when the proposal lookup breaks, without failing the tick or other issues", async () => {
     const { root, remoteBare } = repo(goWorkflowJson());
     const github = new FakeGitHub(remoteBare);

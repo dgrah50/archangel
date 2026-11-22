@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, primaryWriterVendors, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
@@ -32,7 +32,8 @@ import { recordDaemonFacts } from "../core/host-facts.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
-import { runScoutsForProject } from "../core/scout.js";
+import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
+import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
@@ -49,11 +50,12 @@ import { Ledger } from "../ledger/store.js";
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
 
-function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): ReviewerSuite {
+function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string, ledger: Ledger): ReviewerSuite {
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
         accounts: cfg.accounts,
+        accountState: ledger.accountState(cfg.accounts),
         defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
@@ -142,7 +144,7 @@ program
       void cleanup().finally(() => process.exit(1));
     }, 30_000);
 
-    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath);
+    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath, rootLedger);
     const notifier = new TelegramNotifier({
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
@@ -151,11 +153,7 @@ program
       logFilePath: path.join(sharedPaths.dataDir, "archangel.log.jsonl"),
       consoleOutput: true,
     });
-    const cooldowns = {
-      isCoolingDown: (provider: string, now?: number) => rootLedger.getProviderCooldown(provider, now) !== null,
-      recordCooldown: (provider: string, durationMs: number, reason: string, now?: number) =>
-        rootLedger.setProviderCooldown(provider, durationMs, reason, now),
-    };
+    const accountState = rootLedger.accountState(first.accounts);
 
     logger.info(
       "daemon/started",
@@ -164,6 +162,8 @@ program
         : "Auth mode: api (metered keys)",
     );
 
+    /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
+    const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -190,7 +190,7 @@ program
               chains: cfg.chains,
               accounts: cfg.accounts,
               transcriptsDir: paths.transcriptsDir,
-              cooldowns,
+              accountState,
               logger,
             })
           : new ClaudeSdkImplementer({
@@ -209,12 +209,43 @@ program
         notifier,
         logger,
         workerId: daemonOwnerId,
+        // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
+        correctionDrafts:
+          cfg.authMode === "subscription"
+            ? {
+                invoker: defaultScoutCliInvoker,
+                cwd: ARCHANGEL_ROOT,
+                skills: listAllSkills(),
+                evaluate: async (patchFile, heldout) => {
+                  const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+                  try {
+                    return await runEval({
+                      ledger: rootLedger,
+                      sources: evalSources(rootLedger, sharedPaths.dataDir),
+                      suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
+                      baseline: baseline.prompts,
+                      candidate,
+                      heldout,
+                    });
+                  } finally {
+                    candidate.cleanup();
+                  }
+                },
+                openPr: (draft, body, ctx) => {
+                  const client = appClients.get(ARCHANGEL_REPO);
+                  if (!client) throw new Error(`${ARCHANGEL_REPO} is not a watched project, so there is no App client to open the draft PR with`);
+                  return openDraftPr(client, draft, body, ctx);
+                },
+                prStatus: (url) => ghPrStatus(execRunner, url),
+              }
+            : undefined,
       });
       const swept = rec.startupSweep();
       if (swept.length > 0) {
         console.log(`[archangel] [${repoSlug}] Stale-working sweep recovered threads: ${swept.join(", ")}`);
       }
       digestSources.push({ repoSlug, github, agentProposedLabel: cfg.labels.agentProposed });
+      appClients.set(repoSlug, { github, broker, defaultBranch: cfg.defaultBranch });
       return { repoSlug, rec };
     });
 
@@ -570,10 +601,10 @@ program
         }
       }
       if (m.activeCooldowns.length > 0) {
-        console.log("Active provider cooldowns:");
+        console.log("Active account cooldowns:");
         for (const c of m.activeCooldowns) {
           const remMin = Math.max(1, Math.ceil((c.untilTs - now) / 60_000));
-          console.log(`  - ${c.provider}: ${remMin}m left (${c.reason})`);
+          console.log(`  - ${c.account}: ${remMin}m left (${c.reason})`);
         }
       }
       const signals: string[] = [];
@@ -843,7 +874,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
@@ -1283,7 +1314,7 @@ scoutCmd
         github,
         broker,
         workflow,
-        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath),
+        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath, ledger),
         notifier: new TelegramNotifier({ botToken: cfg.telegramBotToken, chatId: cfg.telegramChatId }),
         mainSha,
         filterName: name,

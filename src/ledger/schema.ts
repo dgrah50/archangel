@@ -106,6 +106,8 @@ export interface AttemptRecord {
   /** Replay provenance, set when the Attempt ran (null for rows from before capture). */
   provider: string | null;
   model: string | null;
+  /** Which configured account (login) ran it; null for rows from before accounts. */
+  accountId: string | null;
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;
   workflowSha256: string | null;
@@ -123,6 +125,7 @@ export interface ReviewRecord {
   createdAt: number;
   provider: string | null;
   model: string | null;
+  accountId: string | null;
   promptSha256: string | null;
   /** sha256 of the review rubric text in force (the empty string's hash when none). */
   rubricSha256: string | null;
@@ -237,6 +240,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   finished_at INTEGER,
   provider TEXT,
   model TEXT,
+  account_id TEXT,
   prompt_sha256 TEXT,
   workflow_sha256 TEXT,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
@@ -264,6 +268,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at INTEGER NOT NULL,
   provider TEXT,
   model TEXT,
+  account_id TEXT,
   prompt_sha256 TEXT,
   rubric_sha256 TEXT,
   workflow_sha256 TEXT,
@@ -353,8 +358,8 @@ CREATE TABLE IF NOT EXISTS health_faults (
   PRIMARY KEY (repo, category)
 );
 
-CREATE TABLE IF NOT EXISTS provider_cooldowns (
-  provider TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS account_cooldowns (
+  account_id TEXT PRIMARY KEY,
   until_ts INTEGER NOT NULL,
   reason TEXT NOT NULL,
   updated_at INTEGER NOT NULL

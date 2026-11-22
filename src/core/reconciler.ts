@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { CORRECTION_WINDOW_DAYS, repeatedCategories } from "./corrections.js";
+import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
+import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
@@ -55,8 +56,20 @@ export interface ReconcilerDeps {
   notifier: Notifier;
   logger?: Logger;
   workerId?: string;
+  /** Correction loop, drafting half. Absent: no drafts are made (counting and the Needs You are unchanged). */
+  correctionDrafts?: CorrectionDraftDeps;
   /** Runs the read-only triage CLI; defaults to the Scout sandbox invoker. Tests pass a fake. */
   triageInvoker?: ScoutCliInvoker;
+}
+
+/** What the drafting half needs from outside: the Scout CLI, the eval, the PR opener and a PR status lookup. */
+export interface CorrectionDraftDeps {
+  invoker: ScoutCliInvoker;
+  cwd: string;
+  skills: readonly string[];
+  evaluate: DraftDeps["evaluate"];
+  openPr: DraftDeps["openPr"];
+  prStatus: (url: string) => Promise<PrStatus>;
 }
 
 interface RunningTask {
@@ -112,6 +125,9 @@ export class Reconciler {
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
+  private readonly drafts: CorrectionDraftDeps | undefined;
+  /** Drafts run one at a time, off the tick: a model run and an eval take minutes. */
+  private draftChain: Promise<void> = Promise.resolve();
   private readonly triageInvoker: ScoutCliInvoker;
 
   /** The resolved workflow, or an error when the repo is halted: nothing falls back to defaults. */
@@ -139,6 +155,7 @@ export class Reconciler {
     this.notifier = deps.notifier;
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.workerId = deps.workerId ?? `archangel-${process.pid}`;
+    this.drafts = deps.correctionDrafts;
     this.triageInvoker = deps.triageInvoker ?? defaultScoutCliInvoker;
   }
 
@@ -151,6 +168,7 @@ export class Reconciler {
     while (this.runningTasks.size > 0) {
       await Promise.allSettled([...this.runningTasks.values()].map((t) => t.promise));
     }
+    await this.draftChain;
   }
 
   abortAllActive(cause: "control" | "handoff" = "control"): void {
@@ -324,6 +342,7 @@ export class Reconciler {
     }
 
     await this.raiseCorrectionSignals(now);
+    await this.measureCorrectionDrafts(now);
     await this.raiseHealthSignals(now);
 
     // Flush any newly enqueued outbox effects immediately.
@@ -378,10 +397,65 @@ export class Reconciler {
           recommendation: policy.recommendation,
         });
         this.ledger.appendAudit("corrections/needs_you", null, "archangel", { category, count }, now);
+        this.queueDraft({ category, count, windowDays: CORRECTION_WINDOW_DAYS }, now);
       } catch (err) {
         this.logger.warn("corrections/notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
       }
     }
+  }
+
+  private queueDraft(ctx: DraftContext, now: number): void {
+    const drafts = this.drafts;
+    if (!drafts) return;
+    this.draftChain = this.draftChain.then(() => this.runDraft(drafts, ctx, now)).catch(() => undefined);
+  }
+
+  /** One draft for one repeated category: the outcome is always recorded, and a draft that did not land is shown to the owner. */
+  private async runDraft(drafts: CorrectionDraftDeps, ctx: DraftContext, now: number): Promise<void> {
+    try {
+      const outcome = await draftCorrection(
+        { ledger: this.ledger, chain: this.cfg.chains.scout, invoker: drafts.invoker, cwd: drafts.cwd, skills: drafts.skills, evaluate: drafts.evaluate, openPr: drafts.openPr },
+        ctx,
+        now,
+      );
+      const base = { category: ctx.category, count: ctx.count };
+      switch (outcome.kind) {
+        case "pr_opened":
+          this.ledger.appendAudit("correction_draft/pr_opened", null, "archangel", { ...base, url: outcome.url, file: outcome.draft.file }, now);
+          return;
+        case "eval_failed":
+        case "eval_error": {
+          this.ledger.appendAudit("correction_draft/not_landed", null, "archangel", { ...base, why: outcome.kind === "eval_error" ? "eval_error" : `${outcome.split}_${outcome.result}`, file: outcome.draft.file, draft: outcome.draft.diff }, now);
+          const policy = MAIN_ESCALATION_POLICY.correction_draft_unlanded;
+          await this.notifier.notifyNeedsYou({
+            issueNumber: null,
+            title: `Correction draft not landed on ${this.ledger.repo}: ${ctx.category}`,
+            reason: unlandedText(outcome, ctx).slice(0, 3_500),
+            decisionClass: formatDecisionClass(policy.decisionClass),
+            recommendation: policy.recommendation,
+          });
+          return;
+        }
+        case "skipped":
+          this.ledger.appendAudit("correction_draft/skipped", null, "archangel", { ...base, why: outcome.why }, now);
+          return;
+        default:
+          this.ledger.appendAudit(`correction_draft/${outcome.kind}`, null, "archangel", { ...base, reason: outcome.reason.slice(0, 500) }, now);
+      }
+    } catch (err) {
+      this.ledger.appendAudit("correction_draft/error", null, "archangel", { category: ctx.category, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) }, now);
+    }
+  }
+
+  /** Flags merged drafts whose category did not drop (see measureDrafts); the digest carries the flag. */
+  private async measureCorrectionDrafts(now: number): Promise<void> {
+    if (!this.drafts) return;
+    await measureDrafts(
+      this.ledger,
+      this.drafts.prStatus,
+      (category, since, at) => correctionCategories(this.ledger.computeCorrections({ repo: this.ledger.repo, sinceMs: since, now: at })).find((c) => c.category === category)?.count ?? 0,
+      now,
+    );
   }
 
   /** One Needs You (project-level, no issue) when an auto-promoting Scout version is revoked for waste. */
@@ -1444,7 +1518,7 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
-      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null });
+      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
@@ -1956,6 +2030,7 @@ export class Reconciler {
             costUsd: 0, // Settled via reserveBudget/settleBudget below to avoid double-counting.
             provider: r.provider ?? null,
             model: r.model ?? null,
+            accountId: r.accountId ?? null,
             promptSha256: r.promptSha256 ?? null,
             rubricSha256: rubricSha(this.effectiveReviewRubric),
             workflowSha256: this.workflow?.fileSha256 ?? null,
@@ -2223,6 +2298,7 @@ export class Reconciler {
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
       shadowMode: ownerMergesOnlyNow,
       featureThread: isFeature,
+      agentDraft: pr.headRef.startsWith(AGENT_DRAFT_PREFIX),
     });
 
     // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
@@ -2285,6 +2361,9 @@ export class Reconciler {
     if (await this.autonomyCapReached(now)) {
       return;
     }
+
+    // Defence in depth behind the blocker: a machine-drafted PR is never merged by the daemon, whatever else happens above.
+    if (pr.headRef.startsWith(AGENT_DRAFT_PREFIX)) return;
 
     // All blockers empty -> squash merge pinned strictly to approved head SHA (B7 + Opus S10 recovery!).
     let squashSha: string;

@@ -27,11 +27,11 @@ function needsYouThread(l: Ledger, repo: string, issue: number, now: number) {
 describe("buildDigest", () => {
   it("returns null when there is nothing to report", () => {
     expect(
-      buildDigest({ now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [] }),
+      buildDigest({ now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [], draftReverts: [] }),
     ).toBeNull();
   });
 
-  const quiet = { now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [] };
+  const quiet = { now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [], draftReverts: [] };
   it("is not quiet when pitches or proposals could not be read, or are waiting on the owner", () => {
     expect(buildDigest({ ...quiet, pitches: null })).toContain("Pitches awaiting you: unavailable");
     expect(buildDigest({ ...quiet, proposals: null })).toContain("Scout proposals awaiting you: unavailable");
@@ -43,6 +43,7 @@ describe("buildDigest", () => {
   it("shows class, age and recommendation for Needs You items", () => {
     const text = buildDigest({
       now: NOW,
+      draftReverts: [],
       needsYou: [{ repo: "a/b", issueNumber: 7, title: "Bug 7", code: "review_vetoed", since: NOW - 5 * HOUR }],
       yesterday: { autonomousMerges: 2, ownerMerges: 1, reverts: 1, spendUsd: 1.5 },
       proposals: [{ repo: "a/b", issueNumber: 9, scoutName: "bug-hunt" }],
