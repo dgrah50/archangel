@@ -4,6 +4,7 @@ import { z } from "zod";
 import { HostYamlSchema, resolveConfigPath } from "../config.js";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } from "./corrections.js";
 import type { Ledger, StageMetrics } from "../ledger/store.js";
+import { describeRule, type SignalRule } from "./signal-rules.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
 import { describeEscalation, ESCALATION_POLICY, formatDecisionClass, type EscalationPolicy } from "./escalations.js";
@@ -294,11 +295,28 @@ const pairs = (rec: Record<string, number>) => {
   return e.length > 0 ? e.map(([k, v]) => `${k}=${v}`).join(", ") : "none";
 };
 
+/** What the Intake stage shows about the signal layer: this repo's rules from archangel.yaml and its signal counts. */
+export interface SignalsView {
+  rules: SignalRule[];
+  counts: Record<string, number>;
+}
+
+/** The signal rules in archangel.yaml (all of them; empty when signals are off); null when the file is missing or invalid. Read-only. */
+export function readSignalRules(configPath: string | undefined): SignalRule[] | null {
+  try {
+    const host = HostYamlSchema.safeParse(parseYaml(fs.readFileSync(resolveConfigPath(configPath), "utf8")));
+    return host.success && host.data.signals.enabled ? host.data.signals.rules : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 /** Pure. `wf` is the cached EffectiveWorkflow (untrusted JSON from system_state); only whitelisted fields are read, Scout prompts never leave the Ledger. */
-export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: StageMetrics): PipelineRepo {
+export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: StageMetrics, signals: SignalsView | null = null): PipelineRepo {
   const intakeMetrics = [
     `queued: ${m.intake.queued}${m.intake.oldestQueuedAgeSec === null ? "" : `, oldest ${formatAge(m.intake.oldestQueuedAgeSec * 1000)}`}`,
     `rejected: ${pairs(m.intake.rejections)}`,
+    ...(signals && Object.keys(signals.counts).length > 0 ? [`signals (7d): ${pairs(signals.counts)}`] : []),
   ];
   const kernelStages = (ok: OkWorkflow | null): PipelineStage[] => {
     const scoutEntries = Object.entries(m.scouts);
@@ -306,7 +324,10 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
       {
         id: "intake",
         title: "Intake",
-        items: [{ label: "rule", value: "owner-authored issue, owner-applied ready-for-agent, pinned body hash", source: "kernel" }],
+        items: [
+          { label: "rule", value: "owner-authored issue, owner-applied ready-for-agent, pinned body hash", source: "kernel" },
+          ...(signals?.rules ?? []).map((r) => ({ label: "signal rule", value: `${r.name}: ${describeRule(r)}`, source: "host" as const })),
+        ],
         clamps: [],
         metrics: intakeMetrics,
       },
@@ -488,7 +509,7 @@ const CachedWorkflow = z.union([
 ]);
 
 /** `/api/workflows`: every repo the Ledger knows, with its cached workflow (no GitHub calls). */
-export function buildWorkflowsState(ledger: Ledger, now = Date.now()): WorkflowsState {
+export function buildWorkflowsState(ledger: Ledger, now = Date.now(), signalRules: SignalRule[] | null = null): WorkflowsState {
   const cached = new Map(ledger.listCachedWorkflows().map((c) => [c.repo, CachedWorkflow.safeParse(c.workflow)]));
   const repos = [...new Set([...cached.keys(), ...ledger.listAllThreads().map((t) => t.repo)])].sort();
   const since = now - WINDOW_DAYS * DAY_MS;
@@ -497,11 +518,17 @@ export function buildWorkflowsState(ledger: Ledger, now = Date.now()): Workflows
     windowDays: WINDOW_DAYS,
     repos: repos.map((repo) => {
       const metrics = ledger.computeStageMetrics(repo, since, now);
+      const signals: SignalsView | null = signalRules
+        ? {
+            rules: signalRules.filter((r) => r.repo === undefined || r.repo.toLowerCase() === repo.toLowerCase()),
+            counts: schemaGap(() => ledger.signalCounts(now - 7 * DAY_MS, repo)) ?? {},
+          }
+        : null;
       const hit = cached.get(repo);
       if (hit && !hit.success) {
-        return { ...describeWorkflow(repo, null, metrics), status: "unreadable" as const, error: "The cached workflow could not be read; the daemon rewrites it on its next tick." };
+        return { ...describeWorkflow(repo, null, metrics, signals), status: "unreadable" as const, error: "The cached workflow could not be read; the daemon rewrites it on its next tick." };
       }
-      return describeWorkflow(repo, hit ? (hit.data as unknown as EffectiveWorkflow) : null, metrics);
+      return describeWorkflow(repo, hit ? (hit.data as unknown as EffectiveWorkflow) : null, metrics, signals);
     }),
   };
 }

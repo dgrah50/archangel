@@ -69,6 +69,9 @@ export function classifyLoosening(prev: Host | null, next: Host): string[] {
   const base = prev ?? HOST_DEFAULTS;
   const out: string[] = [];
   if (next.maxDailyUsd > base.maxDailyUsd) out.push(`maxDailyUsd ${base.maxDailyUsd} -> ${next.maxDailyUsd}`);
+  if (next.signals.enabled && !base.signals.enabled) out.push("signals.enabled false -> true");
+  if (next.signals.rules.length > base.signals.rules.length) out.push(`signals.rules ${base.signals.rules.length} -> ${next.signals.rules.length}`);
+  if (next.signals.maxActionsPerDay > base.signals.maxActionsPerDay) out.push(`signals.maxActionsPerDay ${base.signals.maxActionsPerDay} -> ${next.signals.maxActionsPerDay}`);
   const prevProjects = new Map(base.projects.map((p) => [p.repo, p]));
   for (const p of next.projects) {
     // A new project is compared with the strictest stance (shadow on, Scouts off) and the schema defaults for the caps.
