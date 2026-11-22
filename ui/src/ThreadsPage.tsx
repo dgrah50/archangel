@@ -13,6 +13,8 @@ import { threadHash, type ItemRef } from "./route";
 /** Shown open, in this order. `Stuck` is only listed when something is stuck. */
 const OPEN: NeedGroup[] = ["Needs you", "Stuck", "Ready for owner", "In review", "Waiting on CI", "Working"];
 const FOLDED: NeedGroup[] = ["Queued", "Done in last 7 days"];
+/** The Threads headline count and the nav badge: Threads in the open groups, optionally for one repo. */
+export const openThreadCount = (groups: UiState["groups"], repo = "") => OPEN.reduce((n, g) => n + groups[g].filter((i) => repo === "" || i.repo === repo).length, 0);
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
 const gap = (ms: number) => age(ms).replace(/(\d)([a-z])/, "$1 $2");
@@ -64,7 +66,7 @@ export function ThreadsPage({ state, item, thread, now, onRetry }: { state: UiSt
   const pick = (g: NeedGroup) => state.groups[g].filter((i) => repo === "" || i.repo === repo);
   const open = OPEN.map((g) => ({ g, items: pick(g) })).filter((x) => x.items.length > 0);
   const folded = FOLDED.map((g) => ({ g, items: pick(g) })).filter((x) => x.items.length > 0);
-  const live = open.reduce((n, x) => n + x.items.length, 0);
+  const live = openThreadCount(state.groups, repo);
   const owed = pick("Needs you").length;
   const allEmpty = Object.values(state.groups).every((l) => l.length === 0);
   const stuck = state.groups.Stuck.length;

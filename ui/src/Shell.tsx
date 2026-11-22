@@ -1,6 +1,7 @@
 import { Box, Flex, Link, Text } from "@chakra-ui/react";
 import type { UiState } from "../../src/core/ui-state.js";
 import { Dot, OwedCount } from "./page";
+import { openThreadCount } from "./ThreadsPage";
 import { NAV, navPageOf, type NavPage, type Route } from "./route";
 
 /** Left nav on wide screens, a top bar on narrow ones. No header strip: each page states its own situation in its headline. */
@@ -43,7 +44,7 @@ export function Shell({ route, state, children }: { route: Route; state: UiState
 
 function navCounts(state: UiState | null): Partial<Record<NavPage, { n: number; owed: boolean }>> {
   if (!state) return {};
-  const live = Object.entries(state.groups).reduce((n, [g, list]) => (g === "Done in last 7 days" ? n : n + list.length), 0);
+  const live = openThreadCount(state.groups);
   return {
     "needs-you": state.needsYou.length > 0 ? { n: state.needsYou.length, owed: true } : undefined,
     threads: live > 0 ? { n: live, owed: false } : undefined,
