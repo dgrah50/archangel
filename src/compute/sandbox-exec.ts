@@ -193,7 +193,8 @@ export class SandboxExecProvider implements ComputeProvider {
     const reserved = new Set(this.opts.reservedPorts ?? []);
     if (reserved.has(spec.port)) throw new Error(`port ${spec.port} is reserved`);
     const appPort = spec.port || (await freePort(reserved));
-    const publicPort = await freePort(new Set([...reserved, appPort]));
+    if (spec.publicPort !== undefined && (reserved.has(spec.publicPort) || spec.publicPort === appPort)) throw new Error(`port ${spec.publicPort} is reserved or is the app's own`);
+    const publicPort = spec.publicPort ?? (await freePort(new Set([...reserved, appPort])));
     const sb = this.sandboxed(ws);
     // Scrubbed env: the app learns its port and where to bind, and finds the toolchain. TMPDIR is the sandbox's tmp dir.
     const env = { PORT: String(appPort), HOST: "127.0.0.1", PATH: TOOLCHAIN_PATH, TMPDIR: sb.tmp };

@@ -3,7 +3,7 @@ import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { ATTEMPT_FAILURE_ADVICE, MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
-import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -32,6 +32,7 @@ import { renderRecapComment } from "./recap.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
+import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
@@ -249,7 +250,8 @@ export class Reconciler {
     }
     if (issueNumber === null) return;
     const abortController = new AbortController();
-    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate }, issueNumber, mainSha, abortController, now)
+    const webPreview = this.workflow.preview?.kind === "web" ? this.workflow.preview : null;
+    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
       .catch((err: unknown) => this.recordFault("poc_build", err, now, issueNumber!))
       .finally(() => {
         this.pocBuild = null;
@@ -378,6 +380,7 @@ export class Reconciler {
     }
 
     try {
+      closeStalePreviews(this.ledger, now);
       this.startPocBuild(mainSha, now);
     } catch (err) {
       this.recordFault("poc_build", err, now);

@@ -37,6 +37,8 @@ import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
+import { LocalProvider } from "../compute/local.js";
+import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
 import { createSailProvider } from "../compute/sail-sdk.js";
 import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
@@ -436,6 +438,37 @@ pitchCmd
         process.exit(1);
       }
       console.log(`Build queued for pitch #${issueArg}. The daemon starts it on its next pass (it uses your subscription once).`);
+    } finally {
+      ledger.close();
+    }
+  });
+
+pitchCmd
+  .command("preview <repo> <issue>")
+  .description("Run a built PoC in a macOS sandbox on a loopback URL and screenshot it (installed at build time; 60 min TTL, 15 min idle; Ctrl-C stops it)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--ui-port <n>", "The dashboard port, which a preview never uses", "4477")
+  .action(async (repo: string, issueArg: string, opts: { config?: string; uiPort: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+    const paths = resolvePaths(cfg);
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
+    try {
+      const preview = cachedWebPreview(ledger, repoSlug);
+      if (!preview) throw new Error(`${repoSlug} has no web preview block in .agents/archangel.json (or the daemon has not read it yet)`);
+      const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
+      const local = new LocalProvider(broker);
+      const running = await startPocPreview(
+        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs },
+        Number(issueArg),
+      );
+      process.once("SIGINT", running.close);
+      process.once("SIGTERM", running.close);
+      console.log(`Preview of pitch #${issueArg}: ${running.url}  (sandboxed, loopback only; expires ${new Date(running.expiresAt).toLocaleTimeString()}; Ctrl-C to stop)`);
+      await running.closed;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
     } finally {
       ledger.close();
     }

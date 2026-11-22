@@ -81,10 +81,11 @@ export const ScoutSpec = z
 export type ScoutSpec = z.infer<typeof ScoutSpec>;
 
 /** One command as an argv: no shell, so no quoting or expansion. */
+const PreviewPath = z.string().max(100).regex(/^\/([\w.-]+\/)*[\w.-]*$/);
 const Argv = z.array(z.string().min(1).max(200).regex(/^[^\0\r\n]+$/)).min(1).max(20);
 
 /**
- * How the owner says a PoC of this repo is shown. Absent means no preview. Nothing here runs yet; the sandboxed runner reads it.
+ * How the owner says a PoC of this repo is shown. Absent means no preview. The sandboxed runner reads it.
  * `web` starts a server on a port the host health-checks; `demo` lists commands whose output is recorded as a before/after transcript.
  */
 export const Preview = z.discriminatedUnion("kind", [
@@ -94,7 +95,9 @@ export const Preview = z.discriminatedUnion("kind", [
       install: Argv,
       start: Argv,
       port: z.number().int().min(1024).max(65535),
-      readyPath: z.string().max(100).regex(/^\/([\w.-]+\/)*[\w.-]*$/),
+      readyPath: PreviewPath,
+      /** Up to 2 more pages to screenshot after `readyPath`. */
+      shots: z.array(PreviewPath).max(2).default([]),
     })
     .strict(),
   z.object({ kind: z.literal("demo"), commands: z.array(Argv).min(1).max(5) }).strict(),
