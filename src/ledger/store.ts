@@ -1877,6 +1877,14 @@ export class Ledger {
     }));
   }
 
+  /** Telemetry anomalies the telemetry Scout recorded since `sinceMs`, across repos, newest first. */
+  listTelemetryAnomalies(sinceMs: number): Array<{ repo: string; payload: Record<string, unknown>; observedAt: number }> {
+    const rows = this.db
+      .prepare(`SELECT repo, payload_json, observed_at FROM signals WHERE kind = 'telemetry_anomaly' AND observed_at >= ? ORDER BY id DESC`)
+      .all(sinceMs) as Array<{ repo: string; payload_json: string; observed_at: number }>;
+    return rows.map((r) => ({ repo: r.repo, payload: JSON.parse(r.payload_json) as Record<string, unknown>, observedAt: r.observed_at }));
+  }
+
   signalCounts(sinceMs: number, repo = this.repo): Record<string, number> {
     const rows = this.db
       .prepare(`SELECT kind, COUNT(*) AS n FROM signals WHERE repo = ? AND observed_at >= ? GROUP BY kind`)

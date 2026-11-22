@@ -138,3 +138,26 @@ export function FaultsSection({ faults, now }: { faults: UiState["faults"] | nul
     </Section>
   );
 }
+
+/** What the telemetry Scout found abnormal in the last 24h. Normal numbers are not shown. */
+export function TelemetrySection({ telemetry, now }: { telemetry: UiState["telemetry"] | null; now: number }) {
+  return (
+    <Section aria-label="Telemetry" gap="2">
+      <Text textStyle="rowTitle" color="fg">Telemetry, last 24 h</Text>
+      <Text textStyle="meta" color="fg.muted">Local measurements compared with the week before; only what is abnormal is listed. It clears itself once the numbers return to normal.</Text>
+      {telemetry === null ? (
+        <ReadError title="Telemetry is unavailable.">
+          <Text textStyle="meta" color="fg.muted">The Ledger schema is older than this dashboard. Restart the daemon so it can migrate.</Text>
+        </ReadError>
+      ) : telemetry.length === 0 ? (
+        <Text textStyle="meta" color="fg.muted">Nothing abnormal in the last 24h (needs signals enabled in archangel.yaml).</Text>
+      ) : (
+        <RowList>
+          {telemetry.map((t) => (
+            <Row key={`${t.repo}/${t.title}`} lead="" title={`${t.repo} · ${t.title}`} meta={`${t.detail} Found ${age(now - t.observedAt)} ago.`} />
+          ))}
+        </RowList>
+      )}
+    </Section>
+  );
+}

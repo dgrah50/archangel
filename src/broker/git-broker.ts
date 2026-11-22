@@ -68,6 +68,8 @@ export interface GitBrokerOptions {
   enableLocalGate?: boolean;
   localGateSkipTests?: boolean;
   localGateTimeoutMs?: number;
+  /** `owner/name`, only to attribute telemetry. */
+  repo?: string;
 }
 
 /**
@@ -85,6 +87,7 @@ export class GitBroker {
   readonly enableLocalGate: boolean;
   readonly localGateSkipTests: boolean;
   readonly localGateTimeoutMs: number;
+  private readonly repo: string | null;
 
   constructor(opts: GitBrokerOptions) {
     this.bareRepoPath = path.resolve(opts.bareRepoPath);
@@ -93,6 +96,7 @@ export class GitBroker {
     this.enableLocalGate = opts.enableLocalGate ?? false;
     this.localGateSkipTests = opts.localGateSkipTests ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
+    this.repo = opts.repo ?? null;
   }
 
   private gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -135,7 +139,7 @@ export class GitBroker {
         remoteUrl,
         this.bareRepoPath,
       ]);
-      emit("broker_ms", Date.now() - t0, { op: "clone" });
+      emit("broker_ms", Date.now() - t0, { op: "clone" }, this.repo);
       // Never retain embedded token URLs inside bare repo config.
       await this.runGit(this.bareRepoPath, ["remote", "remove", "origin"]);
       return;
@@ -152,7 +156,7 @@ export class GitBroker {
       `+refs/heads/${this.defaultBranch}:refs/heads/${this.defaultBranch}`,
       "+refs/heads/factory/*:refs/heads/factory/*",
     ]);
-    emit("broker_ms", Date.now() - t0, { op: "fetch" });
+    emit("broker_ms", Date.now() - t0, { op: "fetch" }, this.repo);
   }
 
   /**
@@ -203,7 +207,7 @@ export class GitBroker {
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
     const t0 = Date.now();
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
-    emit("broker_ms", Date.now() - t0, { op: "clone" });
+    emit("broker_ms", Date.now() - t0, { op: "clone" }, this.repo);
     // Ensure unpushed staging refs (`refs/archangel/staging/<n>`) are reachable before checkout.
     const hasStart = await this.hasCommitIn(cloneDir, startRef);
     if (!hasStart) {
@@ -372,7 +376,7 @@ export class GitBroker {
       const ms = Date.now() - t0;
       // The Gate does not report a timeout as such: a failed run that lasted at least the command timeout hit it.
       const outcome = !report ? "error" : report.passed ? "passed" : ms >= this.localGateTimeoutMs ? "timeout" : "failed";
-      emit("gate_ms", ms, { outcome });
+      emit("gate_ms", ms, { outcome }, this.repo);
     }
   }
 

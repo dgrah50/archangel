@@ -197,6 +197,7 @@ program
         bareRepoPath: paths.brokerBareRepoPath,
         clonesDir: paths.clonesDir,
         defaultBranch: cfg.defaultBranch,
+        repo: repoSlug,
         enableLocalGate: true,
         // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
         localGateSkipTests: true,
