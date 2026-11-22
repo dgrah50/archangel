@@ -256,10 +256,12 @@ export class Ledger {
     const existing = this.getSystemState("daemon_lock");
     if (!existing) return false;
     try {
-      const parsed = JSON.parse(existing) as { heartbeatAt: number };
-      return now - parsed.heartbeatAt < staleMs;
+      const at = (JSON.parse(existing) as { heartbeatAt?: unknown }).heartbeatAt;
+      // An unreadable lock must read as "a daemon may be live": handoff must not mutate the DB under it.
+      if (typeof at !== "number") return true;
+      return now - at < staleMs;
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -1327,18 +1329,14 @@ export class Ledger {
   }
 
   listActiveCooldowns(now = Date.now()): Array<{ provider: string; untilTs: number; reason: string }> {
-    try {
-      const rows = this.db
-        .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
-        .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
-      return rows.map((r) => ({
-        provider: String(r.provider),
-        untilTs: Number(r.until_ts),
-        reason: String(r.reason),
-      }));
-    } catch {
-      return [];
-    }
+    const rows = this.db
+      .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
+      .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
+    return rows.map((r) => ({
+      provider: String(r.provider),
+      untilTs: Number(r.until_ts),
+      reason: String(r.reason),
+    }));
   }
 
   // ---- Scout Proposals & Atomic Daily Run Caps (V2.0 / Opus H2, M3, M5) ----
@@ -1527,7 +1525,8 @@ export class Ledger {
             if (r.actor === scoutName) ranThisScoutToday = true;
           }
         } catch {
-          // ignore malformed payload
+          // A row we cannot read may be today's run: count it against the cap (fail closed).
+          todayCount++;
         }
       }
       if (todayCount >= maxRunsPerDay) return false;
