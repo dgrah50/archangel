@@ -202,17 +202,22 @@ export class Ledger {
     return tx();
   }
 
-  heartbeatDaemonLock(ownerId: string, now = Date.now()): void {
-    const existing = this.getSystemState("daemon_lock");
-    if (!existing) return;
-    try {
-      const parsed = JSON.parse(existing) as { ownerId: string };
-      if (parsed.ownerId === ownerId) {
-        this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+  /** Refreshes the lock if this daemon still owns it. False means the lock is gone, unreadable or another daemon's: the caller must stop. */
+  heartbeatDaemonLock(ownerId: string, now = Date.now()): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const existing = this.getSystemState("daemon_lock");
+      if (!existing) return false;
+      let owner: unknown;
+      try {
+        owner = (JSON.parse(existing) as { ownerId?: unknown }).ownerId;
+      } catch {
+        return false;
       }
-    } catch {
-      // Ignore
-    }
+      if (owner !== ownerId) return false;
+      this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+      return true;
+    });
+    return tx.immediate();
   }
 
   releaseDaemonLock(ownerId: string): void {

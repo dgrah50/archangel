@@ -40,6 +40,9 @@ const REVIEW_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
+/** How long a CLI gets between SIGTERM and SIGKILL. */
+const KILL_GRACE_MS = 2000;
+
 export type ReviewerCliInvoker = (input: {
   provider: CliProvider;
   model?: string;
@@ -47,7 +50,7 @@ export type ReviewerCliInvoker = (input: {
   timeoutMs: number;
 }) => Promise<unknown>;
 
-function parseJsonEnvelope(stdout: string): unknown {
+export function parseJsonEnvelope(stdout: string): unknown {
   const lines = stdout.trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]?.trim();
@@ -94,16 +97,14 @@ function parseJsonEnvelope(stdout: string): unknown {
       }
       return obj;
     } catch (err) {
-      if (err instanceof Error && !err.message.includes("JSON")) {
-        throw err;
-      }
-      // keep scanning non-JSON lines
+      // Only a line that is not JSON is skipped; a real error envelope is an error whatever words its text contains.
+      if (!(err instanceof SyntaxError)) throw err;
     }
   }
   return undefined;
 }
 
-function defaultReviewerCliInvoker(input: {
+export function defaultReviewerCliInvoker(input: {
   provider: CliProvider;
   model?: string;
   prompt: string;
@@ -189,8 +190,13 @@ function defaultReviewerCliInvoker(input: {
     let stdout = "";
     let stderr = "";
 
+    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
+      // A CLI that ignores SIGTERM would hold the tick forever: escalate unless it has actually exited.
+      killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, KILL_GRACE_MS);
     }, input.timeoutMs);
 
     child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
@@ -198,12 +204,14 @@ function defaultReviewerCliInvoker(input: {
 
     child.on("error", (err) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       reject(err);
     });
 
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       try {
         if (code !== 0) {
           reject(new Error(`${input.provider} exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
@@ -222,6 +230,7 @@ function defaultReviewerCliInvoker(input: {
       }
     });
 
+    child.stdin.on("error", () => undefined); // a CLI that exits before reading its prompt shows up as its exit code, not an uncaught EPIPE
     if (stdinPrompt !== null) {
       child.stdin.write(stdinPrompt);
     }

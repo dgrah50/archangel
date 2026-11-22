@@ -221,6 +221,7 @@ export class Reconciler {
       this.abortAllActive("control");
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
+      await this.flushOutbox(); // effects queued by the aborts above, and any already waiting, still go out while halted
       return;
     }
     if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
@@ -945,16 +946,27 @@ export class Reconciler {
         const dependsOn = this.ledger.getThreadDependency(thread.issueNumber);
         if (dependsOn !== null) {
           const pred = this.ledger.getThread(dependsOn);
-          if (!pred || pred.phase.kind !== "done") return;
-          this.ledger.clearThreadDependency(thread.issueNumber); // consumed: a retry after the Needs You runs the slice on its own
-          if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
-            this.applyMachineEvent(
-              thread,
-              { t: "escalate", code: "dependency_unmet", reason: `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.` },
-              { auditTopic: "thread/needs_you", now },
-            );
+          let unmet: string | null = null;
+          if (!pred) {
+            // No Thread yet: still waiting while the predecessor is an open, ready-for-agent issue that intake will pick up.
+            // Closed or un-labelled, it will never get one, so the chain can never advance.
+            const predIssue = await this.github.getIssue(dependsOn);
+            if (predIssue.state !== "open" || !predIssue.labels.includes(this.cfg.labels.readyForAgent)) {
+              unmet = `Slice #${dependsOn} was closed or un-labelled before it started, so this chained slice has not started.`;
+            }
+          } else if (pred.phase.kind !== "done") {
+            return;
+          } else if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
+            unmet = `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.`;
+          }
+          if (unmet === null && !pred) return;
+          if (unmet !== null) {
+            // Consume the dependency only once the escalation has landed: a lost CAS retries next tick instead of starting the slice unblocked.
+            const escalated = this.applyMachineEvent(thread, { t: "escalate", code: "dependency_unmet", reason: unmet }, { auditTopic: "thread/needs_you", now });
+            if (escalated) this.ledger.clearThreadDependency(thread.issueNumber); // a retry after the Needs You runs the slice on its own
             return;
           }
+          this.ledger.clearThreadDependency(thread.issueNumber);
         }
         await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
         return;
@@ -1201,7 +1213,11 @@ export class Reconciler {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
 
+      // The implementer said it did not finish (budget or turn limit, an execution error): an explicit failed Attempt, with its cost.
+      if (result.failure && !result.aborted) throw new Error(`implementer ended with ${result.failure}`);
+
       // The repo may have been halted while the implementer ran: treat that like a control abort.
+
       if (result.aborted || !this.workflow) {
         const cause = task.abortCause ?? (this.workflow ? "timeout" : "control");
         this.ledger.finishAttempt(attemptId, {
@@ -1436,7 +1452,7 @@ export class Reconciler {
       // A halt or kill switch that landed while the Attempt was still cloning or in repo setup is an abort, not a failure
       // (the policy getters throw once the workflow is gone): return the Thread to where it resumes.
       if (!this.workflow || task.abortController.signal.aborted) {
-        const cause = task.abortCause ?? "control";
+        const cause = task.abortCause ?? (this.workflow ? "timeout" : "control"); // an abort nobody asked for is the Attempt timing out: never refund it
         this.ledger.finishAttempt(attemptId, {
           status: "aborted",
           costUsd: actualCostUsd,
@@ -1771,10 +1787,10 @@ export class Reconciler {
     blockers: ReturnType<typeof computeBlockers>,
     now: number,
   ): Promise<void> {
-    if (
-      cleanMergeTree &&
-      thread.rebaseCount < this.cfg.maxRebasesPerThread
-    ) {
+    // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
+    // re-escalate on the very same conflict at once.
+    const rebaseBudget = this.cfg.maxRebasesPerThread + thread.retryGrants;
+    if (cleanMergeTree && thread.rebaseCount < rebaseBudget) {
       const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
       if (rebased.ok) {
         const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -1804,7 +1820,7 @@ export class Reconciler {
         return;
       }
     }
-    if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
+    if (issue && thread.rebaseCount < rebaseBudget) {
       if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
       await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
       return;
