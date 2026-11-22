@@ -245,6 +245,7 @@ describe("pitch Scout runs", () => {
       const { res } = await f.run(out(pitch(), pitch({ title: "Another well evidenced pitch" })));
       expect(res[0]!.filedIssues).toEqual([]);
       expect(f.ledger.listAudit({ topicPrefix: "pitch/invalid_output" })).toHaveLength(1);
+      expect(res[0]!.status).toBe("failed_output");
     } finally {
       f.cleanup();
     }
