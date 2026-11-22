@@ -1,5 +1,6 @@
 import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
+import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
@@ -78,6 +79,7 @@ export function AppView({
   route,
   state,
   workflows,
+  host,
   thread,
   logs,
   now,
@@ -86,6 +88,7 @@ export function AppView({
   route: Route;
   state: Feed<UiState>;
   workflows: Feed<WorkflowsState>;
+  host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
   logs: Feed<LogsPayload>;
   now: number;
@@ -106,7 +109,7 @@ export function AppView({
     );
   }
   return (
-    <Shell route={route} state={state.data}>
+    <Shell route={route} state={state.data} host={host}>
       <Box pt="4" px="6">
         {bannersFor(state, now).map((b) => (
           <Notice key={b.text} tone={b.tone}>

@@ -7,6 +7,7 @@ import type { Ledger } from "../ledger/store.js";
 import { REPO_SLUG_RE } from "../config.js";
 import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
+import { buildHostStatus } from "./host-facts.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
 
@@ -66,7 +67,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -135,6 +136,7 @@ export async function startUiServer(
         res.end(body);
         return;
       }
+      if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
       const url = new URL(req.url ?? "/", "http://localhost");
       const thread = /^\/api\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(pathname);
       if (thread || pathname === "/api/logs") {
