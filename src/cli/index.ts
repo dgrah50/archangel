@@ -698,6 +698,7 @@ program
         message: opts.message,
       });
       if (reply) ledger.setOwnerReply(issueNumber, reply);
+      ledger.grantRetryBudget(issueNumber);
       await github.removeLabel(issueNumber, cfg.labels.needsYou);
       ledger.transition(issueNumber, thread.version, stepped.next, {
         bodySha256: sha256(issue.body),

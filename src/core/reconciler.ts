@@ -564,6 +564,7 @@ export class Reconciler {
           if (reply) {
             this.ledger.setOwnerReply(thread.issueNumber, reply, now);
           }
+          this.ledger.grantRetryBudget(thread.issueNumber, now);
         } catch (err) {
           // Never resume without the owner's reply: retry on the next tick.
           this.logger.warn("thread/owner_reply_fetch_failed", err instanceof Error ? err.message : String(err), {
@@ -718,13 +719,13 @@ export class Reconciler {
     if (await this.autonomyCapReached(now)) {
       return false;
     }
-    if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread) {
+    if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread + thread.retryGrants) {
       this.applyMachineEvent(
         thread,
         {
           t: "escalate",
           code: "max_attempts",
-          reason: `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread}).`,
+          reason: `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants}).`,
         },
         { auditTopic: "thread/needs_you", now },
       );
@@ -974,7 +975,7 @@ export class Reconciler {
         }
 
         // Allow 1 pre-push local revision starting from the unpushed staging SHA!
-        if (kind === "implement" && latest.revisionCount < this.cfg.maxRevisionsPerThread) {
+        if (kind === "implement" && latest.revisionCount < this.cfg.maxRevisionsPerThread + latest.retryGrants) {
           const backToQueued = this.applyMachineEvent(
             latest,
             { t: "attempt_aborted", cause: "control", now: Date.now() },
@@ -1172,7 +1173,7 @@ export class Reconciler {
         if (
           thread.mode === "autonomous" &&
           issue &&
-          thread.revisionCount < this.cfg.maxRevisionsPerThread &&
+          thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants &&
           this.runningTasks.size < this.cfg.maxConcurrentThreads
         ) {
           await this.spawnAttempt(thread, issue, "revise", mainSha, failMsgs, [], now);
@@ -1320,7 +1321,7 @@ export class Reconciler {
 
       if (
         thread.mode === "autonomous" &&
-        thread.revisionCount < this.cfg.maxRevisionsPerThread &&
+        thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants &&
         this.runningTasks.size < this.cfg.maxConcurrentThreads
       ) {
         await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
