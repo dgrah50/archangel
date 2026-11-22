@@ -16,4 +16,6 @@ Before adding a test, look for one that already covers the behavior and extend i
 
 Keep the tests that guard trust boundaries and hard invariants: Gate proofs, protected paths, never merging or speaking as the owner, the bounds on retries and escalations. Even then, one sharp test per invariant is enough.
 
+No UI tests in this repo: no rendering, component-output, contrast or accessibility tests. The dashboard is checked by eye with screenshots. Only the UI HTTP server's security guards (token, Origin, remote-mode 403, audit-before-write, never merging) are tested, and those are server tests.
+
 When you touch an area, delete tests there that break these rules. Cutting a useless test is a good change.
