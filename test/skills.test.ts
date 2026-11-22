@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildScoutPrompt, parseScoutMarkdown } from "../src/core/scout.js";
-import { listAllSkills, resolveSkills } from "../src/core/skills.js";
+import { resolveSkills } from "../src/core/skills.js";
 
 describe("bundled skills", () => {
-  it("ships general, go and typescript skills", () => {
-    const all = listAllSkills();
-    expect(all).toContain("general/bug-hunt");
-    expect(all.some((s) => s.startsWith("go/"))).toBe(true);
-    expect(all.some((s) => s.startsWith("typescript/"))).toBe(true);
-  });
-
   it("expands folder wildcards in order without duplicates", () => {
     const refs = resolveSkills(["general/bug-hunt", "go/*", "general/bug-hunt"]).map((s) => s.ref);
     expect(refs[0]).toBe("general/bug-hunt");

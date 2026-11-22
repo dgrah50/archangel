@@ -83,6 +83,9 @@ export class Ledger {
       if (!cols.some((c) => c.name === "owner_reply")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
       }
+      if (!cols.some((c) => c.name === "retry_grants")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
+      }
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
         this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
@@ -102,6 +105,13 @@ export class Ledger {
       .prepare("UPDATE threads SET owner_reply = ?, updated_at = ? WHERE repo = ? AND issue_number = ?")
       .run(text, now, this.repo, issueNumber);
     this.appendAudit("thread/owner_reply", issueNumber, "owner", { chars: text?.length ?? 0 }, now);
+  }
+
+  /** An owner retry grants the Thread one more implement and one more revision Attempt. */
+  grantRetryBudget(issueNumber: number, now = Date.now()): void {
+    this.db
+      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, updated_at = ? WHERE repo = ? AND issue_number = ?")
+      .run(now, this.repo, issueNumber);
   }
 
   forRepo(repo: string): Ledger {
@@ -1529,6 +1539,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
       ? (JSON.parse(String(r.implementer_vendors_json)) as ReviewerVendor[])
       : [],
     ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
+    retryGrants: Number(r.retry_grants ?? 0),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
