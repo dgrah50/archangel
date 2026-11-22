@@ -63,6 +63,22 @@ interface RunningTask {
   promise: Promise<void>;
 }
 
+/** What used the autonomy cap's steps, per Thread (counts and issue numbers only). The cap is never extended automatically. */
+export function describeCapUsage(b: ReturnType<Ledger["autonomousStepBreakdown"]>): string {
+  const SHOWN = 10;
+  const lines = b.threads.slice(0, SHOWN).map((t) => {
+    const parts = [t.implement && `${t.implement} implement`, t.revise && `${t.revise} revise`, t.rebase && `${t.rebase} rebase`, t.merged && `${t.merged} merged`].filter(Boolean);
+    return `  #${t.issueNumber}: ${parts.join(", ")}`;
+  });
+  const rest = b.threads.slice(SHOWN).reduce((n, t) => n + t.total, 0);
+  return [
+    `Used by ${b.threads.length} Thread(s):`,
+    ...lines,
+    ...(rest > 0 ? [`  and ${b.threads.length - SHOWN} more Thread(s) (${rest} steps)`] : []),
+    b.needsYou.length > 0 ? `Waiting on you: ${b.needsYou.map((n) => `#${n}`).join(", ")}` : "Nothing is waiting on you.",
+  ].join("\n");
+}
+
 const POST_MERGE_WATCH_TIMEOUT_MS = 2 * 60 * 60_000;
 /** How long a requested rerun may take to show up before the original failure counts as the verdict. */
 const RERUN_GRACE_MS = 10 * 60_000;
@@ -1022,7 +1038,7 @@ export class Reconciler {
         await this.notifier.notifyNeedsYou({
           issueNumber: null,
           title: `Autonomy cap reached for ${this.ledger.repo}`,
-          reason: `${steps} autonomous steps (cap ${cap}) since you were last heard from; no new Attempts or merges will start.`,
+          reason: `${steps} autonomous steps (cap ${cap}) since you were last heard from; no new Attempts or merges will start.\n${describeCapUsage(this.ledger.autonomousStepBreakdown())}`,
           decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.autonomy_cap.decisionClass),
           recommendation: MAIN_ESCALATION_POLICY.autonomy_cap.recommendation,
         });
