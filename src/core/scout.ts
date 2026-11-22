@@ -34,6 +34,7 @@ import {
 } from "./pitch.js";
 import { ingestImage, type IngestedImage } from "./pitch-ingest.js";
 import { resolveSkills, type Skill } from "./skills.js";
+import { emit } from "./telemetry.js";
 import type { EffectiveScout, OkWorkflow } from "./workflow.js";
 
 /** A Scout as the runner needs it: the workflow file's spec resolved with its prompt body and skills. */
@@ -533,6 +534,9 @@ export async function runScoutsForProject(opts: {
     });
   }
 
+  for (const r of results) {
+    emit("scout_run", 1, { outcome: r.status === "skipped_cap" || r.status === "skipped_open_limit" ? "skipped" : r.status }, opts.ledger.repo);
+  }
   return results;
 }
 

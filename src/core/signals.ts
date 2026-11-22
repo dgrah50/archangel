@@ -2,6 +2,9 @@ import { z } from "zod";
 import type { GitHubClient } from "../github/client.js";
 import { formatDayKey, type Ledger } from "../ledger/store.js";
 import { SIGNAL_KINDS, type SignalKind } from "./signal-kinds.js";
+import { emit } from "./telemetry.js";
+import { ANOMALY_METRICS, anomalyEventId, detectAnomalies, TELEMETRY_SCOUT_EVERY_MS } from "./telemetry-scout.js";
+import { REPO_RE } from "./telemetry-events.js";
 import { actionAllowed, ruleKey, type SignalRule, type SignalsConfig } from "./signal-rules.js";
 
 /** Signals older than this are never actioned, and an adapter with no watermark reads back this far. */
@@ -21,12 +24,22 @@ const PAYLOADS = {
     })
     .strict(),
   schedule: z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/), slot: z.string().regex(/^[0-9a-zA-Z-]{1,20}$/) }).strict(),
+  telemetry_anomaly: z
+    .object({
+      metric: z.enum(ANOMALY_METRICS),
+      window: z.literal("24h"),
+      baseline: z.number().finite(),
+      observed: z.number().finite(),
+      ratio: z.number().finite(),
+      repo: z.string().regex(REPO_RE),
+    })
+    .strict(),
 } as const satisfies Record<SignalKind, z.ZodType>;
 
 /** Appends one signal; false when this event was already ingested. Source and taint come from the kind, not from the caller. */
 export function recordSignal(ledger: Ledger, kind: SignalKind, eventId: string, payload: unknown, observedAt: number): boolean {
   const { source, taint } = SIGNAL_KINDS[kind];
-  return ledger.insertSignal({
+  const inserted = ledger.insertSignal({
     repo: ledger.repo,
     source,
     kind,
@@ -35,6 +48,8 @@ export function recordSignal(ledger: Ledger, kind: SignalKind, eventId: string, 
     payload: PAYLOADS[kind].parse(payload),
     observedAt,
   });
+  if (inserted) emit("signal_ingested", 1, { kind }, ledger.repo);
+  return inserted;
 }
 
 function weeklySlot(now: number): string {
@@ -77,6 +92,19 @@ export async function ingestSignals(opts: {
       opts.onError(adapter, err);
     }
   };
+
+  // The telemetry Scout reads only the local Ledger, hourly. Each anomaly is one signal per metric, repo and day.
+  const telemetryMark = ledger.getSignalWatermark("telemetry:anomaly");
+  if (!telemetryMark || now - telemetryMark.polledAt >= TELEMETRY_SCOUT_EVERY_MS) {
+    try {
+      for (const a of detectAnomalies(ledger, now)) {
+        recordSignal(ledger, "telemetry_anomaly", anomalyEventId(a.metric, now), { ...a, window: "24h", repo: ledger.repo }, now);
+      }
+      ledger.setSignalWatermark("telemetry:anomaly", now, now);
+    } catch (err) {
+      opts.onError("telemetry:anomaly", err);
+    }
+  }
 
   await poll("github:pr_merged", "pr_merged", async (since) =>
     (await github.listMergedPrsSince(since, opts.defaultBranch)).map((p) => ({ at: p.mergedAt, eventId: String(p.number), payload: { number: p.number } })),
@@ -176,10 +204,12 @@ export async function convergeSignals(opts: {
           outcome = r === "ran" ? "done" : "rejected";
         }
         ledger.finishSignalAction(sig.id, key, outcome, detail);
+        emit("signal_action", 1, { action: rule.do.action, outcome: outcome === "done" ? "done" : "rejected" }, repo);
         ledger.appendAudit("signal/actioned", null, "signals", { rule: rule.name, signal: sig.id, outcome, detail }, now);
       } catch (err) {
         const msg = (err instanceof Error ? err.message : String(err)).slice(0, 300);
         ledger.finishSignalAction(sig.id, key, "failed", msg);
+        emit("signal_action", 1, { action: rule.do.action, outcome: "failed" }, repo);
         ledger.appendAudit("signal/failed", null, "signals", { rule: rule.name, signal: sig.id, error: msg }, now);
       }
     }
@@ -188,5 +218,5 @@ export async function convergeSignals(opts: {
 
 function refOf(payload: unknown): string {
   const p = payload as Record<string, unknown>;
-  return String(p.number ?? p.tag ?? p.slot);
+  return String(p.number ?? p.tag ?? p.slot ?? p.metric);
 }

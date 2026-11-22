@@ -8,5 +8,7 @@ export const SIGNAL_KINDS = {
   release: { source: "github", taint: "mechanical" },
   advisory: { source: "github_advisory", taint: "untrusted" },
   schedule: { source: "schedule", taint: "owner" },
+  /** Computed here from local telemetry by arithmetic only, never from outside text. */
+  telemetry_anomaly: { source: "telemetry", taint: "mechanical" },
 } as const satisfies Record<string, { source: string; taint: SignalTaint }>;
 export type SignalKind = keyof typeof SIGNAL_KINDS;

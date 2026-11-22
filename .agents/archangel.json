@@ -80,6 +80,7 @@
       "src/core/ui-onboard.ts",
       "src/core/telemetry.ts",
       "src/core/telemetry-events.ts",
+      "src/core/telemetry-scout.ts",
       "src/core/ui-gh.ts",
       "src/core/ui-accounts.ts",
       "src/core/plan.ts",

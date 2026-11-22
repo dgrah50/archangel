@@ -34,6 +34,8 @@ import {
   type ValidatedPhase,
 } from "../core/thread-machine.js";
 import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
+import { emit } from "../core/telemetry.js";
+import type { TelemetryTags } from "../core/telemetry-events.js";
 import {
   LEDGER_SCHEMA_SQL,
   type AttemptErrorCategory,
@@ -867,6 +869,9 @@ export class Ledger {
       this.addSpend(cost, now);
     }
     const attempt = this.getAttempt(attemptId)!;
+    const provider = (attempt.provider ?? "none") as TelemetryTags<"attempt_ms">["provider"];
+    emit("attempt_ms", attempt.durationMs ?? now - attempt.startedAt, { kind: attempt.kind, provider, outcome: result.status }, attempt.repo);
+    if (attempt.peakRssKb !== null) emit("attempt_rss_kb", attempt.peakRssKb, { kind: attempt.kind, provider }, attempt.repo);
     this.appendAudit(
       "attempt/finished",
       attempt.issueNumber,
@@ -1587,6 +1592,7 @@ export class Ledger {
          ON CONFLICT(account_id) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
       )
       .run(accountId, now + duration, reason.slice(0, 300), now);
+    emit("account_cooldown", 1, { account: accountId });
     this.appendAudit("account/cooldown", null, "archangel", { accountId, durationMs: duration }, now, null);
   }
 
@@ -1869,6 +1875,14 @@ export class Ledger {
       payload: JSON.parse(String(r.payload_json)),
       observedAt: Number(r.observed_at),
     }));
+  }
+
+  /** Telemetry anomalies the telemetry Scout recorded since `sinceMs`, across repos, newest first. */
+  listTelemetryAnomalies(sinceMs: number): Array<{ repo: string; payload: Record<string, unknown>; observedAt: number }> {
+    const rows = this.db
+      .prepare(`SELECT repo, payload_json, observed_at FROM signals WHERE kind = 'telemetry_anomaly' AND observed_at >= ? ORDER BY id DESC`)
+      .all(sinceMs) as Array<{ repo: string; payload_json: string; observed_at: number }>;
+    return rows.map((r) => ({ repo: r.repo, payload: JSON.parse(r.payload_json) as Record<string, unknown>, observedAt: r.observed_at }));
   }
 
   signalCounts(sinceMs: number, repo = this.repo): Record<string, number> {

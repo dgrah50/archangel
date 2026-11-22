@@ -93,6 +93,17 @@ reviewerChain:
 #       on: schedule
 #       schedule: weekly-review
 #       do: { action: run_scout, scout: self-audit }
+#     # Local telemetry (never sent anywhere) is compared hourly: the last 24h against the 7 days before. A regression, error
+#     # spike, repeated 429 or quota hit, slow ticks or repeated Gate timeouts becomes one mechanical telemetry_anomaly signal
+#     # per metric, repo and day. Mechanical signals may file an issue or run any Scout; the Scout reads the anomaly, not you.
+#     - name: telemetry-chore
+#       on: telemetry_anomaly
+#       do: { action: file_issue, class: chore, title: Investigate a telemetry anomaly }
+#       maxPerDay: 1
+#     # or hand it to the meta-Scout for deeper analysis:
+#     # - name: telemetry-deep-dive
+#     #   on: telemetry_anomaly
+#     #   do: { action: run_pitch, scout: fleet-pr-miner }
 
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767

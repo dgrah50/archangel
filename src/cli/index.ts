@@ -51,7 +51,7 @@ import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
-import { setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS } from "../core/telemetry.js";
+import { emit, setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS } from "../core/telemetry.js";
 
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
@@ -153,6 +153,7 @@ program
 
     recordDaemonFacts(rootLedger, { configPath: opts.config });
     setTelemetrySink(rootLedger);
+    emit("daemon_start", 1, {});
 
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
@@ -196,6 +197,7 @@ program
         bareRepoPath: paths.brokerBareRepoPath,
         clonesDir: paths.clonesDir,
         defaultBranch: cfg.defaultBranch,
+        repo: repoSlug,
         enableLocalGate: true,
         // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
         localGateSkipTests: true,
@@ -288,7 +290,10 @@ program
       for (const { repoSlug, rec } of reconcilers) {
         if (stopping) break;
         try {
-          await rec.tick(Date.now(), { waitForAttempts: Boolean(opts.once) });
+          const t0 = Date.now();
+          await rec.tick(t0, { waitForAttempts: Boolean(opts.once) });
+          // With --once the tick also waits for Attempts, which is not tick time.
+          if (!opts.once) emit("tick_ms", Date.now() - t0, {}, repoSlug);
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
         }
