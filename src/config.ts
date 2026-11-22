@@ -191,6 +191,8 @@ export const LabelsSchema = z.object({
   agentPitch: z.string().default("agent-pitch"),
   /** Owner-applied label that makes a Thread a feature (owner merges; no red-on-base proof). */
   feature: z.string().default("class:feature"),
+  /** Owner-applied label that makes a Thread a chore (cleanup/hygiene; owner merges; no red-on-base proof). */
+  chore: z.string().default("class:chore"),
 });
 
 export const ScoutsConfigSchema = z.object({
@@ -268,6 +270,7 @@ export const ConfigSchema = z.object({
     agentProposed: "agent-proposed",
     agentPitch: "agent-pitch",
     feature: "class:feature",
+    chore: "class:chore",
   }),
   scouts: ScoutsConfigSchema.default({
     enabled: false,

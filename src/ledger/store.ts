@@ -11,7 +11,7 @@ import { FACTORY_OUTCOMES, classifyFactoryOutcome, type FactoryOutcome, type Fac
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
-import { workClassOfBranch } from "../core/work-class.js";
+import { workClassOfBranch, type WorkClass } from "../core/work-class.js";
 import type { DigestInput } from "../core/digest.js";
 import { readCodexUsage, type AccountLedger } from "../core/accounts.js";
 import type { Account } from "../config.js";
@@ -105,7 +105,7 @@ export interface StageMetrics {
   >;
   promotion: { autoPromotionsLast24h: number; autoPromotionsInWindow: number };
   pitches: PitchMetrics;
-  workClass: Record<"bugfix" | "feature", { threads: number; merged: number; attemptsPerMerge: number | null }>;
+  workClass: Record<WorkClass, { threads: number; merged: number; attemptsPerMerge: number | null }>;
   gate: { attempts: { total: number; succeeded: number; failed: number }; escalations: Record<string, number> };
   review: { byVendor: Record<string, { approve: number; veto: number }>; outages: number };
   landing: { autoMerged: number; ownerMerged: number; reverts: number; disagreements: number; autonomyCapHits: number };
@@ -2303,9 +2303,10 @@ export class Ledger {
     const workClass: StageMetrics["workClass"] = {
       bugfix: { threads: 0, merged: 0, attemptsPerMerge: null },
       feature: { threads: 0, merged: 0, attemptsPerMerge: null },
+      chore: { threads: 0, merged: 0, attemptsPerMerge: null },
     };
     const attemptsOf = this.db.prepare(`SELECT COUNT(*) AS n FROM attempts WHERE repo = ? AND issue_number = ?`);
-    const attemptTotals = { bugfix: 0, feature: 0 };
+    const attemptTotals = { bugfix: 0, feature: 0, chore: 0 };
     for (const t of threads) {
       const cls = workClassOfBranch(t.branchName);
       workClass[cls].threads++;
@@ -2314,7 +2315,7 @@ export class Ledger {
         attemptTotals[cls] += (attemptsOf.get(repo, t.issueNumber) as { n: number }).n;
       }
     }
-    for (const cls of ["bugfix", "feature"] as const) {
+    for (const cls of ["bugfix", "feature", "chore"] as const) {
       const m = workClass[cls].merged;
       workClass[cls].attemptsPerMerge = m > 0 ? Number((attemptTotals[cls] / m).toFixed(2)) : null;
     }

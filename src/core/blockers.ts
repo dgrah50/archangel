@@ -42,7 +42,7 @@ export interface LandingSnapshot {
   autoMergesToday: number;
   maxAutoMergesPerDay: number;
   shadowMode: boolean;
-  featureThread?: boolean;
+  ownerMergeThread?: boolean;
   agentDraft?: boolean;
 }
 
@@ -177,10 +177,10 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
       message: `Daily auto-merge cap reached (${s.autoMergesToday}/${s.maxAutoMergesPerDay})`,
     });
   }
-  if (s.shadowMode && s.featureThread) {
+  if (s.shadowMode && s.ownerMergeThread) {
     blockers.push({
       code: "shadow_mode_active",
-      message: "Feature: owner merges (feature Threads never merge autonomously)",
+      message: "Owner merges (feature and chore Threads never merge autonomously)",
     });
   } else if (s.shadowMode) {
     blockers.push({
