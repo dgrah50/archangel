@@ -133,6 +133,8 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       // Tick 1: intake + implement + push -> awaiting_gate
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getThread(1)).toBeNull();
+      // The resolved workflow is cached for the dashboard (no GitHub calls on its read path).
+      expect(JSON.parse(ledger.getSystemState("workflow:acme/app")!)).toMatchObject({ status: "ok", repo: "acme/app" });
       const t2 = ledger.getThread(2)!;
       expect(t2.phase.kind).toBe("awaiting_gate");
       const headSha = t2.phase.kind === "awaiting_gate" ? t2.phase.headSha : "";

@@ -1,3 +1,5 @@
+import { describeEscalation } from "../core/escalations.js";
+import { workClassOfBranch } from "../core/work-class.js";
 import { categorizeAttemptError } from "../core/metrics-block.js";
 import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
@@ -57,6 +59,24 @@ export interface OutcomeMetrics {
   reworkAttemptsTotal: number;
   reworkAttemptsPerFix: number | null;
   vendorAgreement: Record<string, { approvedMerges: number; undisputed: number; rate: number | null }>;
+}
+
+/** Per-stage figures for one repo (V4 Pipeline view). Numbers and fixed enums only. */
+export interface StageMetrics {
+  windowDays: number;
+  intake: { queued: number; oldestQueuedAgeSec: number | null; rejections: Record<string, number> };
+  scouts: Record<
+    string,
+    { runs: number; secretsBlocked: number; filed: number; becameThread: number; merged: number; reverted: number }
+  >;
+  promotion: { autoPromotionsLast24h: number; autoPromotionsInWindow: number };
+  workClass: Record<"bugfix" | "feature", { threads: number; merged: number; attemptsPerMerge: number | null }>;
+  gate: { attempts: { total: number; succeeded: number; failed: number }; escalations: Record<string, number> };
+  review: { byVendor: Record<string, { approve: number; veto: number }>; outages: number };
+  landing: { autoMerged: number; ownerMerged: number; reverts: number; disagreements: number; autonomyCapHits: number };
+  needsYou: { byDecisionClass: Record<string, number> };
+  /** Threads split by the workflow file version stamped on them ("none" for Threads from before stamping). */
+  byWorkflowSha: Record<string, { threads: number; merged: number; reverted: number }>;
 }
 
 export class Ledger {
@@ -1285,6 +1305,136 @@ export class Ledger {
         spendUsd: spend?.usd ?? 0,
       },
       proposals,
+    };
+  }
+
+  /** Cached `EffectiveWorkflow` JSON per repo, as written by each Reconciler tick (`workflow:<repo>`). */
+  listCachedWorkflows(): Array<{ repo: string; workflow: unknown }> {
+    const rows = this.db.prepare(`SELECT key, value FROM system_state WHERE key LIKE 'workflow:%'`).all() as Array<{ key: string; value: string }>;
+    return rows.map((r) => ({ repo: r.key.slice("workflow:".length), workflow: JSON.parse(r.value) as unknown }));
+  }
+
+  /** Stage-by-stage figures for the Pipeline view: SQL over existing tables, windowed on Thread creation / event time. */
+  computeStageMetrics(repo: string, sinceMs: number, now = Date.now()): StageMetrics {
+    const LANDED = ["merged", "owner_merged", "reverted"];
+    const threads = this.listThreads(undefined, repo).filter((t) => t.createdAt >= sinceMs);
+    const landed = (t: ThreadRecord) => t.phase.kind === "done" && LANDED.includes(t.phase.outcome);
+    const reverted = (t: ThreadRecord) => t.phase.kind === "done" && t.phase.outcome === "reverted";
+    const count = (sql: string, ...params: unknown[]) => (this.db.prepare(sql).get(...params) as { n: number }).n;
+    const auditCount = (topic: string, actor?: string) =>
+      count(
+        `SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = ? AND ts >= ?${actor ? " AND actor = ?" : ""}`,
+        ...[repo, topic, sinceMs, ...(actor ? [actor] : [])],
+      );
+
+    const queued = threads.filter((t) => t.phase.kind === "queued");
+    const rejections: Record<string, number> = {};
+    for (const r of this.db
+      .prepare(`SELECT topic, COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic LIKE 'intake/rejected_%' AND ts >= ? GROUP BY topic`)
+      .all(repo, sinceMs) as Array<{ topic: string; n: number }>) {
+      rejections[r.topic.slice("intake/rejected_".length)] = r.n;
+    }
+
+    const threadByIssue = new Map(this.listThreads(undefined, repo).map((t) => [t.issueNumber, t]));
+    const scouts: StageMetrics["scouts"] = {};
+    const scoutOf = (name: string) => (scouts[name] ??= { runs: 0, secretsBlocked: 0, filed: 0, becameThread: 0, merged: 0, reverted: 0 });
+    for (const r of this.db
+      .prepare(`SELECT actor, COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'scout/run' AND ts >= ? GROUP BY actor`)
+      .all(repo, sinceMs) as Array<{ actor: string; n: number }>) scoutOf(r.actor).runs = r.n;
+    for (const r of this.db
+      .prepare(`SELECT actor, COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'scout/secret_blocked' AND ts >= ? GROUP BY actor`)
+      .all(repo, sinceMs) as Array<{ actor: string; n: number }>) scoutOf(r.actor).secretsBlocked = r.n;
+    for (const p of this.db
+      .prepare(`SELECT scout_name, issue_number FROM scout_proposals WHERE repo = ? AND created_at >= ?`)
+      .all(repo, sinceMs) as Array<{ scout_name: string; issue_number: number }>) {
+      const sc = scoutOf(p.scout_name);
+      sc.filed++;
+      const t = threadByIssue.get(p.issue_number);
+      if (t) {
+        sc.becameThread++;
+        if (landed(t)) sc.merged++;
+        if (reverted(t)) sc.reverted++;
+      }
+    }
+
+    const workClass: StageMetrics["workClass"] = {
+      bugfix: { threads: 0, merged: 0, attemptsPerMerge: null },
+      feature: { threads: 0, merged: 0, attemptsPerMerge: null },
+    };
+    const attemptsOf = this.db.prepare(`SELECT COUNT(*) AS n FROM attempts WHERE repo = ? AND issue_number = ?`);
+    const attemptTotals = { bugfix: 0, feature: 0 };
+    for (const t of threads) {
+      const cls = workClassOfBranch(t.branchName);
+      workClass[cls].threads++;
+      if (landed(t)) {
+        workClass[cls].merged++;
+        attemptTotals[cls] += (attemptsOf.get(repo, t.issueNumber) as { n: number }).n;
+      }
+    }
+    for (const cls of ["bugfix", "feature"] as const) {
+      const m = workClass[cls].merged;
+      workClass[cls].attemptsPerMerge = m > 0 ? Number((attemptTotals[cls] / m).toFixed(2)) : null;
+    }
+
+    const attemptRows = this.db
+      .prepare(`SELECT status, COUNT(*) AS n FROM attempts WHERE repo = ? AND started_at >= ? GROUP BY status`)
+      .all(repo, sinceMs) as Array<{ status: string; n: number }>;
+    const attemptsBy = (st: string) => attemptRows.find((r) => r.status === st)?.n ?? 0;
+    const escalations: Record<string, number> = {};
+    const byDecisionClass: Record<string, number> = {};
+    for (const t of threads) {
+      if (t.phase.kind !== "needs_you") continue;
+      escalations[t.phase.code] = (escalations[t.phase.code] ?? 0) + 1;
+      const cls = describeEscalation(t.phase.code).decisionClass;
+      byDecisionClass[cls] = (byDecisionClass[cls] ?? 0) + 1;
+    }
+
+    const byVendor: StageMetrics["review"]["byVendor"] = {};
+    for (const r of this.db
+      .prepare(`SELECT vendor, verdict, COUNT(*) AS n FROM reviews WHERE repo = ? AND created_at >= ? GROUP BY vendor, verdict`)
+      .all(repo, sinceMs) as Array<{ vendor: string; verdict: string; n: number }>) {
+      const b = (byVendor[r.vendor] ??= { approve: 0, veto: 0 });
+      if (r.verdict === "approve") b.approve += r.n;
+      else b.veto += r.n;
+    }
+
+    const merges = (
+      this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND shadow_only = 0 AND created_at >= ?`).all(repo, sinceMs) as Record<string, unknown>[]
+    ).map(mapMerge);
+
+    const byWorkflowSha: StageMetrics["byWorkflowSha"] = {};
+    for (const t of threads) {
+      const k = t.workflowSha256 ?? "none";
+      const b = (byWorkflowSha[k] ??= { threads: 0, merged: 0, reverted: 0 });
+      b.threads++;
+      if (landed(t)) b.merged++;
+      if (reverted(t)) b.reverted++;
+    }
+
+    return {
+      windowDays: sinceMs > 0 ? Math.max(1, Math.round((now - sinceMs) / 86_400_000)) : 0,
+      intake: {
+        queued: queued.length,
+        oldestQueuedAgeSec: queued.length > 0 ? Math.max(0, Math.round((now - Math.min(...queued.map((t) => t.updatedAt))) / 1000)) : null,
+        rejections,
+      },
+      scouts,
+      promotion: {
+        autoPromotionsLast24h: this.countRecentAutoPromotions(now, repo),
+        autoPromotionsInWindow: count(`SELECT COUNT(*) AS n FROM scout_proposals WHERE repo = ? AND auto_promoted = 1 AND created_at >= ?`, repo, sinceMs),
+      },
+      workClass,
+      gate: { attempts: { total: attemptRows.reduce((a, r) => a + r.n, 0), succeeded: attemptsBy("succeeded"), failed: attemptsBy("failed") }, escalations },
+      review: { byVendor, outages: auditCount("review/outage_started") },
+      landing: {
+        autoMerged: merges.length,
+        ownerMerged: threads.filter((t) => t.phase.kind === "done" && t.phase.outcome === "owner_merged").length,
+        reverts: merges.filter((m) => m.mainWatch.kind === "red").length,
+        disagreements: merges.filter((m) => m.disagreed).length,
+        autonomyCapHits: auditCount("autonomy/cap_reached"),
+      },
+      needsYou: { byDecisionClass },
+      byWorkflowSha,
     };
   }
 
