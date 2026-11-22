@@ -502,7 +502,7 @@ export class Reconciler {
     // 2. Sync Shadow Mode disagreement label idempotently (fixes Opus O4).
     const combinedLabels = [...new Set([...(issue?.labels ?? []), ...(pr?.labels ?? [])])];
     if (thread.phase.kind === "shadow_ready") {
-      this.ledger.markShadowDisagree(
+      this.ledger.markDisagree(
         thread.issueNumber,
         combinedLabels.includes(this.cfg.labels.disagree),
       );

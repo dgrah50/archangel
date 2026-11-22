@@ -20,6 +20,7 @@ import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
 import { collectOwnerReply } from "../core/owner-reply.js";
+import { listAllSkills } from "../core/skills.js";
 import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
@@ -457,6 +458,18 @@ program
       console.log(
         `Shadow:      ${m.shadow.agreed}/${m.shadow.total} agreed (${Math.round(m.shadow.agreementRate * 100)}%)`,
       );
+      const o = m.outcomes;
+      const na = (n: number | null, unit = "") => (n === null ? "n/a" : `${n}${unit}`);
+      console.log("Outcomes (merged fixes only; volume is not success):");
+      console.log(`  Merged fixes: ${o.mergedFixes} (volume)`);
+      console.log(
+        `  Cost/fix:     ${o.costUsdPerFix === null ? "n/a" : `$${o.costUsdPerFix}`} metered (total $${o.meteredUsdTotal}; subscription runs count $0) | ${na(o.attemptsPerFix)} attempts/fix | ${na(o.attemptMinutesPerFix, "m")} attempt time/fix`,
+      );
+      console.log(`  Reverts/fix:  ${na(o.revertsPerFix)} (${o.reverts} reverted)`);
+      console.log(`  Rework:       ${na(o.reworkAttemptsPerFix)} extra attempts/fix (${o.reworkAttemptsTotal} total)`);
+      console.log(
+        `  Vendor agreement with owner: ${Object.entries(o.vendorAgreement).map(([v, s]) => `${v} ${s.rate === null ? "n/a" : `${Math.round(s.rate * 100)}%`} (${s.undisputed}/${s.approvedMerges})`).join(", ") || "n/a"}`,
+      );
       console.log(
         `Reviews:     ${Object.entries(m.reviews.byVendor).map(([v, s]) => `${v}(+${s.approve}/-${s.veto})`).join(", ") || "none"} | outages=${m.reviews.outageEvents}`,
       );
@@ -689,7 +702,7 @@ program
 
 program
   .command("disagree <issue>")
-  .description("Record a Shadow Mode disagreement (marks factory:disagree on GitHub + Ledger)")
+  .description("Record an owner disagreement with a merge, shadow or autonomous (marks factory:disagree on GitHub + Ledger)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--repo <owner/name>", "Target repository")
   .action(async (issueArg: string, opts: { config?: string; repo?: string }) => {
@@ -699,7 +712,9 @@ program
     const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
     try {
       const issueNumber = Number(issueArg);
-      ledger.markShadowDisagree(issueNumber, true);
+      if (ledger.markDisagree(issueNumber, true) === 0) {
+        throw new Error(`No merge recorded for ${repoSlug}#${issueNumber}; nothing to disagree with.`);
+      }
       const github = new GitHubAppClient({
         owner: cfg.githubOwner,
         repo: cfg.githubRepo,
@@ -877,6 +892,13 @@ daemonCmd
 const scoutCmd = program
   .command("scout")
   .description("Discover and run repo-owned read-only Scout workflows (.agents/scouts/*.md)");
+
+scoutCmd
+  .command("skills")
+  .description("List bundled Scout skills (reference them from a repo's .agents/scouts/*.md `skills:` list)")
+  .action(() => {
+    for (const ref of listAllSkills()) console.log(ref);
+  });
 
 scoutCmd
   .command("run [name]")
