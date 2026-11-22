@@ -667,6 +667,7 @@ async function runPitchScout(opts: {
         titleFp: normalizeTitleFp(pitch.title),
         contentSha256: scoutContentHash(created.title, created.body),
         pitchJson: JSON.stringify(pitch),
+        autoPocBuild: pitch.size !== "L",
         now,
       });
       for (const f of pitch.figures) {

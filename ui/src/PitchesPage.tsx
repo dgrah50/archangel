@@ -134,6 +134,7 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
         {p.title}
       </Text>
       {row.attachments.length > 0 ? <Pictures items={row.attachments} /> : null}
+      <TryIt row={row} d={d} />
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
         <Flex direction="column" gap="4" flex="1" minW="0">
           <Field label="The problem">{p.problem}</Field>
@@ -205,6 +206,53 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
           </Text>
         </Flex>
       </Flex>
+    </Section>
+  );
+}
+
+const POC_FAILURES: Record<string, string> = {
+  over_budget: "the daily budget was used up",
+  provider_unavailable: "no agent was available",
+  implementer_failed: "the agent did not finish",
+  setup_failed: "the repo's setup script failed",
+  empty: "the agent changed nothing",
+  out_of_bounds: "the change was over the size limits",
+  aborted: "it was stopped",
+  internal: "something went wrong inside Archangel",
+};
+
+/** The proof-of-concept state in plain words. Nothing runs a PoC yet, so there is no preview to open: only the build, its size and how to ask for one. */
+function TryIt({ row, d }: { row: PitchRow; d: PitchesState }) {
+  const poc = row.poc;
+  const used = poc === null ? 0 : poc.builds;
+  const left = d.pocMaxBuildsPerPitch - used;
+  const ask = (
+    <Flex direction="column" gap="2" align="flex-start">
+      <Text textStyle="meta" color="fg.muted">
+        {left > 0 ? `Build a throwaway PoC so you can see how big it really is. It stays on this machine and is never pushed. Uses one of your ${d.pocMaxBuildsPerDay} builds a day (${d.pocBuildsToday} used in the last 24 hours).` : `This pitch has used its ${d.pocMaxBuildsPerPitch} builds.`}
+      </Text>
+      {left > 0 ? <CopyCommand command={`archangel pitch poc ${row.repo} ${row.issueNumber}`} /> : null}
+    </Flex>
+  );
+  return (
+    <Section gap="3">
+      <Text textStyle="body13" color="fg.subtle">Try it</Text>
+      {poc === null ? ask : null}
+      {poc?.state.kind === "building" ? <Text textStyle="body13" color="fg">Building a PoC. It counts as build {poc.builds} of {d.pocMaxBuildsPerPitch} for this pitch.</Text> : null}
+      {poc?.state.kind === "failed" ? (
+        <>
+          <Text textStyle="body13" color="fg">The last build failed: {POC_FAILURES[poc.state.category]}.</Text>
+          {ask}
+        </>
+      ) : null}
+      {poc?.state.kind === "ready" ? (
+        <>
+          <Text textStyle="body13" color="fg">A PoC is built, {poc.builds} of {d.pocMaxBuildsPerPitch} builds used. It is the local ref <Text as="span" textStyle="ref">refs/pitch-poc/{row.issueNumber}</Text> and was never pushed.</Text>
+          {poc.diffStat ? <Box as="pre" textStyle="ref" color="fg.muted" borderWidth="1px" borderColor="border" p="3" overflowX="auto">{poc.diffStat}</Box> : null}
+          {left > 0 ? ask : null}
+        </>
+      ) : null}
+      {!row.hasPreview ? <Text textStyle="meta" color="fg.subtle">This repo has no preview set up. Add a preview block to .agents/archangel.json so a PoC can be run.</Text> : null}
     </Section>
   );
 }
