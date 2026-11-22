@@ -28,6 +28,7 @@ const host = (over: Partial<HostWorkflowInput> = {}): HostWorkflowInput => ({
   maxAutoMergesPerDay: 3,
   maxAutoPromotionsPerDay: 1,
   scoutRunsPerDay: 2,
+  scoutsEnabled: true,
   maxConcurrentThreads: 2,
   isRevoked: () => false,
   ...over,
@@ -157,6 +158,45 @@ describe("/api/workflows and the Pipeline view", () => {
     expect(html).toContain("Workflow file invalid: this repo is halted");
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;");
+    l.close();
+  });
+});
+
+describe("Pipeline view robustness (Gemini #13)", () => {
+  it("shows a corrupt or schema-drifted cache entry as unreadable instead of crashing", () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    l.setSystemState("workflow:a/b", "{not json");
+    l.setSystemState("workflow:c/d", JSON.stringify({ repo: "c/d", mainSha: "m", status: "ok", fileSha256: "f" })); // ok without its fields
+    l.setSystemState("workflow:e/f", JSON.stringify(resolve()));
+    const s = buildWorkflowsState(l, NOW);
+    expect(Object.fromEntries(s.repos.map((r) => [r.repo, r.status]))).toEqual({ "a/b": "unreadable", "c/d": "unreadable", "e/f": "ok" });
+    expect(s.repos[0]!.error).toContain("could not be read");
+    l.close();
+  });
+
+  it("states that Scouts are disabled on the host instead of showing active schedules and auto promotion", () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    const r = describeWorkflow("a/b", resolve({ scoutsEnabled: false }), l.computeStageMetrics("a/b", SINCE, NOW));
+    const scouts = r.stages.find((s) => s.id === "scouts")!;
+    expect(scouts.clamps).toEqual(["Scouts are disabled on this host (scouts.enabled is false): the repo declares them but nothing runs"]);
+    expect(scouts.items.find((i) => i.label === "enabled on this host")).toMatchObject({ value: "no", source: "host" });
+    l.close();
+  });
+
+  it("counts Shadow Mode disagreements and real reverts (a red main-watch), not only autonomous merges", () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x", now: NOW - DAY, phase: { kind: "done", outcome: "merged" } });
+    l.upsertThread({ issueNumber: 2, title: "t", bodySha256: "x", now: NOW - DAY, phase: { kind: "shadow_ready", prNumber: 5, headSha: "h", baseSha: "b", verdictId: 1 } });
+    const auto = l.recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h1", squashSha: "s1", shadowOnly: false, mainRequired: ["Test"], now: NOW - DAY });
+    l.recordMerge({ issueNumber: 2, prNumber: 5, headSha: "h2", shadowOnly: true, now: NOW - DAY });
+    l.markDisagree(2, true);
+    l.recordScoutProposal({ issueNumber: 1, scoutName: "bug-hunt", contentSha256: "c", titleFp: "f", now: NOW - DAY });
+    l.updateMergeMainWatch(auto.id, { kind: "red", revertPrNumber: null, escalated: true });
+    const m = l.computeStageMetrics("a/b", SINCE, NOW);
+    expect(m.landing.disagreements).toBe(1);
+    expect(m.landing.reverts).toBe(1);
+    expect(m.scouts["bug-hunt"]!.reverted).toBe(1);
+    expect(m.byWorkflowSha.none!.reverted).toBe(1);
     l.close();
   });
 });

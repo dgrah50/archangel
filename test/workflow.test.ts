@@ -12,7 +12,7 @@ const baseFile = () => ({
 });
 const host = (o: Partial<HostWorkflowInput> = {}): HostWorkflowInput => ({
   shadowMode: false, maxAutoMergesPerDay: 3, maxAutoPromotionsPerDay: 1, scoutRunsPerDay: 2,
-  maxConcurrentThreads: 2, isRevoked: () => false, ...o,
+  maxConcurrentThreads: 2, scoutsEnabled: true, isRevoked: () => false, ...o,
 });
 const repo = (file: unknown, o: Partial<RepoWorkflowInput> = {}): RepoWorkflowInput => ({
   repo: "a/b", mainSha: "abc", fileRaw: file === null ? null : JSON.stringify(file),
@@ -89,7 +89,7 @@ describe("host clamp and provenance", () => {
 
   it("copies host caps", () => {
     expect(okOf(host({ maxAutoMergesPerDay: 9, scoutRunsPerDay: 4, maxConcurrentThreads: 1 })).caps)
-      .toEqual({ autoMergesPerDay: 9, autoPromotionsPerDay: 1, scoutRunsPerDay: 4, concurrent: 1 });
+      .toEqual({ autoMergesPerDay: 9, autoPromotionsPerDay: 1, scoutRunsPerDay: 4, scoutsEnabled: true, concurrent: 1 });
   });
 });
 

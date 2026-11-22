@@ -31,6 +31,7 @@ export function hostInput(o: Partial<HostWorkflowInput> = {}): HostWorkflowInput
     maxAutoMergesPerDay: 3,
     maxAutoPromotionsPerDay: 1,
     scoutRunsPerDay: 2,
+    scoutsEnabled: true,
     maxConcurrentThreads: 2,
     isRevoked: () => false,
     ...o,
