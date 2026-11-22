@@ -135,8 +135,19 @@ export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string
 export const OWNER_COMMANDS_LINE =
   "Reply `/archangel retry` with a hint, `/archangel close`, or `/archangel handoff`.";
 
-export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix"): EscalationPolicy {
-  const policy = ESCALATION_POLICY[code];
+/** Decision class of a failed Attempt by its recorded cause; causes not listed stay `attempt_failed`'s own class. */
+const ATTEMPT_FAILURE_CLASS: Partial<Record<AttemptErrorCategory, DecisionClass>> = {
+  auth: "credentials",
+  cli_missing: "credentials",
+  permission_denied: "credentials",
+  provider_network: "live_infrastructure",
+};
+
+export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix", cause?: AttemptErrorCategory): EscalationPolicy {
+  const base = ESCALATION_POLICY[code];
+  const policy = cause
+    ? { ...base, decisionClass: ATTEMPT_FAILURE_CLASS[cause] ?? base.decisionClass, recommendation: ATTEMPT_FAILURE_ADVICE[cause] ?? base.recommendation }
+    : base;
   const feature = workClass !== "bugfix" ? ` This is a ${workClass} Thread: the owner merges it.` : "";
   return { ...policy, recommendation: `${policy.recommendation}${feature} ${OWNER_COMMANDS_LINE}` };
 }
