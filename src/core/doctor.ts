@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { REPO_POLICY_PATH, RepoPolicySchema, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
 
 const execFileAsync = promisify(execFile);
@@ -307,16 +307,54 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
-      const hasRepoPolicy = await gh.fileExistsAtRef(tip, REPO_POLICY_PATH);
+      let policyStatus: "pass" | "warn" | "fail" = "pass";
+      let policyDetail = `${REPO_POLICY_PATH}=present`;
+      try {
+        const token = await gh.getInstallationToken();
+        const policyUrl = `${(opts.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "")}/repos/${encodeURIComponent(cfg.githubOwner)}/${encodeURIComponent(cfg.githubRepo)}/contents/${REPO_POLICY_PATH.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(tip)}`;
+        const response = await fetch(policyUrl, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", Connection: "close" } });
+        if (response.status === 404) {
+          policyStatus = "warn";
+          policyDetail = `${REPO_POLICY_PATH}=missing`;
+        } else if (!response.ok) {
+          throw new Error(`GitHub policy fetch failed (${response.status})`);
+        } else {
+          const file = (await response.json()) as { content?: string; encoding?: string };
+          if (typeof file.content !== "string" || (file.encoding && file.encoding !== "base64")) {
+            policyStatus = "warn";
+            policyDetail = `${REPO_POLICY_PATH}=present but content unavailable`;
+          } else {
+            let policy: unknown;
+            try {
+              policy = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+            } catch (err) {
+              policyStatus = "fail";
+              policyDetail = `${REPO_POLICY_PATH}: invalid JSON (${err instanceof Error ? err.message : String(err)})`;
+            }
+            if (policyStatus !== "fail") {
+              const parsed = RepoPolicySchema.safeParse(policy);
+              if (!parsed.success) {
+                const issue = parsed.error.issues[0]!;
+                const issuePath = issue.path.length > 0 ? issue.path.join(".") : "<root>";
+                policyStatus = "fail";
+                policyDetail = `${REPO_POLICY_PATH}: ${issuePath}: ${issue.message}`;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        policyStatus = "fail";
+        policyDetail = `Unable to fetch ${REPO_POLICY_PATH}: ${err instanceof Error ? err.message : String(err)}`;
+      }
       checks.push({
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
-        status: !hasRepoPolicy ? "fail" : hasPreCommit ? "pass" : "warn",
-        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, ${REPO_POLICY_PATH}=${hasRepoPolicy ? "present" : "missing"}`,
+        status: policyStatus === "fail" ? "fail" : policyStatus === "warn" || !hasPreCommit ? "warn" : "pass",
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, ${policyDetail}`,
         remediation:
-          hasPreCommit && hasRepoPolicy
+          hasPreCommit && policyStatus === "pass"
             ? undefined
-            : "Commit .pre-commit-config.yaml and .agents/archangel.json to the default branch (see templates/go/ or this repo's .agents/archangel.json)",
+            : "Commit a valid .pre-commit-config.yaml and .agents/archangel.json to the default branch (see templates/go/ or this repo's .agents/archangel.json)",
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());
