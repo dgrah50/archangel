@@ -1438,7 +1438,7 @@ export class Reconciler {
       // A halt or kill switch that landed while the Attempt was still cloning or in repo setup is an abort, not a failure
       // (the policy getters throw once the workflow is gone): return the Thread to where it resumes.
       if (!this.workflow || task.abortController.signal.aborted) {
-        const cause = task.abortCause ?? "control";
+        const cause = task.abortCause ?? (this.workflow ? "timeout" : "control"); // an abort nobody asked for is the Attempt timing out: never refund it
         this.ledger.finishAttempt(attemptId, {
           status: "aborted",
           costUsd: actualCostUsd,
@@ -1773,10 +1773,10 @@ export class Reconciler {
     blockers: ReturnType<typeof computeBlockers>,
     now: number,
   ): Promise<void> {
-    if (
-      cleanMergeTree &&
-      thread.rebaseCount < this.cfg.maxRebasesPerThread
-    ) {
+    // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
+    // re-escalate on the very same conflict at once.
+    const rebaseBudget = this.cfg.maxRebasesPerThread + thread.retryGrants;
+    if (cleanMergeTree && thread.rebaseCount < rebaseBudget) {
       const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
       if (rebased.ok) {
         const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -1806,7 +1806,7 @@ export class Reconciler {
         return;
       }
     }
-    if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
+    if (issue && thread.rebaseCount < rebaseBudget) {
       if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
       await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
       return;

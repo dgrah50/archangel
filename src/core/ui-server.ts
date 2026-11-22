@@ -150,9 +150,12 @@ export async function startUiServer(
       const data = fs.readFileSync(file);
       res.writeHead(200, headers).end(data);
     } catch (err) {
-      // Bodies are built before any header is written, so a failure here can still answer 500.
-      if (!res.headersSent) res.writeHead(500).end(err instanceof Error ? err.message : "error");
-      else res.destroy();
+      // Bodies are built before any header is written, so a failure here can still answer with an error.
+      const message = err instanceof Error ? err.message : "error";
+      const status = err instanceof URIError ? 400 : 500;
+      if (res.headersSent) res.destroy();
+      else if ((req.url ?? "").startsWith("/api/")) sendJson(res, status, { error: message });
+      else res.writeHead(status).end(message);
     }
   });
   return new Promise((resolve, reject) => {
