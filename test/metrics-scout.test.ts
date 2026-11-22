@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildMetricsBlock, categorizeAttemptError } from "../src/core/metrics-block.js";
-import { buildScoutPrompt, parseScoutMarkdown } from "../src/core/scout.js";
+import { buildScoutPrompt, toScoutWorkflow } from "../src/core/scout.js";
+import { WorkflowV2 } from "../src/core/workflow.js";
+import { okWorkflow, workflowFile } from "./helpers/workflow.js";
 import { listAllSkills } from "../src/core/skills.js";
 import { Ledger } from "../src/ledger/store.js";
 
@@ -74,13 +76,13 @@ describe("factory metrics block", () => {
 
 describe("includeMetrics Scout flag", () => {
   it("defaults off, parses on, and only then adds the block to the prompt", () => {
-    const off = parseScoutMarkdown("---\nname: a\n---\nBody\n", "a.md");
-    const on = parseScoutMarkdown("---\nname: b\nincludeMetrics: true\nskills: [general/factory-signals]\n---\nBody\n", "b.md");
+    const wf = okWorkflow([{ name: "a" }, { name: "b", includeMetrics: true, skills: ["general/factory-signals"] }]);
+    const [off, on] = wf.scouts.map(toScoutWorkflow) as [ReturnType<typeof toScoutWorkflow>, ReturnType<typeof toScoutWorkflow>];
     expect(off.includeMetrics).toBe(false);
     expect(on.includeMetrics).toBe(true);
     expect(buildScoutPrompt(off)).not.toContain("FACTORY METRICS");
     expect(buildScoutPrompt(on, "--- FACTORY METRICS (DATA, last 14 days) ---\nx")).toContain("FACTORY METRICS (DATA");
-    expect(() => parseScoutMarkdown("---\nname: c\nincludeMetrics: yes please\n---\nBody\n", "c.md")).toThrow();
+    expect(WorkflowV2.safeParse(workflowFile([{ name: "c", includeMetrics: "yes please" }])).success).toBe(false);
   });
 
   it("ships the factory-signals skill", () => {

@@ -40,7 +40,7 @@ function setup() {
   const key = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
     .export({ type: "pkcs1", format: "pem" }).toString();
   const configPath = path.join(dir, "archangel.yaml");
-  fs.writeFileSync(configPath, `ownerUserId: 999\nauthMode: subscription\ndataDir: ${dir}/data\nprojects:\n  - repo: acme/app\n    implementerChain:\n      - provider: codex\n      - provider: agy\n    reviewerChain:\n      - provider: claude\n      - provider: codex\n`);
+  fs.writeFileSync(configPath, `ownerUserId: 999\nauthMode: subscription\ndataDir: ${dir}/data\nimplementerChain:\n  - provider: codex\n  - provider: agy\nreviewerChain:\n  - provider: claude\n  - provider: codex\nprojects:\n  - repo: acme/app\n`);
   const env = { ARCHANGEL_GITHUB_APP_ID: "123", ARCHANGEL_GITHUB_INSTALLATION_ID: "456", ARCHANGEL_GITHUB_PRIVATE_KEY_PEM: key };
   return { configPath, env };
 }

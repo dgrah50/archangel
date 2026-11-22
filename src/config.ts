@@ -41,26 +41,6 @@ export type GatePolicy = z.infer<typeof GatePolicySchema>;
 /** Repo-owned Archangel policy file, always read from the default branch / base commit. */
 export const REPO_POLICY_PATH = ".agents/archangel.json";
 
-export const RepoPolicySchema = z
-  .object({
-    maxNonTestLines: z.number().int().min(1).optional(),
-    maxTotalLines: z.number().int().min(1).optional(),
-    maxFiles: z.number().int().min(1).optional(),
-    extraProtectedPaths: z.array(z.string().min(1)).optional(),
-    testFileGlobs: z.array(z.string().min(1)).optional(),
-    testDataGlobs: z.array(z.string().min(1)).optional(),
-    testBuildCmd: z.string().min(1).optional(),
-    baseTestCmd: z.string().min(1).optional(),
-    testCmd: z.string().min(1).optional(),
-    baseTestRuns: z.number().int().min(1).optional(),
-    headTestRuns: z.number().int().min(1).optional(),
-    requiredChecks: z.array(z.string().min(1)).optional(),
-    reviewRubric: z.string().optional(),
-  })
-  .strict();
-
-export type RepoPolicy = z.infer<typeof RepoPolicySchema>;
-
 export const LabelsSchema = z.object({
   readyForAgent: z.string().default("ready-for-agent"),
   paused: z.string().default("factory:paused"),
@@ -135,20 +115,7 @@ export const ConfigSchema = z.object({
   ...AttemptLimitFields,
   ...TimeoutFields,
 
-  // Per-project Gate policy & required checks (hard-coded; App has no administration:read)
-  gate: GatePolicySchema.default({
-    maxNonTestLines: 150,
-    maxTotalLines: 300,
-    maxFiles: 5,
-    extraProtectedPaths: [],
-    testFileGlobs: [],
-    testDataGlobs: [],
-    baseTestRuns: 3,
-    headTestRuns: 2,
-  }),
-  requiredChecks: z.array(z.string().min(1)).default(["Gate"]),
-  reviewRubric: z.string().optional(),
-
+  /** Fixed constants: label names are not configurable. */
   labels: LabelsSchema.default({
     readyForAgent: "ready-for-agent",
     paused: "factory:paused",
@@ -215,25 +182,13 @@ const HostProjectYamlSchema = z.object({
   maxConcurrentThreads: z.number().int().min(1).max(3).default(2),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
   ...ProjectAttemptOverrides,
-  requiredChecks: z.array(z.string().min(1)).default(["Gate"]),
-  gate: GatePolicySchema.default({
-    maxNonTestLines: 150,
-    maxTotalLines: 300,
-    maxFiles: 5,
-    extraProtectedPaths: [],
-    testFileGlobs: [],
-    testDataGlobs: [],
-    baseTestRuns: 3,
-    headTestRuns: 2,
-  }),
-  reviewRubric: z.string().optional(),
   scouts: ScoutsConfigSchema.default({
     enabled: false,
     maxRunsPerDay: 2,
     maxOpenProposals: 3,
     maxAutoPromotionsPerDay: 1,
   }),
-});
+}).strict();
 
 export const HostYamlSchema = z.object({
   ownerUserId: z.number().int().positive(),
@@ -259,9 +214,8 @@ export const HostYamlSchema = z.object({
   geminiReviewerModel: z.string().default("gemini-2.5-pro"),
   paseoHost: z.string().optional(),
   paseoHome: z.string().optional(),
-  labels: LabelsSchema.optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
-});
+}).strict();
 
 /**
  * Resolves the 2 independent reviewer vendors required for a project (ADR-0003: implementer != reviewer).
@@ -333,66 +287,8 @@ export function resolvePaths(
 }
 
 /**
- * Merges optional repo-side `.agents/archangel.json` (read strictly from `main` tip)
- * onto host policy. Repo config can ONLY tighten bounds or add extra checks/protected paths,
- * never loosen host limits (ADR-0004).
- */
-export function mergeRepoPolicy(
-  hostGate: GatePolicy,
-  hostRequiredChecks: string[],
-  hostRubric: string | undefined,
-  repoPolicyRaw: string | null | undefined,
-): { gate: GatePolicy; requiredChecks: string[]; reviewRubric?: string } {
-  if (!repoPolicyRaw || !repoPolicyRaw.trim()) {
-    return { gate: hostGate, requiredChecks: hostRequiredChecks, reviewRubric: hostRubric };
-  }
-  const parsed = RepoPolicySchema.parse(JSON.parse(repoPolicyRaw));
-  const gate: GatePolicy = {
-    maxNonTestLines:
-      parsed.maxNonTestLines !== undefined
-        ? Math.min(hostGate.maxNonTestLines, parsed.maxNonTestLines)
-        : hostGate.maxNonTestLines,
-    maxTotalLines:
-      parsed.maxTotalLines !== undefined
-        ? Math.min(hostGate.maxTotalLines, parsed.maxTotalLines)
-        : hostGate.maxTotalLines,
-    maxFiles:
-      parsed.maxFiles !== undefined
-        ? Math.min(hostGate.maxFiles, parsed.maxFiles)
-        : hostGate.maxFiles,
-    extraProtectedPaths: [
-      ...new Set([...hostGate.extraProtectedPaths, ...(parsed.extraProtectedPaths ?? [])]),
-    ],
-    testFileGlobs:
-      parsed.testFileGlobs && parsed.testFileGlobs.length > 0
-        ? parsed.testFileGlobs
-        : hostGate.testFileGlobs,
-    testDataGlobs:
-      parsed.testDataGlobs && parsed.testDataGlobs.length > 0
-        ? parsed.testDataGlobs
-        : hostGate.testDataGlobs,
-    testBuildCmd: parsed.testBuildCmd ?? hostGate.testBuildCmd,
-    baseTestCmd: parsed.baseTestCmd ?? hostGate.baseTestCmd,
-    testCmd: parsed.testCmd ?? hostGate.testCmd,
-    baseTestRuns:
-      parsed.baseTestRuns !== undefined
-        ? Math.max(hostGate.baseTestRuns, parsed.baseTestRuns)
-        : hostGate.baseTestRuns,
-    headTestRuns:
-      parsed.headTestRuns !== undefined
-        ? Math.max(hostGate.headTestRuns, parsed.headTestRuns)
-        : hostGate.headTestRuns,
-  };
-  const requiredChecks = [
-    ...new Set([...hostRequiredChecks, ...(parsed.requiredChecks ?? [])]),
-  ];
-  const reviewRubric = [hostRubric, parsed.reviewRubric].filter(Boolean).join("\n\n") || undefined;
-  return { gate, requiredChecks, reviewRubric };
-}
-
-/**
- * Loads multi-project host config from `archangel.yaml` (if present or specified) merged with
- * secrets strictly from `env`, or falls back to single-repo env config.
+ * Loads multi-project host config from `archangel.yaml` merged with secrets strictly from `env`.
+ * A missing file is an error: there is no environment-only configuration.
  */
 export function loadProjectConfigs(opts: {
   configPath?: string;
@@ -402,106 +298,64 @@ export function loadProjectConfigs(opts: {
   const candidatePath = opts.configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
   const resolvedConfig = path.resolve(candidatePath);
 
-  if (opts.configPath || fs.existsSync(resolvedConfig)) {
-    const rawText = fs.readFileSync(resolvedConfig, "utf8");
-    const yamlObj = parseYaml(rawText);
-    const host = HostYamlSchema.parse(yamlObj);
-
-    return host.projects.map((proj) => {
-      const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
-      return ConfigSchema.parse({
-        githubOwner,
-        githubRepo,
-        defaultBranch: proj.defaultBranch,
-        workspace: proj.workspace,
-        ownerUserId: host.ownerUserId,
-        githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
-        githubInstallationId:
-          proj.githubInstallationId ??
-          (env.ARCHANGEL_GITHUB_INSTALLATION_ID
-            ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
-            : undefined),
-        githubPrivateKeyPem: resolvePrivateKeyPem(env),
-        githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
-          ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
-          : undefined,
-        dataDir: host.dataDir,
-        pollIntervalMs: host.pollIntervalMs,
-        maxDailyUsd: host.maxDailyUsd,
-        dailyTimezone: host.dailyTimezone,
-        digestHour: host.digestHour,
-        maxConcurrentThreads: proj.maxConcurrentThreads,
-        maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
-        maxAutonomousStepsWithoutOwner: proj.maxAutonomousStepsWithoutOwner ?? host.maxAutonomousStepsWithoutOwner,
-        maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
-        maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
-        maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
-        implementMaxTurns: host.implementMaxTurns,
-        implementTimeoutMs: host.implementTimeoutMs,
-        setupTimeoutMs: host.setupTimeoutMs,
-        staleLeaseMs: host.staleLeaseMs,
-        gateStartGraceMs: host.gateStartGraceMs,
-        gateTimeoutMs: host.gateTimeoutMs,
-        reviewerOutageMaxMs: host.reviewerOutageMaxMs,
-        shadowMode: proj.shadowMode,
-        requiredChecks: proj.requiredChecks,
-        gate: proj.gate,
-        reviewRubric: proj.reviewRubric,
-        scouts: proj.scouts,
-        labels: host.labels,
-        authMode: host.authMode,
-        implementerChain: host.implementerChain,
-        reviewerChain: host.reviewerChain,
-        claudeModel: host.claudeModel,
-        openaiReviewerModel: host.openaiReviewerModel,
-        geminiReviewerModel: host.geminiReviewerModel,
-        paseoHost: host.paseoHost ?? (env.PASEO_HOST || undefined),
-        paseoHome: host.paseoHome ?? (env.PASEO_HOME || undefined),
-        anthropicApiKey: env.ANTHROPIC_API_KEY,
-        openaiApiKey: env.OPENAI_API_KEY,
-        googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
-        telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
-        telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
-      });
-    });
+  if (!fs.existsSync(resolvedConfig)) {
+    throw new Error(`Host config not found: ${resolvedConfig} (copy archangel.example.yaml to archangel.yaml)`);
   }
+  const rawText = fs.readFileSync(resolvedConfig, "utf8");
+  const yamlObj = parseYaml(rawText);
+  const host = HostYamlSchema.parse(yamlObj);
 
-  return [loadConfigFromEnv(env)];
-}
-
-export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ArchangelConfig {
-  const raw = {
-    githubOwner: env.ARCHANGEL_GITHUB_OWNER,
-    githubRepo: env.ARCHANGEL_GITHUB_REPO,
-    defaultBranch: env.ARCHANGEL_DEFAULT_BRANCH ?? "main",
-    ownerUserId: env.ARCHANGEL_OWNER_USER_ID ? Number(env.ARCHANGEL_OWNER_USER_ID) : undefined,
-    githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
-    githubInstallationId: env.ARCHANGEL_GITHUB_INSTALLATION_ID
-      ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
-      : undefined,
-    githubPrivateKeyPem: resolvePrivateKeyPem(env),
-    githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
-      ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
-      : undefined,
-    dataDir: env.ARCHANGEL_DATA_DIR ?? ".archangel",
-    maxConcurrentThreads: env.ARCHANGEL_MAX_CONCURRENT ? Number(env.ARCHANGEL_MAX_CONCURRENT) : 2,
-    pollIntervalMs: env.ARCHANGEL_POLL_MS ? Number(env.ARCHANGEL_POLL_MS) : 30_000,
-    maxDailyUsd: env.ARCHANGEL_MAX_DAILY_USD ? Number(env.ARCHANGEL_MAX_DAILY_USD) : 20,
-    dailyTimezone: env.ARCHANGEL_TIMEZONE ?? "America/New_York",
-    maxAutoMergesPerDay: env.ARCHANGEL_MAX_MERGES_PER_DAY
-      ? Number(env.ARCHANGEL_MAX_MERGES_PER_DAY)
-      : 3,
-    shadowMode: env.ARCHANGEL_SHADOW_MODE !== "false",
-    anthropicApiKey: env.ANTHROPIC_API_KEY,
-    openaiApiKey: env.OPENAI_API_KEY,
-    googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
-    claudeModel: env.ARCHANGEL_CLAUDE_MODEL ?? "claude-sonnet-4-6",
-    openaiReviewerModel: env.ARCHANGEL_OPENAI_MODEL ?? "gpt-5.4",
-    geminiReviewerModel: env.ARCHANGEL_GEMINI_MODEL ?? "gemini-2.5-pro",
-    paseoHost: env.PASEO_HOST || undefined,
-    paseoHome: env.PASEO_HOME || undefined,
-    telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
-    telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
-  };
-  return ConfigSchema.parse(raw);
+  return host.projects.map((proj) => {
+    const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
+    return ConfigSchema.parse({
+      githubOwner,
+      githubRepo,
+      defaultBranch: proj.defaultBranch,
+      workspace: proj.workspace,
+      ownerUserId: host.ownerUserId,
+      githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
+      githubInstallationId:
+        proj.githubInstallationId ??
+        (env.ARCHANGEL_GITHUB_INSTALLATION_ID
+          ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
+          : undefined),
+      githubPrivateKeyPem: resolvePrivateKeyPem(env),
+      githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
+        ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
+        : undefined,
+      dataDir: host.dataDir,
+      pollIntervalMs: host.pollIntervalMs,
+      maxDailyUsd: host.maxDailyUsd,
+      dailyTimezone: host.dailyTimezone,
+      digestHour: host.digestHour,
+      maxConcurrentThreads: proj.maxConcurrentThreads,
+      maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
+      maxAutonomousStepsWithoutOwner: proj.maxAutonomousStepsWithoutOwner ?? host.maxAutonomousStepsWithoutOwner,
+      maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
+      maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
+      maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
+      implementMaxTurns: host.implementMaxTurns,
+      implementTimeoutMs: host.implementTimeoutMs,
+      setupTimeoutMs: host.setupTimeoutMs,
+      staleLeaseMs: host.staleLeaseMs,
+      gateStartGraceMs: host.gateStartGraceMs,
+      gateTimeoutMs: host.gateTimeoutMs,
+      reviewerOutageMaxMs: host.reviewerOutageMaxMs,
+      shadowMode: proj.shadowMode,
+      scouts: proj.scouts,
+      authMode: host.authMode,
+      implementerChain: host.implementerChain,
+      reviewerChain: host.reviewerChain,
+      claudeModel: host.claudeModel,
+      openaiReviewerModel: host.openaiReviewerModel,
+      geminiReviewerModel: host.geminiReviewerModel,
+      paseoHost: host.paseoHost ?? (env.PASEO_HOST || undefined),
+      paseoHome: host.paseoHome ?? (env.PASEO_HOME || undefined),
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+      openaiApiKey: env.OPENAI_API_KEY,
+      googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
+      telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
+      telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
+    });
+  });
 }

@@ -9,7 +9,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import {
   buildScoutCliArgs,
   normalizeTitleFp,
-  parseScoutMarkdown,
+  toScoutWorkflow,
   runScoutsForProject,
   scanForSecrets,
   scoutContentHash,
@@ -17,6 +17,9 @@ import {
 } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
+import { SCOUT_PROMPT, okWorkflow, workflowJson } from "./helpers/workflow.js";
+
+const BUG_HUNT = { name: "bug-hunt", schedule: "daily", maxProposals: 2 };
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -31,12 +34,8 @@ function makeScoutFixtureRepo(): { root: string; remoteBare: string; mainSha: st
   git(seed, ["config", "user.name", "Test"]);
   git(seed, ["config", "user.email", "test@example.com"]);
   fs.writeFileSync(path.join(seed, "app.ts"), "export const x = 1;\n");
-  fs.writeFileSync(
-    path.join(seed, ".agents", "scouts", "bug-hunt.md"),
-    `---\nname: bug-hunt\nschedule: daily\nmaxProposals: 2\n---\nFind real bugs in app.ts.\n`,
-  );
-  fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+  fs.writeFileSync(path.join(seed, ".agents", "scouts", "bug-hunt.md"), `${SCOUT_PROMPT}\n`);
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), workflowJson([BUG_HUNT]));
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   const mainSha = git(seed, ["rev-parse", "HEAD"]);
@@ -140,6 +139,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
         ledger,
         github: gh,
         broker,
+        workflow: okWorkflow([BUG_HUNT]),
         mainSha,
         invoker: async () => ({
           findings: [
@@ -171,6 +171,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
         ledger,
         github: gh,
         broker,
+        workflow: okWorkflow([BUG_HUNT]),
         mainSha,
         invoker: async () => ({
           findings: [
@@ -356,11 +357,19 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
     }
   });
 
-  it("parses scout frontmatter strictly and rejects unknown keys", () => {
-    const wf = parseScoutMarkdown("---\nname: my-scout\nschedule: daily\nmaxProposals: 2\n---\nAudit src/.\n", "a.md");
-    expect(wf).toMatchObject({ name: "my-scout", schedule: "daily", maxProposals: 2, prompt: "Audit src/." });
-    expect(() =>
-      parseScoutMarkdown("---\nname: bad\nscope: ['src/**']\n---\nBody\n", "b.md"),
-    ).toThrow();
+  it("builds the runnable Scout from its workflow entry, prompt body and skills", () => {
+    const wf = okWorkflow([{ name: "my-scout", schedule: "daily", skills: ["general/bug-hunt"], includeMetrics: true }], {
+      prompts: { "my-scout": "Audit src/." },
+    });
+    expect(toScoutWorkflow(wf.scouts[0]!)).toMatchObject({
+      name: "my-scout",
+      schedule: "daily",
+      maxProposals: 2,
+      autoPromote: false,
+      includeMetrics: true,
+      prompt: "Audit src/.",
+    });
+    expect(toScoutWorkflow(wf.scouts[0]!).skills.map((k) => k.ref)).toEqual(["general/bug-hunt"]);
+    expect(() => toScoutWorkflow(okWorkflow([{ name: "bad", skills: ["general/missing"] }]).scouts[0]!)).toThrow(/Unknown skill/);
   });
 });

@@ -83,8 +83,15 @@ export class Ledger {
       if (!cols.some((c) => c.name === "owner_reply")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
       }
+      if (!cols.some((c) => c.name === "workflow_sha256")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN workflow_sha256 TEXT");
+      }
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
+      }
+      const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
+      if (!mergeCols.some((c) => c.name === "main_required_json")) {
+        this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
       }
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
@@ -193,6 +200,7 @@ export class Ledger {
     branchName?: string;
     phase?: Phase;
     mode?: Mode;
+    workflowSha256?: string | null;
     now?: number;
   }): ThreadRecord {
     const repo = input.repo ?? this.repo;
@@ -212,8 +220,8 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO threads (
-          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, workflow_sha256, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -224,6 +232,7 @@ export class Ledger {
         JSON.stringify(phase),
         input.mode ?? "autonomous",
         branchName,
+        input.workflowSha256 ?? null,
         now,
         now,
       );
@@ -639,6 +648,8 @@ export class Ledger {
     headSha: string;
     squashSha?: string | null;
     shadowOnly: boolean;
+    /** Non-Gate required checks to watch on main after this merge. */
+    mainRequired?: string[];
     now?: number;
     repo?: string;
   }): MergeRecord {
@@ -662,8 +673,8 @@ export class Ledger {
 
     const info = this.db
       .prepare(
-        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, main_watch_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, main_watch_json, main_required_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -674,6 +685,7 @@ export class Ledger {
         input.shadowOnly ? 1 : 0,
         dayKey,
         JSON.stringify(initialWatch),
+        JSON.stringify(input.mainRequired ?? []),
         now,
       );
     this.appendAudit(
@@ -1571,6 +1583,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
       : [],
     ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
     retryGrants: Number(r.retry_grants ?? 0),
+    workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -1618,6 +1631,7 @@ function mapMerge(r: Record<string, unknown>): MergeRecord {
     disagreed: Number(r.disagreed) === 1,
     dayKey: String(r.day_key),
     mainWatch: MainWatchSchema.parse(JSON.parse(String(r.main_watch_json))),
+    mainRequired: JSON.parse(String(r.main_required_json ?? "[]")) as string[],
     createdAt: Number(r.created_at),
   };
 }

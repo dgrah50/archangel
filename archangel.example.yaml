@@ -42,11 +42,6 @@ projects:
     shadowMode: true
     maxConcurrentThreads: 2
     maxAutoMergesPerDay: 3
-    requiredChecks:
-      - Gate
-      - Test
-    gate:
-      maxNonTestLines: 150
-      maxTotalLines: 300
-      maxFiles: 5
-      extraProtectedPaths: []
+    # Gate bounds, test commands, required checks, review rubric and Scouts live in the repo's
+    # .agents/archangel.json (version 1), not here. Landing: shadowMode true forces owner merge.
+    # scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 }

@@ -1,49 +1,66 @@
 {
-  "maxNonTestLines": 150,
-  "maxTotalLines": 300,
-  "maxFiles": 5,
-  "testFileGlobs": [
-    "test/**/*.test.ts"
-  ],
-  "testDataGlobs": [],
-  "testBuildCmd": "npm run typecheck",
-  "baseTestCmd": "npx vitest run",
-  "testCmd": "npm run test:all",
-  "baseTestRuns": 3,
-  "headTestRuns": 2,
-  "extraProtectedPaths": [
-    "package.json",
-    "package-lock.json",
-    "tsconfig.json",
-    "tsconfig.test.json",
-    "vitest.config.ts",
-    "src/config.ts",
-    "src/env.ts",
-    "src/gate/**",
-    "src/broker/**",
-    "src/agents/**",
-    "src/github/**",
-    "src/ledger/**",
-    "src/cli/**",
-    "src/core/blockers.ts",
-    "src/core/thread-machine.ts",
-    "src/core/reconciler.ts",
-    "src/core/scout.ts",
-    "templates/**",
-    "workflows/**",
-    "bin/**",
-    "skills/**",
-    "src/core/work-class.ts",
-    "src/core/onboard.ts",
-    "src/core/owner-reply.ts",
-    "src/core/metrics-block.ts",
-    "src/core/skills.ts",
-    "src/core/ui-server.ts",
-    "ui/**",
-    "src/core/gate-pin.ts"
-  ],
+  "version": 1,
+  "gate": {
+    "testFileGlobs": [
+      "test/**/*.test.ts"
+    ],
+    "testBuildCmd": "npm run typecheck",
+    "baseTestCmd": "npx vitest run",
+    "testCmd": "npm run test:all",
+    "protectedPaths": [
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+      "tsconfig.test.json",
+      "vitest.config.ts",
+      "src/config.ts",
+      "src/env.ts",
+      "src/gate/**",
+      "src/broker/**",
+      "src/agents/**",
+      "src/github/**",
+      "src/ledger/**",
+      "src/cli/**",
+      "src/core/blockers.ts",
+      "src/core/thread-machine.ts",
+      "src/core/reconciler.ts",
+      "src/core/scout.ts",
+      "templates/**",
+      "workflows/**",
+      "bin/**",
+      "skills/**",
+      "src/core/work-class.ts",
+      "src/core/onboard.ts",
+      "src/core/owner-reply.ts",
+      "src/core/metrics-block.ts",
+      "src/core/skills.ts",
+      "src/core/ui-server.ts",
+      "ui/**",
+      "src/core/workflow.ts",
+      "src/core/workflow-load.ts",
+      "src/core/gate-pin.ts"
+    ]
+  },
   "requiredChecks": [
     "Gate",
     "Test"
-  ]
+  ],
+  "scouts": [
+    {
+      "name": "self-audit",
+      "schedule": "daily",
+      "maxProposals": 2,
+      "includeMetrics": true,
+      "skills": [
+        "general/factory-signals",
+        "general/bug-hunt",
+        "general/error-handling",
+        "typescript/async-and-promises",
+        "typescript/type-holes"
+      ]
+    }
+  ],
+  "landing": {
+    "bugfix": "autonomous"
+  }
 }

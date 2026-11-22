@@ -41,6 +41,8 @@ export interface ThreadRecord {
   ownerReply: string | null;
   /** Owner retries so far; each grants one more implement and one more revision Attempt. */
   retryGrants: number;
+  /** sha256 of the workflow file (`.agents/archangel.json`) in force when the Thread was created. */
+  workflowSha256: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -82,6 +84,8 @@ export interface MergeRecord {
   disagreed: boolean;
   dayKey: string;
   mainWatch: MainWatch;
+  /** Non-Gate checks that must be green on main after this merge, recorded at merge time (never re-read from policy). */
+  mainRequired: string[];
   createdAt: number;
 }
 
@@ -151,6 +155,7 @@ CREATE TABLE IF NOT EXISTS threads (
   implementer_vendors_json TEXT NOT NULL DEFAULT '[]',
   owner_reply TEXT,
   retry_grants INTEGER NOT NULL DEFAULT 0,
+  workflow_sha256 TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)
@@ -206,6 +211,7 @@ CREATE TABLE IF NOT EXISTS merges (
   disagreed INTEGER NOT NULL DEFAULT 0,
   day_key TEXT NOT NULL,
   main_watch_json TEXT NOT NULL,
+  main_required_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );

@@ -22,6 +22,7 @@ import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
+import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
@@ -169,14 +170,6 @@ program
         bareRepoPath: paths.brokerBareRepoPath,
         clonesDir: paths.clonesDir,
         defaultBranch: cfg.defaultBranch,
-        maxNonTestLines: cfg.gate.maxNonTestLines,
-        maxTotalLines: cfg.gate.maxTotalLines,
-        maxFiles: cfg.gate.maxFiles,
-        extraProtectedPaths: cfg.gate.extraProtectedPaths,
-        testFileGlobs: cfg.gate.testFileGlobs,
-        testDataGlobs: cfg.gate.testDataGlobs,
-        testBuildCmd: cfg.gate.testBuildCmd,
-        testCmd: cfg.gate.testCmd,
         enableLocalGate: true,
         // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
         localGateSkipTests: true,
@@ -957,11 +950,11 @@ daemonCmd
 
 const scoutCmd = program
   .command("scout")
-  .description("Discover and run repo-owned read-only Scout workflows (.agents/scouts/*.md)");
+  .description("Run the read-only Scouts declared in the repo workflow file (.agents/archangel.json)");
 
 scoutCmd
   .command("skills")
-  .description("List bundled Scout skills (reference them from a repo's .agents/scouts/*.md `skills:` list)")
+  .description("List bundled Scout skills (reference them from a Scout's `skills` list in .agents/archangel.json)")
   .action(() => {
     for (const ref of listAllSkills()) console.log(ref);
   });
@@ -971,7 +964,7 @@ scoutCmd
   .description("Run repo-owned Scout workflow(s) against the default branch (or --dry-run to list them)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--repo <owner/name>", "Target repository")
-  .option("--dry-run", "List parsed .agents/scouts/*.md workflows without running CLIs", false)
+  .option("--dry-run", "List declared Scouts without running CLIs", false)
   .action(async (name: string | undefined, opts: { config?: string; repo?: string; dryRun?: boolean }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), opts.repo);
     const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -998,18 +991,20 @@ scoutCmd
       await broker.ensureBareRepo(remoteUrl);
       const mainSha = await broker.resolveRef(`refs/heads/${cfg.defaultBranch}`);
 
+      const workflow = requireOkWorkflow(await loadWorkflow(broker, cfg, ledger, mainSha));
       const summaries = await runScoutsForProject({
         config: cfg,
         ledger,
         github,
         broker,
+        workflow,
         mainSha,
         filterName: name,
         dryRun: Boolean(opts.dryRun),
         logger,
       });
       if (summaries.length === 0) {
-        console.log(`No matching .agents/scouts/*.md workflows found on ${repoSlug}@${mainSha.slice(0, 8)}.`);
+        console.log(`No matching Scouts declared on ${repoSlug}@${mainSha.slice(0, 8)}.`);
         return;
       }
       for (const s of summaries) {

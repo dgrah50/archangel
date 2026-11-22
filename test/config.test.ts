@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadProjectConfigs, mergeRepoPolicy } from "../src/config.js";
+import { loadProjectConfigs } from "../src/config.js";
 import { loadDotEnv, parseDotEnv } from "../src/env.js";
 
 describe("config security invariants", () => {
@@ -36,47 +36,6 @@ describe("config security invariants", () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
-  });
-
-  it("allows .agents/archangel.json to tighten bounds and add protected paths, never loosen them", () => {
-    const merged = mergeRepoPolicy(
-      {
-        maxNonTestLines: 150,
-        maxTotalLines: 300,
-        maxFiles: 5,
-        extraProtectedPaths: ["proto/**"],
-        testFileGlobs: [],
-        testDataGlobs: [],
-        baseTestRuns: 3,
-        headTestRuns: 2,
-      },
-      ["Gate"],
-      "Host rubric",
-      JSON.stringify({
-        maxNonTestLines: 80,
-        maxTotalLines: 999,
-        maxFiles: 10,
-        extraProtectedPaths: ["migrations/**"],
-        testFileGlobs: ["**/*_test.go"],
-        testCmd: "go test ./...",
-        baseTestRuns: 1,
-        headTestRuns: 4,
-        requiredChecks: ["Lint"],
-        reviewRubric: "Repo rubric",
-      }),
-    );
-
-    expect(merged.gate.maxNonTestLines).toBe(80);
-    expect(merged.gate.maxTotalLines).toBe(300);
-    expect(merged.gate.maxFiles).toBe(5);
-    expect(merged.gate.baseTestRuns).toBe(3); // repo cannot loosen baseTestRuns below host
-    expect(merged.gate.headTestRuns).toBe(4); // repo can tighten headTestRuns above host
-    expect(merged.gate.testFileGlobs).toEqual(["**/*_test.go"]);
-    expect(merged.gate.testCmd).toBe("go test ./...");
-    expect(merged.gate.extraProtectedPaths).toEqual(["proto/**", "migrations/**"]);
-    expect(merged.requiredChecks).toEqual(["Gate", "Lint"]);
-    expect(merged.reviewRubric).toContain("Host rubric");
-    expect(merged.reviewRubric).toContain("Repo rubric");
   });
 });
 
@@ -132,5 +91,21 @@ describe("host limit and timeout knobs", () => {
       maxRebasesPerThread: 1, implementMaxTurns: 40, implementTimeoutMs: 1_200_000, setupTimeoutMs: 300_000,
       staleLeaseMs: 180_000, gateStartGraceMs: 300_000, gateTimeoutMs: 3_600_000, reviewerOutageMaxMs: 21_600_000,
     });
+  });
+
+  it.each([
+    ["per-project gate", "    gate:\n      maxFiles: 3\n"],
+    ["per-project requiredChecks", "    requiredChecks: [Gate]\n"],
+    ["per-project reviewRubric", "    reviewRubric: be nice\n"],
+  ])("rejects removed key: %s", (_n, extra) => {
+    expect(() => load(`ownerUserId: 9\nprojects:\n  - repo: acme/a\n${extra}`)).toThrow();
+  });
+
+  it("rejects host-level labels", () => {
+    expect(() => load("ownerUserId: 9\nlabels:\n  paused: x\nprojects:\n  - repo: acme/a\n")).toThrow();
+  });
+
+  it("fails clearly when archangel.yaml is missing (no environment-only config)", () => {
+    expect(() => loadProjectConfigs({ configPath: path.join(os.tmpdir(), "no-such-archangel.yaml"), env })).toThrow(/Host config not found/);
   });
 });

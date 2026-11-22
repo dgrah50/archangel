@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildScoutPrompt, parseScoutMarkdown } from "../src/core/scout.js";
+import { buildScoutPrompt, toScoutWorkflow } from "../src/core/scout.js";
+import { okWorkflow } from "./helpers/workflow.js";
 import { resolveSkills } from "../src/core/skills.js";
 
 describe("bundled skills", () => {
@@ -16,15 +17,14 @@ describe("bundled skills", () => {
     expect(() => resolveSkills(["../etc/passwd"])).toThrow(/Invalid skill/);
   });
 
-  it("lets a Scout be defined by skills alone and puts skill text in its prompt", () => {
-    const wf = parseScoutMarkdown("---\nname: go-audit\nschedule: daily\nskills: [general/bug-hunt, go/*]\n---\n", "s.md");
-    expect(wf.prompt).toBe("");
-    const prompt = buildScoutPrompt(wf);
+  it("puts skill text in a Scout's prompt, ahead of the repo prompt body", () => {
+    const wf = okWorkflow([{ name: "go-audit", schedule: "daily", skills: ["general/bug-hunt", "go/*"] }], { prompts: { "go-audit": "" } });
+    const sw = toScoutWorkflow(wf.scouts[0]!);
+    expect(sw.prompt).toBe("");
+    const prompt = buildScoutPrompt(sw);
     expect(prompt).toContain("--- BUNDLED SKILL: general/bug-hunt ---");
     expect(prompt).toContain("--- BUNDLED SKILL: go/concurrency ---");
     expect(prompt).not.toContain("SCOUT WORKFLOW");
-    expect(() => parseScoutMarkdown("---\nname: empty\n---\n", "e.md")).toThrow(/prompt body or at least one skill/);
-    expect(() => parseScoutMarkdown("---\nname: bad\nskills: [general/missing]\n---\nBody\n", "b.md")).toThrow(/Unknown skill/);
   });
 });
 

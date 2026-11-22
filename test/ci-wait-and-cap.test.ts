@@ -13,6 +13,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { classifyGate, stepPhase, type Phase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
+import { goWorkflowJson } from "./helpers/workflow.js";
 
 const MIN = 60_000;
 const gh = (name: string, status: CheckStatus["status"], conclusion: string | null, id = 1): CheckStatus & { id: number } => ({
@@ -131,7 +132,7 @@ describe("autonomy cap", () => {
     fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
     fs.writeFileSync(path.join(seed, "app.go"), "package demo\n\nfunc Val() int { return 1 }\n");
     fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson());
     git(seed, ["add", "-A"]);
     git(seed, ["commit", "-m", "initial"]);
     git(root, ["clone", "--bare", seed, remoteBare]);

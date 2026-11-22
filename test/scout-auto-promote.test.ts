@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,16 +9,16 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { normalizeTitleFp, runScoutsForProject, scoutContentHash } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
+import { SCOUT_PROMPT, hashOfScout, okWorkflow, workflowJson } from "./helpers/workflow.js";
 
-const AUTO_SCOUT = `---\nname: auto-hunt\nschedule: daily\nmaxProposals: 2\nautoPromote: true\n---\nFind real bugs in app.ts.\n`;
-const MANUAL_SCOUT = `---\nname: auto-hunt\nschedule: daily\nmaxProposals: 2\n---\nFind real bugs in app.ts.\n`;
-const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
+const AUTO_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "auto" };
+const MANUAL_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "owner" };
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-async function fixture(scout: string) {
+async function fixture(scout: Record<string, unknown> & { name: string }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-autopromote-"));
   const seed = path.join(root, "seed");
   const remoteBare = path.join(root, "remote.git");
@@ -28,9 +27,8 @@ async function fixture(scout: string) {
   git(seed, ["config", "user.name", "Test"]);
   git(seed, ["config", "user.email", "test@example.com"]);
   fs.writeFileSync(path.join(seed, "app.ts"), "export const x = 1;\n");
-  fs.writeFileSync(path.join(seed, ".agents", "scouts", "auto-hunt.md"), scout);
-  fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+  fs.writeFileSync(path.join(seed, ".agents", "scouts", "auto-hunt.md"), `${SCOUT_PROMPT}\n`);
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), workflowJson([scout]));
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   const mainSha = git(seed, ["rev-parse", "HEAD"]);
@@ -86,16 +84,16 @@ const twoFindings = async () => ({
   ],
 });
 
-describe("Scout autoPromote (owner opt-in per Scout file)", () => {
-  it("promotes at most the host daily cap and records the Scout file hash", async () => {
+describe("Scout promotion: auto (owner opt-in per Scout entry)", () => {
+  it("promotes at most the host daily cap and records the Scout trust hash", async () => {
     const { root, mainSha, broker } = await fixture(AUTO_SCOUT);
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      const res = await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, mainSha, invoker: twoFindings });
+      const res = await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
       expect(res[0]?.filedIssues).toEqual([60, 61]);
       expect(labelsAdded).toEqual([{ n: 60, labels: ["ready-for-agent"] }]);
-      expect(ledger.getScoutProposal(60)).toMatchObject({ autoPromoted: true, fileSha256: sha(AUTO_SCOUT) });
+      expect(ledger.getScoutProposal(60)).toMatchObject({ autoPromoted: true, fileSha256: hashOfScout(AUTO_SCOUT) });
       expect(ledger.getScoutProposal(61)?.autoPromoted).toBe(false);
       ledger.close();
     } finally {
@@ -103,12 +101,12 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
     }
   });
 
-  it("never auto-promotes from a Scout without autoPromote: true", async () => {
+  it("never auto-promotes from a Scout without promotion: auto", async () => {
     const { root, mainSha, broker } = await fixture(MANUAL_SCOUT);
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, mainSha, invoker: twoFindings });
+      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([MANUAL_SCOUT]), mainSha, invoker: twoFindings });
       expect(labelsAdded).toEqual([]);
       ledger.close();
     } finally {
@@ -116,12 +114,12 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
     }
   });
 
-  it("revokes trust for that exact Scout file after a disagreed or red merge; a new file version starts clean", async () => {
+  it("revokes trust for that exact Scout version after a disagreed or red merge; an edit to its own entry starts clean, an unrelated edit does not", async () => {
     const { root, mainSha, broker } = await fixture(AUTO_SCOUT);
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { gh, labelsAdded } = fakeScoutGitHub();
-      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, mainSha, invoker: twoFindings });
+      await runScoutsForProject({ config: makeConfig(), ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings });
       ledger.upsertThread({ issueNumber: 60, title: "t", themeLabel: null, bodySha256: "b", phase: { kind: "done", outcome: "merged" }, mode: "autonomous", now: 1 });
       (ledger as unknown as { db: { prepare(s: string): { run(...a: unknown[]): void } } }).db
         .prepare(
@@ -129,8 +127,16 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
            VALUES ('acme/app', 60, 7, 'h', 's', 0, 1, '2026-11-21', '{"kind":"green"}', 1)`,
         )
         .run();
-      expect(ledger.isScoutAutoPromoteRevoked("auto-hunt", sha(AUTO_SCOUT))).toBe(true);
-      expect(ledger.isScoutAutoPromoteRevoked("auto-hunt", sha(AUTO_SCOUT + "edited"))).toBe(false);
+      expect(ledger.isScoutAutoPromoteRevoked("auto-hunt", hashOfScout(AUTO_SCOUT))).toBe(true);
+      expect(ledger.isScoutAutoPromoteRevoked("auto-hunt", hashOfScout({ ...AUTO_SCOUT, maxProposals: 1 }))).toBe(false);
+      expect(ledger.isScoutAutoPromoteRevoked("auto-hunt", hashOfScout(AUTO_SCOUT, "edited prompt"))).toBe(false);
+
+      // Resolution reflects the revocation; an unrelated edit to the workflow file (gate bound) does not re-arm it.
+      const revoked = okWorkflow([AUTO_SCOUT], {
+        host: { isRevoked: (n, h) => ledger.isScoutAutoPromoteRevoked(n, h) },
+        extra: { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 3 } },
+      });
+      expect(revoked.scouts[0]).toMatchObject({ revoked: true, promotionEffective: { value: "owner", source: "kernel" } });
 
       // Revoked: even with the daily cap free (cap 5), no new auto-promotion.
       labelsAdded.length = 0;
@@ -139,6 +145,7 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
         ledger,
         github: gh,
         broker,
+        workflow: revoked,
         mainSha,
         invoker: async () => ({ findings: [{ title: "app.ts: another real bug", body: "Failing test for x=2." }] }),
       });
@@ -149,7 +156,7 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
     }
   });
 
-  it("intake accepts a bot-labelled auto-promoted proposal only while its Scout file is unchanged and opted in", async () => {
+  it("intake accepts a bot-labelled auto-promoted proposal only while its Scout entry and prompt are unchanged and opted in", async () => {
     const { root, remoteBare, mainSha, broker } = await fixture(AUTO_SCOUT);
     try {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
@@ -164,7 +171,7 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
         labels: ["agent-proposed", "ready-for-agent"],
         updatedAt: "2026-11-21T00:00:00Z",
       });
-      const issues = [mk(70, "auto ok"), mk(71, "stale file hash"), mk(72, "not auto-promoted")];
+      const issues = [mk(70, "auto ok"), mk(71, "stale trust hash"), mk(72, "not auto-promoted")];
       const record = (i: GitHubIssue, fileSha256: string, autoPromoted: boolean) =>
         ledger.recordScoutProposal({
           issueNumber: i.number,
@@ -174,9 +181,9 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
           fileSha256,
           autoPromoted,
         });
-      record(issues[0]!, sha(AUTO_SCOUT), true);
-      record(issues[1]!, sha(MANUAL_SCOUT), true);
-      record(issues[2]!, sha(AUTO_SCOUT), false);
+      record(issues[0]!, hashOfScout(AUTO_SCOUT), true);
+      record(issues[1]!, hashOfScout({ ...AUTO_SCOUT, maxProposals: 1 }), true);
+      record(issues[2]!, hashOfScout(AUTO_SCOUT), false);
 
       const gh = {
         getRemoteUrlWithToken: async () => remoteBare,
@@ -226,7 +233,7 @@ describe("Scout autoPromote label failure", () => {
       };
       const res = await runScoutsForProject({
         config: makeConfig({ scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 2 } }),
-        ledger, github: gh, broker, mainSha, invoker: twoFindings,
+        ledger, github: gh, broker, workflow: okWorkflow([AUTO_SCOUT]), mainSha, invoker: twoFindings,
       });
       expect(res[0]?.filedIssues).toEqual([60, 61]);
       expect(labelsAdded).toEqual([{ n: 61, labels: ["ready-for-agent"] }]);

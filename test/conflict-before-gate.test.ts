@@ -10,6 +10,7 @@ import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
+import { goWorkflowJson } from "./helpers/workflow.js";
 
 const MIN = 60_000;
 
@@ -29,7 +30,7 @@ async function harness(mainChange: "unrelated" | "same-line") {
   fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
   fs.writeFileSync(path.join(seed, "app.go"), "package demo\n\nfunc Val() int { return 1 }\n");
   fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson(["Gate", "Test"]));
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   git(root, ["clone", "--bare", seed, remoteBare]);
@@ -51,7 +52,7 @@ async function harness(mainChange: "unrelated" | "same-line") {
   const notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
   const cfg = ConfigSchema.parse({
     githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
-    githubPrivateKeyPem: "fake", shadowMode: true, requiredChecks: ["Gate", "Test"],
+    githubPrivateKeyPem: "fake", shadowMode: true,
   });
   const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
   github.issues.set(1, {

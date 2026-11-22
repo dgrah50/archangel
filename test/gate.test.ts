@@ -55,17 +55,21 @@ function createRepoFixture(): { root: string; repoDir: string; baseSha: string }
     ".agents/archangel.json",
     JSON.stringify(
       {
-        maxNonTestLines: 20,
-        maxTotalLines: 100,
-        maxFiles: 5,
-        testFileGlobs: ["tests/*.test.mjs"],
-        testDataGlobs: ["testdata/**"],
-        testBuildCmd:
-          "node -e 'const fs=require(\"fs\"); for (const f of fs.readdirSync(\"tests\")) { const s=fs.readFileSync(\"tests/\"+f,\"utf8\"); if (s.includes(\"NONEXISTENT_API\")) process.exit(1); }'",
-        testCmd: 'for f in tests/*.test.mjs; do node "$f" || exit 1; done',
-        baseTestRuns: 2,
-        headTestRuns: 2,
-        extraProtectedPaths: ["lock.json"],
+        version: 1,
+        gate: {
+          maxNonTestLines: 20,
+          maxTotalLines: 100,
+          maxFiles: 5,
+          testFileGlobs: ["tests/*.test.mjs"],
+          testDataGlobs: ["testdata/**"],
+          testBuildCmd:
+            "node -e 'const fs=require(\"fs\"); for (const f of fs.readdirSync(\"tests\")) { const s=fs.readFileSync(\"tests/\"+f,\"utf8\"); if (s.includes(\"NONEXISTENT_API\")) process.exit(1); }'",
+          testCmd: 'for f in tests/*.test.mjs; do node "$f" || exit 1; done',
+          baseTestRuns: 3,
+          headTestRuns: 2,
+          protectedPaths: ["lock.json"],
+        },
+        requiredChecks: ["Gate", "Test"],
       },
       null,
       2,
@@ -199,7 +203,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       expect(rMissing.passed).toBe(false);
       expect(rMissing.violations.some((v) => v.includes("missing .agents/archangel.json"))).toBe(true);
 
-      // Typo'd key ("testCommand") in archangel.json throws strict Zod error instead of silently passing
+      // Anything but a valid version 1 workflow (typo'd key, old flat format, out-of-kernel value) fails closed
       git(repoDir, ["checkout", "-b", "typo-landing", baseSha]);
       writeFile(repoDir, ".agents/archangel.json", JSON.stringify({ testCommand: "true", testFileGlobs: ["tests/*.test.mjs"] }));
       git(repoDir, ["add", "-A"]);
@@ -208,9 +212,24 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       writeFile(repoDir, "tests/t.test.mjs", "export {};\n");
       git(repoDir, ["add", "-A"]);
       git(repoDir, ["commit", "-m", "test"]);
-      await expect(
-        runGate({ repoDir, baseRef: typoBase, headRef: "HEAD", policyFromBase: true }),
-      ).rejects.toThrow(/Unrecognized key/);
+      const rTypo = await runGate({ repoDir, baseRef: typoBase, headRef: "HEAD", policyFromBase: true });
+      expect(rTypo.passed).toBe(false);
+      expect(rTypo.violations.some((v) => v.includes("not a valid workflow"))).toBe(true);
+
+      // A kernel-bound violation (maxFiles above the kernel maximum) is invalid, never clamped
+      git(repoDir, ["checkout", "-b", "loose-landing", baseSha]);
+      const loose = JSON.parse(fs.readFileSync(path.join(repoDir, ".agents/archangel.json"), "utf8"));
+      loose.gate.maxFiles = 50;
+      writeFile(repoDir, ".agents/archangel.json", JSON.stringify(loose));
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "loosen"]);
+      const looseBase = git(repoDir, ["rev-parse", "HEAD"]);
+      writeFile(repoDir, "tests/l.test.mjs", "export {};\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "test"]);
+      const rLoose = await runGate({ repoDir, baseRef: looseBase, headRef: "HEAD", policyFromBase: true });
+      expect(rLoose.passed).toBe(false);
+      expect(rLoose.violations.some((v) => v.includes("gate.maxFiles"))).toBe(true);
 
       // Unsupported pre-commit hook key (`args`) or mutating hook fails closed
       git(repoDir, ["checkout", "-b", "mutating-hook", baseSha]);

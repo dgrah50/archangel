@@ -11,6 +11,7 @@ import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
+import { workflowJson, workflowFile } from "./helpers/workflow.js";
 
 async function run(policy: string | null) {
   const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -73,8 +74,73 @@ describe("repo policy is required (fail closed, no host fallback)", () => {
   });
 
   it("works normally with a valid policy", async () => {
-    const r = await run("{}\n");
+    const r = await run(workflowJson());
     expect(r.thread).not.toBeNull();
     expect(r.notes.filter((n) => n.title.includes("repo policy"))).toHaveLength(0);
+  });
+
+  it("takes no work for a pre-version-1 file (no compatibility reader)", async () => {
+    const r = await run(JSON.stringify({ testFileGlobs: ["**/*_test.go"], testCmd: "go test ./..." }));
+    expect(r.calls).toBe(0);
+    expect(r.thread).toBeNull();
+    expect(r.notes).toHaveLength(1);
+  });
+
+  it.each([
+    ["Gate only", ["Gate"]],
+    ["no Gate", ["Test"]],
+    ["none", []],
+  ])("takes no work when requiredChecks is %s (landing could never see main green)", async (_n, requiredChecks) => {
+    const r = await run(JSON.stringify(workflowFile([], { requiredChecks })));
+    expect(r.calls).toBe(0);
+    expect(r.thread).toBeNull();
+    expect(r.notes).toHaveLength(1);
+  });
+
+  it("stamps new Threads with the workflow file hash", async () => {
+    const r = await run(workflowJson());
+    expect(r.thread?.workflowSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("post-merge monitoring does not depend on the current workflow", () => {
+  it("still detects a red main after the workflow became invalid, using the checks recorded at merge time", async () => {
+    const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-postmerge-"));
+    const seed = path.join(root, "seed");
+    const remoteBare = path.join(root, "remote.git");
+    fs.mkdirSync(seed);
+    git(seed, ["init", "-b", "main"]);
+    git(seed, ["config", "user.name", "T"]);
+    git(seed, ["config", "user.email", "t@example.com"]);
+    fs.writeFileSync(path.join(seed, "app.go"), "package demo\n"); // no .agents/archangel.json: workflow is missing
+    git(seed, ["add", "-A"]);
+    git(seed, ["commit", "-m", "initial"]);
+    const mainSha = git(seed, ["rev-parse", "HEAD"]);
+    git(root, ["clone", "--bare", seed, remoteBare]);
+    const github = new FakeGitHub(remoteBare);
+    github.checks.set(mainSha, [
+      { id: 11, name: "Test", status: "completed", conclusion: "failure", appSlug: "github-actions" } as never,
+    ]);
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+    const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
+    const implementer: Implementer = { async run() { return { summary: "", costUsd: 0, transcriptPath: null, aborted: true }; } };
+    const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
+    const cfg = ConfigSchema.parse({
+      githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake",
+    });
+    try {
+      ledger.upsertThread({ issueNumber: 5, title: "t", themeLabel: null, bodySha256: "b", phase: { kind: "done", outcome: "merged" }, mode: "autonomous", now: 1 });
+      const merge = ledger.recordMerge({ issueNumber: 5, prNumber: 9, headSha: "h", squashSha: mainSha, shadowOnly: false, mainRequired: ["Test"], now: 1 });
+      expect(ledger.getMerge(merge.id)!.mainRequired).toEqual(["Test"]);
+      const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      // Red check seen: the watch moved on (rerun requested), proving the recorded list was used.
+      expect(ledger.getMerge(merge.id)!.mainWatch.kind).not.toBe("watching");
+    } finally {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   });
 });
