@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } from "./corrections.js";
 import type { Ledger, StageMetrics } from "../ledger/store.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
@@ -32,6 +33,8 @@ export interface UiState {
   needsYou: Array<UiItem & { decisionClass: string; recommendation: string }>;
   stages: Record<Stage, UiItem[]>;
   outcomes: ReturnType<Ledger["computeMetrics"]>["outcomes"];
+  /** Owner corrections over the last 30 days, all repos (closed categories only). */
+  corrections: CorrectionCounts;
   autonomySteps: Record<string, number>;
   /** Last 14 local days, oldest first. */
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
@@ -125,6 +128,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
     needsYou,
     stages,
     outcomes: ledger.computeMetrics({ now }).outcomes,
+    corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({

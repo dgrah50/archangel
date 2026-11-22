@@ -1,3 +1,4 @@
+import { correctionCategories } from "./corrections.js";
 import { EscalationCodeSchema } from "./thread-machine.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
@@ -35,6 +36,7 @@ export const METRIC_KEYS = [
   "reviews_by_vendor",
   "review_outages",
   "outcomes",
+  "owner_corrections",
   "actionable_signals",
 ] as const;
 
@@ -81,6 +83,7 @@ export function buildMetricsBlock(m: Metrics | null): string {
     `attempt_failure_categories: ${pairs(m.attempts.errorCategories, ATTEMPT_ERROR_CATEGORIES)}`,
     `reviews_by_vendor: ${vendorReviews.join(", ") || "none"}`,
     `review_outages: ${num(m.reviews.outageEvents)}`,
+    `owner_corrections: ${correctionCategories(m.corrections).filter((c) => c.count > 0).map((c) => `${c.category}=${c.count}`).join(", ") || "none"}`,
     `outcomes: merged_fixes=${num(o.mergedFixes)}, reverts=${num(o.reverts)}, reverts_per_fix=${num(o.revertsPerFix)}, rework_attempts_total=${num(o.reworkAttemptsTotal)}, rework_per_fix=${num(o.reworkAttemptsPerFix)}, attempts_per_fix=${num(o.attemptsPerFix)}`,
     "actionable_signals:",
     ...(signals.length > 0 ? signals.map((s) => `  - ${s}`) : ["  - none"]),

@@ -103,6 +103,11 @@ export function formatDecisionClass(c: DecisionClass): string {
 
 /** Escalations raised by project-level monitors (autonomy cap, post-merge main) rather than by a Thread. */
 export const MAIN_ESCALATION_POLICY = {
+  correction_repeated: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "You corrected the factory in this category repeatedly this month. Edit a bundled skill, the review rubric (`review.rubric` in .agents/archangel.json) or the implementer prompt for it (an owner-merged change), then watch whether the count drops. Nothing is drafted automatically.",
+  },
   pitch_scout_paused: {
     decisionClass: "owner_signoff",
     recommendation:
