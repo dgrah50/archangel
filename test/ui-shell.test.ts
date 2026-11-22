@@ -18,6 +18,10 @@ describe("hash routes", () => {
     expect(parseRoute("#/")).toEqual({ page: "overview" });
     expect(parseRoute("#/pipeline")).toEqual({ page: "pipeline" });
     expect(parseRoute("#/pipeline/")).toEqual({ page: "pipeline" });
+    expect(parseRoute("#/threads")).toEqual({ page: "threads" });
+    expect(parseRoute("#/needs-you")).toEqual({ page: "needs-you", item: null });
+    expect(parseRoute("#/needs-you/a/b/7")).toEqual({ page: "needs-you", item: { repo: "a/b", issue: 7 } });
+    expect(parseRoute("#/needs-you/a%20b/c/7").page).toBe("not-found");
     expect(parseRoute("#/nope")).toEqual({ page: "not-found", hash: "#/nope" });
   });
   it("every nav entry round-trips to its own page", () => {

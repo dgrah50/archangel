@@ -1202,6 +1202,38 @@ export class Ledger {
    * Autonomous steps (Attempt starts and autonomous merges) since the owner was last heard from,
    * i.e. since the latest audit row whose actor is 'owner'.
    */
+  /**
+   * What the autonomous steps since the owner was last heard from were spent on, per Thread (the same rows
+   * `autonomousStepsSinceOwner` counts), plus the Threads waiting in needs_you. Counts and issue numbers only.
+   */
+  autonomousStepBreakdown(repo = this.repo): {
+    threads: Array<{ issueNumber: number; implement: number; revise: number; rebase: number; merged: number; total: number }>;
+    needsYou: number[];
+  } {
+    const rows = this.db
+      .prepare(
+        `SELECT issue_number, topic, json_extract(payload_json, '$.kind') AS kind FROM audit_log
+         WHERE repo = ? AND topic IN ('attempt/started', 'thread/merged')
+           AND id > COALESCE((SELECT MAX(id) FROM audit_log WHERE repo = ? AND actor = 'owner'), 0)`,
+      )
+      .all(repo, repo) as Array<{ issue_number: number | null; topic: string; kind: string | null }>;
+    const by = new Map<number, { issueNumber: number; implement: number; revise: number; rebase: number; merged: number; total: number }>();
+    for (const r of rows) {
+      if (r.issue_number === null) continue;
+      const t = by.get(r.issue_number) ?? { issueNumber: r.issue_number, implement: 0, revise: 0, rebase: 0, merged: 0, total: 0 };
+      if (r.topic === "thread/merged") t.merged++;
+      else if (r.kind === "revise") t.revise++;
+      else if (r.kind === "rebase") t.rebase++;
+      else t.implement++;
+      t.total++;
+      by.set(r.issue_number, t);
+    }
+    return {
+      threads: [...by.values()].sort((a, b) => b.total - a.total || a.issueNumber - b.issueNumber),
+      needsYou: this.listThreads(["needs_you"], repo).map((t) => t.issueNumber),
+    };
+  }
+
   autonomousStepsSinceOwner(repo = this.repo): number {
     const row = this.db
       .prepare(

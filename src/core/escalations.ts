@@ -58,6 +58,16 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
     recommendation:
       "Read the reviewer findings in the Recap. Comment guidance and retry, merge yourself if the veto is wrong, or close the PR.",
   },
+  revision_no_change: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "The revision came back byte-identical to the previous head: the implementer could not meet the feedback within the rules. Read its summary and the findings, then comment what it should do differently and retry, or close the PR.",
+  },
+  existing_test_conflict: {
+    decisionClass: "product_decision",
+    recommendation:
+      "The issue contradicts an existing test (named in the reason), and existing tests are immutable for the factory. Decide which behaviour is right: edit the issue to match the test, or change the test yourself; then retry or close.",
+  },
   review_outage: {
     decisionClass: "credentials",
     recommendation: "Reviewer CLIs are unavailable. Run `archangel doctor --smoke`, re-login where needed, then retry.",
@@ -143,3 +153,20 @@ export const MAIN_ESCALATION_POLICY = {
       "Main moved after the bad merge, so no exact revert exists. Revert or fix-forward by hand, then clear the circuit breaker.",
   },
 } as const satisfies Record<string, EscalationPolicy>;
+
+
+/**
+ * Test files named in free text (Gate output, the implementer's own summary): repo-relative paths that look like test files.
+ * The text is untrusted; callers must confirm each path mechanically (a test file by the repo's globs, present on base) before
+ * acting on it, and only paths of plain characters are ever returned.
+ */
+export function testFilesMentioned(texts: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const t of texts) {
+    for (const m of t.matchAll(/(?<![\w@./+-])((?:[\w@+-]+\/)*[\w@+-]+(?:\.(?:test|spec)\.[a-z]{1,4}|_test\.go|_test\.py|Test\.java))(?![\w])/g)) {
+      const p = m[1]!;
+      if (!p.startsWith("/") && !p.split("/").includes("..")) found.add(p);
+    }
+  }
+  return [...found].slice(0, 20);
+}
