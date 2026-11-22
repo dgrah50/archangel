@@ -69,6 +69,8 @@ export interface DraftContext {
   windowDays: number;
   /** Draft attempt number across all repos; makes the branch name unique. Set by draftCorrection. */
   seq?: number;
+  /** Set by the prompt proposer: the PR and commit are titled for it instead of for owner corrections. */
+  proposer?: boolean;
 }
 
 /** Pure policy over the Scout's output: the diff must touch exactly the one allowed file, stay small, and carry no secret. */
@@ -296,9 +298,9 @@ export async function openDraftPr(
   const content = await applyDraftPatch(draft.file, before, draft.diff);
   if (draft.target === "rubric" && !(before !== null && rubricOnlyChange(before, content))) throw new Error("a rubric draft may only change review.rubric");
   const branch = draftBranchName(ctx.category, ctx.seq ?? 1);
-  await client.broker.pushDraftBranch(branch, baseSha, draft.file, content, `chore: correction-loop draft for ${ctx.category}`, remoteUrl);
+  await client.broker.pushDraftBranch(branch, baseSha, draft.file, content, ctx.proposer ? "chore: prompt proposer draft" : `chore: correction-loop draft for ${ctx.category}`, remoteUrl);
   const pr = await client.github.createPr({
-    title: `chore(${draft.target}): draft for owner corrections in ${ctx.category}`,
+    title: ctx.proposer ? `chore(${draft.target}): prompt proposer draft` : `chore(${draft.target}): draft for owner corrections in ${ctx.category}`,
     body,
     head: branch,
     base,
