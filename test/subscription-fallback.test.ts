@@ -25,9 +25,11 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       const impl = new SubscriptionImplementer({
         chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
         transcriptsDir: path.join(tmp, "transcripts"),
-        cooldowns: {
-          isCoolingDown: (p) => cooledDown.has(p),
-          recordCooldown: (p) => cooledDown.add(p),
+        accountState: {
+          cooldownUntil: (id) => (cooledDown.has(id) ? Date.now() + 60_000 : null),
+          attemptsToday: () => 0,
+          lastUsedAt: () => null,
+          recordCooldown: (id) => void cooledDown.add(id),
         },
         invoker: async (input) => {
           seenPrompts.push({ provider: input.provider, prompt: input.prompt });
@@ -160,7 +162,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       requiredChecks: ["Gate"],
       checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" }],
       reviewsForHeadSha: [
-        { id: 1, repo: "acme/app", issueNumber: 13, headSha: "abc", vendor: "anthropic", verdict: "approve", findingsJson: "[]", costUsd: 0, createdAt: 1, provider: null, model: null, promptSha256: null, rubricSha256: null, workflowSha256: null, },
+        { id: 1, repo: "acme/app", issueNumber: 13, headSha: "abc", vendor: "anthropic", verdict: "approve", findingsJson: "[]", costUsd: 0, createdAt: 1, provider: null, model: null, accountId: null, promptSha256: null, rubricSha256: null, workflowSha256: null, },
       ],
       requiredReviewers: remaining,
       mergeTreeClean: true,

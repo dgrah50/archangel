@@ -86,4 +86,14 @@ describe("doctor --smoke per account", () => {
     ]);
     expect(calls.every((c) => c.env.CLAUDE_CONFIG_DIR === undefined || c.env.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR)).toBe(true);
   });
+
+  it("warns explicitly that agy account separation via HOME is unverified when more than one agy account is configured", async () => {
+    const { configPath, env } = setup(TWO_EACH, HOMES);
+    const report = await runDoctor({ configPath, env, offline: true });
+    const warn = report.checks.find((c) => c.id === "agy_accounts");
+    expect(warn?.status).toBe("warn");
+    expect(warn?.detail).toContain("agy account separation via HOME is unverified");
+    const one = setup("accounts:\n  - { id: agy, provider: agy }\n  - { id: claude, provider: claude }\n  - { id: codex, provider: codex }");
+    expect((await runDoctor({ configPath: one.configPath, env: one.env, offline: true })).checks.some((c) => c.id === "agy_accounts")).toBe(false);
+  });
 });

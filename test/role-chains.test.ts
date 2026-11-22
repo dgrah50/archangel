@@ -91,7 +91,7 @@ describe("role routing per attempt kind", () => {
     try {
       const res = await r.run("revise", { preferVendors: ["anthropic"] });
       expect(r.calls).toEqual([{ provider: "claude", model: "haiku" }]);
-      expect(res.runBy).toEqual({ provider: "claude", model: "haiku" });
+      expect(res.runBy).toEqual({ provider: "claude", model: "haiku", accountId: "claude" });
     } finally {
       r.cleanup();
     }

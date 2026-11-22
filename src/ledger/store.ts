@@ -12,6 +12,8 @@ import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
 import { categorizeAttemptError } from "../core/metrics-block.js";
 import type { DigestInput } from "../core/digest.js";
+import { readCodexUsage, type AccountLedger } from "../core/accounts.js";
+import type { Account } from "../config.js";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -162,8 +164,10 @@ export class Ledger {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
       };
-      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256"]);
-      addCols("reviews", ["provider", "model", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
+      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256"]);
+      addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
+      // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
+      this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
       const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
         this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
@@ -694,14 +698,14 @@ export class Ledger {
   /** Replay provenance for an Attempt: who ran it, with which prompt template, under which workflow file. */
   recordAttemptProvenance(
     attemptId: number,
-    p: { provider?: string | null; model?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
+    p: { provider?: string | null; model?: string | null; accountId?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
   ): void {
     this.db
       .prepare(
-        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model),
+        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model), account_id = COALESCE(?, account_id),
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
-      .run(p.provider ?? null, p.model ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+      .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
   }
 
   finishAttempt(
@@ -811,6 +815,7 @@ export class Ledger {
     costUsd: number;
     provider?: string | null;
     model?: string | null;
+    accountId?: string | null;
     promptSha256?: string | null;
     rubricSha256?: string | null;
     workflowSha256?: string | null;
@@ -823,8 +828,8 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO reviews (repo, issue_number, head_sha, vendor, verdict, findings_json, cost_usd, created_at,
-                              provider, model, prompt_sha256, rubric_sha256, workflow_sha256)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              provider, model, account_id, prompt_sha256, rubric_sha256, workflow_sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(repo, issue_number, head_sha, vendor) DO UPDATE SET
            verdict = excluded.verdict,
            findings_json = excluded.findings_json,
@@ -832,6 +837,7 @@ export class Ledger {
            created_at = excluded.created_at,
            provider = excluded.provider,
            model = excluded.model,
+           account_id = excluded.account_id,
            prompt_sha256 = excluded.prompt_sha256,
            rubric_sha256 = excluded.rubric_sha256,
            workflow_sha256 = excluded.workflow_sha256`,
@@ -847,6 +853,7 @@ export class Ledger {
         now,
         input.provider ?? null,
         input.model ?? null,
+        input.accountId ?? null,
         input.promptSha256 ?? null,
         input.rubricSha256 ?? null,
         input.workflowSha256 ?? null,
@@ -1393,24 +1400,62 @@ export class Ledger {
     return merged;
   }
 
-  // ---- Provider Rate-Limit Cooldowns (Continuity Optimization) ----
+  // ---- Per-account rate-limit cooldowns ----
 
-  setProviderCooldown(provider: string, durationMs: number, reason: string, now = Date.now()): void {
-    const untilTs = now + Math.max(1000, durationMs);
+  /** Cools one account down after a limit error. The audit row keeps the count and total cooldown time for metrics. */
+  setAccountCooldown(accountId: string, durationMs: number, reason: string, now = Date.now()): void {
+    const duration = Math.max(1000, durationMs);
     this.db
       .prepare(
-        `INSERT INTO provider_cooldowns(provider, until_ts, reason, updated_at)
+        `INSERT INTO account_cooldowns(account_id, until_ts, reason, updated_at)
          VALUES (?, ?, ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
+         ON CONFLICT(account_id) DO UPDATE SET until_ts = excluded.until_ts, reason = excluded.reason, updated_at = excluded.updated_at`,
       )
-      .run(provider, untilTs, reason.slice(0, 300), now);
+      .run(accountId, now + duration, reason.slice(0, 300), now);
+    this.appendAudit("account/cooldown", null, "archangel", { accountId, durationMs: duration }, now, null);
   }
 
-  getProviderCooldown(provider: string, now = Date.now()): { untilTs: number; reason: string } | null {
+  getAccountCooldown(accountId: string, now = Date.now()): { untilTs: number; reason: string } | null {
     const row = this.db
-      .prepare("SELECT until_ts, reason FROM provider_cooldowns WHERE provider = ? AND until_ts > ?")
-      .get(provider, now) as { until_ts: number; reason: string } | undefined;
+      .prepare("SELECT until_ts, reason FROM account_cooldowns WHERE account_id = ? AND until_ts > ?")
+      .get(accountId, now) as { until_ts: number; reason: string } | undefined;
     return row ? { untilTs: Number(row.until_ts), reason: String(row.reason) } : null;
+  }
+
+  listActiveCooldowns(now = Date.now()): Array<{ account: string; untilTs: number; reason: string }> {
+    const rows = this.db
+      .prepare("SELECT account_id, until_ts, reason FROM account_cooldowns WHERE until_ts > ? ORDER BY account_id")
+      .all(now) as Array<{ account_id: string; until_ts: number; reason: string }>;
+    return rows.map((r) => ({ account: String(r.account_id), untilTs: Number(r.until_ts), reason: String(r.reason) }));
+  }
+
+  /** The selector's view of this Ledger: cooldowns, usage counters, and the optional free Codex reading. */
+  accountState(accounts: Account[]): AccountLedger {
+    const byId = new Map(accounts.map((a) => [a.id, a]));
+    return {
+      cooldownUntil: (id, now) => this.getAccountCooldown(id, now)?.untilTs ?? null,
+      attemptsToday: (id, now) => {
+        const today = formatDayKey(now, this.timeZone);
+        const rows = this.db
+          .prepare(`SELECT started_at FROM attempts WHERE account_id = ? AND started_at >= ?`)
+          .all(id, now - 36 * 3600_000) as Array<{ started_at: number }>;
+        return rows.filter((r) => formatDayKey(r.started_at, this.timeZone) === today).length;
+      },
+      lastUsedAt: (id) => {
+        const row = this.db
+          .prepare(
+            `SELECT MAX(t) AS t FROM (SELECT MAX(started_at) AS t FROM attempts WHERE account_id = ?
+                                      UNION ALL SELECT MAX(created_at) AS t FROM reviews WHERE account_id = ?)`,
+          )
+          .get(id, id) as { t: number | null };
+        return row.t ?? null;
+      },
+      usedPercent: (account) => {
+        const a = byId.get(account.id) ?? account;
+        return a.provider === "codex" ? (readCodexUsage(a.home)?.usedPercent ?? null) : null;
+      },
+      recordCooldown: (id, durationMs, reason, now) => this.setAccountCooldown(id, durationMs, reason, now),
+    };
   }
 
   /** Records one survived error of a class. Returns how many of this class were seen in the last 24h (including this one). */
@@ -1443,17 +1488,6 @@ export class Ledger {
       count: Number(r.count),
       recent24h: (JSON.parse(String(r.recent_json)) as number[]).filter((t) => t > now - HEALTH_WINDOW_MS).length,
       lastError: String(r.last_error),
-    }));
-  }
-
-  listActiveCooldowns(now = Date.now()): Array<{ provider: string; untilTs: number; reason: string }> {
-    const rows = this.db
-      .prepare("SELECT provider, until_ts, reason FROM provider_cooldowns WHERE until_ts > ? ORDER BY provider")
-      .all(now) as Array<{ provider: string; until_ts: number; reason: string }>;
-    return rows.map((r) => ({
-      provider: String(r.provider),
-      untilTs: Number(r.until_ts),
-      reason: String(r.reason),
     }));
   }
 
@@ -2356,7 +2390,7 @@ export class Ledger {
     outcomes: OutcomeMetrics;
     /** Owner corrections counted in closed categories (see core/corrections.ts). */
     corrections: CorrectionCounts;
-    activeCooldowns: Array<{ provider: string; untilTs: number; reason: string }>;
+    activeCooldowns: Array<{ account: string; untilTs: number; reason: string }>;
   } {
     const now = opts.now ?? Date.now();
     const since = opts.sinceMs ?? 0;
@@ -2623,6 +2657,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
     model: r.model === null || r.model === undefined ? null : String(r.model),
+    accountId: r.account_id === null || r.account_id === undefined ? null : String(r.account_id),
     promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
   };
@@ -2641,6 +2676,7 @@ function mapReview(r: Record<string, unknown>): ReviewRecord {
     createdAt: Number(r.created_at),
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
     model: r.model === null || r.model === undefined ? null : String(r.model),
+    accountId: r.account_id === null || r.account_id === undefined ? null : String(r.account_id),
     promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
     rubricSha256: r.rubric_sha256 === null || r.rubric_sha256 === undefined ? null : String(r.rubric_sha256),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),

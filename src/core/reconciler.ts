@@ -1264,7 +1264,7 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
-      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null });
+      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
@@ -1769,6 +1769,7 @@ export class Reconciler {
             costUsd: 0, // Settled via reserveBudget/settleBudget below to avoid double-counting.
             provider: r.provider ?? null,
             model: r.model ?? null,
+            accountId: r.accountId ?? null,
             promptSha256: r.promptSha256 ?? null,
             rubricSha256: rubricSha(this.effectiveReviewRubric),
             workflowSha256: this.workflow?.fileSha256 ?? null,
