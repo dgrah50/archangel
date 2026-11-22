@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 import { LandingJsonSchema, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
-import { GitHubAppClient } from "../github/client.js";
+import { GitHubApiError, GitHubAppClient } from "../github/client.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -309,13 +309,15 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
       let landingError: string | undefined;
       let hasLandingJson = false;
+      let landingExists = false;
       try {
         const landingRaw = await gh.getFileContentAtRef(tip, ".agents/landing.json");
-        hasLandingJson = true;
+        landingExists = true;
         LandingJsonSchema.parse(JSON.parse(landingRaw));
+        hasLandingJson = true;
       } catch (err) {
-        if (err instanceof Error && err.message.includes("(404)")) {
-          hasLandingJson = false;
+        if (err instanceof GitHubApiError && err.status === 404) {
+          landingExists = false;
         } else {
           landingError = err instanceof Error ? err.message : String(err);
         }
@@ -325,9 +327,10 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
         status: verificationStatus,
-        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${landingError ? `invalid: ${landingError}` : hasLandingJson ? "present and valid" : "missing"}`,
-        remediation:
-          hasPreCommit && hasLandingJson
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${landingError ? `invalid: ${landingError}` : landingExists ? "present and valid" : "missing"}`,
+        remediation: landingError
+          ? "Fix .agents/landing.json to satisfy LandingJsonSchema"
+          : hasPreCommit && hasLandingJson
             ? undefined
             : "Commit .pre-commit-config.yaml and .agents/landing.json to main (see templates/gijq/ or run pilot:setup --install-workflow)",
       });

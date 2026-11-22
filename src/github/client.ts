@@ -73,6 +73,13 @@ export interface GitHubAppConfig {
   apiBaseUrl?: string;
 }
 
+export class GitHubApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "GitHubApiError";
+  }
+}
+
 interface EtagEntry {
   etag: string;
   data: unknown;
@@ -194,7 +201,7 @@ export class GitHubAppClient implements GitHubClient {
       if (cached) return { data: cached.data as T, nextUrl: cached.nextUrl };
     }
     if (!res.ok) {
-      throw new Error(`GitHub ${method} ${urlOrEndpoint} failed (${res.status}): ${await res.text()}`);
+      throw new GitHubApiError(res.status, `GitHub ${method} ${urlOrEndpoint} failed (${res.status}): ${await res.text()}`);
     }
     if (res.status === 204) {
       return { data: undefined as T, nextUrl: null };
