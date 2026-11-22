@@ -45,12 +45,12 @@ describe("archangel doctor (Neon P3)", () => {
       }
       if (url.pathname.includes("/contents/.github/workflows/archangel-gate.yml")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ name: "archangel-gate.yml" }));
+        res.end(JSON.stringify({ name: "archangel-gate.yml", sha: "s1", encoding: "base64", content: Buffer.from("x").toString("base64") }));
         return;
       }
       if (hasRepoPolicy && url.pathname.includes("/contents/.agents/archangel.json")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ name: "archangel.json" }));
+        res.end(JSON.stringify({ name: "archangel.json", sha: "s2", encoding: "base64", content: Buffer.from("{}").toString("base64") }));
         return;
       }
       if (url.pathname.endsWith("/labels")) {

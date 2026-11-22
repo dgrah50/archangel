@@ -18,6 +18,10 @@ describe("hash routes", () => {
     expect(parseRoute("#/")).toEqual({ page: "overview" });
     expect(parseRoute("#/pipeline")).toEqual({ page: "pipeline" });
     expect(parseRoute("#/pipeline/")).toEqual({ page: "pipeline" });
+    expect(parseRoute("#/threads")).toEqual({ page: "threads" });
+    expect(parseRoute("#/needs-you")).toEqual({ page: "needs-you", item: null });
+    expect(parseRoute("#/needs-you/a/b/7")).toEqual({ page: "needs-you", item: { repo: "a/b", issue: 7 } });
+    expect(parseRoute("#/needs-you/a%20b/c/7").page).toBe("not-found");
     expect(parseRoute("#/nope")).toEqual({ page: "not-found", hash: "#/nope" });
   });
   it("every nav entry round-trips to its own page", () => {
@@ -30,7 +34,8 @@ describe("app shell", () => {
   l.setSystemState("daemon_lock", JSON.stringify({ ownerId: "x", pid: 1, heartbeatAt: NOW }), NOW);
   const state: Feed<ReturnType<typeof buildUiState>> = { data: buildUiState(l, NOW), at: NOW, error: null };
   const wfs = { data: null, at: null, error: null };
-  const view = (route: Parameters<typeof parseRoute>[0]) => html(createElement(AppView, { route: parseRoute(route), state, workflows: wfs, now: NOW, onRetry: () => {} }));
+  const none = { data: null, at: null, error: null };
+  const view = (route: Parameters<typeof parseRoute>[0]) => html(createElement(AppView, { route: parseRoute(route), state, workflows: wfs, thread: none, logs: none, now: NOW, onRetry: () => {} }));
 
   it("renders nav, daemon chip and the active page marker", () => {
     const out = view("#/");

@@ -765,13 +765,7 @@ export class Reconciler {
         return retried;
       }
       if (command === "close") {
-        const abandoned = this.applyMachineEvent(
-          thread,
-          { t: "owner_abandon" },
-          { auditTopic: "thread/owner_abandoned", auditPayload: { via: "comment" }, now },
-        );
-        if (!abandoned) return "stop";
-        this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "close", "owner", now);
+        // Close the PR first: a failed close leaves the command unhandled so the next tick retries it.
         if (prNumber) {
           try {
             await this.github.closePr(prNumber);
@@ -780,24 +774,33 @@ export class Reconciler {
               repo: this.ledger.repo,
               issue: thread.issueNumber,
             });
+            return "stop";
           }
         }
+        const abandoned = this.applyMachineEvent(
+          thread,
+          { t: "owner_abandon" },
+          { auditTopic: "thread/owner_abandoned", auditPayload: { via: "comment" }, now },
+        );
+        if (!abandoned) return "stop";
+        this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "close", "owner", now);
         return "stop";
       }
       // Handoff launches an agent in the owner's local Paseo, which the daemon cannot do on its own, and
-      // parking a Thread as owner_driving with nobody driving would stall it. Record the request, point at the CLI.
+      // parking a Thread as owner_driving with nobody driving would stall it. Reply, then record, so a failed
+      // post is retried instead of silently dropped.
+      await this.github.postComment(
+        where,
+        command === "handoff"
+          ? `Handoff needs your local Paseo, so I left this Thread in Needs You. Run \`archangel handoff ${thread.issueNumber}\` on your machine.`
+          : `Unknown command. Valid commands (first line of a comment): \`/archangel retry\` (text below it is your hint), \`/archangel close\`, \`/archangel handoff\`.`,
+      );
       this.ledger.recordOwnerCommand(
         c.id,
         thread.issueNumber,
         command === "handoff" ? "handoff_requested" : "unknown",
         "owner",
         now,
-      );
-      await this.github.postComment(
-        where,
-        command === "handoff"
-          ? `Handoff needs your local Paseo, so I left this Thread in Needs You. Run \`archangel handoff ${thread.issueNumber}\` on your machine.`
-          : `Unknown command. Valid commands (first line of a comment): \`/archangel retry\` (text below it is your hint), \`/archangel close\`, \`/archangel handoff\`.`,
       );
     }
     return null;
@@ -1198,6 +1201,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               gate: this.effectiveGate,
               ownerReply: workingThread.ownerReply,
+              factoryGuidance: workingThread.factoryGuidance,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1209,6 +1213,7 @@ export class Reconciler {
                 structuredFindings,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                factoryGuidance: workingThread.factoryGuidance,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({

@@ -43,6 +43,7 @@ export async function loadWorkflow(
       scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
       scoutsEnabled: cfg.scouts.enabled,
       maxConcurrentThreads: cfg.maxConcurrentThreads,
+      factoryRetry: cfg.factoryRetry,
       isRevoked: (name, hash) => ledger.isScoutAutoPromoteRevoked(name, hash),
     },
     { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, mainSha, fileRaw, scoutPrompts },

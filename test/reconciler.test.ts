@@ -667,6 +667,51 @@ describe("Owner comment commands", () => {
     }
   });
 
+  it("/archangel close whose closePr fails stays unhandled and retries until the PR is closed", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel close", h.later());
+      let fail = true;
+      const real = h.github.closePr.bind(h.github);
+      h.github.closePr = async (n: number) => {
+        if (fail) throw new Error("boom");
+        await real(n);
+      };
+      const r = h.make();
+      await h.tick(r);
+      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
+      expect(h.audits("owner_command/close")).toHaveLength(0);
+      fail = false;
+      await h.tick(r);
+      expect(h.github.closedPrs).toEqual([100]);
+      expect(h.ledger.getThread(7)?.phase).toMatchObject({ kind: "done", outcome: "abandoned" });
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("an owner command whose reply fails to post is not marked handled and is answered on the next tick", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel handoff", h.later());
+      let fail = true;
+      const real = h.github.postComment.bind(h.github);
+      h.github.postComment = async (n: number, b: string) => {
+        if (fail) throw new Error("boom");
+        await real(n, b);
+      };
+      const r = h.make();
+      await h.tick(r).catch(() => undefined);
+      expect(h.audits("owner_command/handoff_requested")).toHaveLength(0);
+      fail = false;
+      await h.tick(r);
+      expect(h.helpReplies()).toHaveLength(1);
+      expect(h.audits("owner_command/handoff_requested")).toHaveLength(1);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   it("ignores non-owner and bot commands with an audit row, and never acts on them", async () => {
     const h = harness();
     try {
