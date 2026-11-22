@@ -291,17 +291,20 @@ export class Reconciler {
     for (const scout of wf.scouts) {
       if (scout.promotion !== "auto" || !this.ledger.isScoutAutoPromoteWasted(scout.name, scout.trustHash)) continue;
       if (this.ledger.scoutWasteNoticeSent(scout.name, scout.trustHash)) continue;
-      this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
       const policy = MAIN_ESCALATION_POLICY.scout_auto_promote_revoked;
-      await this.notifier
-        .notifyNeedsYou({
+      // Mark only after delivery: a failed send is retried on the next tick instead of being lost.
+      try {
+        await this.notifier.notifyNeedsYou({
           issueNumber: null,
           title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: Scout '${scout.name}' lost auto-promotion (3 unmerged in a row)`,
           reason: `The last 3 auto-promoted Threads from Scout '${scout.name}' ended without a merge.`,
           decisionClass: formatDecisionClass(policy.decisionClass),
           recommendation: policy.recommendation,
-        })
-        .catch(() => undefined);
+        });
+        this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
+      } catch (err) {
+        this.logger.warn("scout/waste_notice_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
     }
   }
 
