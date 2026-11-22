@@ -4,7 +4,7 @@ import type { NeedGroup, UiItem, UiState } from "../../src/core/ui-state.js";
 import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { Feed } from "./AppView";
 import { age } from "./common";
-import { Owed, Page, PageHeadline, Ref } from "./page";
+import { Page, PageHeadline, Ref } from "./page";
 import { ThreadDetailPage } from "./ThreadDetailPage";
 import { threadHash, type ItemRef } from "./route";
 
@@ -73,11 +73,9 @@ export function ThreadsPage({ state, item, thread, now, onRetry }: { state: UiSt
   return (
     <Page px="0" pb="0">
       <Flex px={{ base: "6", md: "56px" }} justify="space-between" align="flex-end" gap="4" wrap="wrap">
-        <PageHeadline sub={`${owed > 0 ? "Yours first, then everything that is moving without you. " : "Everything here is moving without you. "}${stuck === 0 ? "Nothing is stuck." : `${stuck} stuck.`}`}>
-          {allEmpty ? "No Threads yet." : owed > 0 ? <>{live} Threads, <Owed>{owed} need you</Owed>.</> : `${live} Threads, sorted by what each one needs.`}
-        </PageHeadline>
+        <PageHeadline title="Threads">{allEmpty ? "none yet" : [`${live} open`, owed > 0 ? `${owed} need you` : null, stuck > 0 ? `${stuck} stuck` : null].filter(Boolean).join(" · ")}</PageHeadline>
         {repos.length > 1 ? (
-          <Flex gap="1" bg="bg.muted" rounded="14px" p="1" mb="6" role="group" aria-label="Filter by repo">
+          <Flex gap="1" bg="bg.muted" rounded="14px" p="1" mb="3.5" role="group" aria-label="Filter by repo">
             {["", ...repos].map((r) => (
               <Button key={r} size="sm" variant="plain" h="30px" px="3" rounded="10px" fontWeight={repo === r ? "500" : "400"} color={repo === r ? "fg" : "fg.muted"} bg={repo === r ? "bg" : "transparent"} aria-pressed={repo === r} onClick={() => setRepo(r)}>
                 {r === "" ? "All repos" : r.split("/").pop()}

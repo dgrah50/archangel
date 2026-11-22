@@ -79,11 +79,9 @@ export const textStyles = {
   "9xl": { value: { fontSize: "9xl", lineHeight: "display", letterSpacing: "display" } },
 
   // Dashboard redesign. Geist 600 with tight tracking for headlines and big numbers, Inter 13px for body, Geist Mono for refs, SHAs, commands and paths.
-  // Sizes are for a tool that is scanned, not a landing page: only the Overview headline (headlineLead) is display-sized.
-  headlineLead: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "38px", lineHeight: "44px", letterSpacing: "-0.035em" } },
-  headline: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "28px", lineHeight: "34px", letterSpacing: "-0.03em" } },
+  headline: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "20px", lineHeight: "26px", letterSpacing: "-0.02em" } },
   headlineSub: { value: { fontFamily: "body", fontWeight: "400", fontSize: "15px", lineHeight: "22px", letterSpacing: "body" } },
-  title: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "22px", lineHeight: "28px", letterSpacing: "-0.025em" } },
+  title: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "18px", lineHeight: "24px", letterSpacing: "-0.02em" } },
   bigNumber: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "28px", lineHeight: "32px", letterSpacing: "-0.03em" } },
   figure: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "17px", lineHeight: "18px", letterSpacing: "display" } },
   rowTitle: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "15.5px", lineHeight: "21px", letterSpacing: "-0.02em" } },

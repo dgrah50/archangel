@@ -2,7 +2,7 @@ import { Box, Flex, Text } from "@chakra-ui/react";
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 import { age, recommendationShort } from "./common";
-import { CopyCommand, LinkButton, Metric, Meter, Owed, Page, PageHeadline, Ref, Row, RowList, Section, Sparkline } from "./page";
+import { CopyCommand, LinkButton, Metric, Meter, Page, PageHeadline, Ref, Row, RowList, Section, Sparkline } from "./page";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
@@ -24,16 +24,8 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
   const waiting = decisions + pitches;
   return (
     <Page>
-      <PageHeadline lead sub={`${waiting > 0 && stuck === 0 ? "Everything else is moving. " : ""}${landed} landed today, ${stuck === 0 ? "nothing is stuck" : `${stuck} stuck`}.`}>
-        {waiting === 0 ? (
-          "Nothing is waiting on you."
-        ) : (
-          <>
-            {decisions > 0 ? <Owed>{plural(decisions, "decision")}</Owed> : null}
-            {decisions > 0 && pitches > 0 ? " and " : null}
-            {pitches > 0 ? <Owed>{plural(pitches, "pitch", "pitches")}</Owed> : null} {waiting === 1 ? "is" : "are"} waiting on you.
-          </>
-        )}
+      <PageHeadline title="Overview">
+        {[decisions > 0 ? plural(decisions, "decision") : null, pitches > 0 ? plural(pitches, "pitch", "pitches") : null, waiting === 0 ? "nothing waiting on you" : null, `${landed} landed today`, stuck > 0 ? `${stuck} stuck` : null].filter(Boolean).join(" · ")}
       </PageHeadline>
       <Flex direction={{ base: "column", lg: "row" }} gap="56px" flexShrink={0} _empty={{ display: "none" }}>
         {waiting > 0 ? (
