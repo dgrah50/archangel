@@ -26,6 +26,8 @@ export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
   offline?: boolean;
   apiBaseUrl?: string;
+  /** Per-provider version + login-status checks (never invokes a model). */
+  smoke?: boolean;
 }
 
 export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
@@ -129,6 +131,11 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         status: "pass",
         detail: `${verified.join(", ")} (chain: impl=${first.implementerChain.map((e) => e.provider).join("->")}, rev=${first.reviewerChain.map((e) => e.provider).join("->")})`,
       });
+    }
+    if (opts.smoke) {
+      for (const p of neededProviders) {
+        checks.push(await smokeProvider(p));
+      }
     }
   } else {
     const missingKeys = [
@@ -361,6 +368,38 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   }
 
   return { ok: checks.every((c) => c.status !== "fail"), checks };
+}
+
+// Version + login-status commands only; none of these spend model quota.
+// agy has no login-status command, so for it only installation is verified.
+async function smokeProvider(provider: string): Promise<DoctorCheck> {
+  const id = `smoke_provider:${provider}`;
+  const name = `Smoke Check (${provider})`;
+  const login = provider === "codex" ? `${provider} login` : `${provider} auth login`;
+  try {
+    const { stdout: v } = await execFileAsync(provider, ["--version"]);
+    const version = v.trim().split("\n")[0];
+    if (provider === "agy") {
+      return { id, name, status: "pass", detail: `${version} (installed; auth not verifiable without a model call)` };
+    }
+    const args = provider === "codex" ? ["login", "status"] : ["auth", "status"];
+    const { stdout, stderr } = await execFileAsync(provider, args);
+    const out = `${stdout}\n${stderr}`.trim();
+    const ok = provider === "claude" ? /"loggedIn"\s*:\s*true/.test(out) : /logged in/i.test(out) && !/not\s+logged\s+in/i.test(out);
+    if (!ok) {
+      return { id, name, status: "fail", detail: `${provider} not logged in (${out || "no status output"})`, remediation: `Run \`${login}\`, then retry \`archangel doctor --smoke\`.` };
+    }
+    return { id, name, status: "pass", detail: `${version}; logged in` };
+  } catch (err) {
+    const missing = err instanceof Error && "code" in err && err.code === "ENOENT";
+    return {
+      id,
+      name,
+      status: "fail",
+      detail: missing ? `${provider} not found in PATH` : `${provider} check failed: ${err instanceof Error ? err.message : String(err)}`,
+      remediation: `Install the ${provider} CLI and run \`${login}\`, then retry \`archangel doctor --smoke\`.`,
+    };
+  }
 }
 
 function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
