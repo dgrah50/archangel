@@ -27,6 +27,8 @@ export interface CorrectionCounts {
   reverts: number;
   /** Reviewer findings from vetoes, keyed `<severity>:<top-level directory>`. */
   findings: Record<string, number>;
+  /** Factory retries that did not end well, keyed `<escalation code>:<outcome>` (re_escalated, owner_overrode, bad). */
+  factoryRetries: Record<string, number>;
 }
 
 export const EMPTY_CORRECTIONS: CorrectionCounts = {
@@ -36,6 +38,7 @@ export const EMPTY_CORRECTIONS: CorrectionCounts = {
   ownerRetriesByCode: {},
   reverts: 0,
   findings: {},
+  factoryRetries: {},
 };
 
 /** First path segment as a slug (`src/core/x.ts` -> `src`, `README.md` -> `.`), or `other` for anything that is not a plain repo path. */
@@ -71,6 +74,12 @@ export function correctionCategories(c: CorrectionCounts): CorrectionCategory[] 
   }
   for (const [key, n] of Object.entries(c.findings)) {
     if (/^(blocker|major|minor):[a-z0-9._-]{1,30}$/.test(key)) out.push({ category: `finding:${key}`, count: n });
+  }
+  for (const [key, n] of Object.entries(c.factoryRetries)) {
+    const [code, outcome, ...rest] = key.split(":");
+    if (rest.length === 0 && ESCALATION_CODES.includes(code ?? "") && ["re_escalated", "owner_overrode", "bad"].includes(outcome ?? "")) {
+      out.push({ category: `factory_retry:${code}:${outcome}`, count: n });
+    }
   }
   return out;
 }

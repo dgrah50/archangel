@@ -176,6 +176,8 @@ export type MachineEvent =
   | { t: "pr_observed"; status: "merged" | "closed"; mergeId?: number }
   | { t: "escalate"; code: EscalationCode; reason: string }
   | { t: "owner_retry" }
+  /** The factory spends its one retry: resumes like an owner retry, but posts nothing, removes no label and grants no budget. */
+  | { t: "factory_retry" }
   | { t: "owner_abandon" }
   | { t: "handoff_started"; paseoAgentId: string | null; paseoWorkspaceId: string | null; now: number }
   | { t: "owner_resume"; pr: PrRef | null; now: number }
@@ -603,6 +605,16 @@ export function stepPhase(
           ok: true,
           next: nextPhase,
           effects: [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
+        };
+      }
+      if (ev.t === "factory_retry") {
+        return {
+          ok: true,
+          next:
+            phase.resumeTo.kind === "awaiting_gate"
+              ? { kind: "awaiting_gate", prNumber: phase.resumeTo.prNumber, headSha: phase.resumeTo.headSha, baseSha: phase.resumeTo.baseSha, since: Date.now(), nudgedAt: null }
+              : { kind: "queued" },
+          effects: [],
         };
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in needs_you` };
