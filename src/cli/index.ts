@@ -596,7 +596,7 @@ program
 
 program
   .command("ui")
-  .description("Serve a read-only local dashboard (one page + /api/state) from the Ledger")
+  .description("Serve a local dashboard from the Ledger; its only write is a guarded POST that opens an unmerged workflow PR with your gh (disabled with --allow-remote)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--data-dir <dir>", "Archangel data directory")
   .option("--port <n>", "Port", "4477")
@@ -610,8 +610,8 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote });
-    console.log(`Archangel UI (read-only): http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner });
+    console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
 program

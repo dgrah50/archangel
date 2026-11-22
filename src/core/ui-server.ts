@@ -1,8 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import type { Ledger } from "../ledger/store.js";
-import { ARCHANGEL_ROOT } from "./onboard.js";
+import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
+import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -26,21 +29,90 @@ export function assertBindable(host: string, allowRemote: boolean): void {
   }
 }
 
-/** Serves the static bundle plus GET /api/state (JSON) from a read-only Ledger. No writes, no GitHub calls. */
+export const TOKEN_HEADER = "x-archangel-token";
+const PROPOSE_PATH = /^\/api\/workflows\/([^/]+)\/propose$/;
+const MAX_BODY_BYTES = 1_000_000;
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new ProposeRefusal(413, "body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * Serves the static bundle plus GET /api/state and /api/workflows (JSON) from a read-only Ledger.
+ * The single non-GET route is `POST /api/workflows/:repo/propose` (only with a `proposeRunner`, never with
+ * `allowRemote`): it needs the per-process token embedded in the served page, a loopback Origin and
+ * `application/json`, and it can only open an unmerged PR (or preview one). It never writes archangel.yaml.
+ */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
   if (!fs.existsSync(path.join(uiDir, "index.html"))) {
     throw new Error(`UI bundle not found at ${uiDir}. Run \`npm run build\` (or \`npm run build:ui\`) first.`);
   }
-  const server = http.createServer((req, res) => {
+  const token = crypto.randomBytes(24).toString("hex");
+  const proposeEnabled = Boolean(opts.proposeRunner) && !opts.allowRemote;
+  /** Loopback origins (and the bound host) on the port actually bound, which differs from opts.port when it is 0. */
+  const originAllowed = (origin: string | undefined): boolean => {
+    const port = (server.address() as AddressInfo | null)?.port ?? opts.port;
+    return [...LOOPBACK, opts.host].some((h) => origin === `http://${h.includes(":") && !h.startsWith("[") ? `[${h}]` : h}:${port}`);
+  };
+  const server = http.createServer(async (req, res) => {
     // Loopback-only mode also checks Host to block DNS-rebinding reads from a web page.
     const hostName = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
     if (!opts.allowRemote && !LOOPBACK.has(hostName)) {
       res.writeHead(403).end("forbidden");
+      return;
+    }
+    const proposeMatch = PROPOSE_PATH.exec((req.url ?? "").split("?")[0]!);
+    if (req.method === "POST" && proposeMatch) {
+      if (!proposeEnabled) return sendJson(res, 403, { error: "proposing is disabled (remote mode, or no gh runner)" });
+      const given = req.headers[TOKEN_HEADER];
+      const ok =
+        typeof given === "string" &&
+        given.length === token.length &&
+        crypto.timingSafeEqual(Buffer.from(given), Buffer.from(token));
+      if (!ok) return sendJson(res, 401, { error: "missing or invalid token" });
+      if (!originAllowed(req.headers.origin)) return sendJson(res, 403, { error: "Origin not allowed" });
+      if ((req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() !== "application/json") {
+        return sendJson(res, 415, { error: "Content-Type must be application/json" });
+      }
+      try {
+        const repo = decodeURIComponent(proposeMatch[1]!);
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new ProposeRefusal(400, "repo must be owner/name");
+        let body: unknown;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch (err) {
+          if (err instanceof ProposeRefusal) throw err;
+          throw new ProposeRefusal(400, "body is not valid JSON");
+        }
+        sendJson(res, 200, await handlePropose(ledger, opts.proposeRunner!, repo, body));
+      } catch (err) {
+        if (err instanceof ProposeRefusal) sendJson(res, err.status, { error: err.message });
+        else sendJson(res, 500, { error: err instanceof Error ? err.message : "error" });
+      }
       return;
     }
     if (req.method !== "GET") {
@@ -65,6 +137,12 @@ export async function startUiServer(
         return;
       }
       res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" });
+      if (path.basename(file) === "index.html") {
+        // The token only ever reaches this page: a cross-origin page cannot read the response.
+        const meta = proposeEnabled ? `<meta name="archangel-token" content="${token}" />` : "";
+        res.end(fs.readFileSync(file, "utf8").replace("</head>", `${meta}</head>`));
+        return;
+      }
       res.end(fs.readFileSync(file));
     } catch (err) {
       res.writeHead(500).end(err instanceof Error ? err.message : "error");

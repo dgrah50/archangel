@@ -1,5 +1,6 @@
 import type { Ledger, StageMetrics } from "../ledger/store.js";
-import type { EffectiveWorkflow, OkWorkflow } from "./workflow.js";
+import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
+import { draftFromEffective } from "./ui-propose.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
 import type { ThreadRecord } from "../ledger/schema.js";
 import type { Phase } from "./thread-machine.js";
@@ -161,6 +162,8 @@ export interface PipelineRepo {
   error?: string;
   mainSha?: string;
   fileSha256?: string;
+  /** Editable version 1 draft of the current file (only when status is ok); Scout prompts are not included. */
+  draft?: Workflow;
   stages: PipelineStage[];
 }
 export interface WorkflowsState {
@@ -301,7 +304,15 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
   if (wf.status === "invalid") {
     return { repo, status: "invalid", error: wf.error, mainSha: wf.mainSha, fileSha256: wf.fileSha256, stages: kernelStages(null) };
   }
-  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, stages: kernelStages(wf) };
+  return { repo, status: "ok", mainSha: wf.mainSha, fileSha256: wf.fileSha256, draft: safeDraft(wf), stages: kernelStages(wf) };
+}
+
+function safeDraft(wf: OkWorkflow): Workflow | undefined {
+  try {
+    return draftFromEffective(wf);
+  } catch {
+    return undefined; // a corrupt cache row must not take the whole page down
+  }
 }
 
 /** `/api/workflows`: every repo the Ledger knows, with its cached workflow (no GitHub calls). */
