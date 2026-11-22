@@ -708,6 +708,7 @@ export class Reconciler {
         maxTurns: this.cfg.implementMaxTurns,
         timeoutMs: this.cfg.implementTimeoutMs,
         maxBudgetUsd: reservedUsd,
+        preferVendors: kind === "implement" ? undefined : workingThread.implementerVendors,
       });
 
       actualCostUsd = result.costUsd;

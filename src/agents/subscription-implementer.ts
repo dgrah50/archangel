@@ -306,11 +306,19 @@ export class SubscriptionImplementer implements Implementer {
     const providersUsed: ReviewerVendor[] = [];
     const errors: string[] = [];
 
+    // Prefer vendors that already implemented this thread, while retaining configured order within each group.
+    const preferred = input.preferVendors?.length
+      ? this.chain.filter((e) => input.preferVendors!.includes(providerToVendor(e.provider)))
+      : [];
+    const remaining = input.preferVendors?.length
+      ? this.chain.filter((e) => !input.preferVendors!.includes(providerToVendor(e.provider)))
+      : this.chain;
+    const preferredChain = [...preferred, ...remaining];
     // Reorder chain so providers currently in rate-limit cooldown are tried last (Continuity cooldown memory).
     const now = Date.now();
-    const healthy = this.chain.filter((e) => !this.cooldowns?.isCoolingDown(e.provider, now));
-    const cooling = this.chain.filter((e) => this.cooldowns?.isCoolingDown(e.provider, now));
-    const orderedChain = healthy.length > 0 ? [...healthy, ...cooling] : this.chain;
+    const healthy = preferredChain.filter((e) => !this.cooldowns?.isCoolingDown(e.provider, now));
+    const cooling = preferredChain.filter((e) => this.cooldowns?.isCoolingDown(e.provider, now));
+    const orderedChain = healthy.length > 0 ? [...healthy, ...cooling] : preferredChain;
 
     try {
       for (let i = 0; i < orderedChain.length; i++) {
