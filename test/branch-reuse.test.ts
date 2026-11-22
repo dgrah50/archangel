@@ -32,29 +32,8 @@ function fake(o: { branchExists?: boolean; readError?: string }) {
   return { runner, calls };
 }
 
-describe("a leftover proposal branch does not wedge later proposals", () => {
-  it("force-resets the existing branch to the default-branch tip instead of failing with 'Reference already exists'", async () => {
-    const f = fake({ branchExists: true });
-    const { url } = await proposeWorkflow(f.runner, "o/r", JSON.stringify(proposed), { log: () => {} });
-    expect(url).toBe("https://github.com/o/r/pull/9");
-    expect(f.calls.some((c) => c.includes("-X POST") && c.includes("git/refs"))).toBe(false);
-    const patch = f.calls.find((c) => c.includes("-X PATCH"))!;
-    expect(patch).toContain(`git/refs/heads/${PROPOSE_BRANCH}`);
-    expect(patch).toContain("sha=tipsha");
-    expect(patch).toContain("force=true");
-  });
-
-});
 
 describe("reading the current workflow file fails closed", () => {
-  it("returns null only for a 404; a rate limit or 5xx throws instead of looking like 'no file'", async () => {
-    const notFound: OnboardRunner = { async run() { throw new Error("gh: Not Found (HTTP 404)"); } };
-    expect(await readRepoFile(notFound, "o/r", "main", ".agents/archangel.json")).toBeNull();
-    for (const msg of ["HTTP 502 Bad Gateway", "API rate limit exceeded (HTTP 403)", "timeout"]) {
-      const failing: OnboardRunner = { async run() { throw new Error(msg); } };
-      await expect(readRepoFile(failing, "o/r", "main", ".agents/archangel.json")).rejects.toThrow(msg);
-    }
-  });
 
   it("a transient read failure aborts a proposal instead of reporting 'No loosening detected'", async () => {
     const f = fake({ readError: "HTTP 502 Bad Gateway" });

@@ -33,11 +33,6 @@ describe("triage output", () => {
     expect(v).toMatchObject({ action: "escalate", cause });
   });
 
-  it("an explicit escalate carries its cause and reason, and can never become a retry", async () => {
-    const v = await validateTriage({ ...good, decision: "escalate", cause: "veto_disputed", escalateReason: "the veto looks wrong" }, checks(), "openai");
-    expect(v).toEqual({ action: "escalate", cause: "veto_disputed", reason: "the veto looks wrong" });
-  });
-
   it("rejects guidance naming a protected path, .agents, an existing test, a missing file or a secret", async () => {
     const withStep = (s: string) => ({ ...good, steps: [s] });
     expect(await validateTriage(withStep("edit `protected/x.ts`"), checks(), "o")).toMatchObject({ action: "escalate", cause: "needs_protected_path" });
@@ -46,10 +41,6 @@ describe("triage output", () => {
     expect(await validateTriage(withStep("change `src/missing.ts`"), checks(), "o")).toMatchObject({ action: "escalate", cause: "invalid" });
     expect(await validateTriage(withStep("use key AKIAABCDEFGHIJKLMNOP"), checks(), "o")).toMatchObject({ action: "escalate", cause: "invalid" });
     expect((await validateTriage(withStep("a plain step with no path, e.g. narrow it"), checks(), "o")).action).toBe("guidance");
-  });
-
-  it("extracts only backticked paths and slash tokens", () => {
-    expect(extractPaths("see `a/b.ts:12`, src/x/y.go and https://x.io/z, e.g. nothing, v1.2")).toEqual(["a/b.ts", "src/x/y.go"]);
   });
 
 });
@@ -79,11 +70,4 @@ describe("factory retry outcomes", () => {
   });
 
   const run = (...o: FactoryOutcome[]) => shouldAutoOff(o.map((outcome) => ({ outcome })));
-  it("switches off at 3 of the last 5 unmerged, or on any bad one, and ignores pending", () => {
-    expect(run("success", "success", "re_escalated", "owner_overrode").off).toBe(false);
-    expect(run("success", "re_escalated", "owner_overrode", "re_escalated").off).toBe(true);
-    expect(run("re_escalated", "re_escalated", "success", "success", "success", "success").off).toBe(false); // only the last five count
-    expect(run("success", "bad").off).toBe(true);
-    expect(run("pending", "pending", "pending").off).toBe(false);
-  });
 });

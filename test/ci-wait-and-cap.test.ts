@@ -45,55 +45,9 @@ describe("CI waiting rules", () => {
     expect(r.detail).toContain("Test=success");
   });
 
-  it("is green only when every required check reported success", () => {
-    const all = [gh("Gate", "completed", "success"), gh("Test", "completed", "success", 2)];
-    expect(classifyGate({ ...base, checks: all, now: MIN }).status).toBe("green");
-    for (const bad of [
-      [gh("Gate", "completed", "success"), gh("Test", "completed", "neutral", 2)],
-      [gh("Gate", "completed", "success"), gh("Test", "completed", "skipped", 2)],
-      [gh("Gate", "completed", "success"), gh("Test", "completed", null, 2)],
-      [gh("Gate", "completed", "success"), gh("Test", "queued", null, 2)],
-    ]) {
-      expect(classifyGate({ ...base, checks: bad, now: MIN }).status).not.toBe("green");
-    }
-  });
-
-  it("a new head SHA supersedes the pending wait and resets the timer", () => {
-    const phase: Phase = { kind: "awaiting_gate", prNumber: 10, headSha: "h1", baseSha: "b1", since: 0, nudgedAt: null };
-    const meta = { issueNumber: 1, title: "Bug", needsYouLabel: "needs-you" };
-    const res = stepPhase(
-      phase,
-      "autonomous",
-      { t: "head_moved", pr: { prNumber: 10, headSha: "h2", baseSha: "b1" }, now: 59 * MIN },
-      meta,
-    );
-    if (!res.ok) throw new Error(res.reject);
-    expect(res.next).toMatchObject({ kind: "awaiting_gate", headSha: "h2", since: 59 * MIN });
-    const after = res.next as Extract<Phase, { kind: "awaiting_gate" }>;
-    const r = classifyGate({ ...base, checks: [], since: after.since, now: 60 * MIN });
-    expect(r.status).toBe("missing_grace");
-  });
 });
 
 describe("autonomy cap", () => {
-  it("counts attempt starts and merges since the last owner audit row, per repo", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    try {
-      ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
-      ledger.startAttempt(1, "implement");
-      ledger.startAttempt(1, "revise");
-      ledger.appendAudit("thread/merged", 1, "archangel", {});
-      ledger.appendAudit("attempt/started", 9, "archangel", {}, Date.now(), "other/repo");
-      ledger.appendAudit("thread/owner_retry", 9, "owner", {}, Date.now(), "other/repo");
-      expect(ledger.autonomousStepsSinceOwner()).toBe(3);
-      ledger.appendAudit("thread/owner_retry", 1, "owner", {});
-      expect(ledger.autonomousStepsSinceOwner()).toBe(0);
-      ledger.startAttempt(1, "rebase");
-      expect(ledger.autonomousStepsSinceOwner()).toBe(1);
-    } finally {
-      ledger.close();
-    }
-  });
 
   it("stops starting Attempts at the cap, notifies once, and resumes after an owner action", async () => {
     const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

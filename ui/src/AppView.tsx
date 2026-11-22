@@ -13,6 +13,7 @@ import { HealthPage } from "./HealthPage";
 import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
+import { Page, PageHeadline } from "./page";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
 import { Shell } from "./Shell";
@@ -34,9 +35,10 @@ export const DAEMON_OFFLINE_MS = 3 * 60_000;
 
 const ago = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`);
 
+/** A state banner: a hairline rule and plain text, no box. Amber (red tone) when the factory has stopped or may be stopped; ink when only the data is in doubt. */
 function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
   return (
-    <Box role="alert" borderWidth="1px" borderColor={`${tone}.solid`} rounded="md" px="4" py="2" mb="3" maxW="64rem" mx="auto">
+    <Box role="alert" borderTopWidth="1px" borderTopColor={tone === "red" ? "owner" : "fg"} py="2.5" mb="3" color={tone === "red" ? "owner" : "fg"}>
       {children}
     </Box>
   );
@@ -122,15 +124,17 @@ export function AppView({
     );
   }
   return (
-    <Shell route={route} state={state.data} host={host}>
-      <Box pt="4" px="6">
-        {bannersFor(state, now).map((b) => (
-          <Notice key={b.text} tone={b.tone}>
-            <Text textStyle="sm">{b.text}</Text>
-          </Notice>
-        ))}
-      </Box>
-      {route.page === "overview" ? <Dashboard state={state.data} /> : null}
+    <Shell route={route} state={state.data}>
+      {bannersFor(state, now).length > 0 ? (
+        <Box pt="4" px={{ base: "6", md: "56px" }}>
+          {bannersFor(state, now).map((b) => (
+            <Notice key={b.text} tone={b.tone}>
+              <Text textStyle="sm">{b.text}</Text>
+            </Notice>
+          ))}
+        </Box>
+      ) : null}
+      {route.page === "overview" ? <Dashboard state={state.data} host={host.data} /> : null}
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
@@ -143,6 +147,11 @@ export function AppView({
       ) : null}
       {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
+      {route.page === "pitches" ? (
+        <Page>
+          <PageHeadline>{state.data.pitches.count === 0 ? "No pitches are waiting on you." : `${state.data.pitches.count} pitches are waiting on you.`}</PageHeadline>
+        </Page>
+      ) : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
           <Text fontWeight="medium">No such page.</Text>

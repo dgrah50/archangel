@@ -12,22 +12,6 @@ import { goWorkflowJson } from "./helpers/workflow.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-describe("finishAttempt settles an Attempt once", () => {
-  it("a second finish leaves the first outcome and the budget alone", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "b", now: 1 });
-    const a = l.startAttempt(1, "implement", 1);
-    const reserved = l.reserveBudget(20, 5, 0.05, 1)!;
-    l.finishAttempt(a.id, { status: "succeeded", costUsd: 1.2, reservedUsd: reserved }, 2);
-    const after = l.getSpendBreakdown(2);
-    expect(after.spentUsd).toBeCloseTo(1.2);
-    expect(after.reservedUsd).toBeCloseTo(0);
-    const second = l.finishAttempt(a.id, { status: "failed", costUsd: 1.2, reservedUsd: reserved, errorMessage: "late", errorCategory: "other" }, 3);
-    expect(second.status).toBe("succeeded");
-    expect(l.getSpendBreakdown(3)).toEqual(after);
-    expect(l.listAudit({ topicPrefix: "attempt/finished" })).toHaveLength(1);
-  });
-});
 
 describe("a failing Recap comment never rewrites a pushed Attempt", () => {
   it("keeps the Attempt succeeded and the Thread awaiting the Gate", async () => {

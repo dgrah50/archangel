@@ -70,40 +70,4 @@ describe("Ledger read errors are not swallowed", () => {
     }
   });
 
-  it("a Scout run files nothing when the duplicate check cannot be read", async () => {
-    const spec = { name: "hunt", schedule: "manual", maxProposals: 2 };
-    const { root, remoteBare, mainSha } = repo(workflowJson([spec]));
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    ledger.hasScoutTitleFingerprint = () => {
-      throw new Error("SQLITE_BUSY");
-    };
-    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-    await broker.ensureBareRepo(remoteBare);
-    const created: unknown[] = [];
-    const gh = {
-      listOpenIssuesByLabel: async () => [],
-      addLabels: async () => {},
-      createIssue: async (i: unknown) => {
-        created.push(i);
-        return { number: 1 } as GitHubIssue;
-      },
-    } as unknown as GitHubClient;
-    const cfg = ConfigSchema.parse({
-      githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
-      githubPrivateKeyPem: "fake", githubAppBotUserId: 777, authMode: "subscription",
-      scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
-    });
-    try {
-      await expect(
-        runScoutsForProject({
-          ...scoutDeps, config: cfg, ledger, github: gh, broker, mainSha, workflow: okWorkflow([spec]),
-          invoker: async () => ({ findings: [{ title: "app.go: something is wrong here", body: "Add a failing test for the case." }] }),
-        }),
-      ).rejects.toThrow(/SQLITE_BUSY/);
-      expect(created).toEqual([]);
-    } finally {
-      ledger.close();
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
 });

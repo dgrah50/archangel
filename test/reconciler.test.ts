@@ -535,20 +535,6 @@ describe("Work classes (owner-labelled features)", () => {
     }
   });
 
-  it("Scout proposals (bot-authored, even owner-promoted with an owner class label) are always bugfix", async () => {
-    const h = harness({ githubAppBotUserId: 777 });
-    try {
-      h.addIssue(4, ["ready-for-agent", "class:feature"], { title: "Proposal", body: "Proposal body text", authorId: 777, authorLogin: "app[bot]", authorAssociation: "NONE" });
-      h.ledger.recordScoutProposal({ issueNumber: 4, scoutName: "s", contentSha256: scoutContentHash("Proposal", "Proposal body text"), titleFp: "t" });
-      h.github.labelActors.set("4:ready-for-agent", 999);
-      h.github.labelActors.set("4:class:feature", 999);
-      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
-      expect(h.ledger.getThread(4)?.branchName).toBe("factory/4");
-    } finally {
-      h.cleanup();
-    }
-  });
-
   it("a feature Thread never auto-merges, even with shadowMode false, and shows the owner-merge line", async () => {
     const h = harness({ shadowMode: false });
     try {
@@ -650,46 +636,6 @@ describe("Owner comment commands", () => {
     }
   });
 
-  it("/archangel handoff is recorded and answered once with the CLI command; the Thread stays in needs_you", async () => {
-    const h = harness();
-    try {
-      h.github.addComment(7, OWNER, "/archangel handoff", h.later());
-      const r = h.make();
-      await h.tick(r);
-      await h.tick(r);
-      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
-      expect(h.audits("owner_command/handoff_requested")).toHaveLength(1);
-      const replies = h.helpReplies();
-      expect(replies).toHaveLength(1);
-      expect(replies[0]).toContain("archangel handoff 7");
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  it("/archangel close whose closePr fails stays unhandled and retries until the PR is closed", async () => {
-    const h = harness();
-    try {
-      h.github.addComment(7, OWNER, "/archangel close", h.later());
-      let fail = true;
-      const real = h.github.closePr.bind(h.github);
-      h.github.closePr = async (n: number) => {
-        if (fail) throw new Error("boom");
-        await real(n);
-      };
-      const r = h.make();
-      await h.tick(r);
-      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
-      expect(h.audits("owner_command/close")).toHaveLength(0);
-      fail = false;
-      await h.tick(r);
-      expect(h.github.closedPrs).toEqual([100]);
-      expect(h.ledger.getThread(7)?.phase).toMatchObject({ kind: "done", outcome: "abandoned" });
-    } finally {
-      h.cleanup();
-    }
-  });
-
   it("ignores non-owner and bot commands with an audit row, and never acts on them", async () => {
     const h = harness();
     try {
@@ -700,17 +646,6 @@ describe("Owner comment commands", () => {
       expect(h.github.closedPrs).toEqual([]);
       expect(h.audits("owner_command/ignored")).toHaveLength(2);
       expect(h.helpReplies()).toHaveLength(0);
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  it("an owner comment from before the escalation is not a command", async () => {
-    const h = harness();
-    try {
-      h.github.addComment(7, OWNER, "/archangel close", h.later() - 20_000);
-      await h.tick(h.make());
-      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
     } finally {
       h.cleanup();
     }

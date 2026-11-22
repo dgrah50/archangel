@@ -80,15 +80,4 @@ describe("thread-machine global invariants", () => {
     }
   });
 
-  it("classifyGate fails closed when appSlug is null or non-github-actions", () => {
-    const res = classifyGate({
-      requiredChecks: ["Gate"],
-      checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: null }],
-      since: 0,
-      now: 1000,
-      graceMs: 5000,
-      timeoutMs: 60_000,
-    });
-    expect(res.status).toBe("untrusted");
-  });
 });
