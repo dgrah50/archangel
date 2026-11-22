@@ -1,36 +1,51 @@
-import { Badge, Box, Button, Code, Flex, Heading, Link, Stack, Text } from "@chakra-ui/react";
+import { Box, Button, Flex, Text, chakra } from "@chakra-ui/react";
 import { useState } from "react";
-import type { LogsPayload, ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
+import type { ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
 import type { Feed } from "./AppView";
-import { GhLink, STATUS_PALETTE, age } from "./common";
+import { age } from "./common";
+import { Dot, LinkButton, Ref } from "./page";
 import type { ItemRef } from "./route";
 
-const TONE: Record<TimelineEvent["tone"], string> = { ok: "green", failed: "red", info: "gray" };
-const LEVEL: Record<string, string> = { error: "red", warn: "orange", info: "gray" };
+// One Thread in the right pane: phase rail, timeline from the Ledger audit (newest first), Gate proof as a checklist.
+// Every string here comes from the Ledger and is untrusted: it is only rendered as React text children.
 
-function Row({ e, now }: { e: TimelineEvent; now: number }) {
+const RAIL: ReadonlyArray<{ kind: string; label: string }> = [
+  { kind: "queued", label: "Queued" },
+  { kind: "working", label: "Working" },
+  { kind: "awaiting_gate", label: "Waiting on Gate" },
+  { kind: "reviewing", label: "Review" },
+  { kind: "landing", label: "Landing" },
+];
+
+const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+function Check() {
   return (
-    <Box as="li" borderLeftWidth="3px" borderLeftColor={e.tone === "failed" ? "red.solid" : e.tone === "ok" ? "green.solid" : "border"} pl="3" py="1" role={e.tone === "failed" ? "alert" : undefined}>
-      <Box as="details">
-        <Box as="summary" cursor="pointer">
-          <Badge colorPalette={TONE[e.tone]} mr="2">
-            {e.kind}
-          </Badge>
-          {e.title}{" "}
-          <Text as="span" color="fg.muted" textStyle="xs" title={new Date(e.ts).toISOString()}>
-            {age(now - e.ts)} ago
-          </Text>
-        </Box>
-        <Stack gap="0" mt="1" textStyle="sm">
-          {e.details.map((d, i) => (
-            <Text key={`${d.label}-${i}`} color="fg.muted">
-              {d.label}: <Code>{d.value}</Code>
-              {d.label === "transcript" ? <CopyPath path={d.value} /> : null}
-            </Text>
-          ))}
-        </Stack>
-      </Box>
-    </Box>
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m2.5 6.5 2.3 2.3 4.7-5.3" />
+    </svg>
+  );
+}
+
+function PhaseRail({ phase }: { phase: string }) {
+  const at = RAIL.findIndex((r) => r.kind === phase);
+  return (
+    <Flex align="center" gap="3" wrap="wrap" bg="bg.subtle" rounded="14px" px="4" py="2.5" aria-label="Phase">
+      {RAIL.map((r, i) => (
+        <Flex key={r.kind} align="center" gap="3" flex={i < RAIL.length - 1 ? "1" : undefined} minW="0">
+          <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} borderWidth="1px" borderColor={i === at ? "border" : "transparent"} bg={i === at ? "bg" : undefined} rounded="full" px="2.5" py="1" whiteSpace="nowrap">
+            {i < at ? <Check /> : i === at ? <Dot /> : null}
+            {r.label}
+          </Flex>
+          {i < RAIL.length - 1 ? <Box flex="1" minW="3" borderTopWidth="1px" borderTopStyle={i < at ? "solid" : "dashed"} borderTopColor="border.emphasized" /> : null}
+        </Flex>
+      ))}
+      {at === -1 ? (
+        <Text textStyle="meta" color="fg.muted">
+          Now: {phase.replace(/_/g, " ")}
+        </Text>
+      ) : null}
+    </Flex>
   );
 }
 
@@ -43,72 +58,148 @@ function CopyPath({ path }: { path: string }) {
   );
 }
 
-export function ThreadDetailPage({ item, thread, logs, now, onRetry }: { item: ItemRef; thread: Feed<ThreadDetail>; logs: Feed<LogsPayload>; now: number; onRetry: () => void }) {
-  const back = (
-    <Link href="#/threads" textStyle="sm">
-      Threads
-    </Link>
+const Details = chakra("details");
+
+function TimelineRow({ e, now, open }: { e: TimelineEvent; now: number; open: boolean }) {
+  return (
+    <Flex as="li" gap="4" py="3" role={e.tone === "failed" ? "alert" : undefined}>
+      <Text textStyle="ref" color="fg.subtle" w="44px" flexShrink={0} pt="2px" title={new Date(e.ts).toISOString()}>
+        {clock(e.ts)}
+      </Text>
+      <Box pt="5px">{e.tone === "failed" ? <Dot tone="owner" /> : e.kind === "attempt" ? <Dot /> : <Dot tone="hollow" />}</Box>
+      <Details open={open} flex="1" minW="0">
+        <Text as="summary" textStyle="label" color="fg" cursor="pointer">
+          {e.title}{" "}
+          <Text as="span" textStyle="meta" color="fg.subtle" fontWeight="400">
+            {age(now - e.ts)} ago
+          </Text>
+        </Text>
+        <Flex mt="2" gap="x" wrap="wrap" columnGap="6" rowGap="2" borderWidth={e.kind === "attempt" ? "1px" : undefined} borderColor="border" rounded="12px" p={e.kind === "attempt" ? "3" : undefined}>
+          {e.details.map((d, i) => (
+            <Box key={`${d.label}-${i}`} minW="0" maxW="100%">
+              <Text textStyle="meta" color="fg.subtle">
+                {d.label}
+              </Text>
+              <Text textStyle="meta" color="fg" fontFamily={d.label === "provider" ? undefined : "mono"} wordBreak="break-word">
+                {d.value}
+                {d.label === "transcript" ? <CopyPath path={d.value} /> : null}
+              </Text>
+            </Box>
+          ))}
+        </Flex>
+      </Details>
+    </Flex>
   );
+}
+
+export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef; thread: Feed<ThreadDetail>; now: number; onRetry: () => void }) {
   if (thread.data === null) {
     return (
-      <Box maxW="64rem" mx="auto" p="6">
-        {back}
+      <Box p="6">
         {thread.error === null ? (
-          <Text color="fg.muted" mt="3">Loading thread...</Text>
+          <Text color="fg.muted">Loading thread...</Text>
         ) : (
-          <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" p="3" mt="3">
-            <Text fontWeight="medium">{item.repo}#{item.issue} could not be loaded.</Text>
+          <Box role="alert" borderWidth="1px" borderColor="owner" rounded="md" p="3">
+            <Text fontWeight="medium">
+              {item.repo}#{item.issue} could not be loaded.
+            </Text>
             <Text textStyle="sm">{thread.error}</Text>
-            <Button size="sm" mt="2" onClick={onRetry}>Retry</Button>
+            <Button size="sm" mt="2" onClick={onRetry}>
+              Retry
+            </Button>
           </Box>
         )}
       </Box>
     );
   }
   const d = thread.data;
+  const events = [...d.events].reverse();
+  const openAt = events.findIndex((e) => e.kind === "attempt");
+  const slug = /^[\w.-]+\/[\w.-]+$/.test(d.repo);
   return (
-    <Box maxW="64rem" mx="auto" p="6">
-      {back} / <Text as="span" textStyle="sm">{d.repo}#{d.issueNumber}</Text>
-      <Heading size="xl" mt="2">{d.title}</Heading>
-      <Flex gap="3" mt="2" align="center" wrap="wrap" textStyle="sm">
-        <Badge colorPalette={STATUS_PALETTE[d.phase] ?? "gray"}>{d.phase.replace(/_/g, " ")}</Badge>
-        <GhLink repo={d.repo} kind="issues" num={d.issueNumber}>issue on GitHub</GhLink>
-        {d.prNumber ? <GhLink repo={d.repo} kind="pull" num={d.prNumber}>{`PR #${d.prNumber}`}</GhLink> : null}
+    <Flex direction="column" gap="5" p="6" minW="0">
+      <Flex justify="space-between" align="flex-start" gap="4" wrap="wrap">
+        <Box minW="0" flex="1">
+          <Text textStyle="meta" color="fg.muted">
+            <Ref repo={d.repo} num={d.issueNumber} />
+          </Text>
+          <Text as="h2" textStyle="headline" fontSize="28px" lineHeight="34px" color="fg" mt="1">
+            {d.title}
+          </Text>
+        </Box>
+        {slug ? (
+          <Flex gap="2">
+            <LinkButton external href={`https://github.com/${d.repo}/issues/${d.issueNumber}`}>
+              Issue
+            </LinkButton>
+            {d.prNumber ? (
+              <LinkButton external href={`https://github.com/${d.repo}/pull/${d.prNumber}`}>
+                {`PR #${d.prNumber}`}
+              </LinkButton>
+            ) : null}
+          </Flex>
+        ) : null}
       </Flex>
       {thread.error ? (
-        <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" px="3" py="2" mt="3" textStyle="sm">
+        <Box role="alert" borderWidth="1px" borderColor="owner" rounded="md" px="3" py="2" textStyle="sm">
           Refresh failed ({thread.error}); showing the last loaded copy.
         </Box>
       ) : null}
-      <Heading size="md" mt="6" mb="2">Timeline</Heading>
-      {d.auditTruncated ? <Text color="fg.muted" textStyle="sm">Showing last 500 audit events.</Text> : null}
-      {d.events.length === 0 ? (
-        <Text color="fg.muted">No recorded events yet.</Text>
-      ) : (
-        <Stack as="ol" listStyleType="none" gap="2" aria-label="Timeline">
-          {d.events.map((e, i) => (
-            <Row key={`${e.ts}-${i}`} e={e} now={now} />
-          ))}
-        </Stack>
-      )}
-      <Heading size="md" mt="6" mb="2">Log</Heading>
-      <Logs logs={logs} />
-    </Box>
-  );
-}
-
-function Logs({ logs }: { logs: Feed<LogsPayload> }) {
-  if (logs.data === null) return <Text color="fg.muted">{logs.error ? `Log unavailable: ${logs.error}` : "Loading log..."}</Text>;
-  if (logs.data.missing) return <Text color="fg.muted">No log file is configured or it does not exist yet.</Text>;
-  if (logs.data.entries.length === 0) return <Text color="fg.muted">No log entries for this Thread.</Text>;
-  return (
-    <Stack gap="0" fontFamily="mono" textStyle="xs" aria-label="Log">
-      {logs.data.entries.map((l, i) => (
-        <Text key={`${l.ts}-${i}`}>
-          <Badge colorPalette={LEVEL[l.level] ?? "gray"} mr="2">{l.level}</Badge>
-          {l.ts.slice(11, 19)} {l.event} {l.message}
-        </Text>
-      ))}
-    </Stack>
+      <PhaseRail phase={d.phase} />
+      <Flex direction={{ base: "column", xl: "row" }} gap="8" align="flex-start">
+        <Box flex="1" minW="0" w="full">
+          <Flex gap="2" align="baseline" pb="2">
+            <Text textStyle="label" fontSize="15px" color="fg">
+              Timeline
+            </Text>
+            <Text textStyle="meta" color="fg.muted">
+              Ledger audit, newest first{d.auditTruncated ? " (last 500 events)" : ""}
+            </Text>
+          </Flex>
+          {events.length === 0 ? (
+            <Text color="fg.muted" borderTopWidth="1px" borderTopColor="fg" pt="3">
+              No recorded events yet.
+            </Text>
+          ) : (
+            <Box as="ol" listStyleType="none" borderTopWidth="1px" borderTopColor="fg" aria-label="Timeline" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+              {events.map((e, i) => (
+                <TimelineRow key={`${e.ts}-${i}`} e={e} now={now} open={i === openAt} />
+              ))}
+            </Box>
+          )}
+        </Box>
+        <Box w={{ xl: "280px" }} flexShrink={0} alignSelf="stretch">
+          <Flex gap="2" align="baseline" pb="2">
+            <Text textStyle="label" fontSize="15px" color="fg">
+              Gate proof
+            </Text>
+            <Text textStyle="meta" color="fg.muted">
+              mechanical, models only veto
+            </Text>
+          </Flex>
+          <Box borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+            {d.gate.length === 0 ? (
+              <Text textStyle="body13" color="fg.muted" pt="3">
+                No Gate result recorded yet.
+              </Text>
+            ) : (
+              d.gate.map((g, i) => (
+                <Flex key={i} align="baseline" gap="2.5" py="2.5" textStyle="body13" color="fg">
+                  <Box color={g.passed ? "passed" : "fg.muted"} flexShrink={0}>
+                    {g.passed ? <Check /> : "x"}
+                  </Box>
+                  <Text flex="1" minW="0" wordBreak="break-word">
+                    {g.label}
+                  </Text>
+                  <Text textStyle="meta" color={g.passed ? "passed" : "fg.muted"} flexShrink={0}>
+                    {g.passed ? "passed" : "failed"}
+                  </Text>
+                </Flex>
+              ))
+            )}
+          </Box>
+        </Box>
+      </Flex>
+    </Flex>
   );
 }

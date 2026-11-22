@@ -1,19 +1,18 @@
 import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 import type { HostStatus } from "../../src/core/host-facts.js";
-import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
-import { EvalsPage } from "./EvalsPage";
 import type { EvalsState } from "../../src/core/eval-reports.js";
 import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
-import { HealthPage } from "./HealthPage";
-import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
 import { Page, PageHeadline } from "./page";
+import { PitchesPage } from "./PitchesPage";
+import type { PitchesState } from "../../src/core/ui-pitches.js";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
 import { Shell } from "./Shell";
@@ -36,7 +35,7 @@ export const DAEMON_OFFLINE_MS = 3 * 60_000;
 const ago = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`);
 
 /** A state banner: a hairline rule and plain text, no box. Amber (red tone) when the factory has stopped or may be stopped; ink when only the data is in doubt. */
-function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
+export function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
   return (
     <Box role="alert" borderTopWidth="1px" borderTopColor={tone === "red" ? "owner" : "fg"} py="2.5" mb="3" color={tone === "red" ? "owner" : "fg"}>
       {children}
@@ -59,19 +58,24 @@ export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "re
   return out;
 }
 
-function PipelinePage({ workflows, onRetry }: { workflows: Feed<WorkflowsState>; onRetry: () => void }) {
-  return (
-    <Box maxW="64rem" mx="auto" p="6">
-      {workflows.data ? (
-        <>
-          {workflows.error ? (
+function PipelinePage({ workflows, settings, onRetry }: { workflows: Feed<WorkflowsState>; settings: SettingsState | null; onRetry: () => void }) {
+  if (workflows.data) {
+    return (
+      <>
+        {workflows.error ? (
+          <Box pt="4" px={{ base: "6", md: "56px" }}>
             <Notice tone="red">
               <Text textStyle="sm">Pipeline refresh failed ({workflows.error}); showing the last loaded copy.</Text>
             </Notice>
-          ) : null}
-          <Pipeline data={workflows.data} />
-        </>
-      ) : workflows.error ? (
+          </Box>
+        ) : null}
+        <Pipeline data={workflows.data} settings={settings} />
+      </>
+    );
+  }
+  return (
+    <Page>
+      {workflows.error ? (
         <Notice tone="red">
           <Text fontWeight="medium">Pipeline unavailable.</Text>
           <Text textStyle="sm">{workflows.error}</Text>
@@ -82,7 +86,7 @@ function PipelinePage({ workflows, onRetry }: { workflows: Feed<WorkflowsState>;
       ) : (
         <Text color="fg.muted">Loading pipeline...</Text>
       )}
-    </Box>
+    </Page>
   );
 }
 
@@ -94,7 +98,7 @@ export function AppView({
   settings,
   host,
   thread,
-  logs,
+  pitches,
   now,
   onRetry,
 }: {
@@ -105,7 +109,7 @@ export function AppView({
   settings: Feed<SettingsState>;
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
-  logs: Feed<LogsPayload>;
+  pitches: Feed<PitchesState>;
   now: number;
   onRetry: () => void;
 }) {
@@ -135,23 +139,16 @@ export function AppView({
         </Box>
       ) : null}
       {route.page === "overview" ? <Dashboard state={state.data} host={host.data} /> : null}
-      {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
-      {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
-      {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
-      {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
-      {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
+      {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} thread={thread} onRetry={onRetry} /> : null}
+      {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} workflows={workflows} onRetry={onRetry}>
-          <PipelinePage workflows={workflows} onRetry={onRetry} />
+          <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
-      {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} onRetry={onRetry} /> : null}
-      {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
-      {route.page === "pitches" ? (
-        <Page>
-          <PageHeadline>{state.data.pitches.count === 0 ? "No pitches are waiting on you." : `${state.data.pitches.count} pitches are waiting on you.`}</PageHeadline>
-        </Page>
-      ) : null}
+      {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} evals={evals} now={now} onRetry={onRetry} /> : null}
+      {route.page === "pipeline" ? <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} /> : null}
+      {route.page === "pitches" ? <PitchesPage pitches={pitches} now={now} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
           <Text fontWeight="medium">No such page.</Text>

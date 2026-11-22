@@ -10,8 +10,6 @@ export type Route =
   | { page: "thread"; item: ItemRef }
   | { page: "pipeline" }
   | { page: "pitches" }
-  | { page: "health" }
-  | { page: "evals" }
   | { page: "setup"; repo: string | null }
   | { page: "settings"; scope: "machine" | "repo" | "kernel" | "raw" }
   | { page: "not-found"; hash: string };
@@ -27,14 +25,11 @@ export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> 
   { page: "setup", label: "Setup and health", hash: "#/setup" },
 ];
 
-/** The nav item a route lives under (Health and Evals stay reachable by URL; they sit under Setup and health). */
+/** The nav item a route lives under. */
 export function navPageOf(route: Route): NavPage | null {
   switch (route.page) {
     case "thread":
       return "threads";
-    case "health":
-    case "evals":
-      return "setup";
     case "not-found":
       return null;
     default:
@@ -58,8 +53,6 @@ export function parseRoute(hash: string): Route {
   if (path === "/setup") return { page: "setup", repo: null };
   const su = /^\/setup\/([^/]+\/[^/]+)$/.exec(path);
   if (su && SLUG.test(su[1]!)) return { page: "setup", repo: su[1]! };
-  if (path === "/evals") return { page: "evals" };
-  if (path === "/health") return { page: "health" };
   if (path === "/threads") return { page: "threads" };
   if (path === "/needs-you") return { page: "needs-you", item: null };
   const t = /^\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(path);
