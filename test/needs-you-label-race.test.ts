@@ -11,6 +11,7 @@ import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
+import { goWorkflowJson } from "./helpers/workflow.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -23,7 +24,7 @@ describe("needs-you label that has not landed yet", () => {
     git(seed, ["init", "-b", "main"]);
     git(seed, ["config", "user.name", "T"]);
     git(seed, ["config", "user.email", "t@example.com"]);
-    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson());
     fs.writeFileSync(path.join(seed, "a.txt"), "x\n");
     git(seed, ["add", "-A"]);
     git(seed, ["commit", "-m", "init"]);
@@ -46,7 +47,7 @@ describe("needs-you label that has not landed yet", () => {
     const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
     const cfg = ConfigSchema.parse({
       githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
-      githubPrivateKeyPem: "fake", requiredChecks: ["Gate"],
+      githubPrivateKeyPem: "fake",
     });
     const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
     const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
