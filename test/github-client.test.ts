@@ -188,3 +188,54 @@ describe("GitHubAppClient.verifyLabelRemovedBy", () => {
     }
   });
 });
+
+describe("GitHubAppClient file reads: only a real 404 is 'missing'", () => {
+  async function client(handler: (path: string) => { status: number; body: unknown }) {
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname.endsWith("/access_tokens")) {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ token: "t", expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: { contents: "read" } }));
+        return;
+      }
+      const { status, body } = handler(url.pathname);
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(typeof body === "string" ? body : JSON.stringify(body));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const c = new GitHubAppClient({
+      owner: "acme", repo: "app", appId: "1", installationId: 777, privateKeyPem: generateTestRsaKey(),
+      apiBaseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+    });
+    return { c, close: () => server.close() };
+  }
+
+  it("a 500 whose body happens to say (404) is an error, not a missing file", async () => {
+    const t = await client(() => ({ status: 500, body: "upstream said (404) somewhere" }));
+    try {
+      await expect(t.c.fileExistsAtRef("main", "a.txt")).rejects.toThrow();
+      await expect(t.c.readFileAtRef("main", "a.txt")).rejects.toThrow();
+    } finally {
+      t.close();
+    }
+  });
+
+  it("a real 404 is missing (false / null)", async () => {
+    const t = await client(() => ({ status: 404, body: { message: "Not Found" } }));
+    try {
+      expect(await t.c.fileExistsAtRef("main", "a.txt")).toBe(false);
+      expect(await t.c.readFileAtRef("main", "a.txt")).toBeNull();
+    } finally {
+      t.close();
+    }
+  });
+
+  it("a file the Contents API does not inline (over 1 MB) is an error, not a missing file", async () => {
+    const t = await client(() => ({ status: 200, body: { encoding: "none", content: "" } }));
+    try {
+      await expect(t.c.readFileAtRef("main", "big.json")).rejects.toThrow(/without inline content/);
+    } finally {
+      t.close();
+    }
+  });
+});
