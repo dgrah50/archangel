@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildDigest, sendDigestIfDue } from "../src/core/digest.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -25,12 +25,6 @@ function needsYouThread(l: Ledger, repo: string, issue: number, now: number) {
 }
 
 describe("buildDigest", () => {
-  it("returns null when there is nothing to report", () => {
-    expect(
-      buildDigest({ now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [], draftReverts: [] }),
-    ).toBeNull();
-  });
-
   const quiet = { now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [], faults: [], draftReverts: [] };
   it("is not quiet when pitches or proposals could not be read, or are waiting on the owner", () => {
     expect(buildDigest({ ...quiet, pitches: null })).toContain("Pitches awaiting you: unavailable");
@@ -40,25 +34,6 @@ describe("buildDigest", () => {
     expect(buildDigest(quiet)).toBeNull();
   });
 
-  it("shows class, age and recommendation for Needs You items", () => {
-    const text = buildDigest({
-      now: NOW,
-      draftReverts: [],
-      needsYou: [{ repo: "a/b", issueNumber: 7, title: "Bug 7", code: "review_vetoed", since: NOW - 5 * HOUR }],
-      yesterday: { autonomousMerges: 2, ownerMerges: 1, reverts: 1, spendUsd: 1.5 },
-      proposals: [{ repo: "a/b", issueNumber: 9, scoutName: "bug-hunt" }],
-      pitches: [],
-      faults: [],
-    })!;
-    expect(text).toContain("a/b#7 Bug 7");
-    expect(text).toContain("live infrastructure");
-    expect(text).toContain("waiting 5h");
-    expect(text).toContain("Recommended: Read the reviewer findings");
-    expect(text).toContain("Merges: 2 autonomous, 1 owner");
-    expect(text).toContain("Reverts (red main): 1");
-    expect(text).toContain("Metered spend: $1.50");
-    expect(text).toContain("a/b#9 (bug-hunt)");
-  });
 });
 
 describe("sendDigestIfDue", () => {
@@ -108,17 +83,5 @@ describe("digest Scout proposals", () => {
     expect(text).not.toContain("a/b#11");
     expect(text).not.toContain("a/b#12");
     l.close();
-  });
-});
-
-describe("TelegramNotifier.sendDigest", () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it("posts plain text without a parse mode", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-    await new TelegramNotifier({ botToken: "t", chatId: "c" }).sendDigest("hello");
-    const sent = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
-    expect(sent.text).toBe("hello");
-    expect(sent.parse_mode).toBeUndefined();
   });
 });

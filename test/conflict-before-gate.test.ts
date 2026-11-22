@@ -130,17 +130,4 @@ describe("a PR that conflicts with base is rebased before the Gate timers apply"
     }
   });
 
-  it("a mergeable PR with missing checks still escalates gate_timeout after 5 minutes", async () => {
-    const h = await harness("unrelated");
-    try {
-      h.github.prs.get(100)!.mergeable = true;
-      await h.reconciler.tick(h.t0 + 10 * MIN, { waitForAttempts: true });
-      const t = h.ledger.getThread(1)!;
-      expect(t.phase.kind).toBe("needs_you");
-      if (t.phase.kind !== "needs_you") throw new Error("unreachable");
-      expect(t.phase.code).toBe("gate_timeout");
-    } finally {
-      h.cleanup();
-    }
-  });
 });

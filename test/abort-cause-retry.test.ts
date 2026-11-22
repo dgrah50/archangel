@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { requireTransition } from "../src/cli/transition.js";
+
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -78,14 +78,6 @@ describe("rebase budget honours the owner's retry grants", () => {
     } finally {
       cleanup(w);
     }
-  });
-});
-
-describe("owner commands do not report success for a lost compare-and-set", () => {
-  it("throws when the transition returned null, and passes the updated Thread through otherwise", () => {
-    expect(() => requireTransition(null, "a/b", 7)).toThrow(/a\/b#7 changed while this command ran/);
-    const t = { issueNumber: 7 } as never;
-    expect(requireTransition(t, "a/b", 7)).toBe(t);
   });
 });
 

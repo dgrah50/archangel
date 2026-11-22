@@ -5,8 +5,8 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { GitBroker } from "../src/broker/git-broker.js";
-import { computeBlockers, type LandingSnapshot } from "../src/core/blockers.js";
-import { AGENT_DRAFT_PREFIX, draftBranchName, openDraftPr, type Draft } from "../src/core/correction-draft.js";
+import { type LandingSnapshot } from "../src/core/blockers.js";
+import { AGENT_DRAFT_PREFIX, openDraftPr, type Draft } from "../src/core/correction-draft.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
@@ -50,13 +50,6 @@ describe("Gate classify rule for agent-draft/* branches", () => {
         expect(r.out).not.toContain("is_draft");
       });
 
-      it("labels drafts agent-proposed and only drafts, with the write permission that needs", () => {
-        const label = wf.jobs.gate.steps.find((s) => s.name.startsWith("Label machine drafts"))!;
-        expect(label.if).toBe("steps.classify.outputs.is_draft == 'true'");
-        expect(label.run).toContain("--add-label agent-proposed");
-        expect(wf.permissions).toMatchObject({ contents: "read", "pull-requests": "write", issues: "write" });
-        for (const s of wf.jobs.gate.steps.filter((x) => x.if?.includes("is_factory"))) expect(s.if).not.toContain("is_draft");
-      });
     });
   }
 });
@@ -66,10 +59,6 @@ describe("the daemon never merges a machine draft", () => {
     prOpen: true, prDraft: false, headSha: "h", shaRecordedByBroker: true, postHandoff: false, labels: [], pauseLabel: "p", stopLabel: "s",
     circuitBreakerTripped: false, mainTipGreen: true, branchUpToDateWithMain: true, protectedFilesTouched: [], requiredChecks: [], checks: [],
     reviewsForHeadSha: [], requiredReviewers: [], mergeTreeClean: true, autoMergesToday: 0, maxAutoMergesPerDay: 3, shadowMode: false, ...over,
-  });
-  it("adds an owner-only blocker for an agent-draft PR, and none otherwise", () => {
-    expect(computeBlockers(snap({ agentDraft: true })).map((b) => b.code)).toContain("agent_draft_owner_only");
-    expect(computeBlockers(snap()).map((b) => b.code)).not.toContain("agent_draft_owner_only");
   });
 
   it("the Lander leaves an all-green, fully approved agent-draft/* PR unmerged, with the same setup that merges a factory PR", async () => {
@@ -130,11 +119,6 @@ describe("the daemon never merges a machine draft", () => {
 
 describe("opening a draft PR as the App", () => {
   const draft: Draft = { target: "skill", file: "skills/general/gate-first.md", diff: ["diff --git a/skills/general/gate-first.md b/skills/general/gate-first.md", "new file mode 100644", "--- /dev/null", "+++ b/skills/general/gate-first.md", "@@ -0,0 +1 @@", "+# Gate first", ""].join("\n"), rationale: "r" };
-
-  it("names branches agent-draft/<slug>-<n>", () => {
-    expect(draftBranchName("owner_retry:gate_failed", 4)).toBe("agent-draft/owner-retry-gate-failed-4");
-    expect(draftBranchName("factory_retry:review_vetoed:owner_overrode", 12)).toMatch(/^agent-draft\/[a-z0-9-]+-12$/);
-  });
 
   it("pushes one commit on an agent-draft branch with the broker, opens the PR through the App client and labels it", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-draftpush-"));

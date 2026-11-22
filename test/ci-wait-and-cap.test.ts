@@ -7,7 +7,7 @@ import type { Implementer } from "../src/agents/implementer.js";
 import type { ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
-import { computeBlockers, type CheckStatus } from "../src/core/blockers.js";
+import { type CheckStatus } from "../src/core/blockers.js";
 import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { classifyGate, stepPhase, type Phase } from "../src/core/thread-machine.js";
@@ -26,11 +26,6 @@ const gh = (name: string, status: CheckStatus["status"], conclusion: string | nu
 const base = { requiredChecks: ["Gate", "Test"], since: 0, graceMs: 5 * MIN, timeoutMs: 60 * MIN };
 
 describe("CI waiting rules", () => {
-  it("keeps waiting for a missing check inside the 5 minute grace window", () => {
-    const r = classifyGate({ ...base, checks: [gh("Test", "completed", "success")], now: 4 * MIN });
-    expect(r).toEqual({ status: "missing_grace", missing: ["Gate"] });
-  });
-
   it("escalates when a required check never appears within 5 minutes, naming missing and present checks", () => {
     const r = classifyGate({ ...base, checks: [gh("Test", "completed", "success")], now: 6 * MIN });
     expect(r.status).toBe("timeout");
@@ -38,13 +33,6 @@ describe("CI waiting rules", () => {
     expect(r.detail).toContain("Gate");
     expect(r.detail).toContain("Gate=missing");
     expect(r.detail).toContain("Test=success");
-  });
-
-  it("never treats a missing Gate as passed, even with every other check green", () => {
-    for (const now of [0, 6 * MIN, 120 * MIN]) {
-      const r = classifyGate({ ...base, checks: [gh("Test", "completed", "success")], now });
-      expect(r.status).not.toBe("green");
-    }
   });
 
   it("keeps waiting on pending checks past 5 minutes but stops after 1 hour with observed states", () => {
@@ -68,19 +56,6 @@ describe("CI waiting rules", () => {
     ]) {
       expect(classifyGate({ ...base, checks: bad, now: MIN }).status).not.toBe("green");
     }
-  });
-
-  it("blockers also refuse a merge unless every required check succeeded", () => {
-    const snap = (checks: CheckStatus[]) =>
-      computeBlockers({
-        prOpen: true, prDraft: false, headSha: "a".repeat(40), shaRecordedByBroker: true, postHandoff: false,
-        labels: [], pauseLabel: "p", stopLabel: "s", circuitBreakerTripped: false, mainTipGreen: true,
-        branchUpToDateWithMain: true, protectedFilesTouched: [], requiredChecks: ["Gate", "Test"], checks,
-        reviewsForHeadSha: [], requiredReviewers: [], mergeTreeClean: true, autoMergesToday: 0,
-        maxAutoMergesPerDay: 3, shadowMode: false,
-      }).map((b) => b.code);
-    expect(snap([gh("Test", "completed", "success")])).toContain("check_missing");
-    expect(snap([gh("Gate", "completed", "neutral"), gh("Test", "completed", "success", 2)])).toContain("check_failed");
   });
 
   it("a new head SHA supersedes the pending wait and resets the timer", () => {

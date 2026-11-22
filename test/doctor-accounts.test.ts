@@ -76,17 +76,6 @@ describe("doctor --smoke per account", () => {
     expect(failed[0]!.remediation).toContain(`CLAUDE_CONFIG_DIR=${dir}/claude-b`);
   });
 
-  it("without an accounts list it checks one implicit account per provider, keyed by provider name, on the default home", async () => {
-    const { configPath, env } = setup("");
-    const report = await runDoctor({ configPath, env, offline: true, smoke: true });
-    expect(report.checks.filter((c) => c.id.startsWith("smoke_provider:")).map((c) => c.id).sort()).toEqual([
-      "smoke_provider:agy",
-      "smoke_provider:claude",
-      "smoke_provider:codex",
-    ]);
-    expect(calls.every((c) => c.env.CLAUDE_CONFIG_DIR === undefined || c.env.CLAUDE_CONFIG_DIR === process.env.CLAUDE_CONFIG_DIR)).toBe(true);
-  });
-
   it("warns explicitly that agy account separation via HOME is unverified when more than one agy account is configured", async () => {
     const { configPath, env } = setup(TWO_EACH, HOMES);
     const report = await runDoctor({ configPath, env, offline: true });

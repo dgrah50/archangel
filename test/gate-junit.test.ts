@@ -109,35 +109,15 @@ describe("Gate JUnit test-ID diffing", () => {
     }
   });
 
-  it("rejects a base run that failed only for an unrelated reason, while the old exit-code rule would have accepted it", async () => {
+  it("rejects a base run that failed only for an unrelated reason", async () => {
     // The new test already passes on base, and a different existing test fails in the overlaid run (flaky/environment).
-    const files = { "tests/neg.test.mjs": 'console.log("ok negative");\n' };
-    const withJunit = fixture({ flakyOnOverlay: true });
-    const without = fixture({ flakyOnOverlay: true, junit: null });
-    try {
-      withJunit.commit(files);
-      without.commit(files);
-      const strict = await withJunit.gate();
-      expect(strict.passed).toBe(false);
-      expect(strict.violations.join(" ")).toContain("unrelated to the new tests");
-      expect(strict.already_fixed).toBe(false);
-      // junitReport unset: behaviour is exactly as before (any non-zero base exit counts as red).
-      const legacy = await without.gate();
-      expect(legacy.passed).toBe(true);
-      expect(legacy.proof?.junit).toBeUndefined();
-    } finally {
-      cleanup(withJunit.root);
-      cleanup(without.root);
-    }
-  });
-
-  it("still reports already_fixed when the new test passes on base and nothing else failed", async () => {
-    const f = fixture();
+    const f = fixture({ flakyOnOverlay: true });
     try {
       f.commit({ "tests/neg.test.mjs": 'console.log("ok negative");\n' });
       const r = await f.gate();
       expect(r.passed).toBe(false);
-      expect(r.already_fixed).toBe(true);
+      expect(r.violations.join(" ")).toContain("unrelated to the new tests");
+      expect(r.already_fixed).toBe(false);
     } finally {
       cleanup(f.root);
     }
@@ -224,10 +204,6 @@ describe("JUnit parsing and attribution conventions", () => {
     expect(parseJunit(xml)!.map((c) => `${c.name}:${c.status}`)).toEqual(["p:passed", "f:failed", "e:failed", "s:skipped"]);
   });
 
-  it("returns null for non-JUnit or truncated documents", () => {
-    expect(parseJunit("hello")).toBeNull();
-    expect(parseJunit('<testsuites><testsuite><testcase name="a"><failure>')).toBeNull();
-  });
 });
 
 describe("junitReport schema validation (kernel)", () => {

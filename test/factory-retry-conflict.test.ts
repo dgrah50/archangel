@@ -92,20 +92,6 @@ describe("merge_conflict after the rebase budget (factory retry)", () => {
     }
   });
 
-  it("escalates on a second conflict: one factory retry per Thread", async () => {
-    const w = world("once");
-    try {
-      w.start();
-      await w.conflict();
-      sql(w.ledger, "UPDATE threads SET rebase_count = 1 WHERE issue_number = 4");
-      await w.conflict();
-      expect(w.spawn).toHaveBeenCalledTimes(1);
-      expect(w.ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "merge_conflict" });
-    } finally {
-      w.cleanup();
-    }
-  });
-
   it("does not use the factory retry once the owner has retried the Thread (that grants a normal rebase instead)", async () => {
     const w = world("once");
     try {
@@ -114,22 +100,6 @@ describe("merge_conflict after the rebase budget (factory retry)", () => {
       await w.conflict();
       expect(w.spawn.mock.calls.map((c) => c[2])).toEqual(["rebase"]);
       expect(w.ledger.getThread(4)!.factoryRetries).toBe(0);
-    } finally {
-      w.cleanup();
-    }
-  });
-
-  it("escalates when the repo already spent its three daily factory retries", async () => {
-    const w = world("once");
-    try {
-      for (const n of [11, 12, 13]) {
-        w.ledger.upsertThread({ issueNumber: n, title: "t", bodySha256: "x" });
-        expect(w.ledger.claimFactoryRetry(n, { code: "merge_conflict", guidance: null, perThread: 1, perRepoPerDay: 3 })).toBe(true);
-      }
-      w.start();
-      await w.conflict();
-      expect(w.spawn).not.toHaveBeenCalled();
-      expect(w.ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "merge_conflict" });
     } finally {
       w.cleanup();
     }

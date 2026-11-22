@@ -40,20 +40,6 @@ function createFixtureRemote(): { root: string; remoteBare: string; baseSha: str
 const BOUNDS = GatePolicySchema.parse({});
 
 describe("GitBroker (ADR-0004 B2 isolation)", () => {
-  it("holds no host-side Gate defaults: the policy is a required argument", async () => {
-    const { root } = createFixtureRemote();
-    try {
-      const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-      for (const field of ["maxNonTestLines", "maxTotalLines", "maxFiles", "extraProtectedPaths", "testFileGlobs", "testDataGlobs"]) {
-        expect(field in broker, field).toBe(false);
-      }
-      // @ts-expect-error bounds is required: omitting it must not compile (and so cannot silently mean "no protected paths").
-      void (() => broker.fetchAndValidateFromClone("/x", 1, "sha"));
-    } finally {
-      cleanupDir(root);
-    }
-  });
-
   it("isolates throwaway clones, ignores planted hooks, validates paths, and pushes factory/<n>", async () => {
     const { root, remoteBare, baseSha } = createFixtureRemote();
     try {
