@@ -788,7 +788,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

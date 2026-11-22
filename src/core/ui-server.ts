@@ -7,6 +7,7 @@ import type { Ledger } from "../ledger/store.js";
 import { REPO_SLUG_RE } from "../config.js";
 import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
+import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doctor.js";
 import { buildHostStatus } from "./host-facts.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
@@ -67,7 +68,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; doctor?: DoctorRunner },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -76,6 +77,11 @@ export async function startUiServer(
   }
   const token = crypto.randomBytes(24).toString("hex");
   const proposeEnabled = Boolean(opts.proposeRunner) && !opts.allowRemote;
+  /** The token is embedded in the page whenever something that needs it is enabled; never in remote mode. */
+  const tokenEnabled = !opts.allowRemote && (proposeEnabled || Boolean(opts.doctor));
+  const tokenOk = (given: string | string[] | undefined): boolean =>
+    typeof given === "string" && given.length === token.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(token));
+  const doctor = opts.doctor ? makeDoctorHandler(opts.doctor) : null;
   /** Loopback origins (and the bound host) on the port actually bound, which differs from opts.port when it is 0. */
   const originAllowed = (origin: string | undefined): boolean => {
     const port = (server.address() as AddressInfo | null)?.port ?? opts.port;
@@ -91,12 +97,7 @@ export async function startUiServer(
     const proposeMatch = PROPOSE_PATH.exec((req.url ?? "").split("?")[0]!);
     if (req.method === "POST" && proposeMatch) {
       if (!proposeEnabled) return sendJson(res, 403, { error: "proposing is disabled (remote mode, or no gh runner)" });
-      const given = req.headers[TOKEN_HEADER];
-      const ok =
-        typeof given === "string" &&
-        given.length === token.length &&
-        crypto.timingSafeEqual(Buffer.from(given), Buffer.from(token));
-      if (!ok) return sendJson(res, 401, { error: "missing or invalid token" });
+      if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
       if (!originAllowed(req.headers.origin)) return sendJson(res, 403, { error: "Origin not allowed" });
       if ((req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() !== "application/json") {
         return sendJson(res, 415, { error: "Content-Type must be application/json" });
@@ -136,6 +137,19 @@ export async function startUiServer(
         res.end(body);
         return;
       }
+      if (pathname === "/api/doctor") {
+        if (!doctor) return sendJson(res, 404, { error: "doctor is not available" });
+        const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+        const scope = q.get("scope");
+        if (scope !== "machine" && scope !== "repo") return sendJson(res, 400, { error: "scope must be machine or repo" });
+        const smoke = q.get("smoke") === "1";
+        // Smoke runs spawn provider CLIs and repo checks call GitHub: both need the page's token and are never served remotely.
+        if (smoke || scope === "repo") {
+          if (opts.allowRemote) return sendJson(res, 403, { error: "disabled in remote mode" });
+          if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
+        }
+        return sendJson(res, 200, await doctor(scope as DoctorScope, smoke));
+      }
       if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
       const url = new URL(req.url ?? "/", "http://localhost");
       const thread = /^\/api\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(pathname);
@@ -158,7 +172,7 @@ export async function startUiServer(
       const headers = { "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" };
       if (path.basename(file) === "index.html") {
         // The token only ever reaches this page: a cross-origin page cannot read the response.
-        const meta = proposeEnabled ? `<meta name="archangel-token" content="${token}" />` : "";
+        const meta = tokenEnabled ? `<meta name="archangel-token" content="${token}" />` : "";
         const html = fs.readFileSync(file, "utf8").replace("</head>", `${meta}</head>`);
         res.writeHead(200, headers).end(html);
         return;
