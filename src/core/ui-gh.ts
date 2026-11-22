@@ -50,9 +50,18 @@ export function makeGhReads(deps: { runner: OnboardRunner; now?: () => number })
         return gh(["api", "user", "--jq", "{id: .id, login: .login}"]);
       case "pr": {
         const repo = repoOf(q);
-        const n = Number(q.get("number"));
-        if (!Number.isSafeInteger(n) || n < 1) throw new ProposeRefusal(400, "number must be a positive integer");
-        return gh(["pr", "view", String(n), "--repo", repo, "--json", "number,state,isDraft,mergeable,reviewDecision,url,headRefName,statusCheckRollup"]);
+        // A PR is named by number, or by head branch (the wizard looks up `chore/archangel-onboard` after a reload).
+        const branch = q.get("branch");
+        let selector: string;
+        if (branch !== null) {
+          if (!BRANCH_RE.test(branch) || branch.includes("..")) throw new ProposeRefusal(400, "branch is not a valid branch name");
+          selector = branch;
+        } else {
+          const n = Number(q.get("number"));
+          if (!Number.isSafeInteger(n) || n < 1) throw new ProposeRefusal(400, "number must be a positive integer");
+          selector = String(n);
+        }
+        return gh(["pr", "view", selector, "--repo", repo, "--json", "number,state,isDraft,mergeable,reviewDecision,url,title,headRefName,statusCheckRollup"]);
       }
       case "protection": {
         const repo = repoOf(q);

@@ -8,6 +8,7 @@ import { EvalsPage } from "./EvalsPage";
 import type { EvalsState } from "../../src/core/eval-reports.js";
 import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
+import { SetupPage } from "./SetupPage";
 import { HealthPage } from "./HealthPage";
 import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
@@ -140,6 +141,7 @@ export function AppView({
           <PipelinePage workflows={workflows} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
+      {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">
