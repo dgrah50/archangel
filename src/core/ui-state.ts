@@ -29,6 +29,8 @@ export interface UiState {
   stages: Record<Stage, UiItem[]>;
   outcomes: ReturnType<Ledger["computeMetrics"]>["outcomes"];
   autonomySteps: Record<string, number>;
+  /** Last 14 local days, oldest first. */
+  daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
 }
 
@@ -90,6 +92,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
     needsYou,
     stages,
     outcomes: ledger.computeMetrics({ now }).outcomes,
+    daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({
       repo: p.repo,
