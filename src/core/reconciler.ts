@@ -755,10 +755,21 @@ export class Reconciler {
     // 2. Sync Shadow Mode disagreement label idempotently (fixes Opus O4).
     const combinedLabels = [...new Set([...(issue?.labels ?? []), ...(pr?.labels ?? [])])];
     if (thread.phase.kind === "shadow_ready") {
-      this.ledger.markDisagree(
-        thread.issueNumber,
-        combinedLabels.includes(this.cfg.labels.disagree),
-      );
+      let disagreed = false;
+      if (combinedLabels.includes(this.cfg.labels.disagree)) {
+        // The label counts only if the owner applied it (or the Archangel App did, which only `archangel disagree` does on the owner's machine).
+        const trusted = [this.cfg.ownerUserId, ...(this.cfg.githubAppBotUserId ? [this.cfg.githubAppBotUserId] : [])];
+        const places = [thread.issueNumber, ...(pr ? [pr.number] : [])];
+        for (const actor of trusted) {
+          for (const where of places) {
+            disagreed ||= await this.github.verifyLabelActor(where, this.cfg.labels.disagree, actor);
+          }
+        }
+        if (!disagreed && this.ledger.listAudit({ topicPrefix: "shadow/disagree_ignored", issueNumber: thread.issueNumber, limit: 1 }).length === 0) {
+          this.ledger.appendAudit("shadow/disagree_ignored", thread.issueNumber, "archangel", { label: this.cfg.labels.disagree, reason: "not applied by the owner" }, now);
+        }
+      }
+      this.ledger.markDisagree(thread.issueNumber, disagreed);
     }
 
     // 3. Derive live owner Control from combined labels (NEVER stored as a Phase — fixes O1, O2, S2, S3!).
