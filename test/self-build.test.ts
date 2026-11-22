@@ -13,7 +13,7 @@ const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, en
 
 const pitchJson = JSON.stringify({
   type: "feature", title: "Tighten the gate", problem: "p",
-  evidence: [{ file: null, symbol: null, metric: null, note: "n" }, { file: null, symbol: null, metric: null, note: "m" }],
+  evidence: [{ file: null, symbol: null, metric: null, research: null, note: "n" }, { file: null, symbol: null, metric: null, research: null, note: "m" }],
   proposal: "p", smallestVersion: "s", optionsConsidered: ["Do nothing", "Tighten"],
   slices: [{ title: "Tighten", acceptance: "Done." }], measurement: "", figures: [], changeDiagram: null, estimates: [], recommendation: "do", size: "M",
 });

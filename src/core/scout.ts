@@ -22,6 +22,7 @@ import { FLEET_MINER_WINDOW_DAYS, buildFleetMinerBlock, provisionalLine, readSee
 import { formatRepoInstructions } from "../agents/prompts.js";
 import { loadRepoInstructions } from "./workflow-load.js";
 import { syncPitchDecisions } from "./pitch-expiry.js";
+import { buildResearchBlock, citableResearch } from "./research.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
   PITCH_DECLINE_WINDOW_DAYS,
@@ -601,6 +602,7 @@ async function runPitchScout(opts: {
   const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
   const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
   const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
+  const research = citableResearch(ledger, now);
   const compute = opts.compute ?? new LocalProvider(opts.broker);
   const workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
   const cloneDir = workspace.path;
@@ -617,6 +619,7 @@ async function runPitchScout(opts: {
         skills: wf.skills,
         prompt: wf.prompt,
         repoInstructions: await loadRepoInstructions(opts.broker, opts.mainSha),
+        researchBlock: buildResearchBlock(research),
         declined: recent.map((r) => ({ title: r.title, reason: r.declineReason })),
         metricsBlock: wf.includeMetrics
           ? [
@@ -657,6 +660,8 @@ async function runPitchScout(opts: {
         },
         fileExists: async (file) => (await opts.broker.readFileAtRef(opts.mainSha, file)) !== null,
         metricsGiven,
+        researchGiven: research.length,
+        research,
         secretScan: scanForSecrets,
         isDuplicate: (title) => fps.has(normalizeTitleFp(title)),
       });
@@ -670,7 +675,7 @@ async function runPitchScout(opts: {
         ledger.appendAudit("pitch/dropped", null, wf.name, { reason: "cites no mined commit", title: pitch.title.slice(0, 60) }, now);
         continue;
       }
-      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source)}`;
+      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source, research)}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {
         ledger.appendAudit("pitch/vetoed", null, wf.name, { reason: veto.slice(0, 300), title: pitch.title.slice(0, 60) }, now);

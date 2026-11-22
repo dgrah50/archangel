@@ -307,6 +307,20 @@ export const ComputeConfigSchema = z
   .default({ provider: "local" });
 export type ComputeConfig = z.infer<typeof ComputeConfigSchema>;
 
+export const RESEARCH_TOPIC_RE = /^[a-z0-9][a-z0-9 .+-]{0,39}$/;
+
+export const ResearchConfigSchema = z
+  .object({
+    /** Owner-written search terms: at most 5, each at most 40 characters of `[a-z0-9 .+-]`. Empty turns research off. */
+    topics: z.array(z.string().regex(RESEARCH_TOPIC_RE, "use lowercase letters, digits, space and . + -")).max(5).default([]),
+    /** Hard cap on outbound requests per repo per day (a release lookup counts as one). PROVISIONAL. */
+    maxFetchesPerDay: z.number().int().min(1).max(100).default(20),
+    /** Polite pause between requests. PROVISIONAL; arXiv asks for at least 3 seconds between calls. */
+    minIntervalMs: z.number().int().min(1000).max(60_000).default(3000),
+  })
+  .strict();
+export type ResearchConfig = z.infer<typeof ResearchConfigSchema>;
+
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
@@ -346,6 +360,8 @@ export const ConfigSchema = z.object({
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
   signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
+  /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
+  research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -448,6 +464,8 @@ export const HostYamlSchema = z.object({
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
   signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
+  /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
+  research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -621,6 +639,7 @@ export function loadProjectConfigs(opts: {
       fleetScouts: host.fleetScouts,
       fleetMinerSeeds: host.fleetMinerSeeds,
       signals: host.signals,
+      research: host.research,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

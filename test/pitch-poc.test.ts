@@ -18,7 +18,7 @@ const pitchJson = JSON.stringify({
   type: "feature",
   title: "A --watch mode for the filter",
   problem: "p",
-  evidence: [{ file: null, symbol: null, metric: null, note: "n" }, { file: null, symbol: null, metric: null, note: "m" }],
+  evidence: [{ file: null, symbol: null, metric: null, research: null, note: "n" }, { file: null, symbol: null, metric: null, research: null, note: "m" }],
   proposal: "p",
   smallestVersion: "Re-run the filter when the file changes.",
   optionsConsidered: ["Do nothing", "Watch"],
