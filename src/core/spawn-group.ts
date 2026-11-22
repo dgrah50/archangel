@@ -22,6 +22,37 @@ export function killGroup(child: ChildProcess, graceMs: number = KILL_GRACE_MS):
   return () => clearTimeout(t);
 }
 
+export const AWAKE_POLL_MS = 5000;
+const SLEEP_GAP_MS = 30_000;
+
+export interface AwakeTimeoutOptions {
+  pollMs?: number;
+  now?: () => number;
+}
+
+/**
+ * A timeout that charges only awake time. Bun's timers run on a clock that keeps counting while a laptop sleeps, so a
+ * plain `setTimeout` kills a healthy process on wake; nothing runs while the host is suspended. Polls every `pollMs`
+ * (unref'd) and does not charge a gap far beyond the interval. Returns a cancel.
+ */
+export function awakeTimeout(ms: number, onFire: () => void, opts: AwakeTimeoutOptions = {}): () => void {
+  const pollMs = opts.pollMs ?? AWAKE_POLL_MS;
+  const now = opts.now ?? Date.now;
+  let last = now();
+  let awake = 0;
+  const t = setInterval(() => {
+    const at = now();
+    const delta = at - last;
+    last = at;
+    awake += delta > SLEEP_GAP_MS ? pollMs : delta;
+    if (awake < ms) return;
+    clearInterval(t);
+    onFire();
+  }, pollMs);
+  t.unref();
+  return () => clearInterval(t);
+}
+
 export interface ExecGroupOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -53,7 +84,7 @@ export function execFileGroup(file: string, args: string[], opts: ExecGroupOptio
       killed = true;
       cancelEscalation = killGroup(child);
     };
-    const timer = opts.timeout ? setTimeout(kill, opts.timeout) : undefined;
+    const cancelTimeout = opts.timeout ? awakeTimeout(opts.timeout, kill) : undefined;
     const append = (which: "out" | "err") => (c: Buffer) => {
       if (which === "out") stdout += c.toString("utf8");
       else stderr += c.toString("utf8");
@@ -62,12 +93,12 @@ export function execFileGroup(file: string, args: string[], opts: ExecGroupOptio
     child.stdout!.on("data", append("out"));
     child.stderr!.on("data", append("err"));
     const fail = (message: string, code: number | string | null, signal: NodeJS.Signals | null) => {
-      clearTimeout(timer);
+      cancelTimeout?.();
       reject(Object.assign(new Error(message), { stdout, stderr, code, signal, killed }) as ExecGroupError);
     };
     child.on("error", (err) => fail(err.message, (err as NodeJS.ErrnoException).code ?? null, null));
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
+      cancelTimeout?.();
       if (!killed) cancelEscalation?.();
       if (code === 0 && !killed) resolve({ stdout, stderr });
       else fail(killed ? `Command killed: ${file}` : `Command failed: ${file}`, code, signal);

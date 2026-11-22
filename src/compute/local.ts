@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { GitBroker } from "../broker/git-broker.js";
-import { killGroup, KILL_GRACE_MS } from "../core/spawn-group.js";
+import { awakeTimeout, killGroup, KILL_GRACE_MS } from "../core/spawn-group.js";
 import { startPeakRssPoll } from "./peak-rss.js";
 import type { CollectedResult, ComputeProvider, ExecResult, ExecSpec, Exposed, ExposeSpec, ListedPreview, PrepareSpec, Workspace } from "./provider.js";
 
@@ -25,15 +25,15 @@ export function execInGroup(cwd: string, spec: ExecSpec): Promise<ExecResult> {
     };
     const poll = child.pid ? startPeakRssPoll(child.pid, spec.rssPollMs ?? RSS_POLL_MS) : null;
     const cleanup = () => {
-      clearTimeout(timer);
+      cancelTimeout();
       spec.signal?.removeEventListener("abort", kill);
     };
 
     spec.signal?.addEventListener("abort", kill, { once: true });
-    const timer = setTimeout(() => {
+    const cancelTimeout = awakeTimeout(spec.timeoutMs, () => {
       spec.onTimeout?.();
       kill();
-    }, spec.timeoutMs);
+    });
 
     child.stdout.on("data", (c: Buffer) => {
       const s = c.toString("utf8");
