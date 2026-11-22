@@ -4,12 +4,10 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
-import { EvalsPage } from "./EvalsPage";
 import type { EvalsState } from "../../src/core/eval-reports.js";
 import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
-import { HealthPage } from "./HealthPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
 import { Page, PageHeadline } from "./page";
@@ -138,14 +136,12 @@ export function AppView({
       {route.page === "overview" ? <Dashboard state={state.data} host={host.data} /> : null}
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} thread={thread} onRetry={onRetry} /> : null}
       {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
-      {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
-      {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
           <PipelinePage workflows={workflows} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
-      {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} onRetry={onRetry} /> : null}
+      {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} evals={evals} now={now} onRetry={onRetry} /> : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "pitches" ? <PitchesPage pitches={pitches} now={now} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
