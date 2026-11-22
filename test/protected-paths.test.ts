@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
-import { isProtectedPath } from "../src/gate/gate.js";
+import { isProtectedPath, isTestOrFixtureFile } from "../src/gate/gate.js";
 
 // Allowlist, not blocklist: every tracked src/ file must be protected unless the owner explicitly
 // lists it as a self-improvable leaf in .agents/leaf-modules.json (itself under protected .agents/).
@@ -25,6 +25,14 @@ describe("Archangel's own protected paths", () => {
       expect(tracked).toContain(f);
       expect(isProtectedPath(f, protectedPaths)).toBe(false);
     }
+  });
+
+  it("makes every existing test helper immutable, so a factory PR cannot weaken tests by editing the fakes they run against", () => {
+    const g = (JSON.parse(fs.readFileSync(".agents/archangel.json", "utf8")) as { gate: { testFileGlobs: string[]; testDataGlobs?: string[] } }).gate;
+    const policy = { testFileGlobs: g.testFileGlobs, testDataGlobs: g.testDataGlobs ?? [] };
+    const helpers = execFileSync("git", ["ls-files", "test/helpers"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    expect(helpers.length).toBeGreaterThan(0);
+    for (const f of helpers) expect(isTestOrFixtureFile(f, policy), f).toBe(true);
   });
 
   it("protects this test itself", () => {
