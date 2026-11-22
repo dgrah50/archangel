@@ -4,7 +4,7 @@ import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
 import { age, recommendationShort } from "./common";
-import { CopyCommand, LinkButton, Owed, Page, PageHeadline, Ref, Section } from "./page";
+import { CopyCommand, Dot, LinkButton, Owed, Page, PageHeadline, Ref, Section, Ticked } from "./page";
 import { itemHash, threadHash, type ItemRef } from "./route";
 
 type Item = UiState["needsYou"][number];
@@ -24,10 +24,10 @@ export function nextItem(queue: Item[], current: Item | null): Item | null {
 const clock = (ts: number, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ts);
 
 /** Decisions answered today (local day per `dailyTimezone`): plain grey rows, the ref in mono. */
-function AnsweredToday({ answered }: { answered: UiState["answeredToday"] }) {
+function AnsweredToday({ answered, inQueue }: { answered: UiState["answeredToday"]; inQueue?: boolean }) {
   if (answered.items.length === 0) return null;
   return (
-    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border">
+    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border" {...(inQueue ? { pl: { base: "6", md: "56px" }, pr: "6", pb: "5" } : {})}>
       <Text textStyle="meta" color="fg.muted">
         Answered today
       </Text>
@@ -77,7 +77,7 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
         ) : null}
       </Flex>
       <Flex direction={{ base: "column", lg: "row" }} flex="1" borderTopWidth="1px" borderTopColor="border" mx={{ base: "-6", md: "-56px" }}>
-        <Flex as="ul" listStyleType="none" direction="column" gap="2" w={{ lg: "478px" }} flexShrink={0} p="5" borderRightWidth={{ lg: "1px" }} borderRightColor="border" aria-label="Queue (oldest first)">
+        <Flex as="ul" listStyleType="none" direction="column" w={{ lg: "400px" }} flexShrink={0} borderRightWidth={{ lg: "1px" }} borderRightColor="border" aria-label="Queue (oldest first)" css={{ "& > li": { borderBottomWidth: "1px", borderBottomColor: "var(--chakra-colors-border)" } }}>
           {queue.map((i) => {
             const on = selected === i;
             return (
@@ -89,39 +89,32 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
                   flexDirection="column"
                   alignItems="stretch"
                   textAlign="left"
-                  gap="1.5"
-                  py="3"
-                  px="4"
-                  rounded="14px"
-                  borderWidth="1px"
-                  borderColor={on ? "border" : "transparent"}
+                  gap="1"
+                  py="3.5"
+                  pl={{ base: "6", md: "56px" }}
+                  pr="6"
                   bg={on ? "bg.subtle" : "transparent"}
-                  borderLeftWidth="3px"
-                  borderLeftColor={on ? "owner" : "border"}
                   textDecoration="none"
                   _hover={{ textDecoration: "none", bg: "bg.subtle" }}
                 >
-                  <Text textStyle="rowTitle" color="fg">
-                    {i.title}
-                  </Text>
-                  <Flex justify="space-between" gap="3">
-                    <Text textStyle="ref" color="fg.muted">
-                      <Ref repo={i.repo} num={i.issueNumber} />
+                  <Flex justify="space-between" align="baseline" gap="3">
+                    <Text textStyle="rowTitle" color="fg">
+                      {i.title}
                     </Text>
-                    <Text textStyle="figure" color={on ? "owner" : "fg.subtle"}>
+                    <Text textStyle="figure" fontSize="15px" color={on ? "owner" : "fg.subtle"} flexShrink={0}>
                       {gap(state.generatedAt - i.since)}
                     </Text>
                   </Flex>
                   <Text textStyle="meta" color="fg.muted">
-                    {cap(i.decisionClass)} · {recommendationShort(i)}
+                    <Ref repo={i.repo} num={i.issueNumber} /> · {cap(i.decisionClass)} · {recommendationShort(i)}
                   </Text>
                 </Link>
               </li>
             );
           })}
-          <AnsweredToday answered={state.answeredToday} />
+          <AnsweredToday answered={state.answeredToday} inQueue />
         </Flex>
-        <Box flex="1" minW="0" p="7" pb="6">
+        <Box flex="1" minW="0" px={{ base: "6", md: "10" }} py="7">
           {selected === null ? (
             <Box role="status">
               <Text textStyle="rowTitle">That item no longer needs you.</Text>
@@ -146,7 +139,7 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
           {i.prNumber ? ` · PR #${i.prNumber}` : ""}
           {d?.recap.themeLabel ? ` · Theme: ${d.recap.themeLabel}` : ""}
         </Text>
-        <Text as="h2" textStyle="headline" fontSize="30px" color="fg">
+        <Text as="h2" textStyle="title" color="fg">
           {i.title}
         </Text>
         <Text textStyle="meta" color="fg.muted">
@@ -156,17 +149,17 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
           {" · "}Waiting {gap(now - i.since)} · <Text as="span" textStyle="ref">{i.code}</Text>
         </Text>
       </Flex>
-      <Flex direction="column" gap="2" p="6" rounded="20px" bg="bg.muted">
-        <Text textStyle="meta" color="fg.muted">
+      <Section gap="2">
+        <Text textStyle="label" color="fg">
           {i.threadRecommendation ? "The factory recommends, for this Thread" : "The factory recommends"}
         </Text>
-        <Text textStyle="rowTitle" fontSize="18px" color="fg">
-          {i.threadRecommendation ? i.threadRecommendation.headline : i.recommendation}
+        <Text textStyle="headlineSub" color="fg" maxW="68ch">
+          <Ticked>{i.threadRecommendation ? i.threadRecommendation.headline : i.recommendation}</Ticked>
         </Text>
         <Text textStyle="body13" color="fg.muted">
           {i.threadRecommendation ? i.threadRecommendation.reason : i.reason}
         </Text>
-      </Flex>
+      </Section>
       {d === null ? (
         thread.error ? (
           <Box role="alert" borderTopWidth="1px" borderTopColor="owner" py="2.5" color="owner">
@@ -188,14 +181,14 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
             </Text>
             <Facts
               rows={[
-                ["Head commit", d.recap.headSha ?? "none"],
+                ["Head commit", d.recap.headSha ?? NONE("none")],
                 ["Attempts", d.recap.attempts],
-                ["Implementer", d.recap.implementers.join(", ") || "none"],
-                ["Reviews", d.recap.reviews.map((r) => `${r.vendor} ${r.verdict}`).join(" · ") || "none on this head"],
+                ["Implementer", d.recap.implementers.join(", ") || NONE("none")],
+                ["Reviews", d.recap.reviews.map((r) => `${r.vendor} ${r.verdict}`).join(" · ") || NONE("none on this head")],
                 [
                   "Gate",
                   d.gate.length === 0 ? (
-                    "not recorded"
+                    NONE("not recorded")
                   ) : (
                     <>
                       {d.gate.map((g, k) => (
@@ -209,7 +202,7 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
                 [
                   "Diff",
                   d.diff === null
-                    ? "not recorded"
+                    ? NONE("not recorded")
                     : `${d.diff.nonTestLines} non-test lines in ${d.diff.files} files${d.diff.limits ? ` of ${d.diff.limits.maxNonTestLines} / ${d.diff.limits.maxFiles} allowed` : ""}`,
                 ],
               ]}
@@ -227,7 +220,9 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
               <Flex as="ul" listStyleType="none" direction="column" gap="3.5">
                 {d.blockers.map((b, k) => (
                   <Flex as="li" key={k} gap="3" align="flex-start">
-                    <Box w="7px" h="7px" mt="7px" flexShrink={0} bg={b.owner ? "owner" : "fg"} />
+                    <Box mt="7px">
+                      <Dot tone={b.owner ? "owner" : "ink"} />
+                    </Box>
                     <Flex direction="column" gap="0.5" minW="0">
                       <Text textStyle="rowTitle" color="fg">
                         {b.title}
@@ -264,6 +259,13 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
     </Flex>
   );
 }
+
+/** A recap value that is absent: grey, so the rows that hold something stand out. */
+const NONE = (text: string) => (
+  <Box as="span" color="fg.subtle">
+    {text}
+  </Box>
+);
 
 function Facts({ rows }: { rows: Array<[string, ReactNode]> }) {
   return (

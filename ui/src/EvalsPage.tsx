@@ -26,8 +26,9 @@ function describe(r: RunSummary): { title: string; meta: string; owed: boolean }
 /** Read-only list of the last reports the CLI saved. Running an eval stays on the command line. */
 export function EvalsSection({ evals, now, onRetry }: { evals: Feed<EvalsState>; now: number; onRetry: () => void }) {
   return (
-    <Section title="The last reports the command line saved. Running an eval stays on the command line.">
+    <Section gap="2">
       <Text textStyle="rowTitle" color="fg">Evals and replays</Text>
+      <Text textStyle="meta" color="fg.muted">The last reports the command line saved. Running an eval stays on the command line.</Text>
       {evals.data === null ? (
         evals.error ? (
           <ReadError title="Reports unavailable.">

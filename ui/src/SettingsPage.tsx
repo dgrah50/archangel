@@ -67,10 +67,9 @@ function NumberField({ label, value, base, onCommit, min, prefix = "" }: { label
         <Input
           key={String(value)}
           type="number"
-          h="44px"
-          borderRadius="14px"
+          h="36px"
+          borderRadius="10px"
           textStyle="label"
-          fontSize="16px"
           min={min}
           defaultValue={value ?? ""}
           aria-label={label}
@@ -80,7 +79,7 @@ function NumberField({ label, value, base, onCommit, min, prefix = "" }: { label
             if (e.target.value !== "" && Number.isFinite(n) && n !== value) onCommit(n);
           }}
         />
-        {changed && base !== null ? <Text position="absolute" right="14px" top="13px" textStyle="meta" color="fg.subtle" textDecoration="line-through" pointerEvents="none">{prefix}{base}</Text> : null}
+        {changed && base !== null ? <Text position="absolute" right="12px" top="9px" textStyle="meta" color="fg.subtle" textDecoration="line-through" pointerEvents="none">{prefix}{base}</Text> : null}
       </Box>
     </Flex>
   );
@@ -305,7 +304,7 @@ function Alerts({ s, f, b, onOp }: { s: SettingsState; f: HostForm; b: HostForm;
         <NumberField label="Digest hour (0-23)" value={f.digestHour} base={b.digestHour} min={0} onCommit={(n) => onOp((t) => editField(t, ["digestHour"], n))} />
         <Flex direction="column" gap="1.5" flex="2" minW="200px">
           <Text textStyle="body13" color="fg.muted">Timezone</Text>
-          <Input key={f.dailyTimezone} h="44px" borderRadius="14px" textStyle="label" fontSize="16px" aria-label="Timezone" defaultValue={f.dailyTimezone} {...(f.dailyTimezone !== b.dailyTimezone ? unsentOutline : {})} onBlur={(e) => { if (e.target.value && e.target.value !== f.dailyTimezone) onOp((t) => editField(t, ["dailyTimezone"], e.target.value)); }} />
+          <Input key={f.dailyTimezone} h="36px" borderRadius="10px" textStyle="label" aria-label="Timezone" defaultValue={f.dailyTimezone} {...(f.dailyTimezone !== b.dailyTimezone ? unsentOutline : {})} onBlur={(e) => { if (e.target.value && e.target.value !== f.dailyTimezone) onOp((t) => editField(t, ["dailyTimezone"], e.target.value)); }} />
         </Flex>
       </Flex>
       <Box as="details">

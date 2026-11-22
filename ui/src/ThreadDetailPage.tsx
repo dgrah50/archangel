@@ -35,7 +35,7 @@ function Duration({ d }: { d: PhaseDuration }) {
   const over = d.running && d.limitMs !== null && d.ms > d.limitMs;
   const text = d.running ? (d.limitMs !== null ? `${mins(d.ms)} of ${Math.round(d.limitMs / 60_000)}` : `running ${mins(d.ms)}`) : mins(d.ms);
   return (
-    <Text textStyle="meta" color={over ? "owner" : "fg.subtle"} whiteSpace="nowrap" px="2.5">
+    <Text textStyle="meta" color={over ? "owner" : "fg.subtle"} whiteSpace="nowrap">
       {text}
     </Text>
   );
@@ -44,13 +44,13 @@ function Duration({ d }: { d: PhaseDuration }) {
 function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDuration[] }) {
   const at = RAIL.findIndex((r) => r.kind === phase);
   return (
-    <Flex align="flex-start" gap="3" wrap="wrap" bg="bg.subtle" rounded="14px" px="4" py="2.5" aria-label="Phase">
+    <Flex align="flex-start" gap="3" wrap="wrap" aria-label="Phase">
       {RAIL.map((r, i) => {
         const d = durations.find((x) => x.kind === r.kind);
         return (
           <Flex key={r.kind} align="flex-start" gap="3" flex={i < RAIL.length - 1 ? "1" : undefined} minW="0">
             <Box>
-              <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} borderWidth="1px" borderColor={i === at ? "border" : "transparent"} bg={i === at ? "bg" : undefined} rounded="full" px="2.5" py="1" whiteSpace="nowrap">
+              <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} py="1" whiteSpace="nowrap">
                 {i < at ? <Check /> : i === at ? <Dot /> : null}
                 {r.label}
               </Flex>
@@ -86,15 +86,14 @@ function TimelineRow({ e, now, open }: { e: TimelineEvent; now: number; open: bo
       <Text textStyle="ref" color="fg.subtle" w="44px" flexShrink={0} pt="2px" title={new Date(e.ts).toISOString()}>
         {clock(e.ts)}
       </Text>
-      <Box pt="5px">{e.tone === "failed" ? <Dot tone="owner" /> : e.kind === "attempt" ? <Dot /> : <Dot tone="hollow" />}</Box>
       <Details open={open} flex="1" minW="0">
-        <Text as="summary" textStyle="label" color="fg" cursor="pointer">
+        <Text as="summary" textStyle="label" color={e.tone === "failed" ? "owner" : "fg"} fontWeight={e.kind === "attempt" || e.tone === "failed" ? "500" : "400"} cursor="pointer">
           {e.title}{" "}
           <Text as="span" textStyle="meta" color="fg.subtle" fontWeight="400">
             {age(now - e.ts)} ago
           </Text>
         </Text>
-        <Flex mt="2" gap="x" wrap="wrap" columnGap="6" rowGap="2" borderWidth={e.kind === "attempt" ? "1px" : undefined} borderColor="border" rounded="12px" p={e.kind === "attempt" ? "3" : undefined}>
+        <Flex mt="2" wrap="wrap" columnGap="6" rowGap="2">
           {e.details.map((d, i) => (
             <Box key={`${d.label}-${i}`} minW="0" maxW="100%">
               <Text textStyle="meta" color="fg.subtle">
@@ -143,7 +142,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
           <Text textStyle="meta" color="fg.muted">
             <Ref repo={d.repo} num={d.issueNumber} />
           </Text>
-          <Text as="h2" textStyle="headline" fontSize="28px" lineHeight="34px" color="fg" mt="1">
+          <Text as="h2" textStyle="title" color="fg" mt="1">
             {d.title}
           </Text>
         </Box>
