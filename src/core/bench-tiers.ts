@@ -97,7 +97,7 @@ export async function collectBenchCases(sources: BenchSource[], role: WriterRole
         let base: string;
         try {
           base = c.conflictBase ?? (await git(clone.dir, ["merge-base", c.startSha, clone.mainRef])).trim();
-        } catch {
+        } catch (_err) {
           skipped++;
           continue;
         }
@@ -287,7 +287,7 @@ export async function runBenchTiers(opts: BenchOptions): Promise<BenchReport> {
         const r = await runArm(c, chain, opts, await brokerFor(c), opts.role);
         opts.ledger.putBenchResult(key, c.id, r, opts.now);
         return r;
-      } catch {
+      } catch (_err) {
         return null; // a failed run is an error for this case, not a failing score; it is never cached
       }
     };

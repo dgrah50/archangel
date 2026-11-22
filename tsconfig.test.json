@@ -7,6 +7,6 @@
     "module": "ESNext",
     "moduleResolution": "Bundler"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "test/**/*.tsx", "scripts/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "test/**/*.tsx", "scripts/**/*.ts", "formal/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -69,8 +69,8 @@ export function accountHomeProblems(accounts: Account[]): Array<{ id: string; pr
     try {
       if (!fs.statSync(dir).isDirectory()) throw new Error("not a directory");
       entries = fs.readdirSync(dir);
-    } catch {
-      out.push({ id: a.id, problem: `home ${dir} does not exist or is not a directory` });
+    } catch (err) {
+      out.push({ id: a.id, problem: `home ${dir} does not exist or is not a directory (${err instanceof Error ? err.message : String(err)})` });
       continue;
     }
     if (entries.length === 0) out.push({ id: a.id, problem: `home ${dir} is empty: log this account in first` });

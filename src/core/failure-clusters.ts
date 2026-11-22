@@ -1,5 +1,6 @@
 import type { Ledger } from "../ledger/store.js";
 import { ATTEMPT_ERROR_CATEGORIES, type AttemptErrorCategory } from "../ledger/schema.js";
+import { tryParseJson } from "./json.js";
 import { METRICS_WINDOW_DAYS, UNAVAILABLE } from "./metrics-block.js";
 import { EscalationCodeSchema } from "./thread-machine.js";
 import { workClassOfBranch } from "./work-class.js";
@@ -129,12 +130,8 @@ export function buildClusterBlock(rows: ClusterRows | null, now: number): string
     v.reviews++;
     if (r.verdict === "veto") {
       v.vetoes++;
-      let findings: unknown;
-      try {
-        findings = JSON.parse(r.findingsJson);
-      } catch {
-        findings = [];
-      }
+      const parsedFindings = tryParseJson(r.findingsJson);
+      const findings = parsedFindings.ok ? parsedFindings.value : [];
       for (const f of Array.isArray(findings) ? (findings as Array<{ severity?: unknown; file?: unknown }>) : []) {
         const sev = (SEVERITIES as readonly unknown[]).includes(f?.severity) ? (f.severity as string) : "unknown";
         veto.add(`${vendor} x ${sev} x ${pathBucket(f?.file)}`, r.ts, now);
@@ -185,7 +182,7 @@ export function buildClusterBlockFrom(
   let rows: ClusterRows;
   try {
     rows = ledger.listClusterRows({ repo: opts.repo, sinceMs: opts.now - METRICS_WINDOW_DAYS * DAY_MS, excludeScouts: opts.excludeScouts });
-  } catch {
+  } catch (_err) {
     return buildClusterBlock(null, opts.now);
   }
   return buildClusterBlock(rows, opts.now);

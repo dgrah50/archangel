@@ -127,7 +127,7 @@ export async function sendDigestIfDue(
     try {
       const open = await opts.openProposals();
       input.proposals = input.proposals.filter((p) => open.has(`${p.repo}#${p.issueNumber}`));
-    } catch {
+    } catch (_err) {
       input.proposals = null; // GitHub read failed: say "unavailable", do not list stale proposals or pretend there are none
     }
   }

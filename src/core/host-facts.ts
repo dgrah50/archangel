@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveConfigPath } from "../config.js";
+import { tryParseJson } from "./json.js";
 import type { Ledger } from "../ledger/store.js";
 
 /** Every env var Archangel reads, by name only, with the feature that needs it. Values are never read into this table. */
@@ -52,12 +53,10 @@ export function buildHostStatus(ledger: Ledger, configPath: string | undefined, 
   const loadedSha = ledger.getSystemState(FACT_KEYS.sha);
   const loadedAtRaw = ledger.getSystemState(FACT_KEYS.loadedAt);
   let envPresence: Record<string, boolean> | null = null;
-  try {
-    const raw = ledger.getSystemState(FACT_KEYS.env);
-    const parsed: unknown = raw === null ? null : JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null && Object.values(parsed).every((v) => typeof v === "boolean")) envPresence = parsed as Record<string, boolean>;
-  } catch {
-    envPresence = null;
+  const raw = ledger.getSystemState(FACT_KEYS.env);
+  const parsedEnv = raw === null ? null : tryParseJson(raw);
+  if (parsedEnv?.ok && typeof parsedEnv.value === "object" && parsedEnv.value !== null && Object.values(parsedEnv.value).every((v) => typeof v === "boolean")) {
+    envPresence = parsedEnv.value as Record<string, boolean>;
   }
   let diskSha: string | null = null;
   let disk: HostStatus["disk"] = "ok";
@@ -66,7 +65,7 @@ export function buildHostStatus(ledger: Ledger, configPath: string | undefined, 
   else {
     try {
       diskSha = sha256(fs.readFileSync(file));
-    } catch {
+    } catch (_err) {
       disk = "unreadable";
     }
   }
