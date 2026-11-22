@@ -13,6 +13,7 @@ import { listReports } from "./eval-reports.js";
 import { buildAccountsState } from "./ui-accounts.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildPitchesState } from "./ui-pitches.js";
+import { assetPath, type ImageMime } from "./pitch-ingest.js";
 import { buildThreadDetail } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
@@ -208,6 +209,23 @@ export async function startUiServer(
         if (opts.allowRemote) return sendJson(res, 403, { error: "pitches are disabled in remote mode" });
         if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
         return sendJson(res, 200, buildPitchesState(ledger));
+      }
+      if (pathname.startsWith("/api/pitch-asset/")) {
+        // Read by content hash only: the hash must be a stored attachment, and no part of the request names a path.
+        const sha = pathname.slice("/api/pitch-asset/".length);
+        if (!/^[0-9a-f]{64}$/.test(sha)) return sendJson(res, 400, { error: "asset id must be 64 hex characters" });
+        const mime = ledger.pitchAssetMime(sha);
+        const file = mime && opts.dataDir ? assetPath(opts.dataDir, sha, mime as ImageMime) : null;
+        if (!file || !fs.existsSync(file)) return sendJson(res, 404, { error: "no such asset" });
+        res.writeHead(200, {
+          "Content-Type": mime!,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'none'",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        res.end(fs.readFileSync(file));
+        return;
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));

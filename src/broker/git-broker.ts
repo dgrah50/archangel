@@ -95,6 +95,10 @@ export class GitBroker {
   }
 
   private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+    return (await this.runGitBytes(cwd, args, env)).toString("utf8");
+  }
+
+  private async runGitBytes(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Buffer> {
     const cleanEnv: NodeJS.ProcessEnv = {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: process.env.HOME ?? "/tmp",
@@ -107,6 +111,7 @@ export class GitBroker {
       cwd,
       env: cleanEnv,
       maxBuffer: 20 * 1024 * 1024,
+      encoding: "buffer",
     });
     return stdout;
   }
@@ -198,6 +203,13 @@ export class GitBroker {
     const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
     if (listed.trim() === "") return null;
     return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
+  }
+
+  /** Binary-safe `readFileAtRef`: the exact bytes of a blob, or null when the path does not exist at that ref. */
+  async readBinaryAtRef(ref: string, relPath: string): Promise<Buffer | null> {
+    const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
+    if (listed.trim() === "") return null;
+    return this.runGitBytes(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
   }
 
   private async hasCommitIn(repoDir: string, ref: string): Promise<boolean> {
