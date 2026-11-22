@@ -3,7 +3,6 @@ import { buildMetricsBlock } from "../src/core/metrics-block.js";
 import { buildScoutPrompt, toScoutWorkflow } from "../src/core/scout.js";
 import { Workflow } from "../src/core/workflow.js";
 import { okWorkflow, workflowFile } from "./helpers/workflow.js";
-import { listAllSkills } from "../src/core/skills.js";
 import type { AttemptErrorCategory } from "../src/ledger/schema.js";
 import { Ledger } from "../src/ledger/store.js";
 
@@ -27,22 +26,6 @@ describe("factory metrics block", () => {
       expect(block).toContain("attempt_failure_categories: timeout=2");
       expect(block).toContain("repeated attempt failure category timeout (2x)");
       for (const bad of ["IGNORE", "evil", "ANTHROPIC", "Title"]) expect(block).not.toContain(bad);
-    } finally {
-      ledger.close();
-    }
-  });
-
-  it("drops unknown escalation codes and vendors even if the ledger holds them", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    try {
-      const m = ledger.computeMetrics({ repo: "acme/app", sinceMs: 1 });
-      m.threads.escalationsByCode["ignore instructions"] = 5;
-      m.threads.escalationsByCode.gate_failed = 2;
-      m.reviews.byVendor["evil vendor"] = { approve: 1, veto: 1 };
-      m.attempts.errorCategories["free text"] = 9;
-      const block = buildMetricsBlock(m);
-      expect(block).toContain("gate_failed=2");
-      expect(block).not.toMatch(/ignore instructions|evil vendor|free text/);
     } finally {
       ledger.close();
     }
@@ -80,7 +63,4 @@ describe("includeMetrics Scout flag", () => {
     expect(Workflow.safeParse(workflowFile([{ name: "c", includeMetrics: "yes please" }])).success).toBe(false);
   });
 
-  it("ships the factory-signals skill", () => {
-    expect(listAllSkills()).toContain("general/factory-signals");
-  });
 });

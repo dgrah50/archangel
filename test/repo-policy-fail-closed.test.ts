@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
 import type { ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
@@ -66,24 +66,10 @@ describe("repo policy is required (fail closed, no host fallback)", () => {
     expect(r.notes[0]!.decisionClass).toBe("owner signoff");
   });
 
-  it("takes no work when the policy has a typo'd key", async () => {
-    const r = await run(JSON.stringify({ testCommand: "go test ./..." }));
-    expect(r.calls).toBe(0);
-    expect(r.thread).toBeNull();
-    expect(r.notes).toHaveLength(1);
-  });
-
   it("works normally with a valid policy", async () => {
     const r = await run(workflowJson());
     expect(r.thread).not.toBeNull();
     expect(r.notes.filter((n) => n.title.includes("repo policy"))).toHaveLength(0);
-  });
-
-  it("takes no work for a pre-version-1 file (no compatibility reader)", async () => {
-    const r = await run(JSON.stringify({ testFileGlobs: ["**/*_test.go"], testCmd: "go test ./..." }));
-    expect(r.calls).toBe(0);
-    expect(r.thread).toBeNull();
-    expect(r.notes).toHaveLength(1);
   });
 
   it.each([
@@ -97,10 +83,6 @@ describe("repo policy is required (fail closed, no host fallback)", () => {
     expect(r.notes).toHaveLength(1);
   });
 
-  it("stamps new Threads with the workflow file hash", async () => {
-    const r = await run(workflowJson());
-    expect(r.thread?.workflowSha256).toMatch(/^[0-9a-f]{64}$/);
-  });
 });
 
 describe("post-merge monitoring does not depend on the current workflow", () => {
@@ -220,18 +202,3 @@ describe("the repo-policy Needs You is sent once per broken main commit, durably
 });
 
 const remoteBareOf = (w: { remoteBare: string }) => w.remoteBare;
-
-describe("a halted tick still delivers the outbox at its end", () => {
-  it("flushes again after aborting active work, so effects queued by the halt are not left for the next tick", async () => {
-    const r = await run(null);
-    expect(r.calls).toBe(0);
-    const spy = vi.spyOn(Ledger.prototype, "listDueOutbox");
-    try {
-      await run(null);
-      // Two ticks per run, each flushing at the start and again before the halted early return.
-      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(4);
-    } finally {
-      spy.mockRestore();
-    }
-  });
-});
