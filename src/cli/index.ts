@@ -13,6 +13,7 @@ import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
+import { sendDigestIfDue } from "../core/digest.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
@@ -218,6 +219,15 @@ program
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
         }
+      }
+      try {
+        await sendDigestIfDue(rootLedger, notifier, {
+          now: Date.now(),
+          timeZone: first.dailyTimezone,
+          digestHour: first.digestHour,
+        });
+      } catch (err) {
+        console.error("[archangel] Digest error:", err);
       }
     };
 

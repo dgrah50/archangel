@@ -71,6 +71,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       async notifyNeedsYou(i) {
         notifications.push(`${i.issueNumber}:${i.reason}`);
       },
+      async sendDigest() {},
     };
 
     let implementCalls = 0;
@@ -208,6 +209,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       async notifyNeedsYou(i) {
         notifications.push(`${i.issueNumber}:${i.reason}`);
       },
+      async sendDigest() {},
     };
 
     const implementer: Implementer = {
@@ -290,7 +292,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       bareRepoPath: path.join(root, "broker.git"),
       clonesDir: path.join(root, "clones"),
     });
-    const notifier: Notifier = { async notifyNeedsYou() {} };
+    const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
 
     let attemptNum = 0;
     const promptsSeen: string[] = [];

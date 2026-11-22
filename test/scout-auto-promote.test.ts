@@ -194,7 +194,7 @@ describe("Scout autoPromote (owner opt-in per Scout file)", () => {
         broker,
         implementer: { run: async () => ({ ok: false, costUsd: 0, turns: 0, summary: "", transcriptPath: "", aborted: false }) },
         reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
-        notifier: { notifyNeedsYou: async () => {} },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
       });
       await rec.tick(Date.now(), { waitForAttempts: false });
       rec.abortAllActive("control");

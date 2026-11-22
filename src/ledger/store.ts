@@ -1,3 +1,4 @@
+import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -1151,6 +1152,66 @@ export class Ledger {
       return true;
     });
     return tx();
+  }
+
+  // ---- Daily digest ----
+
+  dayKeyOf(ts: number): string {
+    return formatDayKey(ts, this.timeZone);
+  }
+
+  digestSentFor(dayKey: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM audit_log WHERE topic = 'digest/sent' AND json_extract(payload_json, '$.dayKey') = ? LIMIT 1`)
+      .get(dayKey);
+    return Boolean(row);
+  }
+
+  markDigestSent(dayKey: string, now = Date.now()): void {
+    this.appendAudit("digest/sent", null, "archangel", { dayKey }, now, null);
+  }
+
+  /**
+   * Digest inputs across ALL repos in this Ledger. Needs You age is time since the Thread's last transition (`updated_at`).
+   * "Yesterday" is the local day before today in the Ledger timezone. Reverts are yesterday's merges whose main-watch is now red
+   * (no timestamp is recorded for the red transition itself). Owner merges come from `thread/owner_merged` audit rows.
+   */
+  collectDigestInput(now: number): DigestInput {
+    const yKey = formatDayKey(now - 86_400_000, this.timeZone);
+    const needsYou = this.listAllThreads(["needs_you"]).flatMap((t) =>
+      t.phase.kind === "needs_you"
+        ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
+        : [],
+    );
+    const merges = (
+      this.db.prepare(`SELECT * FROM merges WHERE day_key = ? AND shadow_only = 0`).all(yKey) as Record<string, unknown>[]
+    ).map(mapMerge);
+    const ownerMerges = (
+      this.db
+        .prepare(`SELECT ts FROM audit_log WHERE topic = 'thread/owner_merged' AND ts >= ?`)
+        .all(now - 3 * 86_400_000) as Array<{ ts: number }>
+    ).filter((r) => formatDayKey(r.ts, this.timeZone) === yKey).length;
+    const spend = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`).get(yKey) as { usd: number } | undefined;
+    const proposals = (
+      this.db
+        .prepare(
+          `SELECT p.repo, p.issue_number, p.scout_name FROM scout_proposals p
+           LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+           WHERE t.issue_number IS NULL ORDER BY p.created_at ASC`,
+        )
+        .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name }));
+    return {
+      now,
+      needsYou,
+      yesterday: {
+        autonomousMerges: merges.length,
+        ownerMerges,
+        reverts: merges.filter((x) => x.mainWatch.kind === "red").length,
+        spendUsd: spend?.usd ?? 0,
+      },
+      proposals,
+    };
   }
 
   // ---- Operational Metrics & Self-Improvement Telemetry ----

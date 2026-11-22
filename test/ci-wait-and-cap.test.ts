@@ -138,7 +138,7 @@ describe("autonomy cap", () => {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
     const notes: Array<{ decisionClass: string; recommendation: string }> = [];
-    const notifier: Notifier = { async notifyNeedsYou(i) { notes.push(i); } };
+    const notifier: Notifier = { async notifyNeedsYou(i) { notes.push(i); }, async sendDigest() {} };
     let calls = 0;
     const implementer: Implementer = {
       async run(input) {
