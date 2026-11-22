@@ -1281,6 +1281,26 @@ export class Reconciler {
   ): Promise<void> {
     if (thread.phase.kind !== "awaiting_gate") return;
 
+    // GitHub never runs pull_request workflows on a PR that conflicts with its base, so the required checks would
+    // never appear. Resolve the conflict first; do not let the missing checks time out.
+    if (pr.mergeable === false && thread.mode === "autonomous") {
+      const cleanMergeTree = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
+      await this.rebaseOntoMain(thread, pr, issue, mainSha, cleanMergeTree, [
+        { code: "merge_conflict", message: "PR conflicts with the base branch; the Gate cannot run until it is rebased" },
+      ] as ReturnType<typeof computeBlockers>, now);
+      return;
+    }
+    // GitHub is still computing mergeability (and has not started workflows yet): keep waiting, and restart the
+    // missing-checks clock so this wait is never counted as checks that failed to appear.
+    if (pr.mergeable === null) {
+      this.applyMachineEvent(
+        thread,
+        { t: "head_moved", pr: { prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha }, now },
+        { now },
+      );
+      return;
+    }
+
     const checks = await this.github.getCheckRunsForRef(pr.headSha);
     const verdict = classifyGate({
       requiredChecks: this.effectiveRequiredChecks,
@@ -1523,6 +1543,72 @@ export class Reconciler {
     }
   }
 
+  /**
+   * Gets a conflicting or stale PR back onto main: a deterministic Broker rebase when the merge-tree is clean (0 LLM tokens),
+   * else an LLM rebase Attempt, bounded by maxRebasesPerThread; escalates `merge_conflict` once that is exhausted.
+   * Shared by landing (computed blockers) and the Gate wait (GitHub reports the PR as conflicting).
+   */
+  private async rebaseOntoMain(
+    thread: ThreadRecord,
+    pr: GitHubPr,
+    issue: GitHubIssue | undefined,
+    mainSha: string,
+    cleanMergeTree: boolean,
+    blockers: ReturnType<typeof computeBlockers>,
+    now: number,
+  ): Promise<void> {
+    if (
+      cleanMergeTree &&
+      thread.rebaseCount < this.cfg.maxRebasesPerThread
+    ) {
+      const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
+      if (rebased.ok) {
+        const remoteUrl = await this.github.getRemoteUrlWithToken();
+        await this.broker.pushFactoryBranch(thread.branchName, rebased.headSha, remoteUrl);
+        this.ledger.recordPushedSha(rebased.headSha, thread.issueNumber, "broker", now);
+        const moved = this.applyMachineEvent(
+          thread,
+          {
+            t: "head_moved",
+            pr: { prNumber: pr.number, headSha: rebased.headSha, baseSha: mainSha },
+            now,
+          },
+          {
+            incRebase: true,
+            auditTopic: "broker/deterministic_rebase",
+            auditPayload: { oldSha: pr.headSha, newSha: rebased.headSha, mainSha },
+            now,
+          },
+        );
+        if (moved) {
+          this.logger?.info(
+            "broker/deterministic_rebase",
+            `Rebased ${thread.branchName} onto ${mainSha.slice(0, 8)} -> ${rebased.headSha.slice(0, 8)} (0 LLM tokens)`,
+            { repo: this.ledger.repo, issue: thread.issueNumber },
+          );
+        }
+        return;
+      }
+    }
+    if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
+      if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
+      await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
+      return;
+    }
+    const escalated = this.applyMachineEvent(
+      thread,
+      {
+        t: "escalate",
+        code: "merge_conflict",
+        reason: "Branch is behind main or conflicted after max rebase attempts.",
+      },
+      { auditTopic: "thread/needs_you", now },
+    );
+    if (escalated) {
+      await this.postRecapSafe(escalated, pr, blockers);
+    }
+  }
+
   private async reconcileLanding(
     thread: ThreadRecord,
     _stalePr: GitHubPr,
@@ -1611,57 +1697,15 @@ export class Reconciler {
       blockers.some((b) => b.code === "merge_conflict" || b.code === "branch_behind_main") &&
       thread.mode === "autonomous"
     ) {
-      if (
-        mergeTreeClean &&
-        !blockers.some((b) => b.code === "merge_conflict") &&
-        thread.rebaseCount < this.cfg.maxRebasesPerThread
-      ) {
-        const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
-        if (rebased.ok) {
-          const remoteUrl = await this.github.getRemoteUrlWithToken();
-          await this.broker.pushFactoryBranch(thread.branchName, rebased.headSha, remoteUrl);
-          this.ledger.recordPushedSha(rebased.headSha, thread.issueNumber, "broker", now);
-          const moved = this.applyMachineEvent(
-            thread,
-            {
-              t: "head_moved",
-              pr: { prNumber: pr.number, headSha: rebased.headSha, baseSha: mainSha },
-              now,
-            },
-            {
-              incRebase: true,
-              auditTopic: "broker/deterministic_rebase",
-              auditPayload: { oldSha: pr.headSha, newSha: rebased.headSha, mainSha },
-              now,
-            },
-          );
-          if (moved) {
-            this.logger?.info(
-              "broker/deterministic_rebase",
-              `Rebased ${thread.branchName} onto ${mainSha.slice(0, 8)} -> ${rebased.headSha.slice(0, 8)} (0 LLM tokens)`,
-              { repo: this.ledger.repo, issue: thread.issueNumber },
-            );
-          }
-          return;
-        }
-      }
-      if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
-        if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
-        await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
-        return;
-      }
-      const escalated = this.applyMachineEvent(
+      await this.rebaseOntoMain(
         thread,
-        {
-          t: "escalate",
-          code: "merge_conflict",
-          reason: "Branch is behind main or conflicted after max rebase attempts.",
-        },
-        { auditTopic: "thread/needs_you", now },
+        pr,
+        issue,
+        mainSha,
+        mergeTreeClean && !blockers.some((b) => b.code === "merge_conflict"),
+        blockers,
+        now,
       );
-      if (escalated) {
-        await this.postRecapSafe(escalated, pr, blockers);
-      }
       return;
     }
 
