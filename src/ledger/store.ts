@@ -1443,6 +1443,11 @@ export class Ledger {
     return Boolean(this.db.prepare(`SELECT 1 FROM audit_log WHERE ${where.join(" AND ")} LIMIT 1`).get(...params));
   }
 
+  /** Rows of one audit topic across every repo since `sinceMs` (for limits that are global rather than per repo). */
+  countAuditAllRepos(topic: string, sinceMs: number): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE topic = ? AND ts >= ?").get(topic, sinceMs) as { n: number }).n;
+  }
+
   listAudit(
     opts: { repo?: string; topicPrefix?: string; issueNumber?: number; limit?: number } = {},
   ): AuditLogEntry[] {
@@ -2090,6 +2095,16 @@ export class Ledger {
     );
     const faults = attempt(() => this.listHealthFaults(now).map((f) => ({ repo: f.repo, category: f.category, recent24h: f.recent24h, lastError: f.lastError })));
     const pitches = attempt(() => this.listOpenPitches().map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, scoutName: p.scoutName, since: p.filedAt })));
+    const draftReverts = attempt(() =>
+      (
+        this.db
+          .prepare(`SELECT repo, payload_json FROM audit_log WHERE topic = 'correction_draft/revert_flag' AND ts >= ? ORDER BY id ASC`)
+          .all(now - 14 * 86_400_000) as Array<{ repo: string; payload_json: string }>
+      ).map((r) => {
+        const p = JSON.parse(r.payload_json) as { category: string; url: string; before: number; after: number };
+        return { repo: r.repo, category: p.category, url: p.url, before: p.before, after: p.after };
+      }),
+    );
     return {
       now,
       needsYou,
@@ -2102,6 +2117,7 @@ export class Ledger {
       proposals,
       pitches,
       faults,
+      draftReverts,
     };
   }
 
