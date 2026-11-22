@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { REPO_POLICY_PATH } from "../config.js";
+import { REPO_POLICY_PATH, REPO_SLUG_RE } from "../config.js";
 import { createOrResetBranch, isNotFound, type OnboardRunner } from "./onboard.js";
 import {
   Workflow,
@@ -90,7 +90,7 @@ export async function planWorkflowProposal(
   proposedRaw: string,
   opts: { baseFileSha256?: string; scoutPrompts?: Record<string, string>; host?: HostWorkflowInput } = {},
 ): Promise<ProposePlan> {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`Expected owner/name, got '${repo}'`);
+  if (!REPO_SLUG_RE.test(repo)) throw new Error(`Expected owner/name, got '${repo}'`);
   let json: unknown;
   try {
     json = JSON.parse(proposedRaw);

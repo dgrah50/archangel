@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { LabelsSchema } from "../config.js";
+import { LabelsSchema, REPO_SLUG_RE } from "../config.js";
 
 const execFileP = promisify(execFile);
 
@@ -289,7 +289,7 @@ export async function onboard(
   opts: { dryRun?: boolean; log?: (s: string) => void; archangelRoot?: string } = {},
 ): Promise<OnboardPlan> {
   const log = opts.log ?? console.log;
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`Expected owner/name, got '${repo}'`);
+  if (!REPO_SLUG_RE.test(repo)) throw new Error(`Expected owner/name, got '${repo}'`);
   const plan = await buildPlan(runner, repo, { archangelRoot: opts.archangelRoot });
   printPlan(plan, log);
   if (opts.dryRun) {

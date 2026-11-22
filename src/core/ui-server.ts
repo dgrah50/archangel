@@ -4,6 +4,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import type { Ledger } from "../ledger/store.js";
+import { REPO_SLUG_RE } from "../config.js";
 import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
@@ -100,7 +101,7 @@ export async function startUiServer(
       }
       try {
         const repo = decodeURIComponent(proposeMatch[1]!);
-        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new ProposeRefusal(400, "repo must be owner/name");
+        if (!REPO_SLUG_RE.test(repo)) throw new ProposeRefusal(400, "repo must be owner/name");
         let body: unknown;
         try {
           body = JSON.parse(await readBody(req));
