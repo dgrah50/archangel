@@ -37,6 +37,8 @@ import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
+import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
+import { execFileGroup } from "../core/spawn-group.js";
 import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
@@ -49,6 +51,7 @@ import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
+import { setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS } from "../core/telemetry.js";
 
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
@@ -149,6 +152,7 @@ program
     }
 
     recordDaemonFacts(rootLedger, { configPath: opts.config });
+    setTelemetrySink(rootLedger);
 
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
@@ -275,6 +279,12 @@ program
     };
 
     const runTickBody = async () => {
+      try {
+        const swept = await sweepOrphanPreviews();
+        if (swept.length > 0) console.log(`[archangel] Killed orphan preview(s): ${swept.join(", ")}`);
+      } catch (err) {
+        console.error("[archangel] Preview sweep error:", err);
+      }
       for (const { repoSlug, rec } of reconcilers) {
         if (stopping) break;
         try {
@@ -282,6 +292,11 @@ program
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
         }
+      }
+      try {
+        rootLedger.pruneTelemetry(Date.now() - TELEMETRY_RETENTION_MS, TELEMETRY_PRUNE_BATCH);
+      } catch (err) {
+        console.error("[archangel] Telemetry prune error:", err);
       }
       try {
         await sendDigestIfDue(rootLedger, notifier, {
@@ -307,11 +322,13 @@ program
         stopping = true;
         if (nextTimer) clearTimeout(nextTimer);
         clearInterval(lockHeartbeat);
+        stopAllPreviews();
         for (const { rec } of reconcilers) {
           rec.abortAllActive("control");
           await rec.waitForActiveTasks();
         }
         await inFlightTick;
+        setTelemetrySink(null);
         rootLedger.releaseDaemonLock(daemonOwnerId);
         rootLedger.close();
       })();
@@ -915,6 +932,35 @@ program
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
+    }
+  });
+
+program
+  .command("preview <ref>")
+  .description("RUNNER ONLY: serve a local git ref in a macOS sandbox on a loopback URL (no PoC build, no Ledger row; Ctrl-C, the 60 min TTL or 15 min idle stops it)")
+  .requiredOption("--start <command>", "The command that starts the app; it gets PORT and HOST=127.0.0.1")
+  .option("--repo <dir>", "The repository holding <ref>", process.cwd())
+  .option("--ready-path <path>", "Polled for up to 30 s before the URL is printed", "/")
+  .option("--ui-port <n>", "The dashboard port, which a preview never uses", "4477")
+  .action(async (ref: string, opts: { start: string; repo: string; readyPath: string; uiPort: string }) => {
+    const [cmd, ...args] = opts.start.trim().split(/\s+/);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-preview-ws-"));
+    const provider = new SandboxExecProvider({ prepare: async () => ({ id: dir, path: dir }), collect: async () => ({ kind: "clone", path: dir }), destroy: () => undefined }, { reservedPorts: [Number(opts.uiPort)] });
+    try {
+      await execFileGroup("git", ["init", "--quiet", dir]);
+      await execFileGroup("git", ["fetch", "--quiet", path.resolve(opts.repo), ref], { cwd: dir });
+      await execFileGroup("git", ["checkout", "--quiet", "FETCH_HEAD"], { cwd: dir });
+      // Installs never run here: Seatbelt cannot allow registry hosts for one step, so dependencies must come from the ref.
+      const preview = await provider.expose({ id: dir, path: dir }, { port: 0, ttlMs: 60 * 60_000, cmd: cmd!, args, readyPath: opts.readyPath });
+      process.once("SIGINT", preview.close);
+      process.once("SIGTERM", preview.close);
+      console.log(`Preview of ${ref}: ${preview.url}  (sandboxed, loopback only; Ctrl-C to stop)`);
+      await preview.closed;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

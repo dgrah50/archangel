@@ -541,4 +541,16 @@ CREATE TABLE IF NOT EXISTS signal_watermarks (
   polled_at INTEGER NOT NULL,
   PRIMARY KEY (repo, adapter)
 );
+
+-- Telemetry: the factory's own measurements, local only. name and tags are closed enums (see core/telemetry-events.ts); never free text.
+CREATE TABLE IF NOT EXISTS telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  repo TEXT,
+  name TEXT NOT NULL,
+  value REAL NOT NULL,
+  tags_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_name_ts ON telemetry(name, ts);
+CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts);
 `;

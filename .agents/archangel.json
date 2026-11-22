@@ -78,6 +78,8 @@
       "src/core/eval-reports.ts",
       "src/core/ui-host-config.ts",
       "src/core/ui-onboard.ts",
+      "src/core/telemetry.ts",
+      "src/core/telemetry-events.ts",
       "src/core/ui-gh.ts",
       "src/core/ui-accounts.ts",
       "src/core/plan.ts",
