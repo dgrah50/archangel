@@ -122,6 +122,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     }
     const neededAccounts = [...rolesByAccount.values()];
     const missingBins: string[] = [];
+    const notInstalled = new Set<string>();
     const baseEnv = opts.env ?? process.env;
     const verified: string[] = [];
     for (const { account } of neededAccounts) {
@@ -142,7 +143,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
         }
       } catch (_err) {
-        missingBins.push(`${label} (not found in PATH)`);
+        if (!notInstalled.has(p)) missingBins.push(`${p} (not found in PATH; install the ${p} CLI, then log in)`);
+        notInstalled.add(p);
       }
     }
     if (missingBins.length > 0) {
@@ -173,6 +175,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     }
     if (opts.smoke) {
       for (const { account, roles } of neededAccounts) {
+        if (notInstalled.has(account.provider)) continue;
         checks.push(await smokeAccount(account, roles, baseEnv));
       }
     }
