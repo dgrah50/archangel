@@ -125,3 +125,21 @@ describe("Ledger outbox ordering", () => {
     }
   });
 });
+
+describe("daemon lock heartbeat", () => {
+  it("returns false once the lock is gone, unreadable or taken by another daemon, and never rewrites it", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // no lock row
+      expect(ledger.acquireDaemonLock("a", 1000)).toBe(true);
+      expect(ledger.heartbeatDaemonLock("a")).toBe(true);
+      ledger.setSystemState("daemon_lock", JSON.stringify({ ownerId: "b", pid: 1, heartbeatAt: 1 }));
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // stolen
+      expect(JSON.parse(ledger.getSystemState("daemon_lock")!).ownerId).toBe("b");
+      ledger.setSystemState("daemon_lock", "not json");
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // unreadable
+    } finally {
+      ledger.close();
+    }
+  });
+});
