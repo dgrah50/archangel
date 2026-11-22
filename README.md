@@ -35,7 +35,7 @@
 
 **Requirements**
 
-- Node.js 22+, `git >= 2.38`, and GitHub CLI (`gh`)
+- Bun 1.4.5+, `git >= 2.38`, and GitHub CLI (`gh`)
 - A least-privilege GitHub App created with `bun scripts/create-github-app.ts`
 - Two or more logged-in AI CLIs (`codex`, `claude`, `agy`) for cross-vendor review
 
@@ -298,7 +298,7 @@ New repositories default to `shadowMode: true`. Archangel runs the full loop (bu
 
 ### Does Archangel run on Linux or only macOS?
 
-The reconciler daemon (`archangel start`), CLI commands, Gate, and local dashboard (`archangel ui`) run on both macOS and Linux with Node.js 22+. The `archangel daemon install|restart|uninstall|status` helper manages macOS `launchd` specifically.
+The reconciler daemon (`archangel start`), CLI commands, Gate, and local dashboard (`archangel ui`) run on both macOS and Linux with Bun. Only the Gate bundle (`bin/archangel-gate.mjs`) runs on Node 22, inside the target repo's GitHub Actions. The `archangel daemon install|restart|uninstall|status` helper manages macOS `launchd` specifically.
 
 ---
 

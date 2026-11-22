@@ -13,7 +13,7 @@ import { FaultsSection, LadderList, ReadError, SmokeChecks, tokenOf, useLadder }
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
-import { CopyCommand, Owed, Page, PageHeadline, Section } from "./page";
+import { CopyCommand, Dot, Owed, Page, PageHeadline, Section } from "./page";
 import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNotProtected, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
 interface GhRepo {
@@ -68,14 +68,14 @@ function Mark({ done }: { done: boolean }) {
       <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ) : (
-    <Box role="img" aria-label="Needs attention" w="14px" h="14px" m="1px" rounded="4px" bg="owner" flexShrink={0} />
+    <Flex role="img" aria-label="Needs attention" w="16px" h="16px" align="center" justify="center" flexShrink={0}><Dot tone="owner" /></Flex>
   );
 }
 
 /** A problem in plain words: title, an amber tag, the explanation, and commands to copy. */
 function Problem({ title, tag, children }: { title: string; tag: string; children?: React.ReactNode }) {
   return (
-    <Flex direction="column" gap="2.5" p="4" rounded="14px" bg="bg.subtle" role="alert">
+    <Flex direction="column" gap="2.5" pt="3" borderTopWidth="1px" borderTopColor="owner" role="alert">
       <Flex gap="4" align="baseline">
         <Text textStyle="label" fontWeight="600" color="fg" flex="1">{title}</Text>
         <Text textStyle="meta" color="owner">{tag}</Text>
@@ -117,7 +117,7 @@ function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onR
           {r.url ? <Link href={r.url} target="_blank" rel="noreferrer noopener">{r.name}</Link> : r.name}
         </Line>
       ))}
-      {bad.length > 0 ? <Text role="alert" textStyle="meta" color="owner">{bad.length} check(s) are failing on this PR.</Text> : null}
+      {bad.length > 0 ? <Text role="alert" textStyle="meta" color="owner">{bad.length === 1 ? "1 check is" : `${bad.length} checks are`} failing on this PR.</Text> : null}
       {pr.state === "CLOSED" ? <Text role="alert" textStyle="meta" color="owner">The PR was closed without merging. Plan and apply again above.</Text> : null}
       <Flex align="center" gap="3">
         <Link href={pr.url} target="_blank" rel="noreferrer noopener" textStyle="meta">Review and merge on GitHub</Link>
@@ -247,7 +247,7 @@ function Cell({ status, title }: { status: "pass" | "bad" | "none" | "pending"; 
       <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
-  if (status === "bad") return <Box role="img" aria-label={title ?? "Needs attention"} title={title} w="14px" h="14px" rounded="4px" bg="owner" />;
+  if (status === "bad") return <Flex role="img" aria-label={title ?? "Needs attention"} title={title} w="16px" h="16px" align="center" justify="center"><Dot tone="owner" /></Flex>;
   return <Text textStyle="meta" color="fg.subtle" title={status === "pending" ? "Not read yet" : "Not reported"}>{status === "pending" ? "..." : "-"}</Text>;
 }
 
@@ -377,7 +377,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
           {open === 2 ? (
             <Flex direction="column" gap="2">
               {host === undefined ? <Line>Loading archangel.yaml...</Line> : host.state === "ok" ? (
-                <Prose>archangel.yaml is valid: owner id {host.config.ownerUserId}, {host.config.projects.length} project(s).</Prose>
+                <Prose>archangel.yaml is valid: owner id {host.config.ownerUserId}, {host.config.projects.length} {host.config.projects.length === 1 ? "project" : "projects"}.</Prose>
               ) : (
                 <Problem title={host.state === "missing" ? "There is no archangel.yaml." : `archangel.yaml is ${host.state}.`} tag="Needs you"><Prose>{host.error}</Prose></Problem>
               )}

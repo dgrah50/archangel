@@ -10,7 +10,7 @@ import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
-import { Page } from "./page";
+import { Page, Ticked } from "./page";
 import { PitchesPage } from "./PitchesPage";
 import type { PitchesState } from "../../src/core/ui-pitches.js";
 import { Pipeline } from "./Pipeline";
@@ -133,7 +133,7 @@ export function AppView({
         <Box pt="4" px={{ base: "6", md: "56px" }}>
           {bannersFor(state, now).map((b) => (
             <Notice key={b.text} tone={b.tone}>
-              <Text textStyle="sm">{b.text}</Text>
+              <Text textStyle="body13"><Ticked>{b.text}</Ticked></Text>
             </Notice>
           ))}
         </Box>

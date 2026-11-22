@@ -11,21 +11,21 @@ const SLUG = /^[\w.-]+\/[\w.-]+$/;
 /** A page body: the headline, then its sections. Page padding lives here, so existing pages that bring their own padding are not wrapped in it. */
 export function Page({ children, ...rest }: { children: ReactNode } & FlexProps) {
   return (
-    <Flex direction="column" px={{ base: "6", md: "56px" }} pt="34px" pb="30px" minH="100vh" {...rest}>
+    <Flex direction="column" flex="1" px={{ base: "6", md: "56px" }} pt="7" pb="8" {...rest}>
       {children}
     </Flex>
   );
 }
 
-/** One plain sentence stating the situation, plus one grey sentence under it. Wrap the words that need the owner in <Owed>. */
-export function PageHeadline({ children, sub }: { children: ReactNode; sub?: ReactNode }) {
+/** One plain sentence stating the situation, plus one grey sentence under it. Wrap the words that need the owner in <Owed>. `lead` is the display size, for the Overview only. */
+export function PageHeadline({ children, sub, lead }: { children: ReactNode; sub?: ReactNode; lead?: boolean }) {
   return (
-    <Flex direction="column" gap="1" pt="10px" pb="6">
-      <Text as="h1" textStyle="headline" color="fg">
+    <Flex direction="column" gap="1" pb="6">
+      <Text as="h1" textStyle={lead ? "headlineLead" : "headline"} color="fg">
         {children}
       </Text>
       {sub ? (
-        <Text textStyle="headlineSub" color="fg.subtle">
+        <Text textStyle="headlineSub" color="fg.muted" maxW="64ch">
           {sub}
         </Text>
       ) : null}
@@ -85,6 +85,23 @@ export function Row({ lead, owed, title, meta, action }: { lead: ReactNode; owed
   );
 }
 
+/** Plain text where `backticked` spans are commands: they render in mono, without the backticks. */
+export function Ticked({ children }: { children: string }) {
+  return (
+    <>
+      {children.split("`").map((part, i) =>
+        i % 2 === 1 ? (
+          <Text as="code" key={i} textStyle="command" fontSize="0.92em" lineHeight="inherit" bg="bg.muted" rounded="4px" px="4px" py="1px" whiteSpace="nowrap">
+            {part}
+          </Text>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 /** A button that is a link (to GitHub or another page). The dashboard never acts: it only links. */
 export function LinkButton({ href, primary, external, children }: { href: string; primary?: boolean; external?: boolean; children: ReactNode }) {
   return (
@@ -114,14 +131,14 @@ export function Ref({ repo, num, href }: { repo: string; num: number; href?: str
 }
 
 /** A metric: label, one big number (with an optional aside), and one sentence saying what it is for and what clears it. */
-export function Metric({ label, value, aside, visual, children }: { label: string; value: ReactNode; aside?: ReactNode; visual?: ReactNode; children: ReactNode }) {
+export function Metric({ label, value, aside, visual, empty, children }: { label: string; value: ReactNode; aside?: ReactNode; visual?: ReactNode; empty?: boolean; children: ReactNode }) {
   return (
     <Section flex="1" minW="0" gap="1.5">
       <Text textStyle="label" fontSize="12.5px" lineHeight="17px" color="fg">
         {label}
       </Text>
       <Flex align="center" gap="4">
-        <Text textStyle="bigNumber" color="fg" whiteSpace="pre">
+        <Text textStyle="bigNumber" color={empty ? "fg.subtle" : "fg"} whiteSpace="pre">
           {value}
           {aside ? (
             <Box as="span" fontSize="14px" fontWeight="400" letterSpacing="body" color="fg.subtle">

@@ -33,11 +33,11 @@ export function Shell({ route, state, children }: { route: Route; state: UiState
         </Flex>
         <Repos state={state} />
         <Box flex="1" display={{ base: "none", md: "block" }} />
-        <DaemonCard state={state} />
+        <DaemonLine state={state} />
       </Flex>
-      <Box flex="1" minW="0">
+      <Flex direction="column" flex="1" minW="0" minH={{ md: "100vh" }}>
         {children}
-      </Box>
+      </Flex>
     </Flex>
   );
 }
@@ -142,26 +142,24 @@ function Repos({ state }: { state: UiState | null }) {
   );
 }
 
-function DaemonCard({ state }: { state: UiState | null }) {
+/** One line: is the daemon alive, and how long since its last tick. The offline banner carries the explanation and the command. */
+function DaemonLine({ state }: { state: UiState | null }) {
   const beat = state?.daemonHeartbeatAt ?? null;
   const live = state !== null && beat !== null && state.generatedAt - beat <= 3 * 60_000;
   const secs = state && beat !== null ? Math.max(0, Math.round((state.generatedAt - beat) / 1000)) : null;
   return (
-    <Flex direction="column" gap="10px" p="12px" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="14px" display={{ base: "none", md: "flex" }}>
-      <Flex align="center" gap="2">
+    <Flex align="center" gap="2" px="10px" pt="12px" borderTopWidth="1px" borderTopColor="border" display={{ base: "none", md: "flex" }}>
+      <Flex w="16px" justify="center" flexShrink={0}>
         <Dot tone={live ? "passed" : state === null ? "hollow" : "owner"} />
-        <Text textStyle="meta" fontSize="12px" fontWeight="500" lineHeight="16px" color="fg" flex="1">
-          {state === null ? "Daemon unknown" : live ? "Daemon running" : "Daemon offline"}
-        </Text>
-        {secs !== null ? (
-          <Text textStyle="caption" fontFamily="mono" color="fg.subtle">
-            {secs < 90 ? `tick ${secs}s` : `tick ${Math.round(secs / 60)}m`}
-          </Text>
-        ) : null}
       </Flex>
-      <Text textStyle="caption" lineHeight="15px" color="fg.subtle">
-        Read-only by default. Merges and approvals happen on GitHub.
+      <Text textStyle="meta" fontSize="12px" lineHeight="16px" color="fg" flex="1">
+        {state === null ? "Daemon unknown" : live ? "Daemon running" : "Daemon offline"}
       </Text>
+      {secs !== null ? (
+        <Text textStyle="caption" color="fg.subtle">
+          {secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`}
+        </Text>
+      ) : null}
     </Flex>
   );
 }

@@ -12,7 +12,7 @@
     "url": "https://github.com/dgrah50/archangel/issues"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "bun": ">=1.4.5"
   },
   "keywords": [
     "software-factory",
@@ -24,10 +24,10 @@
   ],
   "type": "module",
   "bin": {
-    "archangel": "./dist/cli/index.js"
+    "archangel": "./src/cli/index.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && bun run build:gate-bundle && bun run build:ui",
+    "build": "bun run build:gate-bundle && bun run build:ui",
     "build:gate-bundle": "esbuild src/gate/cli.ts --bundle --minify --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=bin/archangel-gate.mjs",
     "build:ui": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "build:all": "bun run build",
@@ -36,6 +36,7 @@
     "verify:formal": "bun formal/check.ts",
     "test": "bun test --parallel --timeout=30000",
     "test:all": "bun run typecheck && bun run test",
+    "start": "bun src/cli/index.ts start",
     "dev": "bun src/cli/index.ts"
   },
   "dependencies": {
@@ -45,7 +46,6 @@
     "@getpaseo/client": "^0.16.2",
     "@mastra/core": "^1.85.0",
     "@mastra/libsql": "^1.31.1",
-    "better-sqlite3": "^13.2.0",
     "commander": "^15.1.0",
     "esbuild": "^0.28.2",
     "yaml": "^2.9.1",
@@ -57,7 +57,6 @@
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@fontsource-variable/inter": "^5.3.0",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "^1.4.5",
     "@types/node": "^25.0.0",
     "@types/react": "^19.3.0",

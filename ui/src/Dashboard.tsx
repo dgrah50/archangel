@@ -24,8 +24,7 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
   const waiting = decisions + pitches;
   return (
     <Page>
-      <StatusLine state={s} />
-      <PageHeadline sub={`${waiting > 0 && stuck === 0 ? "Everything else is moving. " : ""}${landed} landed today, ${stuck === 0 ? "nothing is stuck" : `${stuck} stuck`}.`}>
+      <PageHeadline lead sub={`${waiting > 0 && stuck === 0 ? "Everything else is moving. " : ""}${landed} landed today, ${stuck === 0 ? "nothing is stuck" : `${stuck} stuck`}.`}>
         {waiting === 0 ? (
           "Nothing is waiting on you."
         ) : (
@@ -36,9 +35,9 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
           </>
         )}
       </PageHeadline>
-      <Flex direction={{ base: "column", lg: "row" }} gap="56px" flexShrink={0}>
-        <Box flex="1" minW="0">
-          {waiting > 0 ? (
+      <Flex direction={{ base: "column", lg: "row" }} gap="56px" flexShrink={0} _empty={{ display: "none" }}>
+        {waiting > 0 ? (
+          <Box flex="1" minW="0">
             <RowList>
               {s.needsYou.map((i, idx) => (
                 <Row
@@ -67,13 +66,12 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
                 />
               ) : null}
             </RowList>
-          ) : null}
-        </Box>
-        <StopsNext state={s} host={host} />
+          </Box>
+        ) : null}
+        <StopsNext state={s} host={host} wide={waiting === 0} />
       </Flex>
       <LineMap state={s} landed={landed} />
-      <Box flex="1" />
-      <Flex gap="40px" flexShrink={0} direction={{ base: "column", md: "row" }} pt="8">
+      <Flex gap="40px" flexShrink={0} direction={{ base: "column", md: "row" }} pt="12">
         <SpendMetric state={s} />
         <CostMetric state={s} />
         <AgreementMetric state={s} />
@@ -82,35 +80,24 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
   );
 }
 
-function StatusLine({ state: s }: { state: UiState }) {
-  const beat = s.daemonHeartbeatAt;
-  const live = beat !== null && s.generatedAt - beat <= 3 * 60_000;
-  const at = new Date(s.generatedAt);
-  const when = `${at.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, ${at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
-  const heard = Math.max(0, ...Object.values(s.ownerLastHeardAt).map((v) => v ?? 0));
-  const heardAt = new Date(heard);
-  const heardDay = heardAt.toDateString() === at.toDateString() ? "" : `${heardAt.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, `;
-  const lastHeard = heard > 0 ? ` · you were last heard from at ${heardDay}${heardAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : "";
-  return (
-    <Flex align="center" gap="2">
-      <Box w="7px" h="7px" rounded="full" flexShrink={0} bg={live ? "passed" : "owner"} />
-      <Text textStyle="meta" lineHeight="18px" color="fg.subtle">
-        {when} · {live ? "daemon running" : "daemon offline"}{lastHeard}
-      </Text>
-    </Flex>
-  );
-}
+const heardAt = (ts: number, now: number) => {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date(now).toDateString() ? `at ${time}` : `on ${d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })} at ${time}`;
+};
 
-/** "What stops work next, and what clears it": only abnormal things. */
-function StopsNext({ state: s, host }: { state: UiState; host: HostStatus | null }) {
+/** "What stops work next, and what clears it": only abnormal things, so it is absent when nothing is about to stop. */
+function StopsNext({ state: s, host, wide }: { state: UiState; host: HostStatus | null; wide: boolean }) {
   const nearCap = Object.entries(s.autonomyCaps)
     .map(([repo, cap]) => ({ repo, cap, steps: s.autonomySteps[repo] ?? 0 }))
     .filter((r) => r.steps >= Math.ceil(r.cap * NEAR_CAP));
   const restart = host?.restartPending === true;
+  if (nearCap.length === 0 && !restart) return null;
   return (
-    <Section title="What stops work next, and what clears it." w={{ lg: "316px" }} flexShrink={0} gap="14px">
+    <Section title="What stops work next, and what clears it." w={{ lg: wide ? "480px" : "316px" }} flexShrink={0} gap="14px">
       {nearCap.map((r) => {
         const name = r.repo.split("/").pop();
+        const heard = s.ownerLastHeardAt[r.repo] ?? null;
         return (
           <Flex key={r.repo} direction="column" gap="1">
             <Flex align="baseline" gap="2">
@@ -122,7 +109,7 @@ function StopsNext({ state: s, host }: { state: UiState; host: HostStatus | null
               </Text>
             </Flex>
             <Text textStyle="meta" color="fg.muted">
-              It has started {r.steps} Attempts and merges since it last heard from you. Answering a {name} decision, or merging one of its PRs, resets the count.
+              It has started {r.steps} Attempts and merges since it last heard from you{heard === null ? "" : ` ${heardAt(heard, s.generatedAt)}`}. Answering a {name} decision, or merging one of its PRs, resets the count.
             </Text>
           </Flex>
         );
@@ -134,11 +121,6 @@ function StopsNext({ state: s, host }: { state: UiState; host: HostStatus | null
           </Text>
           <CopyCommand command={RESTART_COMMAND} />
         </Flex>
-      ) : null}
-      {nearCap.length === 0 && !restart ? (
-        <Text textStyle="meta" color="fg.muted">
-          Nothing is about to stop the factory.
-        </Text>
       ) : null}
     </Section>
   );
@@ -187,7 +169,7 @@ function LineMap({ state: s, landed }: { state: UiState; landed: number }) {
     { label: "Landed today", list: landed, kind: "landed" },
   ];
   return (
-    <Box pt="34px" flexShrink={0}>
+    <Box pt="10" flexShrink={0}>
       <Flex>
         {stations.map((st) => {
           const n = typeof st.list === "number" ? st.list : st.list.length;
@@ -205,7 +187,7 @@ function LineMap({ state: s, landed }: { state: UiState; landed: number }) {
         })}
       </Flex>
       <Box position="relative" mt="12px">
-        <svg viewBox={`0 0 ${W} 140`} width="100%" role="img" aria-label="Where every Thread is on the line" style={{ display: "block" }}>
+        <svg viewBox={`0 0 ${W} ${need > 0 ? 140 : 64}`} width="100%" role="img" aria-label="Where every Thread is on the line" style={{ display: "block" }}>
           <path d={`M20 ${LINE_Y}H1070`} fill="none" stroke={TRACK} strokeWidth="3" strokeLinecap="round" />
           <path d={`M1062 ${LINE_Y - 8}L1073 ${LINE_Y}L1062 ${LINE_Y + 8}`} fill="none" stroke={TRACK} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           {need > 0 ? <path d={`M${stationX(3)} ${LINE_Y}C${stationX(3)} 92 676 ${SIDING_Y} 724 ${SIDING_Y}H800`} fill="none" stroke={AMBER} strokeWidth="3" strokeLinecap="round" /> : null}
@@ -221,7 +203,6 @@ function LineMap({ state: s, landed }: { state: UiState; landed: number }) {
                 <circle key={k} cx={742 + k * 26} cy={SIDING_Y} r="9" fill={AMBER} />
               ))}
               <circle cx="800" cy={SIDING_Y} r="12" fill={AMBER} />
-              <circle cx="800" cy={SIDING_Y} r="17" fill="none" stroke={AMBER} strokeWidth="1.5" opacity="0.4" />
             </>
           ) : null}
         </svg>
@@ -230,12 +211,12 @@ function LineMap({ state: s, landed }: { state: UiState; landed: number }) {
             <Text textStyle="rowTitle" fontSize="14.5px" lineHeight="20px" color="owner" whiteSpace="pre">
               Needs you · {need}
             </Text>
-            <Text textStyle="meta" lineHeight="17px" color="fg.muted" whiteSpace="pre">
+            <Text textStyle="meta" lineHeight="17px" color="fg.muted" whiteSpace="pre" display={{ base: "none", xl: "block" }}>
               Parked off the line, nothing else waits.
             </Text>
           </Flex>
         ) : null}
-        <Flex direction="column" gap="5px" position="absolute" left="0" top={`${(102 / 140) * 100}%`}>
+        <Flex {...(need > 0 ? { direction: "column", gap: "5px", position: "absolute", left: "0", top: `${(102 / 140) * 100}%` } : { gap: "5", pt: "1" })}>
           <Legend solid>The factory is acting</Legend>
           <Legend>Waiting, not blocked</Legend>
         </Flex>
@@ -270,7 +251,7 @@ function CostMetric({ state: s }: { state: UiState }) {
   const trend = s.daily.map((d, i) => (d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null));
   const first = trend.find((v) => v !== null) ?? null;
   return (
-    <Metric label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} visual={<Sparkline values={trend} label="Cost per merged fix, last 14 days" />}>
+    <Metric label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} empty={cost === null} visual={<Sparkline values={trend} label="Cost per merged fix, last 14 days" />}>
       {first !== null && cost !== null && first > cost ? `Down from ${usd(first)} two weeks ago. ` : ""}
       Subscription runs count $0. Change models in Pipeline.
     </Metric>
@@ -282,7 +263,7 @@ function AgreementMetric({ state: s }: { state: UiState }) {
   const approved = v.reduce((n, a) => n + a.approvedMerges, 0);
   const agreed = v.reduce((n, a) => n + a.undisputed, 0);
   return (
-    <Metric label="Would-merge verdicts you agreed with" value={approved === 0 ? "n/a" : `${Math.round((agreed / approved) * 100)}%`}>
+    <Metric label="Would-merge verdicts you agreed with" value={approved === 0 ? "n/a" : `${Math.round((agreed / approved) * 100)}%`} empty={approved === 0}>
       {approved === 0 ? "No reviewed merges yet. " : `${agreed} of ${approved} reviewed merges you did not dispute. `}
       This is the evidence for letting a repo land on its own.
     </Metric>

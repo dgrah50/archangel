@@ -75,17 +75,18 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
                   pb="3"
                   borderBottomWidth="1px"
                   borderBottomColor="border"
-                  opacity={current && keyOf(current) === keyOf(p) ? 1 : 0.62}
+                  aria-pressed={current !== null && keyOf(current) === keyOf(p)}
+                  css={{ "&[aria-pressed=false] h3": { color: "var(--chakra-colors-fg-muted)" } }}
                 >
                   <Flex justify="space-between" gap="2">
-                    <Text textStyle="meta" color="owner">
+                    <Text textStyle="meta" color="fg">
                       {TYPE(p.pitch.type)} <Text as="span" color="fg.subtle">· Size {p.pitch.size}</Text>
                     </Text>
                     <Text textStyle="meta" color="fg.subtle">
                       {expires(p, now)}
                     </Text>
                   </Flex>
-                  <Text textStyle="rowTitle" color="fg" mt="1">
+                  <Text as="h3" textStyle="rowTitle" color="fg" mt="1">
                     {p.pitch.title}
                   </Text>
                   <Box mt="1" color="fg.muted">
@@ -130,11 +131,11 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
     <Section flex="1" minW="0" gap="5" key={keyOf(row)}>
       <Flex justify="space-between" gap="4" wrap="wrap" textStyle="meta" color="fg.subtle">
         <Text>
-          <Text as="span" color="owner">{TYPE(p.type)}</Text> · Size {p.size}, {p.slices.length} {p.slices.length === 1 ? "slice" : "slices"} · <Ref repo={row.repo} num={row.issueNumber} /> · pitched {ago(now - row.filedAt)} by Scout {row.scoutName}
+          <Text as="span" color="fg">{TYPE(p.type)}</Text> · Size {p.size}, {p.slices.length} {p.slices.length === 1 ? "slice" : "slices"} · <Ref repo={row.repo} num={row.issueNumber} /> · pitched {ago(now - row.filedAt)} by Scout {row.scoutName}
         </Text>
         <Text color="fg">The Scout recommends: {RECOMMENDS[p.recommendation]}</Text>
       </Flex>
-      <Text as="h2" textStyle="headline" fontSize="30px" lineHeight="36px" color="fg">
+      <Text as="h2" textStyle="title" color="fg">
         {p.title}
       </Text>
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
