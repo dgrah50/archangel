@@ -404,17 +404,21 @@ export class GitBroker {
     baseSha: string,
     headSha: string,
   ): Promise<{ diffText: string; touchedFiles: Record<string, string> }> {
+    const effectiveBase =
+      (
+        await this.runGit(this.bareRepoPath, ["merge-base", baseSha, headSha]).catch(() => baseSha)
+      ).trim() || baseSha;
     const diffText = await this.runGit(this.bareRepoPath, [
       "diff",
       "--no-color",
-      baseSha,
+      effectiveBase,
       headSha,
     ]);
     const filesRaw = await this.runGit(this.bareRepoPath, [
       "diff",
       "--name-only",
       "--no-renames",
-      baseSha,
+      effectiveBase,
       headSha,
     ]);
     const touchedFiles: Record<string, string> = {};

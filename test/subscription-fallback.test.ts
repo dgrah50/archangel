@@ -160,7 +160,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       requiredChecks: ["Gate"],
       checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" }],
       reviewsForHeadSha: [
-        { id: 1, repo: "dgrah50/gijq", issueNumber: 13, headSha: "abc", vendor: "anthropic", verdict: "approve", findingsJson: "[]", costUsd: 0, createdAt: 1 },
+        { id: 1, repo: "acme/app", issueNumber: 13, headSha: "abc", vendor: "anthropic", verdict: "approve", findingsJson: "[]", costUsd: 0, createdAt: 1 },
       ],
       requiredReviewers: remaining,
       mergeTreeClean: true,

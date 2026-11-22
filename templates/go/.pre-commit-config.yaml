@@ -1,5 +1,5 @@
-# Standard pre-commit hooks owned by dgrah50/gijq.
-# Run locally with `pre-commit run` or automatically by Archangel's Gate (read strictly from `main`).
+# Standard Go pre-commit hooks for repositories using Archangel.
+# Run locally with `pre-commit run` or automatically by Archangel's Gate (read strictly from the default branch).
 repos:
   - repo: local
     hooks:

@@ -111,7 +111,7 @@ const server = http.createServer(async (req, res) => {
       console.log(`\n[archangel] Created GitHub App '${data.name}' (ID: ${data.id})`);
       console.log(`[archangel] Saved chmod 600 PEM to ${PEM_PATH}`);
       console.log(`[archangel] Updated ${ENV_PATH} with ARCHANGEL_GITHUB_APP_ID=${data.id}`);
-      console.log(`[archangel] Next: install it ONLY on dgrah50/gijq at: ${installUrl}\n`);
+      console.log(`[archangel] Next: install it ONLY on your target repositories at: ${installUrl}\n`);
 
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!doctype html>
@@ -120,7 +120,7 @@ const server = http.createServer(async (req, res) => {
   <h2>GitHub App Created!</h2>
   <p><b>App:</b> ${escapeHtml(data.name)} (ID: <code>${data.id}</code>)</p>
   <p>Saved PEM to <code>${escapeHtml(PEM_PATH)}</code> (<code>chmod 600</code>) and updated <code>.env</code>.</p>
-  <p><a href="${escapeHtml(installUrl)}" style="font-size: 16px;">Step 2: Install ONLY on <code>dgrah50/gijq</code> &rarr;</a></p>
+  <p><a href="${escapeHtml(installUrl)}" style="font-size: 16px;">Step 2: Install ONLY on your target repositories &rarr;</a></p>
   <p>After clicking Install, you can close this tab and tell Archangel "installed" so it auto-fills <code>ARCHANGEL_GITHUB_INSTALLATION_ID</code>.</p>
 </body>
 </html>`);

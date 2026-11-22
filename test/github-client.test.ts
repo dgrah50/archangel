@@ -37,7 +37,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       }
 
       // Paginated issues with ETag on page 1
-      if (req.method === "GET" && url.pathname === "/repos/dgrah50/gijq/issues") {
+      if (req.method === "GET" && url.pathname === "/repos/acme/app/issues") {
         const page = url.searchParams.get("page") ?? "1";
         if (page === "1") {
           issueHits++;
@@ -50,7 +50,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
           res.writeHead(200, {
             "Content-Type": "application/json",
             ETag: '"etag-p1"',
-            Link: `<${baseUrl}/repos/dgrah50/gijq/issues?page=2>; rel="next"`,
+            Link: `<${baseUrl}/repos/acme/app/issues?page=2>; rel="next"`,
           });
           res.end(
             JSON.stringify([
@@ -69,7 +69,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       }
 
       // Check runs with duplicate names -> must keep highest id
-      if (req.method === "GET" && url.pathname === "/repos/dgrah50/gijq/commits/abc123/check-runs") {
+      if (req.method === "GET" && url.pathname === "/repos/acme/app/commits/abc123/check-runs") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
@@ -83,12 +83,12 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       }
 
       // Recap comments upsert -> PATCH existing
-      if (req.method === "GET" && url.pathname === "/repos/dgrah50/gijq/issues/5/comments") {
+      if (req.method === "GET" && url.pathname === "/repos/acme/app/issues/5/comments") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify([{ id: 501, body: `${RECAP_MARKER}\nold recap` }]));
         return;
       }
-      if (req.method === "PATCH" && url.pathname === "/repos/dgrah50/gijq/issues/comments/501") {
+      if (req.method === "PATCH" && url.pathname === "/repos/acme/app/issues/comments/501") {
         patchedCommentId = 501;
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ id: 501 }));
@@ -96,7 +96,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       }
 
       // Squash merge pinned to SHA
-      if (req.method === "PUT" && url.pathname === "/repos/dgrah50/gijq/pulls/5/merge") {
+      if (req.method === "PUT" && url.pathname === "/repos/acme/app/pulls/5/merge") {
         let body = "";
         req.on("data", (c) => (body += c));
         req.on("end", () => {
@@ -116,8 +116,8 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
 
     try {
       const gh = new GitHubAppClient({
-        owner: "dgrah50",
-        repo: "gijq",
+        owner: "acme",
+        repo: "app",
         appId: "123",
         installationId: 777,
         privateKeyPem,

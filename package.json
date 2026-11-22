@@ -15,8 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:all": "npm run typecheck && npm test",
-    "dev": "tsx src/cli/index.ts",
-    "pilot:setup": "tsx scripts/setup-gijq-pilot.ts"
+    "dev": "tsx src/cli/index.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.124",

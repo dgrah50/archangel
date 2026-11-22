@@ -301,7 +301,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           : `.github/workflows/archangel-gate.yml missing on ${cfg.defaultBranch}`,
         remediation: hasGateWf
           ? undefined
-          : "Run `npm run pilot:setup -- --install-workflow <repo-dir> --apply` and push to main",
+          : "Copy workflows/archangel-gate.yml into .github/workflows/archangel-gate.yml (pin ARCHANGEL_GATE_SHA) and merge to default branch",
       });
 
       const hasPreCommit =
@@ -316,7 +316,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         remediation:
           hasPreCommit && hasLandingJson
             ? undefined
-            : "Commit .pre-commit-config.yaml and .agents/landing.json to main (see templates/gijq/ or run pilot:setup --install-workflow)",
+            : "Commit .pre-commit-config.yaml and .agents/landing.json to the default branch (see templates/go/ or this repo's .agents/landing.json)",
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());
@@ -331,7 +331,9 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
             ? "All factory labels present"
             : `Missing labels: ${missingLabels.join(", ")}`,
         remediation:
-          missingLabels.length === 0 ? undefined : "Run `npm run pilot:setup -- --apply`",
+          missingLabels.length === 0
+            ? undefined
+            : `Create missing labels in ${repoSlug}: ${missingLabels.join(", ")}`,
       });
     } catch (err) {
       checks.push({
