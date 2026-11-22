@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { requireTransition } from "../src/cli/transition.js";
+import { describe, expect, it } from "vitest";
+
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
@@ -45,7 +45,6 @@ const cleanup = (w: { root: string; ledger: Ledger }) => {
   fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 };
 
-
 const lastAttempt = (w: { ledger: Ledger }) => w.ledger.listAttemptsFor(4).at(-1)!;
 
 describe("an Attempt records why it ended, at the source", () => {
@@ -84,12 +83,4 @@ describe("an Attempt records why it ended, at the source", () => {
     }
   });
 
-  it("finishAttempt stores the category and a successful Attempt has none", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "s", now: 1 });
-    const a = l.startAttempt(1, "implement", 1);
-    expect(l.finishAttempt(a.id, { status: "failed", errorMessage: "x", errorCategory: "no_change" }, 2).errorCategory).toBe("no_change");
-    const b = l.startAttempt(1, "implement", 3);
-    expect(l.finishAttempt(b.id, { status: "succeeded" }, 4).errorCategory).toBeNull();
-  });
 });

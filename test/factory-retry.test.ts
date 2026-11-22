@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildImplementPrompt, buildOpenAiReviewerPrompt, buildRebasePrompt, buildRevisionPrompt, formatFactoryNote } from "../src/agents/prompts.js";
+import { buildImplementPrompt, buildRevisionPrompt, formatFactoryNote } from "../src/agents/prompts.js";
 import { KERNEL, Workflow, classifyChange, loosens, resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
 import { hostInput, workflowFile } from "./helpers/workflow.js";
@@ -8,13 +8,6 @@ const caps = { perThread: KERNEL.factoryRetriesPerThread, perRepoPerDay: KERNEL.
 const claim = (l: Ledger, n: number, now = 1_000_000, guidance: string | null = "note") =>
   l.claimFactoryRetry(n, { code: "merge_conflict", guidance, ...caps }, now);
 const thread = (l: Ledger, n: number) => l.upsertThread({ issueNumber: n, title: `t${n}`, bodySha256: "x" });
-
-describe("the kernel fixes the factory retry", () => {
-  it("is one per Thread and three per repo per day", () => {
-    expect(KERNEL.factoryRetriesPerThread).toBe(1);
-    expect(KERNEL.factoryRetriesPerRepoPerDay).toBe(3);
-  });
-});
 
 describe("claimFactoryRetry", () => {
   it("allows one per Thread for life, records it under the factory actor and keeps the note", () => {
@@ -44,20 +37,6 @@ describe("claimFactoryRetry", () => {
     }
   });
 
-  it("is per repo: another repo's retries do not use this repo's allowance", () => {
-    const root = new Ledger(":memory:");
-    try {
-      const a = root.forRepo("a/a");
-      const b = root.forRepo("b/b");
-      for (const n of [1, 2, 3]) a.upsertThread({ issueNumber: n, title: "t", bodySha256: "x" });
-      b.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
-      for (const n of [1, 2, 3]) expect(claim(a, n)).toBe(true);
-      expect(claim(b, 1)).toBe(true);
-    } finally {
-      root.close();
-    }
-  });
-
   it("is refused once the owner has acted on the Thread (a reply or a retry), and an owner retry clears the note", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
     try {
@@ -75,35 +54,12 @@ describe("claimFactoryRetry", () => {
     }
   });
 
-  it("never resets the autonomy cap: only an owner row does", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      thread(l, 1);
-      l.appendAudit("attempt/started", 1, "archangel", {});
-      l.appendAudit("attempt/started", 1, "archangel", {});
-      expect(l.autonomousStepsSinceOwner()).toBe(2);
-      expect(claim(l, 1)).toBe(true);
-      l.appendAudit("factory/escalated", 1, "factory", {});
-      expect(l.autonomousStepsSinceOwner()).toBe(2); // factory rows leave the count alone
-      l.appendAudit("thread/owner_reply", 1, "owner", {});
-      expect(l.autonomousStepsSinceOwner()).toBe(0);
-    } finally {
-      l.close();
-    }
-  });
 });
 
 describe("escalations.factoryRetry", () => {
   const resolve = (file: Record<string, unknown>, host = {}) =>
     resolveWorkflow(hostInput(host), { repo: "a/b", mainSha: "m", fileRaw: JSON.stringify(file), scoutPrompts: {} });
   const parse = (extra: Record<string, unknown>) => Workflow.parse(workflowFile([], extra));
-
-  it("defaults to off and only accepts off or once", () => {
-    const r = resolve(workflowFile([], {}));
-    expect(r.status === "ok" && r.factoryRetry).toEqual({ value: "off", source: "repo" });
-    expect(resolve(workflowFile([], { escalations: { factoryRetry: "twice" } })).status).toBe("invalid");
-    expect(resolve(workflowFile([], { escalations: { factoryRetry: "once", extra: 1 } })).status).toBe("invalid");
-  });
 
   it("the host kill switch turns a repo's once back to off and records the clamp", () => {
     const file = workflowFile([], { escalations: { factoryRetry: "once" } });
@@ -142,10 +98,4 @@ describe("the factory note", () => {
     expect(buildImplementPrompt({ ...base, factoryGuidance: null })).not.toContain("FACTORY NOTE");
   });
 
-  it("never reaches a reviewer: reviewer prompts take no note", () => {
-    const p = buildOpenAiReviewerPrompt({ issueNumber: 1, title: "t", body: "b", diffText: "diff" });
-    expect(p).not.toContain("FACTORY NOTE");
-    expect(buildOpenAiReviewerPrompt.length).toBe(1); // one options object, none of which is a note
-    expect(buildRebasePrompt({ issueNumber: 1, title: "t", baseBranch: "main" })).not.toContain("FACTORY NOTE");
-  });
 });

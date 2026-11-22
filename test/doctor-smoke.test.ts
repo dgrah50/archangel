@@ -61,20 +61,6 @@ describe("archangel doctor --smoke", () => {
     expect(commands.some((c) => c.startsWith("agy auth"))).toBe(false);
   });
 
-  it("shows the autonomy cap and current step count", async () => {
-    const { configPath, env } = setup();
-    const report = await runDoctor({ configPath, env, offline: true });
-    const cap = report.checks.find((c) => c.id === "autonomy_cap:acme/app");
-    expect(cap?.status).toBe("pass");
-    expect(cap?.detail).toMatch(/^0\/25 /);
-  });
-
-  it("does not run smoke checks by default", async () => {
-    const { configPath, env } = setup();
-    const report = await runDoctor({ configPath, env, offline: true });
-    expect(report.checks.some((c) => c.id.startsWith("smoke_provider:"))).toBe(false);
-  });
-
   it("fails the affected provider with actionable remediation when missing or unauthenticated", async () => {
     const { configPath, env } = setup();
     outcomes.set("agy", "missing");

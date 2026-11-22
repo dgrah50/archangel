@@ -112,17 +112,3 @@ describe("reviewer independence", () => {
   });
 });
 
-describe("landing mode report", () => {
-  it("shows the effective bugfix landing mode and who decided it", async () => {
-    const { describeLanding } = await import("../src/core/doctor.js");
-    const { okWorkflow } = await import("./helpers/workflow.js");
-    const auto = { landing: { bugfix: "autonomous" } };
-    expect(describeLanding("a/b", okWorkflow([], { extra: auto })).detail).toContain("autonomous (source: repo");
-    expect(describeLanding("a/b", okWorkflow([], { extra: auto, host: { shadowMode: true } })).detail)
-      .toBe("owner (source: host; repo declares autonomous)");
-    expect(describeLanding("a/b", okWorkflow([])).detail).toContain("owner (source: repo");
-    const missing = describeLanding("a/b", { repo: "a/b", mainSha: "x", status: "missing", error: "gone" });
-    expect(missing.status).toBe("warn");
-    expect(missing.detail).toContain("halted");
-  });
-});

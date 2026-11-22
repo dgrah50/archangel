@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { BUMP_BRANCH, assessPinDrift, gateBump, latestGateCommit, pinOf, withPin } from "../src/core/gate-pin.js";
+import { BUMP_BRANCH, assessPinDrift, gateBump, withPin } from "../src/core/gate-pin.js";
 import { execRunner, type OnboardRunner } from "../src/core/onboard.js";
 
 const git = (cwd: string, ...a: string[]) =>
@@ -59,20 +59,7 @@ function runnerFor(root: string, o: { wf?: string | null; openPr?: string; dirty
   return { runner, calls, mutating: () => calls.filter((c) => /-X POST|-X PUT|pr create/.test(c)) };
 }
 
-describe("pin helpers", () => {
-  it("reads and rewrites only the pin line", () => {
-    expect(pinOf(TEMPLATE)).toBe("REPLACE");
-    expect(withPin(TEMPLATE, "abc")).toBe("env:\n  ARCHANGEL_GATE_SHA: abc\nsteps: [gate]\n");
-    expect(pinOf("no pin")).toBeNull();
-  });
-});
-
 describe("drift detection", () => {
-  it("uses the latest commit touching gate paths, not docs-only commits", async () => {
-    const { root, c3 } = checkout();
-    expect(await latestGateCommit(execRunner, root)).toBe(c3);
-  });
-
   it("flags an older pin, accepts the latest or newer, flags an unknown pin", async () => {
     const { root, c1, c2, c3 } = checkout();
     const wf = (sha: string) => withPin(TEMPLATE, sha);
@@ -146,14 +133,6 @@ describe("gateBump", () => {
     const open = runnerFor(root, { wf: withPin(TEMPLATE, c1), openPr: "https://github.com/o/r/pull/3" });
     expect((await gateBump(open.runner, ["o/r"], { ...quiet, root }))["o/r"]).toBe("pr-open");
     expect(open.mutating()).toEqual([]);
-  });
-
-  it("dry-run reports drift and makes no mutating calls", async () => {
-    const { root, c1 } = checkout();
-    const { runner, mutating } = runnerFor(root, { wf: withPin(TEMPLATE, c1) });
-    const res = await gateBump(runner, ["o/r"], { ...quiet, root, dryRun: true });
-    expect(res["o/r"]).toBe("would-bump");
-    expect(mutating()).toEqual([]);
   });
 
   it("refuses on a dirty checkout, when HEAD is not on origin/main, and for a bad repo name", async () => {

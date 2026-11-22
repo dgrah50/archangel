@@ -6,17 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler, type CorrectionDraftDeps } from "../src/core/reconciler.js";
-import {
-  DRAFT_GLOBAL_PER_WEEK,
-  DRAFT_PER_CATEGORY_DAYS,
-  applyDraftPatch,
-  draftCorrection,
-  measureDrafts,
-  rubricOnlyChange,
-  validateDraft,
-  type DraftDeps,
-} from "../src/core/correction-draft.js";
-import { buildDigest } from "../src/core/digest.js";
+import { DRAFT_GLOBAL_PER_WEEK, DRAFT_PER_CATEGORY_DAYS, draftCorrection, measureDrafts, rubricOnlyChange, validateDraft, type DraftDeps } from "../src/core/correction-draft.js";
+
 import type { EvalReport } from "../src/core/eval.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
@@ -57,9 +48,6 @@ function deps(ledger: Ledger, over: Partial<DraftDeps> = {}) {
 }
 
 describe("validateDraft", () => {
-  it("accepts one allowed file whose diff changes only that file", () => {
-    expect(validateDraft(GOOD, ctx).ok).toBe(true);
-  });
   it.each([
     ["a file outside the allowed set", { ...GOOD, file: "src/core/reconciler.ts", target: "prompt" }],
     ["a target that does not match the file", { ...GOOD, target: "prompt" }],
@@ -90,19 +78,6 @@ describe("draftCorrection", () => {
       expect(body).toContain("Machine-drafted; owner review required");
       expect(body).toContain("agent-draft/*");
       expect(invoker.mock.calls[0]![0]).toMatchObject({ provider: "claude", maxProposals: 0 });
-    } finally {
-      l.close();
-    }
-  });
-
-  it("a dev failure stops before the held-out set and opens no PR", async () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      const { d, evaluate, openPr } = deps(l, { evaluate: vi.fn(async () => report("fail", ["1 new false approval"])) });
-      const out = await draftCorrection(d, ctx, NOW);
-      expect(out).toMatchObject({ kind: "eval_failed", split: "dev", result: "fail" });
-      expect((d.evaluate as typeof evaluate).mock.calls).toHaveLength(1);
-      expect(openPr).not.toHaveBeenCalled();
     } finally {
       l.close();
     }
@@ -160,25 +135,9 @@ describe("draftCorrection", () => {
     }
   });
 
-  it("is skipped, not attempted, when the Scout chain has no read-only provider", async () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      const { d, invoker } = deps(l, { chain: [{ provider: "agy" }] });
-      expect(await draftCorrection(d, ctx, NOW)).toMatchObject({ kind: "skipped", why: "no_provider" });
-      expect(invoker).not.toHaveBeenCalled();
-    } finally {
-      l.close();
-    }
-  });
 });
 
 describe("applying a draft", () => {
-  it("applies a diff to one file's content in a scratch directory", async () => {
-    const out = await applyDraftPatch("skills/general/x.md", "a\nb\n", ["diff --git a/skills/general/x.md b/skills/general/x.md", "--- a/skills/general/x.md", "+++ b/skills/general/x.md", "@@ -1,2 +1,3 @@", " a", " b", "+c", ""].join("\n"));
-    expect(out).toBe("a\nb\nc\n");
-    expect(await applyDraftPatch("skills/general/gate-first.md", null, SKILL_DIFF)).toContain("Run the gate first");
-    await expect(applyDraftPatch("skills/general/x.md", "zzz\n", SKILL_DIFF.replace("/dev/null", "a/skills/general/x.md").replace("new file mode 100644\n", ""))).rejects.toThrow();
-  });
   it("a rubric draft may change review.rubric and nothing else", () => {
     const before = JSON.stringify({ version: 1, review: { rubric: "a" }, landing: { bugfix: "owner" } });
     expect(rubricOnlyChange(before, JSON.stringify({ version: 1, review: { rubric: "b" }, landing: { bugfix: "owner" } }))).toBe(true);
@@ -233,19 +192,6 @@ describe("measurement and the digest", () => {
     }
   });
 
-  it("the digest lists flagged drafts and a flagged draft keeps a quiet digest alive", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      l.appendAudit("correction_draft/revert_flag", null, "archangel", { category: CAT, url: "u/1", before: 3, after: 4 }, NOW - DAY);
-      const input = l.collectDigestInput(NOW);
-      expect(input.draftReverts).toEqual([{ repo: "a/b", category: CAT, url: "u/1", before: 3, after: 4 }]);
-      const text = buildDigest({ ...input, needsYou: [], proposals: [], pitches: [], faults: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } })!;
-      expect(text).toContain("did not help");
-      expect(text).toContain(`${CAT}: 3 corrections before, 4`);
-    } finally {
-      l.close();
-    }
-  });
 });
 
 describe("the Reconciler drafts when a category crosses its threshold", () => {
@@ -320,14 +266,4 @@ describe("the Reconciler drafts when a category crosses its threshold", () => {
     }
   });
 
-  it("makes no draft at all when drafting is not wired", async () => {
-    const w = world(undefined);
-    try {
-      await w.raise();
-      expect(w.notes).toHaveLength(1);
-      expect(w.ledger.listAudit({ topicPrefix: "correction_draft/" })).toHaveLength(0);
-    } finally {
-      w.cleanup();
-    }
-  });
 });

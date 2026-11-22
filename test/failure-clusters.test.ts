@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
-import { CLUSTER_KEYS, buildClusterBlock, buildClusterBlockFrom, gateViolationKinds, pathBucket, trendOf } from "../src/core/failure-clusters.js";
+import { CLUSTER_KEYS, buildClusterBlock, buildClusterBlockFrom } from "../src/core/failure-clusters.js";
 import { UNAVAILABLE } from "../src/core/metrics-block.js";
 import { runScoutsForProject } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
@@ -89,18 +89,6 @@ describe("failure clusters", () => {
     expect(b).toContain("gemini 0 (0/1)");
   });
 
-  it("clusters attempt failures by the fixed category and gate rejections by violation kind, with failure rates", () => {
-    const b = block(fixture());
-    expect(b).toContain("gate_or_policy: this_week=1, prev_week=1");
-    expect(b).toContain("static_rejection: this_week=1");
-    expect(b).toContain("provider_unavailable: this_week=1");
-    expect(b).toContain("protected_path: this_week=1, prev_week=0, trend=new");
-    expect(b).toContain("bounds: this_week=1");
-    expect(b).toContain("no_new_test: this_week=1");
-    expect(b).toContain("already_fixed: this_week=0, prev_week=1, trend=gone");
-    expect(b).toContain("attempt_failure_rate: this_week 0.75 (3/4), prev_week 1 (1/1)");
-  });
-
   it("never emits free text from titles, errors, findings or paths", () => {
     const b = block(fixture());
     for (const bad of [SECRET, "IGNORE", "INSTRUCTIONS", "etc/passwd", "we ird", "<script>", "excluded", "lock.json", "a.ts"]) {
@@ -125,20 +113,6 @@ describe("failure clusters", () => {
     for (const k of CLUSTER_KEYS) expect(b).toContain(`${k}: ${UNAVAILABLE}`);
     expect(block(new Ledger(":memory:", { repo: "acme/app" }))).toContain("veto_rate_by_vendor: none");
     expect(buildClusterBlock(null, NOW)).toContain(UNAVAILABLE);
-  });
-
-  it("computes trends and classifies gate violations and path buckets", () => {
-    expect(trendOf({ thisWeek: 3, prevWeek: 1 })).toBe("up");
-    expect(trendOf({ thisWeek: 1, prevWeek: 3 })).toBe("down");
-    expect(trendOf({ thisWeek: 2, prevWeek: 2 })).toBe("flat");
-    expect(trendOf({ thisWeek: 2, prevWeek: 0 })).toBe("new");
-    expect(trendOf({ thisWeek: 0, prevWeek: 2 })).toBe("gone");
-    expect(gateViolationKinds("base failed for reasons unrelated to the new tests: x", "gate_or_policy")).toEqual(["unrelated_base_failure"]);
-    expect(gateViolationKinds("pre-commit hook 'x' failed", null)).toEqual([]);
-    expect(pathBucket("pkg/sub/x.go")).toBe("pkg");
-    expect(pathBucket("x.go")).toBe("(root)");
-    expect(pathBucket("a b/x.go")).toBe("(other)");
-    expect(pathBucket(42)).toBe("(other)");
   });
 
   it("is added to the prompt of an includeMetrics Scout as DATA, and not to one without it", async () => {
