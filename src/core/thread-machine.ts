@@ -36,6 +36,8 @@ export const EscalationCodeSchema = z.enum([
   "gate_timeout",
   "gate_untrusted",
   "review_vetoed",
+  "revision_no_change",
+  "existing_test_conflict",
   "review_outage",
   "merge_conflict",
   "attempt_timeout",
