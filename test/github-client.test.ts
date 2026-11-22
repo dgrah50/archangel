@@ -95,6 +95,12 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/repos/acme/app/pulls/5") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ number: 5, head: { ref: "agent/issue-5", sha: "head555" } }));
+        return;
+      }
+
       // Squash merge pinned to SHA
       if (req.method === "PUT" && url.pathname === "/repos/acme/app/pulls/5/merge") {
         let body = "";
@@ -236,6 +242,41 @@ describe("GitHubAppClient file reads: only a real 404 is 'missing'", () => {
       await expect(t.c.readFileAtRef("main", "big.json")).rejects.toThrow(/without inline content/);
     } finally {
       t.close();
+    }
+  });
+});
+
+describe("GitHubAppClient.squashMergePr refuses machine drafts", () => {
+  it("throws before the PUT /merge when the head ref starts with agent-draft/", async () => {
+    const calls: string[] = [];
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      calls.push(`${req.method} ${url.pathname}`);
+      if (url.pathname.endsWith("/access_tokens")) {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ token: "t", expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: { pull_requests: "write" } }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.method === "GET") res.end(JSON.stringify({ number: 7, head: { ref: "agent-draft/prefer-small-7-1", sha: "h7" } }));
+      else res.end(JSON.stringify({ merged: true, sha: "sq7" }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const gh = new GitHubAppClient({
+        owner: "acme",
+        repo: "app",
+        appId: "123",
+        installationId: 777,
+        privateKeyPem: generateTestRsaKey(),
+        apiBaseUrl: `http://127.0.0.1:${port}`,
+      });
+      await expect(gh.squashMergePr(7, "h7", "draft")).rejects.toThrow(/agent-draft\/.*owner/);
+      expect(calls).toContain("GET /repos/acme/app/pulls/7");
+      expect(calls.some((c) => c.startsWith("PUT "))).toBe(false);
+    } finally {
+      server.close();
     }
   });
 });
