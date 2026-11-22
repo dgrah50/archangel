@@ -1235,6 +1235,28 @@ export class Ledger {
     };
   }
 
+  /**
+   * Last `days` local days (oldest first): fixes that landed (by the Thread's final transition) and their rework attempts
+   * (Attempts beyond the first). Read-only; used by the dashboard.
+   */
+  dailyOutcomes(days: number, now: number): Array<{ day: string; merged: number; reworkAttempts: number }> {
+    const series = Array.from({ length: days }, (_, i) => ({
+      day: formatDayKey(now - (days - 1 - i) * 86_400_000, this.timeZone),
+      merged: 0,
+      reworkAttempts: 0,
+    }));
+    const byDay = new Map(series.map((d) => [d.day, d]));
+    const count = this.db.prepare(`SELECT COUNT(*) AS n FROM attempts WHERE repo = ? AND issue_number = ?`);
+    for (const t of this.listAllThreads(["done"])) {
+      if (t.phase.kind !== "done" || !["merged", "owner_merged", "reverted"].includes(t.phase.outcome)) continue;
+      const bucket = byDay.get(formatDayKey(t.updatedAt, this.timeZone));
+      if (!bucket) continue;
+      bucket.merged++;
+      bucket.reworkAttempts += Math.max(0, (count.get(t.repo, t.issueNumber) as { n: number }).n - 1);
+    }
+    return series;
+  }
+
   // ---- Operational Metrics & Self-Improvement Telemetry ----
 
   /**
