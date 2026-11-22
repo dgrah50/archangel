@@ -57,7 +57,8 @@
       "src/core/eval-candidate.ts",
       "src/core/ui-thread.ts",
       "src/core/host-facts.ts",
-      "src/core/ui-doctor.ts"
+      "src/core/ui-doctor.ts",
+      "src/core/ui-settings.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
