@@ -11,6 +11,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const MIN = 60_000;
 
@@ -54,7 +55,7 @@ async function harness(mainChange: "unrelated" | "same-line") {
     githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
     githubPrivateKeyPem: "fake", shadowMode: true,
   });
-  const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+  const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
   github.issues.set(1, {
     number: 1, title: "Issue 1", body: "b", state: "open", authorId: 999, authorLogin: "dgrah50",
     authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString(),

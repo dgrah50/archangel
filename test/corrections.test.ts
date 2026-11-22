@@ -15,6 +15,7 @@ import { Reconciler, type CorrectionDraftDeps } from "../src/core/reconciler.js"
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
@@ -94,7 +95,7 @@ describe("repeated corrections raise one Needs You per category per 30 days", ()
     const implementer: Implementer = { async run() { throw new Error("none"); } };
     const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
     const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier: { notifyNeedsYou: notify, async sendDigest() {} } });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier: { notifyNeedsYou: notify, async sendDigest() {} } });
     return { ledger, reconciler, cleanup: () => { ledger.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } };
   }
   const retry = (l: Ledger, code: string, n: number, at: number) => {
@@ -264,7 +265,7 @@ describe("the Reconciler drafts when a category crosses its threshold", () => {
       prStatus: mock(async () => ({ state: "open" as const, mergedAt: null })),
       ...drafts,
     };
-    const rec = new Reconciler({
+    const rec = new Reconciler({ triageInvoker: noCli,
       config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" }),
       ledger,
       github: new FakeGitHub(path.join(root, "remote.git")),

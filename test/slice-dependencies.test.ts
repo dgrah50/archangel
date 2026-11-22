@@ -13,6 +13,7 @@ import { stepPhase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -49,7 +50,7 @@ function setup() {
   const cfg = ConfigSchema.parse({
     githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake",
   });
-  const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+  const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
   for (const n of [10, 11]) {
     github.issues.set(n, { number: n, title: `Slice ${n}`, body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent", "class:feature"], updatedAt: "" });
     github.labelActors.set(`${n}:ready-for-agent`, 999);

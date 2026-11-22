@@ -10,6 +10,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -37,7 +38,7 @@ describe("a PR merged on GitHub", () => {
       },
     };
     const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
-    const rec = new Reconciler({
+    const rec = new Reconciler({ triageInvoker: noCli,
       config: cfg, ledger, github, broker, implementer,
       reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
       notifier: { async notifyNeedsYou() {}, async sendDigest() {} },

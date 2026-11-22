@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 
 import type { ReviewPromptBuilders, ReviewRequest, ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
@@ -32,8 +32,21 @@ interface World {
   sources: () => EvalOptions["sources"];
 }
 
-/** A watched repo with `good` merged fixes (each with a test), pinned in a bare repo, plus a temp "Archangel" checkout to patch. */
-async function world(good: number, opts: { dispute?: number[]; closed?: number[]; noBody?: boolean } = {}): Promise<World> {
+/** The git half of a world (watched repo, pinned bare repo, "Archangel" checkout) is built once per distinct shape and shared; each test gets its own Ledger. */
+interface Fixture { root: string; bare: string; archangel: string; heads: Record<number, string>; patch: World["patch"] }
+const fixtures = new Map<string, Promise<Fixture>>();
+afterAll(async () => {
+  for (const f of fixtures.values()) fs.rmSync((await f).root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+});
+
+function buildFixture(good: number, closed: number): Promise<Fixture> {
+  const key = `${good}/${closed}`;
+  let f = fixtures.get(key);
+  if (!f) fixtures.set(key, (f = buildFixtureUncached(good, closed)));
+  return f;
+}
+
+async function buildFixtureUncached(good: number, closedCount: number): Promise<Fixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-eval-test-"));
   const work = path.join(root, "work");
   fs.mkdirSync(work);
@@ -44,7 +57,7 @@ async function world(good: number, opts: { dispute?: number[]; closed?: number[]
   git(work, ["add", "-A"]);
   git(work, ["commit", "-qm", "base"]);
   const heads: Record<number, string> = {};
-  for (let n = 1; n <= good + (opts.closed?.length ?? 0); n++) {
+  for (let n = 1; n <= good + closedCount; n++) {
     git(work, ["checkout", "-q", "-b", `factory/${n}`, "main"]);
     write(work, "calc.mjs", `export function add(a, b) {\n  return a + b + ${n - n}; // fix ${n}\n}\n`);
     write(work, `tests/issue${n}.test.mjs`, `import assert from "node:assert/strict";\nassert.equal(${n}, ${n});\n`);
@@ -56,22 +69,7 @@ async function world(good: number, opts: { dispute?: number[]; closed?: number[]
   const bare = path.join(root, "broker.git");
   git(root, ["clone", "-q", "--bare", work, bare]);
   const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(root, "clones") });
-  const ledger = new Ledger(":memory:", { repo: "acme/app" });
-  for (const [n, head] of Object.entries(heads).map(([k, v]) => [Number(k), v] as const)) {
-    await broker.pinEvalRef("acme/app", n, head);
-    const isClosed = opts.closed?.includes(n);
-    ledger.upsertThread({
-      issueNumber: n, title: `Bug ${n}`, bodySha256: "b", branchName: `factory/${n}`, now: 1,
-      issueBody: opts.noBody ? null : `Issue text ${n}`,
-      phase: (isClosed ? { kind: "done", outcome: "pr_closed" } : { kind: "done", outcome: "merged" }) as never,
-    });
-    const a = ledger.startAttempt(n, "implement", 1);
-    ledger.finishAttempt(a.id, { status: "succeeded", headSha: head }, 2);
-    if (!isClosed) {
-      ledger.recordMerge({ issueNumber: n, prNumber: n, headSha: head, squashSha: "s", shadowOnly: false, mainRequired: ["Test"], now: 1 });
-      if (opts.dispute?.includes(n)) ledger.markDisagree(n, true);
-    }
-  }
+  for (const n of Object.keys(heads).map(Number)) await broker.pinEvalRef("acme/app", n, heads[n]!);
   // a temp "Archangel" checkout holding the real prompts and policy, to patch
   const archangel = path.join(root, "archangel");
   fs.mkdirSync(archangel);
@@ -90,12 +88,32 @@ async function world(good: number, opts: { dispute?: number[]; closed?: number[]
     fs.writeFileSync(file, git(scratch, ["diff"]) + "\n");
     return file;
   };
+  return { root, bare, archangel, heads, patch };
+}
+
+/** A watched repo with `good` merged fixes (each with a test), pinned in a bare repo, plus a temp "Archangel" checkout to patch. */
+async function world(good: number, opts: { dispute?: number[]; closed?: number[]; noBody?: boolean } = {}): Promise<World> {
+  const { root, bare, archangel, heads, patch } = await buildFixture(good, opts.closed?.length ?? 0);
+  const ledger = new Ledger(":memory:", { repo: "acme/app" });
+  for (const [n, head] of Object.entries(heads).map(([k, v]) => [Number(k), v] as const)) {
+    const isClosed = opts.closed?.includes(n);
+    ledger.upsertThread({
+      issueNumber: n, title: `Bug ${n}`, bodySha256: "b", branchName: `factory/${n}`, now: 1,
+      issueBody: opts.noBody ? null : `Issue text ${n}`,
+      phase: (isClosed ? { kind: "done", outcome: "pr_closed" } : { kind: "done", outcome: "merged" }) as never,
+    });
+    const a = ledger.startAttempt(n, "implement", 1);
+    ledger.finishAttempt(a.id, { status: "succeeded", headSha: head }, 2);
+    if (!isClosed) {
+      ledger.recordMerge({ issueNumber: n, prNumber: n, headSha: head, squashSha: "s", shadowOnly: false, mainRequired: ["Test"], now: 1 });
+      if (opts.dispute?.includes(n)) ledger.markDisagree(n, true);
+    }
+  }
   return { root, bare, ledger, archangel, patch, sources: () => [{ repo: "acme/app", bareRepoPath: bare, seeds: ledger.listReplaySeeds(0, "acme/app") }] };
 }
 
 const cleanup = (w: World) => {
   w.ledger.close();
-  fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 };
 
 /** Fake reviewers: the prompt wording decides leniency (LENIENT approves everything, STRICT vetoes everything); otherwise a
@@ -154,15 +172,14 @@ describe("vault split and dispute pinning", () => {
 
 describe("eval scoring", () => {
   it("passes a neutral candidate, and hard-fails one that newly approves a known-bad case", async () => {
-    const w = await world(10);
+    const w = await world(4);
     try {
-      const r = await run(w, "NEUTRAL");
+      const [r, lenient] = await Promise.all([run(w, "NEUTRAL"), run(w, "LENIENT")]);
       expect(r.result).toBe("pass");
       expect(r.scored.good + r.scored.bad).toBeGreaterThanOrEqual(EVAL_THRESHOLDS.minCases);
       expect(r.newFalseApprovals).toEqual([]);
       expect(r.newFalseVetoes).toEqual([]);
       expect(r.baseline.falseApprovals).toEqual([]); // the baseline reviewers catch every seeded corruption
-      const lenient = await run(w, "LENIENT");
       expect(lenient.result).toBe("fail");
       expect(lenient.newFalseApprovals.length).toBeGreaterThan(0);
     } finally {
@@ -176,7 +193,9 @@ describe("eval scoring", () => {
       const r = await run(w, "NEUTRAL");
       expect(r.result).toBe("insufficient");
       expect(renderEval(r)).toContain("INSUFFICIENT DATA");
-      const capped = await run(await world(10), "NEUTRAL", { maxCases: 3 });
+      const w10 = await world(4);
+      const capped = await run(w10, "NEUTRAL", { maxCases: 3 });
+      cleanup(w10);
       expect(capped.result).toBe("insufficient");
     } finally {
       cleanup(w);

@@ -30,7 +30,7 @@ async function world() {
   const ledger = new Ledger(":memory:", { repo: "acme/app" });
   const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
   const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
-  const rec = new Reconciler({
+  const rec = new Reconciler({ triageInvoker: noCli,
     config: cfg, ledger, github, broker,
     implementer: { async run() { throw new Error("unused"); } },
     reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
@@ -48,6 +48,7 @@ async function world() {
   return { root, github, ledger, rec };
 }
 import crypto from "node:crypto";
+import { noCli } from "./helpers/no-cli.js";
 const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
 
 describe("removing needs-you resumes a Thread only when the owner removed it", () => {
