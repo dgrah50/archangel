@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -10,8 +11,104 @@ export type CliProvider = z.infer<typeof CliProviderSchema>;
 export const ProviderEntrySchema = z.object({
   provider: CliProviderSchema,
   model: z.string().min(1).optional(),
+  /** Restrict this entry to these account ids (of this provider); by default it may use every account of the provider. */
+  accounts: z.array(z.string().min(1)).min(1).optional(),
 });
 export type ProviderEntry = z.infer<typeof ProviderEntrySchema>;
+
+/**
+ * One login of a subscription CLI. `home` is that CLI's own config dir (CLAUDE_CONFIG_DIR for claude, CODEX_HOME for codex,
+ * HOME for agy); the owner logs each account in by hand and Archangel never reads, copies or refreshes a token.
+ * Without `home` the account uses the CLI's default home.
+ */
+export const AccountSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,30}$/, "account id must be a lowercase slug"),
+    provider: CliProviderSchema,
+    home: z.string().min(1).optional(),
+    /** Optional per-account cap on Attempts started per local day. */
+    maxAttemptsPerDay: z.number().int().min(1).optional(),
+  })
+  .strict();
+export type Account = z.infer<typeof AccountSchema>;
+
+/**
+ * The base case, not a fallback: with no `accounts` list there is exactly one implicit account per provider using the CLI's
+ * default home, and its id is the provider name.
+ */
+export const DEFAULT_ACCOUNTS: Account[] = CliProviderSchema.options.map((provider) => ({ id: provider, provider }));
+
+export function expandHome(p: string, home = os.homedir()): string {
+  return p === "~" ? home : p.startsWith("~/") ? path.join(home, p.slice(2)) : p;
+}
+
+/** The single environment variable that points a CLI at this account's login. Empty for an account on the default home. */
+export function accountEnv(account: Account | undefined): NodeJS.ProcessEnv {
+  if (!account?.home) return {};
+  const home = path.resolve(expandHome(account.home));
+  if (account.provider === "claude") return { CLAUDE_CONFIG_DIR: home };
+  if (account.provider === "codex") return { CODEX_HOME: home };
+  return { HOME: home };
+}
+
+/** The account an entry runs on: the first account of its provider that the entry allows. (A selector over these comes next.) */
+export function accountsFor(accounts: Account[], entry: ProviderEntry): Account[] {
+  return accounts.filter((a) => a.provider === entry.provider && (!entry.accounts || entry.accounts.includes(a.id)));
+}
+export function firstAccount(accounts: Account[], entry: ProviderEntry): Account | undefined {
+  return accountsFor(accounts, entry)[0];
+}
+
+/** Filesystem checks for configured homes: each must exist, be a directory, and hold a login (non-empty). */
+export function accountHomeProblems(accounts: Account[]): Array<{ id: string; problem: string }> {
+  const out: Array<{ id: string; problem: string }> = [];
+  for (const a of accounts) {
+    if (!a.home) continue;
+    const dir = path.resolve(expandHome(a.home));
+    let entries: string[];
+    try {
+      if (!fs.statSync(dir).isDirectory()) throw new Error("not a directory");
+      entries = fs.readdirSync(dir);
+    } catch {
+      out.push({ id: a.id, problem: `home ${dir} does not exist or is not a directory` });
+      continue;
+    }
+    if (entries.length === 0) out.push({ id: a.id, problem: `home ${dir} is empty: log this account in first` });
+  }
+  return out;
+}
+
+/** Cross-field rules for an accounts list and the chains that use it. */
+function checkAccounts(
+  accounts: Account[],
+  chains: Array<[string, ProviderEntry[]]>,
+  addIssue: (path: (string | number)[], message: string) => void,
+): void {
+  const ids = new Set<string>();
+  const homes = new Map<string, string>();
+  accounts.forEach((a, i) => {
+    if (ids.has(a.id)) addIssue(["accounts", i, "id"], `duplicate account id '${a.id}'`);
+    ids.add(a.id);
+    if (a.home) {
+      const key = path.resolve(expandHome(a.home));
+      const other = homes.get(key);
+      if (other) addIssue(["accounts", i, "home"], `accounts '${other}' and '${a.id}' share one home: that is one login, not two`);
+      homes.set(key, a.id);
+    }
+  });
+  for (const [where, chain] of chains) {
+    chain.forEach((entry, i) => {
+      if (!accounts.some((a) => a.provider === entry.provider)) {
+        addIssue([where, i, "provider"], `${where} names provider '${entry.provider}' but no account of that provider is configured`);
+      }
+      for (const id of entry.accounts ?? []) {
+        const acct = accounts.find((a) => a.id === id);
+        if (!acct) addIssue([where, i, "accounts"], `unknown account '${id}'`);
+        else if (acct.provider !== entry.provider) addIssue([where, i, "accounts"], `account '${id}' is a ${acct.provider} account, not ${entry.provider}`);
+      }
+    });
+  }
+}
 
 const ChainSchema = z.array(ProviderEntrySchema).min(1, "a chain needs at least one provider");
 
@@ -182,6 +279,7 @@ export const ConfigSchema = z.object({
   // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
   authMode: AuthModeSchema.default("api"),
   chains: ChainsSchema.default(ChainsSchema.parse({})),
+  accounts: z.array(AccountSchema).default(DEFAULT_ACCOUNTS),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
@@ -254,6 +352,7 @@ export const HostYamlSchema = z.object({
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
   chains: ChainsSchema.default(ChainsSchema.parse({})),
+  accounts: z.array(AccountSchema).default(DEFAULT_ACCOUNTS),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
@@ -265,6 +364,11 @@ export const HostYamlSchema = z.object({
   paseoHome: z.string().optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
 }).strict().superRefine((host, ctx) => {
+  checkAccounts(
+    host.accounts,
+    [...Object.entries(host.chains).map(([role, chain]) => [`chains.${role}`, chain] as [string, ProviderEntry[]]), ["reviewerChain", host.reviewerChain]],
+    (p, message) => ctx.addIssue({ code: "custom", path: p, message }),
+  );
   // Two entries for one repo would run two Reconcilers over one Broker clone, clones dir and Ledger view.
   const seen = new Set<string>();
   host.projects.forEach((p, i) => {
@@ -365,6 +469,10 @@ export function loadProjectConfigs(opts: {
   const rawText = fs.readFileSync(resolvedConfig, "utf8");
   const yamlObj = parseYaml(rawText);
   const host = HostYamlSchema.parse(yamlObj);
+  const homeProblems = accountHomeProblems(host.accounts);
+  if (homeProblems.length > 0) {
+    throw new Error(`Invalid accounts in ${resolvedConfig}: ${homeProblems.map((p) => `${p.id}: ${p.problem}`).join("; ")}`);
+  }
 
   return host.projects.map((proj) => {
     const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
@@ -407,6 +515,7 @@ export function loadProjectConfigs(opts: {
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,
+      accounts: host.accounts,
       reviewerChain: host.reviewerChain,
       claudeModel: host.claudeModel,
       openaiReviewerModel: host.openaiReviewerModel,

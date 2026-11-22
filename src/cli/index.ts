@@ -53,6 +53,7 @@ function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): Reviewer
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
+        accounts: cfg.accounts,
         defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
@@ -187,6 +188,7 @@ program
         cfg.authMode === "subscription"
           ? new SubscriptionImplementer({
               chains: cfg.chains,
+              accounts: cfg.accounts,
               transcriptsDir: paths.transcriptsDir,
               cooldowns,
               logger,
