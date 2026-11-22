@@ -39,18 +39,27 @@ describe("Needs You decision classes", () => {
   });
 
   it("feature escalations say the owner merges; bugfix text is unchanged", () => {
-    expect(describeEscalation("gate_failed", "feature").recommendation).toMatch(/owner merges it\.$/);
-    expect(describeEscalation("gate_failed").recommendation).toBe(ESCALATION_POLICY.gate_failed.recommendation);
+    expect(describeEscalation("gate_failed", "feature").recommendation).toContain("the owner merges it.");
+    expect(describeEscalation("gate_failed").recommendation).not.toContain("owner merges it");
     const prompt = buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "a/b", workClass: "feature" });
     expect(prompt).toContain("NOT A BUG FIX");
     expect(prompt).not.toContain("reproduces the bug");
     expect(buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "a/b" })).toContain("reproduces the bug");
   });
 
+  it("lists the owner comment commands in every escalation recommendation", () => {
+    for (const code of Object.keys(ESCALATION_POLICY) as EscalationCode[]) {
+      const r = describeEscalation(code).recommendation;
+      expect(r).toContain("`/archangel retry`");
+      expect(r).toContain("`/archangel close`");
+      expect(r).toContain("`/archangel handoff`");
+    }
+  });
+
   it("shows class and recommendation in the Recap", () => {
     const body = renderRecapComment({ thread: needsYouThread("review_vetoed"), reviews: [], blockers: [] });
     expect(body).toContain("Needs You — live infrastructure");
-    expect(body).toContain(`**Recommended:** ${ESCALATION_POLICY.review_vetoed.recommendation}`);
+    expect(body).toContain(`**Recommended:** ${describeEscalation("review_vetoed").recommendation}`);
   });
 });
 

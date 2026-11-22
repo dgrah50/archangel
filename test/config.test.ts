@@ -79,3 +79,58 @@ describe("config security invariants", () => {
     expect(merged.reviewRubric).toContain("Repo rubric");
   });
 });
+
+describe("host limit and timeout knobs", () => {
+  const env = {
+    ARCHANGEL_GITHUB_APP_ID: "1",
+    ARCHANGEL_GITHUB_PRIVATE_KEY_PEM: "pem",
+    ARCHANGEL_GITHUB_INSTALLATION_ID: "2",
+  };
+  function load(yaml: string) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-knobs-"));
+    try {
+      const p = path.join(tmp, "archangel.yaml");
+      fs.writeFileSync(p, yaml);
+      return loadProjectConfigs({ configPath: p, env });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  it("passes host knobs through, lets projects override attempt limits, and keeps defaults when omitted", () => {
+    const [a, b] = load(
+      [
+        "ownerUserId: 9",
+        "maxAutonomousStepsWithoutOwner: 7",
+        "maxImplementAttemptsPerThread: 5",
+        "maxRevisionsPerThread: 2",
+        "maxRebasesPerThread: 3",
+        "implementMaxTurns: 11",
+        "implementTimeoutMs: 40000",
+        "setupTimeoutMs: 6000",
+        "staleLeaseMs: 20000",
+        "gateStartGraceMs: 20000",
+        "gateTimeoutMs: 120000",
+        "reviewerOutageMaxMs: 120000",
+        "projects:",
+        "  - repo: acme/a",
+        "  - repo: acme/b",
+        "    maxImplementAttemptsPerThread: 1",
+      ].join("\n"),
+    ) as [ReturnType<typeof load>[number], ReturnType<typeof load>[number]];
+    expect(a).toMatchObject({
+      maxAutonomousStepsWithoutOwner: 7, maxImplementAttemptsPerThread: 5, maxRevisionsPerThread: 2,
+      maxRebasesPerThread: 3, implementMaxTurns: 11, implementTimeoutMs: 40000, setupTimeoutMs: 6000,
+      staleLeaseMs: 20000, gateStartGraceMs: 20000, gateTimeoutMs: 120000, reviewerOutageMaxMs: 120000,
+    });
+    expect(b.maxImplementAttemptsPerThread).toBe(1);
+    expect(b.maxRevisionsPerThread).toBe(2);
+
+    const [d] = load("ownerUserId: 9\nprojects:\n  - repo: acme/a\n");
+    expect(d).toMatchObject({
+      maxAutonomousStepsWithoutOwner: 25, maxImplementAttemptsPerThread: 3, maxRevisionsPerThread: 1,
+      maxRebasesPerThread: 1, implementMaxTurns: 40, implementTimeoutMs: 1_200_000, setupTimeoutMs: 300_000,
+      staleLeaseMs: 180_000, gateStartGraceMs: 300_000, gateTimeoutMs: 3_600_000, reviewerOutageMaxMs: 21_600_000,
+    });
+  });
+});
