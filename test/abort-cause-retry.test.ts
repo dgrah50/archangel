@@ -1,3 +1,4 @@
+import type { ImplementInput } from "../src/agents/implementer.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +15,7 @@ import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-async function world(implementer: (input: { abortController: AbortController }) => Promise<never>, over: object = {}) {
+async function world(implementer: (input: ImplementInput) => Promise<never>, over: object = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-abortcause-"));
   const seed = path.join(root, "seed");
   fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
@@ -65,7 +66,7 @@ describe("an abort nobody asked for is a timeout, not a control abort", () => {
 describe("a handoff whose push fails is an explicit state, not a silent drop", () => {
   it("records handoff/push_failed and tells the owner on the issue", async () => {
     const w = await world(async (input) => {
-      fs.writeFileSync(path.join((input as unknown as { cloneDir: string }).cloneDir, "work.go"), "package demo\n");
+      fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "work.go"), "package demo\n");
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, 4000);
         input.abortController.signal.addEventListener("abort", () => (clearTimeout(t), resolve()));

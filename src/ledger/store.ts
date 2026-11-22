@@ -182,7 +182,7 @@ export class Ledger {
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} ${type}`);
       };
       addCols("attempts", ["duration_ms", "peak_rss_kb"], "INTEGER");
-      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
+      addCols("attempts", ["provider", "model", "account_id", "compute", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
       addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
       this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
@@ -798,14 +798,14 @@ export class Ledger {
   /** Replay provenance for an Attempt: who ran it, with which prompt template, under which workflow file. */
   recordAttemptProvenance(
     attemptId: number,
-    p: { provider?: string | null; model?: string | null; accountId?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
+    p: { provider?: string | null; model?: string | null; accountId?: string | null; compute?: string | null; promptSha256?: string | null; workflowSha256?: string | null },
   ): void {
     this.db
       .prepare(
-        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model), account_id = COALESCE(?, account_id),
+        `UPDATE attempts SET provider = COALESCE(?, provider), model = COALESCE(?, model), account_id = COALESCE(?, account_id), compute = COALESCE(?, compute),
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
-      .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+      .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.compute ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
   }
 
   /** What the Attempt's agent runs cost in wall time and memory (peak RSS in KB, null when never sampled). */
@@ -3151,6 +3151,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
     model: r.model === null || r.model === undefined ? null : String(r.model),
     accountId: r.account_id === null || r.account_id === undefined ? null : String(r.account_id),
+    compute: r.compute === null || r.compute === undefined ? null : String(r.compute),
     promptSha256: r.prompt_sha256 === null || r.prompt_sha256 === undefined ? null : String(r.prompt_sha256),
     workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     durationMs: r.duration_ms === null || r.duration_ms === undefined ? null : Number(r.duration_ms),

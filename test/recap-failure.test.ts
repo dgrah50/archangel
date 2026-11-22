@@ -39,9 +39,9 @@ describe("a failing Recap comment never rewrites a pushed Attempt", () => {
         broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),
         implementer: {
           async run(input) {
-            fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
-            git(input.cloneDir, ["add", "-A"]);
-            git(input.cloneDir, ["commit", "-qm", "fix"]);
+            fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
+            git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+            git((await input.workspaces.local.workspace()).path, ["commit", "-qm", "fix"]);
             return { summary: "ok", costUsd: 1.2, transcriptPath: null, aborted: false };
           },
         },

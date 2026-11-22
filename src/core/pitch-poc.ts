@@ -1,6 +1,8 @@
 import type { Implementer } from "../agents/implementer.js";
 import type { GitBroker } from "../broker/git-broker.js";
-import type { ComputeProvider, Workspace } from "../compute/provider.js";
+import { LazyWorkspace, type WorkspaceHandle } from "../compute/lazy-workspace.js";
+import type { ComputeProvider } from "../compute/provider.js";
+import { AttemptError } from "../ledger/schema.js";
 import type { ArchangelConfig, GatePolicy } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
 import fs from "node:fs";
@@ -20,7 +22,9 @@ const DIFF_STAT_MAX_CHARS = 2000;
 export interface PocBuildDeps {
   ledger: Ledger;
   broker: GitBroker;
+  /** The configured `compute.provider`: claude builds run here. When it is remote, codex and agy builds run on `local` instead. */
   compute: ComputeProvider;
+  local?: ComputeProvider;
   implementer: Implementer;
   cfg: Pick<ArchangelConfig, "maxDailyUsd" | "implementMaxTurns" | "implementTimeoutMs" | "setupTimeoutMs" | "githubOwner" | "githubRepo">;
   gate: GatePolicy;
@@ -67,20 +71,33 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     ledger.appendAudit("budget/daily_cap_reached", issueNumber, "archangel", { phase: "poc", maxDailyUsd: cfg.maxDailyUsd }, now);
     return fail("over_budget", "daily budget reached");
   }
-  let workspace: Workspace | null = null;
+  const handleFor = (c: ComputeProvider) =>
+    new LazyWorkspace(c, { issueNumber, startSha: mainSha }, async (ws) => {
+      try {
+        await broker.runRepoSetup(ws.path, mainSha, cfg.setupTimeoutMs, c.remote ? (spec) => c.exec(ws, spec) : undefined);
+      } catch (err) {
+        throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
+      }
+    });
+  const configured = handleFor(compute);
+  const localHandle = compute.remote ? handleFor(deps.local ?? compute) : configured;
+  let ranOn: WorkspaceHandle = configured;
   let costUsd = 0;
   try {
-    workspace = await compute.prepare({ issueNumber, startSha: mainSha });
-    try {
-      await broker.runRepoSetup(workspace.path, mainSha, cfg.setupTimeoutMs);
-    } catch (err) {
-      return fail("setup_failed", err instanceof Error ? err.message : String(err));
+    // A local provider is prepared up front; a remote one only when a claude entry needs it.
+    if (!compute.remote) {
+      try {
+        await configured.workspace();
+      } catch (err) {
+        if (err instanceof AttemptError && err.category === "setup_failed") return fail("setup_failed", err.message);
+        throw err;
+      }
     }
     let result;
     try {
       result = await deps.implementer.run({
         issueNumber,
-        cloneDir: workspace.path,
+        workspaces: compute.remote ? { local: localHandle, remote: configured } : { local: configured },
         prompt: buildImplementPrompt({ issueNumber, title: brief.title, body: brief.body, repoName: `${cfg.githubOwner}/${cfg.githubRepo}`, gate: deps.gate, workClass: "feature", repoInstructions: await loadRepoInstructions(broker, mainSha) }),
         abortController: abort,
         maxTurns: cfg.implementMaxTurns,
@@ -89,13 +106,15 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
         role: "implement",
       });
     } catch (err) {
+      if (err instanceof AttemptError && err.category === "setup_failed") return fail("setup_failed", err.message);
       return fail("provider_unavailable", err instanceof Error ? err.message : String(err));
     }
     costUsd = result.costUsd;
+    if (compute.remote && result.ranOn !== "remote") ranOn = localHandle;
     if (result.aborted) return fail("aborted", "aborted", costUsd);
     if (result.failure) return fail("implementer_failed", result.failure, costUsd);
 
-    const validation = await broker.fetchAndValidateCollected(await compute.collect(workspace), issueNumber, mainSha, deps.gate, "feature");
+    const validation = await broker.fetchAndValidateCollected(await ranOn.compute.collect(await ranOn.workspace()), issueNumber, mainSha, deps.gate, "feature");
     if (validation.protectedViolations.length > 0) {
       return fail(validation.changedFiles.length === 0 ? "empty" : "out_of_bounds", validation.protectedViolations.join("; "), costUsd);
     }
@@ -104,14 +123,18 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     if (deps.preview) {
       // Outside any sandbox (Seatbelt cannot allow registry hosts for one step), scrubbed env, the repo setup's timeout. A failed
       // install does not fail the build: the preview installs again when it starts.
+      // A preview is always served from a local checkout: a build that ran on a remote box is checked out here from the validated head.
+      const localCompute = deps.local ?? compute;
+      let previewWs = ranOn.compute.remote ? null : await ranOn.workspace();
       try {
-        await installPreviewDeps(compute, workspace, deps.preview.policy.install, cfg.setupTimeoutMs);
+        previewWs ??= await localCompute.prepare({ issueNumber, startSha: validation.headSha });
+        await installPreviewDeps(localCompute, previewWs, deps.preview.policy.install, cfg.setupTimeoutMs);
         const dir = deps.preview.workspaceDir(issueNumber);
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(path.dirname(dir), { recursive: true });
-        fs.renameSync(workspace.path, dir);
-        workspace = null;
+        fs.renameSync(previewWs.path, dir);
       } catch (err) {
+        if (ranOn.compute.remote && previewWs) localCompute.destroy(previewWs);
         ledger.appendAudit("poc/install_failed", issueNumber, "archangel", { detail: (err instanceof Error ? err.message : String(err)).slice(0, 300) }, Date.now());
       }
     }
@@ -121,6 +144,7 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     fail("internal", err instanceof Error ? err.message : String(err), costUsd);
   } finally {
     ledger.settleBudget(reserved, costUsd, Date.now());
-    if (workspace) compute.destroy(workspace);
+    configured.destroy();
+    if (localHandle !== configured) localHandle.destroy();
   }
 }

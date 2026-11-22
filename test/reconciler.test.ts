@@ -82,9 +82,9 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     const implementer: Implementer = {
       async run(input) {
         implementCalls++;
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 42 }\n");
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", "fix Val"]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 42 }\n");
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix Val"]);
         return { summary: "Fixed Val to return 42.", costUsd: 0.45, transcriptPath: null, aborted: false };
       },
     };
@@ -220,9 +220,9 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
 
     const implementer: Implementer = {
       async run(input) {
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n");
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", "fix Val 99"]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n");
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix Val 99"]);
         return { summary: "Fixed Val to 99.", costUsd: 0.5, transcriptPath: null, aborted: false };
       },
     };
@@ -319,11 +319,11 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
           return { summary: "Aborted", costUsd: 0.25, transcriptPath: null, aborted: true };
         }
         fs.writeFileSync(
-          path.join(input.cloneDir, "app.go"),
+          path.join((await input.workspaces.local.workspace()).path, "app.go"),
           `package demo\n\nfunc Val() int { return ${attemptNum === 1 ? 10 : 20} }\n`,
         );
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", `attempt ${attemptNum}`]);
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", `attempt ${attemptNum}`]);
         return { summary: `Attempt ${attemptNum}`, costUsd: 1.0, transcriptPath: null, aborted: false };
       },
     };
@@ -485,9 +485,9 @@ describe("Work classes (owner-labelled features)", () => {
     const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
     const implementer: Implementer = {
       async run(input) {
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", "feature"]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", "feature"]);
         return { summary: "Done.", costUsd: 0.1, transcriptPath: null, aborted: false };
       },
     };
@@ -579,9 +579,9 @@ describe("Owner comment commands", () => {
     const implementer: Implementer = {
       async run(input) {
         prompts.push(input.prompt);
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 5 }\n");
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", "fix"]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 5 }\n");
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]);
         return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
       },
     };
