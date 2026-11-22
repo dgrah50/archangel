@@ -436,11 +436,21 @@ describe("archangel pitch promote", () => {
 
   it("--slice promotes only that slice and leaves the pitch open for the rest", async () => {
     const { ledger, runner, calls, base } = setup();
-    expect(await promotePitch(runner, ledger, { ...base, slice: 2 })).toEqual([100]);
+    expect(await promotePitch(runner, ledger, { ...base, slice: "2" })).toEqual([100]);
     expect(ledger.getPitch(40)!.state).toEqual({ kind: "partially_promoted", promotedSlices: [1], totalSlices: 2 });
     expect(calls.some((c) => c[1] === "close")).toBe(false);
-    expect(await promotePitch(runner, ledger, { ...base, slice: 1 })).toEqual([101]);
+    expect(await promotePitch(runner, ledger, { ...base, slice: "1" })).toEqual([101]);
     expect(ledger.getPitch(40)!.state.kind).toBe("promoted");
+  });
+
+  it("--slice takes a comma list and rejects repeats, out-of-range and malformed entries before creating anything", async () => {
+    const { ledger, runner, calls, base } = setup();
+    for (const bad of ["1,1", "3", "0", "1,x", "1,,2", ""]) {
+      await expect(promotePitch(runner, ledger, { ...base, slice: bad })).rejects.toThrow(/--slice/);
+    }
+    expect(calls.some((c) => c[1] === "create")).toBe(false);
+    expect(await promotePitch(runner, ledger, { ...base, slice: "2,1" })).toEqual([100, 101]);
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "promoted", promotedSlices: [0, 1] });
   });
 
   it("--chain records slice N waiting on slice N-1 and applies ready-for-agent only after the order is recorded", async () => {

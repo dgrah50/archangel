@@ -12,7 +12,7 @@ export type Route =
   | { page: "health" }
   | { page: "evals" }
   | { page: "setup"; repo: string | null }
-  | { page: "settings"; scope: "machine" | "repo" | "kernel" }
+  | { page: "settings"; scope: "machine" | "repo" | "accounts" | "kernel" }
   | { page: "not-found"; hash: string };
 
 type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health" | "settings" | "evals" | "setup";
@@ -37,6 +37,7 @@ export function parseRoute(hash: string): Route {
   if (path === "/pipeline") return { page: "pipeline" };
   if (path === "/settings") return { page: "settings", scope: "machine" };
   if (path === "/settings/repo") return { page: "settings", scope: "repo" };
+  if (path === "/settings/accounts") return { page: "settings", scope: "accounts" };
   if (path === "/settings/kernel") return { page: "settings", scope: "kernel" };
   if (path === "/setup") return { page: "setup", repo: null };
   const su = /^\/setup\/([^/]+\/[^/]+)$/.exec(path);

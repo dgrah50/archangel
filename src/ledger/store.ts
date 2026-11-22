@@ -514,6 +514,7 @@ export class Ledger {
       /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
+      auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
       now?: number;
       repo?: string;
@@ -565,7 +566,7 @@ export class Ledger {
       }
 
       if (opts.auditTopic) {
-        this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
       }
       // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
       if (validated.kind === "needs_you") {
@@ -1561,6 +1562,12 @@ export class Ledger {
       .prepare("SELECT account_id, until_ts, reason FROM account_cooldowns WHERE until_ts > ? ORDER BY account_id")
       .all(now) as Array<{ account_id: string; until_ts: number; reason: string }>;
     return rows.map((r) => ({ account: String(r.account_id), untilTs: Number(r.until_ts), reason: String(r.reason) }));
+  }
+
+  /** Every account's most recent limit error, including ended cooldowns: the last failover away from it. */
+  listAccountSwitches(): Array<{ account: string; at: number; reason: string }> {
+    const rows = this.db.prepare("SELECT account_id, updated_at, reason FROM account_cooldowns").all() as Array<{ account_id: string; updated_at: number; reason: string }>;
+    return rows.map((r) => ({ account: String(r.account_id), at: Number(r.updated_at), reason: String(r.reason) }));
   }
 
   /** The selector's view of this Ledger: cooldowns, usage counters, and the optional free Codex reading. */
