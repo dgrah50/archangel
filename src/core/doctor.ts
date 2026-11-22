@@ -4,6 +4,8 @@ import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 import { REPO_POLICY_PATH, loadProjectConfigs, providerToVendor, resolvePaths, resolveRequiredReviewers, type ArchangelConfig } from "../config.js";
+import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
+import { execRunner } from "./onboard.js";
 import { GitHubAppClient } from "../github/client.js";
 import { Ledger } from "../ledger/store.js";
 
@@ -285,6 +287,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   }
 
   // 9. Online GitHub App least-privilege permission audit + target repo checks (ADR-0004!)
+  let gateLatest: string | undefined;
   for (const cfg of projects) {
     const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
     const gh = new GitHubAppClient({
@@ -344,6 +347,30 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           ? undefined
           : "Copy workflows/archangel-gate.yml into .github/workflows/archangel-gate.yml (pin ARCHANGEL_GATE_SHA) and merge to default branch",
       });
+
+      if (hasGateWf) {
+        const wf = await gh.readFileAtRef(tip, ".github/workflows/archangel-gate.yml");
+        if (wf !== null) {
+          try {
+            gateLatest ??= await latestGateCommit(execRunner);
+            const drift = await assessPinDrift(execRunner, wf, gateLatest);
+            checks.push({
+              id: `gate_pin:${repoSlug}`,
+              name: `Gate Pin (${repoSlug})`,
+              status: drift.drifted ? "warn" : "pass",
+              detail: drift.drifted ? drift.reasons.join("; ") : `pin is current (latest gate-relevant commit ${gateLatest.slice(0, 10)})`,
+              remediation: drift.drifted ? `archangel gate bump --repo ${repoSlug}` : undefined,
+            });
+          } catch (err) {
+            checks.push({
+              id: `gate_pin:${repoSlug}`,
+              name: `Gate Pin (${repoSlug})`,
+              status: "warn",
+              detail: `could not assess pin drift: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        }
+      }
 
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||

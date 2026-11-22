@@ -56,16 +56,16 @@ export interface OnboardPlan {
 }
 
 /** Refuses unless the Archangel checkout is clean and HEAD is on origin/main; returns the pin. */
-export async function pinnedSha(runner: OnboardRunner, root: string): Promise<string> {
+export async function pinnedSha(runner: OnboardRunner, root: string, what = "onboard"): Promise<string> {
   if ((await runner.run("git", ["status", "--porcelain"], { cwd: root })).trim() !== "") {
-    throw new Error("Refusing to onboard: the Archangel checkout has uncommitted changes.");
+    throw new Error(`Refusing to ${what}: the Archangel checkout has uncommitted changes.`);
   }
   await runner.run("git", ["fetch", "origin", "main", "--quiet"], { cwd: root });
   const sha = (await runner.run("git", ["rev-parse", "HEAD"], { cwd: root })).trim();
   try {
     await runner.run("git", ["merge-base", "--is-ancestor", sha, "origin/main"], { cwd: root });
   } catch {
-    throw new Error(`Refusing to onboard: Archangel HEAD ${sha.slice(0, 10)} is not on origin/main (the Gate pin must be fetchable).`);
+    throw new Error(`Refusing to ${what}: Archangel HEAD ${sha.slice(0, 10)} is not on origin/main (the Gate pin must be fetchable).`);
   }
   return sha;
 }

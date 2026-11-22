@@ -318,6 +318,25 @@ export class GitHubAppClient implements GitHubClient {
     }
   }
 
+  /** UTF-8 content of a file at a ref, or null when it does not exist. */
+  async readFileAtRef(ref: string, filePath: string): Promise<string | null> {
+    try {
+      const res = await this.request<{ content?: string; encoding?: string }>(
+        "GET",
+        `/repos/${this.cfg.owner}/${this.cfg.repo}/contents/${filePath
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}?ref=${encodeURIComponent(ref)}`,
+        { useEtag: false },
+      );
+      if (res.encoding !== "base64" || typeof res.content !== "string") return null;
+      return Buffer.from(res.content, "base64").toString("utf8");
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("(404)")) return null;
+      throw err;
+    }
+  }
+
   async listRepoLabels(): Promise<string[]> {
     const items = await this.requestAllPages<{ name?: string }>(
       `/repos/${this.cfg.owner}/${this.cfg.repo}/labels?per_page=100`,
