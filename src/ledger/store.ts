@@ -771,6 +771,57 @@ export class Ledger {
     return this.getMerge(Number(info.lastInsertRowid))!;
   }
 
+  /**
+   * What replay needs per Thread: the final outcome, the heads that merged, and heads whose Attempt failed with a
+   * recorded error. Read-only; the SHAs themselves are kept alive by the Broker's eval refs.
+   */
+  listReplaySeeds(
+    sinceMs = 0,
+    repo = this.repo,
+  ): Array<{
+    issueNumber: number;
+    branchName: string;
+    phase: Phase;
+    updatedAt: number;
+    merges: Array<{ headSha: string; shadowOnly: boolean; disagreed: boolean; mainWatch: string }>;
+    failedAttempts: Array<{ headSha: string; errorMessage: string }>;
+    /** The most recent head any Attempt produced (the head an owner-closed Thread ended with). */
+    lastHead: string | null;
+  }> {
+    const heads = this.db
+      .prepare(`SELECT issue_number, head_sha FROM attempts WHERE repo = ? AND head_sha IS NOT NULL ORDER BY id`)
+      .all(repo) as Array<Record<string, unknown>>;
+    const merges = this.db
+      .prepare(`SELECT issue_number, head_sha, shadow_only, disagreed, main_watch_json FROM merges WHERE repo = ? ORDER BY id`)
+      .all(repo) as Array<Record<string, unknown>>;
+    const failed = this.db
+      .prepare(
+        `SELECT issue_number, head_sha, error_message FROM attempts
+         WHERE repo = ? AND status = 'failed' AND head_sha IS NOT NULL AND error_message IS NOT NULL ORDER BY id`,
+      )
+      .all(repo) as Array<Record<string, unknown>>;
+    return this.listThreads(undefined, repo)
+      .filter((t) => t.updatedAt >= sinceMs)
+      .map((t) => ({
+        issueNumber: t.issueNumber,
+        branchName: t.branchName,
+        phase: t.phase,
+        updatedAt: t.updatedAt,
+        merges: merges
+          .filter((m) => Number(m.issue_number) === t.issueNumber)
+          .map((m) => ({
+            headSha: String(m.head_sha),
+            shadowOnly: Number(m.shadow_only) === 1,
+            disagreed: Number(m.disagreed) === 1,
+            mainWatch: String((JSON.parse(String(m.main_watch_json)) as { kind?: string }).kind ?? "unknown"),
+          })),
+        failedAttempts: failed
+          .filter((a) => Number(a.issue_number) === t.issueNumber)
+          .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message) })),
+        lastHead: heads.filter((h) => Number(h.issue_number) === t.issueNumber).map((h) => String(h.head_sha)).at(-1) ?? null,
+      }));
+  }
+
   /** Every commit a Thread's history depends on (reviewed heads, Attempt heads, merged heads), for eval-ref pinning. */
   listEvalShas(repo = this.repo): Array<{ issueNumber: number; sha: string }> {
     const rows = this.db

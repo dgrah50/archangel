@@ -159,6 +159,7 @@ archangel ui               # open the local dashboard at http://127.0.0.1:4477
 | `archangel metrics [--days <n>] [--repo <owner/name>] [--json]` | Show funnel stats, lead times, per-fix outcomes, vendor agreement, cooldowns, and signals. |
 | `archangel events [--repo <owner/name>] [--topic <prefix>] [--issue <n>]` | Inspect the append-only SQLite Ledger audit log (`--limit <n>`). |
 | `archangel gate --base <ref> [--head <ref>] [--repo <dir>]` | Run the mechanical Gate locally (`--revert-of`, `--skip-pre-commit`, `--skip-tests`). |
+| `archangel replay [--repo <owner/name>] [--since <days>] [--run-tests] [--json]` | Re-run the Gate offline over captured Threads (pinned eval refs) and seeded corruptions of known-good fixes; exit 1 on any regression. Local only. Without `--run-tests` no repo code runs and the test-dependent mutants are skipped. |
 | `archangel gate-bump <--repo <owner/name>\|--all> [--dry-run]` | Open one unmerged PR per drifted repo to re-pin `ARCHANGEL_GATE_SHA`. |
 | `archangel workflow propose <repo> --file <path> [--dry-run]` | Validate a `.agents/archangel.json` draft and open one unmerged PR (`policy:loosens` if relaxed). |
 | `archangel scout run [name] [--repo <owner/name>] [--dry-run]` | Run declared read-only Scouts against the default branch (or list them with `--dry-run`). |
