@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import type { WriterRole } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 
 export interface ImplementInput {
@@ -14,6 +15,8 @@ export interface ImplementInput {
   timeoutMs: number;
   maxBudgetUsd: number;
   preferVendors?: ReviewerVendor[];
+  /** Which provider chain runs this Attempt (implement, revise or LLM rebase). */
+  role: WriterRole;
 }
 
 export interface ImplementResult {

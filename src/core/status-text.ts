@@ -1,4 +1,4 @@
-import type { Ledger } from "../ledger/store.js";
+import type { HealthFault, Ledger } from "../ledger/store.js";
 import { formatAge, STAGES, type Stage, type UiItem } from "./ui-state.js";
 
 /** The daemon renews its lock every 30s; the host default lease is 3 minutes. */
@@ -10,6 +10,8 @@ export interface Health {
   halted: Array<{ repo: string; status: string; error: string }>;
   stuckOutbox: Array<{ repo: string; effect: string; attempts: number; lastError: string | null }>;
   autonomyCapHit: string[];
+  /** Subsystem error classes the daemon survived in the last 24h (intake, Scout, pitch, owner commands). */
+  faults: HealthFault[];
   ok: boolean;
 }
 
@@ -28,7 +30,8 @@ export function computeHealth(ledger: Ledger, now: number, repos: string[]): Hea
   }
   const stuckOutbox = ledger.listStuckOutbox().map((o) => ({ repo: o.repo, effect: o.effect?.kind ?? "unknown", attempts: o.attempts, lastError: o.lastError }));
   const autonomyCapHit = repos.filter((r) => ledger.autonomyCapHitSinceOwner(r));
-  return { daemon, halted, stuckOutbox, autonomyCapHit, ok: daemon.state === "running" && halted.length === 0 && stuckOutbox.length === 0 && autonomyCapHit.length === 0 };
+  const faults = ledger.listHealthFaults(now);
+  return { daemon, halted, stuckOutbox, autonomyCapHit, faults, ok: daemon.state === "running" && halted.length === 0 && stuckOutbox.length === 0 && autonomyCapHit.length === 0 && faults.length === 0 };
 }
 
 /** Text lines for the Health block: problems are prefixed with `!` so they stand out. */
@@ -45,6 +48,9 @@ export function renderHealth(h: Health): string[] {
   for (const x of h.halted) lines.push(`! Policy:   ${x.repo} halted (workflow ${x.status}): ${x.error.slice(0, 200)}`);
   for (const o of h.stuckOutbox) lines.push(`! Outbox:   ${o.repo} ${o.effect} failed ${o.attempts}x${o.lastError ? `: ${o.lastError.slice(0, 120)}` : ""}`);
   for (const r of h.autonomyCapHit) lines.push(`! Autonomy: ${r} hit the autonomy cap; waiting for the owner`);
+  for (const f of h.faults) {
+    lines.push(`! Errors:   ${f.repo} ${f.category} x${f.count} (${f.recent24h} in 24h), first ${formatAge(Math.max(0, Date.now() - f.firstSeen))} ago, last ${formatAge(Math.max(0, Date.now() - f.lastSeen))} ago: ${f.lastError.slice(0, 120)}`);
+  }
   if (h.ok) lines.push("  All clear.");
   lines.push("");
   return lines;

@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
@@ -26,6 +26,7 @@ import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { computeHealth, renderHealth, renderStages } from "../core/status-text.js";
+import { recordDaemonFacts } from "../core/host-facts.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
@@ -50,7 +51,7 @@ function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): Reviewer
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
-        primaryImplementerVendor: providerToVendor(cfg.implementerChain[0]!.provider),
+        defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
         openaiApiKey: cfg.openaiApiKey!,
@@ -129,6 +130,8 @@ program
       throw new Error("Another live Archangel daemon already holds the Ledger lock.");
     }
 
+    recordDaemonFacts(rootLedger, { configPath: opts.config });
+
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
       if (rootLedger.heartbeatDaemonLock(daemonOwnerId)) return;
@@ -154,7 +157,7 @@ program
     logger.info(
       "daemon/started",
       first.authMode === "subscription"
-        ? `Auth mode: subscription (impl=${first.implementerChain.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
+        ? `Auth mode: subscription (impl=${first.chains.implement.map((e) => e.provider).join("->")}, revise=${first.chains.revise.map((e) => e.provider).join("->")}, rebase=${first.chains.rebase.map((e) => e.provider).join("->")}, scout=${first.chains.scout.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
         : "Auth mode: api (metered keys)",
     );
 
@@ -181,7 +184,7 @@ program
       const implementer =
         cfg.authMode === "subscription"
           ? new SubscriptionImplementer({
-              chain: cfg.implementerChain,
+              chains: cfg.chains,
               transcriptsDir: paths.transcriptsDir,
               cooldowns,
               logger,
@@ -521,6 +524,13 @@ program
       console.log(
         `Attempts:    ${m.attempts.total} total (${m.attempts.succeeded} ok, ${m.attempts.failed} fail, ${m.attempts.aborted} abort; ${Math.round(m.attempts.successRate * 100)}% success)`,
       );
+      for (const [role, r] of Object.entries(m.attempts.byRole).sort()) {
+        const done = r.succeeded + r.failed + r.aborted;
+        const models = Object.entries(r.models).map(([k, n]) => `${k} x${n}`).join(", ");
+        console.log(
+          `  ${role.padEnd(9)} ${r.attempts} attempts, ${done > 0 ? Math.round((r.succeeded / done) * 100) : 0}% ok, $${r.costUsd.toFixed(2)} metered${models ? ` (${models})` : ""}`,
+        );
+      }
       console.log(
         `Duration:    p50=${m.attempts.p50DurationSec ?? "n/a"}s, p95=${m.attempts.p95DurationSec ?? "n/a"}s`,
       );
@@ -748,7 +758,7 @@ evalCmd
       const report = await runEval({
         ledger,
         sources: evalSources(ledger, dataDir, opts.repo),
-        suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, primaryImplementerVendor: providerToVendor(host.implementerChain[0]!.provider), prompts }),
+        suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts }),
         baseline: baseline.prompts,
         candidate,
         heldout: opts.heldout,
@@ -786,7 +796,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl") });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

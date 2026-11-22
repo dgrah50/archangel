@@ -60,8 +60,8 @@ describe("provider failover", () => {
         ? { code: 1, stdout: "", stderr: "rate limit exceeded: quota", aborted: false }
         : { code: 0, stdout: JSON.stringify({ result: "done" }), stderr: "", aborted: false };
     };
-    const impl = new SubscriptionImplementer({ chain: [{ provider: "codex" }, { provider: "claude" }], transcriptsDir: tmp(), invoker });
-    const res = await impl.run({ issueNumber: 1, cloneDir: dir, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 5000, maxBudgetUsd: 1 });
+    const impl = new SubscriptionImplementer({ chains: { implement: [{ provider: "codex" }, { provider: "claude" }], revise: [{ provider: "codex" }], rebase: [{ provider: "codex" }] }, transcriptsDir: tmp(), invoker });
+    const res = await impl.run({ issueNumber: 1, cloneDir: dir, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 5000, maxBudgetUsd: 1, role: "implement" });
     expect(res.providersUsed).toEqual(expect.arrayContaining(["openai", "anthropic"]));
   });
 });

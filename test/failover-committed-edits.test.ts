@@ -19,7 +19,7 @@ describe("implementer vendor tracking across failover", () => {
     git("commit", "-m", "init");
     try {
       const impl = new SubscriptionImplementer({
-        chain: [{ provider: "codex" }, { provider: "agy" }],
+        chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
         transcriptsDir: path.join(tmp, "transcripts"),
         invoker: async (input) => {
           if (input.provider === "codex") {
@@ -38,7 +38,7 @@ describe("implementer vendor tracking across failover", () => {
         abortController: new AbortController(),
         maxTurns: 1,
         timeoutMs: 1000,
-        maxBudgetUsd: 1,
+        maxBudgetUsd: 1, role: "implement" as const,
       });
       expect(res.providersUsed).toEqual(expect.arrayContaining(["openai", "gemini"]));
     } finally {
