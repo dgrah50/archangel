@@ -107,6 +107,11 @@ export const MAIN_ESCALATION_POLICY = {
     recommendation:
       "Review and merge the revert PR to turn main green, then clear the circuit breaker; the original issue can be retried afterwards.",
   },
+  scout_auto_promote_revoked: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "This Scout's last 3 auto-promoted Threads ended without a merge, so auto-promotion is off for this version. Review its recent proposals, then edit or remove the Scout entry or prompt (a merged edit lifts the revocation).",
+  },
   repo_policy_invalid: {
     decisionClass: "owner_signoff",
     recommendation:

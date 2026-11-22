@@ -79,6 +79,9 @@ export interface StageMetrics {
   byWorkflowSha: Record<string, { threads: number; merged: number; reverted: number }>;
 }
 
+/** Consecutive unmerged auto-promoted Threads of one Scout version that revoke its auto-promotion. */
+export const SCOUT_WASTE_STREAK = 3;
+
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
@@ -1182,10 +1185,52 @@ export class Ledger {
 
   /**
    * Auto-promotion trust for one exact version of a Scout file is revoked once any fix it
-   * auto-promoted was disagreed with, reverted, or turned main red. Editing the Scout file
-   * (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
+   * auto-promoted was disagreed with, reverted, or turned main red, or once its last
+   * SCOUT_WASTE_STREAK auto-promoted Threads all ended without a merge (wasted autonomy).
+   * Editing the Scout file (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
    */
   isScoutAutoPromoteRevoked(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    return this.isScoutAutoPromoteHarmful(scoutName, fileSha256, repo) || this.isScoutAutoPromoteWasted(scoutName, fileSha256, repo);
+  }
+
+  /**
+   * Waste: the most recent SCOUT_WASTE_STREAK auto-promoted proposals of this exact Scout version all ended without a merge
+   * (Needs You, PR closed, or abandoned). A merged one in that window, or any still in flight, means no streak.
+   */
+  isScoutAutoPromoteWasted(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    const rows = this.db
+      .prepare(
+        `SELECT t.phase_json AS phase FROM scout_proposals p
+         LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+         WHERE p.repo = ? AND p.scout_name = ? AND p.file_sha256 = ? AND p.auto_promoted = 1
+         ORDER BY p.created_at DESC, p.issue_number DESC LIMIT ?`,
+      )
+      .all(repo, scoutName, fileSha256, SCOUT_WASTE_STREAK) as Array<{ phase: string | null }>;
+    if (rows.length < SCOUT_WASTE_STREAK) return false;
+    return rows.every((r) => {
+      if (r.phase === null) return false;
+      const phase = JSON.parse(r.phase) as { kind: string; outcome?: string };
+      return phase.kind === "needs_you" || (phase.kind === "done" && (phase.outcome === "pr_closed" || phase.outcome === "abandoned"));
+    });
+  }
+
+  /** The owner has been told, once, that this exact Scout version was revoked for waste. */
+  scoutWasteNoticeSent(scoutName: string, trustHash: string, repo = this.repo): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM audit_log WHERE repo = ? AND topic = 'scout/auto_promote_revoked' AND actor = ?
+             AND json_extract(payload_json, '$.trustHash') = ? LIMIT 1`,
+        )
+        .get(repo, scoutName, trustHash),
+    );
+  }
+
+  markScoutWasteNoticeSent(scoutName: string, trustHash: string, now = Date.now(), repo = this.repo): void {
+    this.appendAudit("scout/auto_promote_revoked", null, scoutName, { trustHash, reason: "waste" }, now, repo);
+  }
+
+  private isScoutAutoPromoteHarmful(scoutName: string, fileSha256: string, repo: string): boolean {
     const row = this.db
       .prepare(
         `SELECT 1 FROM scout_proposals p

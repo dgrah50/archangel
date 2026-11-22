@@ -172,6 +172,8 @@ export class Reconciler {
       this.effectiveReviewRubric = resolved.rubric;
     }
 
+    if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
+
     if (policyError) {
       if (this.policyErrorNotifiedSha !== mainSha) {
         this.policyErrorNotifiedSha = mainSha;
@@ -255,6 +257,25 @@ export class Reconciler {
 
     // Flush any newly enqueued outbox effects immediately.
     await this.flushOutbox();
+  }
+
+  /** One Needs You (project-level, no issue) when an auto-promoting Scout version is revoked for waste. */
+  private async notifyWastedScouts(wf: OkWorkflow, now: number): Promise<void> {
+    for (const scout of wf.scouts) {
+      if (scout.promotion !== "auto" || !this.ledger.isScoutAutoPromoteWasted(scout.name, scout.trustHash)) continue;
+      if (this.ledger.scoutWasteNoticeSent(scout.name, scout.trustHash)) continue;
+      this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
+      const policy = MAIN_ESCALATION_POLICY.scout_auto_promote_revoked;
+      await this.notifier
+        .notifyNeedsYou({
+          issueNumber: null,
+          title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: Scout '${scout.name}' lost auto-promotion (3 unmerged in a row)`,
+          reason: `The last 3 auto-promoted Threads from Scout '${scout.name}' ended without a merge.`,
+          decisionClass: formatDecisionClass(policy.decisionClass),
+          recommendation: policy.recommendation,
+        })
+        .catch(() => undefined);
+    }
   }
 
   private async resolveIssueForThread(
