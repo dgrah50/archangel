@@ -1,6 +1,6 @@
 import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
 import { useState } from "react";
-import type { PitchRow, PitchesState } from "../../src/core/ui-pitches.js";
+import type { PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
 import { CopyCommand, LinkButton, Owed, Page, PageHeadline, Ref, Section } from "./page";
 
@@ -14,6 +14,22 @@ const keyOf = (p: { repo: string; issueNumber: number }) => `${p.repo}#${p.issue
 const daysLeft = (p: PitchRow, now: number) => Math.max(0, Math.ceil((p.expiresAt - now) / DAY));
 const expires = (p: PitchRow, now: number) => (daysLeft(p, now) === 0 ? "expires today" : `expires in ${daysLeft(p, now)} d`);
 const ago = (ms: number) => (ms < DAY ? "today" : `${Math.floor(ms / DAY)} d ago`);
+
+const WHEN = new Intl.DateTimeFormat("en-GB", { weekday: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+/** One plain sentence per repo's pitch Scout, from the server's schedule data. Never a guessed time: a Scout with no clock says so. */
+function scoutLine(i: PitchScoutInfo, many: boolean, now: number, pauseAfter: number): string {
+  const who = many ? `On ${i.repo}, the` : "The";
+  const s = i.scout;
+  if (s === null) return `${many ? i.repo : "This repo"} has no pitch Scout.`;
+  if (s.hostDisabled) return `${who} pitch Scout is off: Scouts are disabled on this host.`;
+  if (s.paused) return `${who} pitch Scout is paused after ${pauseAfter} in a row went unpromoted.`;
+  const streak = s.unpromotedInARow === 0 ? "" : ` ${s.unpromotedInARow} in a row ${s.unpromotedInARow === 1 ? "has" : "have"} gone unpromoted so far.`;
+  if (s.schedule === "manual") return `${who} pitch Scout runs only when you start it.${streak}`;
+  if (s.schedule === "daily") return `${who} pitch Scout runs daily, when the daemon has nothing else to do.${streak}`;
+  const next = s.nextRunAt === null || s.nextRunAt <= now ? "due on the next daemon pass" : `next on ${WHEN.format(s.nextRunAt).replace(/^(\w+),? /, "$1 ")}`;
+  return `${who} pitch Scout runs weekly, ${next}.${streak}`;
+}
 
 const outcome = (s: PitchesState["decided"][number]["state"]) =>
   s.kind === "promoted" ? "Promoted" : s.kind === "partially_promoted" ? `Promoted ${s.promotedSlices.length}` : s.kind === "declined" ? "Declined" : s.kind === "expired" ? "Expired" : "Open";
@@ -93,6 +109,7 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
           ) : null}
           <Box flex="1" />
           <Text textStyle="meta" color="fg.subtle">
+            {d.pitchScouts.map((i) => scoutLine(i, d.pitchScouts.length > 1, now, d.pauseAfterUnpromoted)).join(" ")}{" "}
             At most {d.maxOpen} pitches stay open. The pitch Scout pauses after {d.pauseAfterUnpromoted} in a row go unpromoted.
           </Text>
         </Flex>
