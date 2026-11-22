@@ -757,6 +757,7 @@ export class Reconciler {
       incRebase?: boolean;
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
+      auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
       now?: number;
     } = {},
@@ -797,6 +798,11 @@ export class Reconciler {
       );
     }
     return updated;
+  }
+
+  /** A merge by the configured owner is the owner being heard (it resets the autonomy count); anyone else, a bot or the App is not. */
+  private mergeActor(pr: GitHubPr): "archangel" | "owner" {
+    return pr.merged && pr.mergedBy === this.cfg.ownerUserId ? "owner" : "archangel";
   }
 
   /** The repo opted in (`escalations.factoryRetry: "once"`), the host allows it, and the repo's auto-off has not tripped. */
@@ -1097,6 +1103,7 @@ export class Reconciler {
         { t: "pr_observed", status: pr.merged ? "merged" : "closed" },
         {
           auditTopic: pr.merged ? "thread/owner_merged" : "thread/pr_closed",
+          auditActor: this.mergeActor(pr),
           auditPayload: { prNumber: pr.number, mergeCommitSha: pr.mergeCommitSha },
           now,
         },
@@ -2240,7 +2247,7 @@ export class Reconciler {
       this.applyMachineEvent(
         thread,
         { t: "pr_observed", status: pr.merged ? "merged" : "closed" },
-        { auditTopic: pr.merged ? "thread/owner_merged" : "thread/pr_closed", now },
+        { auditTopic: pr.merged ? "thread/owner_merged" : "thread/pr_closed", auditActor: this.mergeActor(pr), now },
       );
       return;
     }
