@@ -16,3 +16,15 @@ export function resolveDataDir(opts: { config?: string; dataDir?: string }, env:
   }
   return env.ARCHANGEL_DATA_DIR ?? ".archangel";
 }
+
+/** The host settings read-only tools need (no secrets): where the data lives and which CLIs review. */
+export function resolveHostSettings(
+  opts: { config?: string; dataDir?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): { dataDir: string; authMode: "subscription" | "api"; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; implementerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }> } {
+  const candidate = opts.config ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
+  const file = path.resolve(candidate);
+  if (!fs.existsSync(file)) throw new Error(`Host config not found: ${file}`);
+  const host = HostYamlSchema.parse(parseYaml(fs.readFileSync(file, "utf8")));
+  return { dataDir: opts.dataDir ?? host.dataDir, authMode: host.authMode, reviewerChain: host.reviewerChain, implementerChain: host.implementerChain };
+}

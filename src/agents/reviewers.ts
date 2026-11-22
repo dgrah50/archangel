@@ -52,6 +52,16 @@ export interface ReviewBatchOutcome {
   errors: Array<{ vendor: ReviewerVendor; error: string }>;
 }
 
+/** The two reviewer prompt templates. Eval swaps these to score a candidate wording against the current one. */
+export interface ReviewPromptBuilders {
+  contract: (req: ReviewRequest) => string;
+  adversarial: (req: ReviewRequest) => string;
+}
+export const DEFAULT_REVIEW_PROMPTS: ReviewPromptBuilders = {
+  contract: (req) => buildOpenAiReviewerPrompt(req),
+  adversarial: (req) => buildGeminiAdversarialPrompt(req),
+};
+
 export interface ReviewerSuite {
   reviewAll(req: ReviewRequest): Promise<ReviewBatchOutcome>;
 }

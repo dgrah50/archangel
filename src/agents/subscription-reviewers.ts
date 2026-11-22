@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { providerToVendor, type CliProvider, type ProviderEntry } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
-import { buildGeminiAdversarialPrompt, buildOpenAiReviewerPrompt, promptTemplateSha } from "./prompts.js";
+import { promptTemplateSha } from "./prompts.js";
 import {
+  DEFAULT_REVIEW_PROMPTS,
   parseStrictVerdict,
+  type ReviewPromptBuilders,
   type ReviewBatchOutcome,
   type ReviewRequest,
   type ReviewerSuite,
@@ -232,6 +234,8 @@ export interface SubscriptionReviewerOptions {
   primaryImplementerVendor: ReviewerVendor;
   timeoutMs?: number;
   invoker?: ReviewerCliInvoker;
+  /** Prompt templates; defaults to the current ones (eval passes a candidate's). */
+  prompts?: ReviewPromptBuilders;
 }
 
 /**
@@ -247,8 +251,10 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
   private readonly primaryImplementerVendor: ReviewerVendor;
   private readonly timeoutMs: number;
   private readonly invoker: ReviewerCliInvoker;
+  private readonly prompts: ReviewPromptBuilders;
 
   constructor(opts: SubscriptionReviewerOptions) {
+    this.prompts = opts.prompts ?? DEFAULT_REVIEW_PROMPTS;
     this.chain = opts.chain;
     this.primaryImplementerVendor = opts.primaryImplementerVendor;
     this.timeoutMs = opts.timeoutMs ?? 180_000;
@@ -281,10 +287,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
       item: { entry: ProviderEntry; vendor: ReviewerVendor },
       slotIndex: number,
     ): Promise<VendorReviewResult> => {
-      const prompt =
-        slotIndex === 0
-          ? buildOpenAiReviewerPrompt(req)
-          : buildGeminiAdversarialPrompt(req);
+      const prompt = slotIndex === 0 ? this.prompts.contract(req) : this.prompts.adversarial(req);
       const raw = await this.invoker({
         provider: item.entry.provider,
         model: item.entry.model,

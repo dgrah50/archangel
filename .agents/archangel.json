@@ -51,7 +51,9 @@
       "src/core/notifier.ts",
       "src/core/escalations.ts",
       "src/core/pitch-expiry.ts",
-      "src/core/corrections.ts"
+      "src/core/corrections.ts",
+      "src/core/eval.ts",
+      "src/core/eval-candidate.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
