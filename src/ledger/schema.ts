@@ -196,6 +196,19 @@ export interface AuditLogEntry {
   payloadJson: string;
 }
 
+export type SignalTaint = "owner" | "mechanical" | "untrusted";
+
+export interface SignalRecord {
+  id: number;
+  repo: string;
+  source: string;
+  kind: string;
+  dedupeKey: string;
+  taint: SignalTaint;
+  payload: unknown;
+  observedAt: number;
+}
+
 export const LEDGER_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
@@ -473,5 +486,41 @@ CREATE TABLE IF NOT EXISTS bench_results (
   result_json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (cache_key, case_id)
+);
+-- Signals (O8): durable, append-only facts adapters observed. dedupe_key makes ingestion idempotent; taint is fixed by the signal's kind.
+CREATE TABLE IF NOT EXISTS signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  taint TEXT NOT NULL CHECK (taint IN ('owner', 'mechanical', 'untrusted')),
+  payload_json TEXT NOT NULL,
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_repo_observed ON signals(repo, observed_at);
+CREATE TRIGGER IF NOT EXISTS signals_no_update BEFORE UPDATE ON signals BEGIN SELECT RAISE(ABORT, 'signals are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS signals_no_delete BEFORE DELETE ON signals BEGIN SELECT RAISE(ABORT, 'signals are append-only'); END;
+
+-- One row per (signal, rule version): the claim that makes an action happen once. A changed rule has a new rule_key, so it reconsiders.
+CREATE TABLE IF NOT EXISTS signal_actions (
+  signal_id INTEGER NOT NULL REFERENCES signals(id),
+  rule_key TEXT NOT NULL,
+  rule_name TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  detail TEXT,
+  actioned_at INTEGER NOT NULL,
+  PRIMARY KEY (signal_id, rule_key)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_actions_day ON signal_actions(day_key, rule_name);
+
+-- How far each adapter has read (a timestamp in ms) and when it last polled.
+CREATE TABLE IF NOT EXISTS signal_watermarks (
+  repo TEXT NOT NULL,
+  adapter TEXT NOT NULL,
+  watermark INTEGER NOT NULL,
+  polled_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, adapter)
 );
 `;

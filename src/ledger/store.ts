@@ -46,6 +46,8 @@ import {
   type ReviewerVendor,
   type ReviewVerdict,
   type ScoutProposalRecord,
+  type SignalRecord,
+  type SignalTaint,
   type ThreadRecord,
   type TriageSummary,
 } from "./schema.js";
@@ -1822,6 +1824,86 @@ export class Ledger {
       )
       .get(repo, scoutName, fileSha256);
     return Boolean(row);
+  }
+
+  /** Appends one signal; false when its `dedupe_key` was already ingested (so ingestion is idempotent). */
+  insertSignal(s: Omit<SignalRecord, "id">): boolean {
+    const r = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO signals (repo, source, kind, dedupe_key, taint, payload_json, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(s.repo, s.source, s.kind, s.dedupeKey, s.taint, JSON.stringify(s.payload), s.observedAt);
+    return r.changes === 1;
+  }
+
+  /** This repo's signals observed at or after `sinceMs`, oldest first. */
+  listSignals(sinceMs: number, repo = this.repo): SignalRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM signals WHERE repo = ? AND observed_at >= ? ORDER BY id ASC`)
+      .all(repo, sinceMs) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      repo: String(r.repo),
+      source: String(r.source),
+      kind: String(r.kind),
+      dedupeKey: String(r.dedupe_key),
+      taint: r.taint as SignalTaint,
+      payload: JSON.parse(String(r.payload_json)),
+      observedAt: Number(r.observed_at),
+    }));
+  }
+
+  signalCounts(sinceMs: number, repo = this.repo): Record<string, number> {
+    const rows = this.db
+      .prepare(`SELECT kind, COUNT(*) AS n FROM signals WHERE repo = ? AND observed_at >= ? GROUP BY kind`)
+      .all(repo, sinceMs) as Array<{ kind: string; n: number }>;
+    return Object.fromEntries(rows.map((r) => [r.kind, r.n]));
+  }
+
+  getSignalWatermark(adapter: string, repo = this.repo): { watermark: number; polledAt: number } | null {
+    const r = this.db.prepare(`SELECT watermark, polled_at FROM signal_watermarks WHERE repo = ? AND adapter = ?`).get(repo, adapter) as
+      | { watermark: number; polled_at: number }
+      | null;
+    return r ? { watermark: r.watermark, polledAt: r.polled_at } : null;
+  }
+
+  setSignalWatermark(adapter: string, watermark: number, now: number, repo = this.repo): void {
+    this.db
+      .prepare(
+        `INSERT INTO signal_watermarks (repo, adapter, watermark, polled_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (repo, adapter) DO UPDATE SET watermark = excluded.watermark, polled_at = excluded.polled_at`,
+      )
+      .run(repo, adapter, watermark, now);
+  }
+
+  hasSignalAction(signalId: number, ruleKey: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM signal_actions WHERE signal_id = ? AND rule_key = ?`).get(signalId, ruleKey) !== null;
+  }
+
+  /** Actions taken today (local day), across every repo: for one rule when `ruleName` is given, else all. Rejected rows do not count. */
+  countSignalActionsToday(now: number, ruleName?: string): number {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM signal_actions WHERE day_key = ? AND outcome != 'rejected' AND (? IS NULL OR rule_name = ?)`)
+      .get(dayKey, ruleName ?? null, ruleName ?? null) as { n: number };
+    return r.n;
+  }
+
+  /** Claims (signal, rule version) before acting, so the action happens at most once. False when already claimed. */
+  claimSignalAction(signalId: number, ruleKey: string, ruleName: string, outcome: string, now: number): boolean {
+    const r = this.db
+      .prepare(`INSERT OR IGNORE INTO signal_actions (signal_id, rule_key, rule_name, day_key, outcome, actioned_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(signalId, ruleKey, ruleName, formatDayKey(now, this.timeZone), outcome, now);
+    return r.changes === 1;
+  }
+
+  finishSignalAction(signalId: number, ruleKey: string, outcome: string, detail: string | null): void {
+    this.db.prepare(`UPDATE signal_actions SET outcome = ?, detail = ? WHERE signal_id = ? AND rule_key = ?`).run(outcome, detail, signalId, ruleKey);
+  }
+
+  /** Gives a claim back when the action provably did not happen (a Scout cap), so the signal stays pending. */
+  releaseSignalAction(signalId: number, ruleKey: string): void {
+    this.db.prepare(`DELETE FROM signal_actions WHERE signal_id = ? AND rule_key = ?`).run(signalId, ruleKey);
   }
 
   /**

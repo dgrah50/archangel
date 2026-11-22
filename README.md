@@ -41,8 +41,8 @@
 ```bash
 git clone https://github.com/dgrah50/archangel.git && cd archangel
 bun install
+bun src/cli/index.ts init          # creates archangel.yaml, .env and an empty Ledger; never overwrites
 bun scripts/create-github-app.ts   # creates the App, then writes its ids into .env
-cp archangel.example.yaml archangel.yaml
 bun src/cli/index.ts onboard owner/my-repo
 bun src/cli/index.ts doctor --smoke && bun src/cli/index.ts ui
 ```
@@ -265,6 +265,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 
 | Command | What it does |
 | --- | --- |
+| `archangel init` | Create `archangel.yaml`, `.env` (mode 0600) and an empty Ledger in the current directory. Never overwrites, safe to rerun. |
 | `archangel start [--once] [-c <path>]` | Run the reconciler daemon continuously, or execute one tick and exit. |
 | `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` background agent. |
 | `archangel onboard <repo> [--dry-run]` | Create labels and open one onboarding PR with your `gh` CLI (never auto-merged). |

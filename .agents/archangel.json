@@ -80,7 +80,9 @@
       "src/core/ui-onboard.ts",
       "src/core/ui-gh.ts",
       "src/core/ui-accounts.ts",
-      "src/core/plan.ts"
+      "src/core/plan.ts",
+      "src/core/signals.ts",
+      "src/core/signal-kinds.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

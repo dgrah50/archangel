@@ -8,6 +8,7 @@ import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
+import { INIT_NEXT_STEPS, runInit } from "./init.js";
 import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
@@ -97,6 +98,16 @@ program
   .name("archangel")
   .description("Archangel autonomous software factory CLI")
   .version("0.1.0");
+
+program
+  .command("init")
+  .description("Create archangel.yaml, .env and an empty Ledger in the current directory (never overwrites; safe to rerun)")
+  .action(() => {
+    const lines = runInit(process.cwd());
+    console.log(lines.join("\n"));
+    console.log(lines.every((l) => !l.startsWith("created")) ? "\nNothing to do: already initialised." : "");
+    console.log(["Next steps:", ...INIT_NEXT_STEPS.map((c, i) => `  ${i + 1}. ${c}`)].join("\n"));
+  });
 
 program
   .command("start")
@@ -914,7 +925,7 @@ program
     };
     const appender = (source: string) => (topic: string, payload: Record<string, unknown>, now: number) => {
       // Audit-before-write: with no Ledger there is nowhere to record it, and the UI must not create one, so refuse.
-      if (!fs.existsSync(paths.ledgerDbPath)) throw new Error("The daemon has not run yet, so there is no Ledger to record this in. Run `archangel start` once, then retry.");
+      if (!fs.existsSync(paths.ledgerDbPath)) throw new Error("The daemon has not run yet, so there is no Ledger to record this in. Run `archangel init`, then retry.");
       const w = new Ledger(paths.ledgerDbPath);
       try { w.appendAudit(topic, null, source, payload, now, null); } finally { w.close(); }
     };

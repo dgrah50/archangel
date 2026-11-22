@@ -74,6 +74,12 @@ export interface GitHubClient {
   listRepoLabels?(): Promise<string[]>;
   findPrByHeadBranch(branch: string): Promise<GitHubPr | null>;
   createPr(input: { title: string; body: string; head: string; base: string }): Promise<GitHubPr>;
+  /** PRs merged into `baseBranch` after `sinceMs` (the 100 most recently updated closed PRs), oldest first. */
+  listMergedPrsSince(sinceMs: number, baseBranch: string): Promise<Array<{ number: number; mergedAt: number }>>;
+  /** Published, non-draft releases after `sinceMs`, oldest first. */
+  listReleasesSince(sinceMs: number): Promise<Array<{ tag: string; publishedAt: number }>>;
+  /** Open Dependabot alerts created after `sinceMs`, oldest first. Needs the App's `vulnerability_alerts` read permission. */
+  listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>>;
   createIssue?(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue>;
   getPrLive(prNumber: number): Promise<GitHubPr>;
   getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>>;
@@ -421,6 +427,39 @@ export class GitHubAppClient implements GitHubClient {
       { body: input },
     );
     return this.getPrLive(Number(created.number));
+  }
+
+  async listMergedPrsSince(sinceMs: number, baseBranch: string): Promise<Array<{ number: number; mergedAt: number }>> {
+    const items = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&base=${encodeURIComponent(baseBranch)}`,
+    );
+    return items
+      .flatMap((p) => (typeof p.merged_at === "string" ? [{ number: Number(p.number), mergedAt: Date.parse(p.merged_at) }] : []))
+      .filter((p) => p.mergedAt > sinceMs)
+      .sort((a, b) => a.mergedAt - b.mergedAt);
+  }
+
+  async listReleasesSince(sinceMs: number): Promise<Array<{ tag: string; publishedAt: number }>> {
+    const items = await this.request<Array<Record<string, unknown>>>("GET", `/repos/${this.cfg.owner}/${this.cfg.repo}/releases?per_page=30`);
+    return items
+      .flatMap((r) => (r.draft !== true && typeof r.published_at === "string" ? [{ tag: String(r.tag_name), publishedAt: Date.parse(r.published_at) }] : []))
+      .filter((r) => r.publishedAt > sinceMs)
+      .sort((a, b) => a.publishedAt - b.publishedAt);
+  }
+
+  async listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>> {
+    const items = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/dependabot/alerts?state=open&sort=created&direction=desc&per_page=50`,
+    );
+    return items
+      .map((a) => {
+        const adv = (a.security_advisory ?? {}) as Record<string, unknown>;
+        return { number: Number(a.number), createdAt: Date.parse(String(a.created_at)), severity: String(adv.severity), ghsaId: String(adv.ghsa_id) };
+      })
+      .filter((a) => a.createdAt > sinceMs)
+      .sort((a, b) => a.createdAt - b.createdAt);
   }
 
   async createIssue(input: {
