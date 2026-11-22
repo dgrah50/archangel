@@ -130,6 +130,8 @@ describe("autonomy cap", () => {
     git(seed, ["config", "user.email", "t@example.com"]);
     fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
     fs.writeFileSync(path.join(seed, "app.go"), "package demo\n\nfunc Val() int { return 1 }\n");
+    fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
+    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
     git(seed, ["add", "-A"]);
     git(seed, ["commit", "-m", "initial"]);
     git(root, ["clone", "--bare", seed, remoteBare]);
