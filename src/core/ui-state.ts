@@ -6,7 +6,7 @@ import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } f
 import type { Ledger, StageMetrics } from "../ledger/store.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
-import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import { describeEscalation, ESCALATION_POLICY, formatDecisionClass, type EscalationPolicy } from "./escalations.js";
 import type { ThreadRecord } from "../ledger/schema.js";
 import type { Phase } from "./thread-machine.js";
 
@@ -51,6 +51,8 @@ export interface UiState {
   ownerLastHeardAt: Record<string, number | null>;
   /** Last daemon heartbeat (ms), or null when no daemon lock exists: the dashboard shows an offline banner when it is old or null. */
   daemonHeartbeatAt: number | null;
+  /** Decisions the owner answered today (local day in `dailyTimezone`): the escalation's decision class when it was raised, and when the owner first acted on that Thread after. Newest first. */
+  answeredToday: { timeZone: string; items: Array<{ repo: string; issueNumber: number; decisionClass: string; answeredAt: number }> };
   /** Undecided pitches (open or partly promoted), oldest first: the count and the five oldest. */
   pitches: { count: number; items: Array<{ repo: string; issueNumber: number; title: string; filedAt: number }> };
   /** Metered spend today and the last 14 local days (oldest first), against the host's daily cap. `capUsd` is null when archangel.yaml cannot be read. */
@@ -202,6 +204,14 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
   const spendDaily = ledger.dailySpend(14, now);
   return {
     generatedAt: now,
+    answeredToday: {
+      timeZone: ledger.dayTimeZone,
+      items: ledger.ownerAnswersToday(now).flatMap((a) => {
+        // The code was written by an earlier build, so a code this build no longer knows is skipped rather than guessed at.
+        const policy = (ESCALATION_POLICY as Record<string, EscalationPolicy | undefined>)[a.code];
+        return policy ? [{ repo: a.repo, issueNumber: a.issueNumber, decisionClass: formatDecisionClass(policy.decisionClass), answeredAt: a.answeredAt }] : [];
+      }),
+    },
     pitches: { count: pitches.length, items: pitches.slice(0, 5).map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, title: p.title, filedAt: p.filedAt })) },
     spend: { todayUsd: spendDaily[spendDaily.length - 1]!.usd, capUsd: limits?.maxDailyUsd ?? null, daily: spendDaily },
     autonomyCaps: limits?.autonomyCaps ?? {},
