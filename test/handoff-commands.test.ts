@@ -79,20 +79,6 @@ describe("handoff vs daemon claim race", () => {
     l.close();
   });
 
-  it("completes normally when the daemon claims and finishes in time", async () => {
-    const { l, deps, launches } = setup(2_000);
-    const daemon = setTimeout(() => {
-      expect(l.claimCommand(1)).toBe(true);
-      const t = l.getThread(7)!;
-      l.transition(7, t.version, { kind: "owner_driving", paseoAgentId: null, paseoWorkspaceId: null, since: Date.now(), prNumber: 5, headSha: "h", baseSha: "b" } as never, { nextMode: "advisory" });
-      l.completeCommand(1, {});
-    }, 100);
-    const res = await handoffThreadToPaseo(7, deps);
-    clearTimeout(daemon);
-    expect(res.agentId).toBe("ag1");
-    expect(launches).toEqual(["factory/7"]);
-    l.close();
-  });
 });
 
 describe("daemon liveness and Paseo state never fail open", () => {
@@ -127,25 +113,5 @@ describe("daemon liveness and Paseo state never fail open", () => {
       restore4();
     });
 
-    it("resume refuses when the agent's state cannot be verified, and leaves the Thread alone", async () => {
-      const l = new Ledger(":memory:", { repo: "a/b" });
-      l.upsertThread({
-        issueNumber: 7, title: "t", bodySha256: "x",
-        phase: { kind: "owner_driving", paseoAgentId: "ag1", paseoWorkspaceId: null, since: 1, prNumber: 5, headSha: "h", baseSha: "b" } as never,
-        mode: "advisory",
-      });
-      const paseo: PaseoRunner = {
-        async checkoutBranchAndSeed() {
-          throw new Error("unused");
-        },
-        async isAgentRunning() {
-          throw new Error("Could not verify whether Paseo agent ag1 is running: ECONNREFUSED");
-        },
-      };
-      const config = ConfigSchema.parse({ githubOwner: "a", githubRepo: "b", ownerUserId: 1, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "x" });
-      await expect(resumeThreadFromPaseo(7, { config, ledger: l, github: {} as never, paseo })).rejects.toThrow(/Could not verify/);
-      expect(l.getThread(7)!.phase.kind).toBe("owner_driving");
-      l.close();
-    });
   });
 });

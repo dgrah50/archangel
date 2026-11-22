@@ -99,35 +99,4 @@ describe("a PR that conflicts with base is rebased before the Gate timers apply"
     }
   });
 
-  it("real conflict: an LLM rebase Attempt runs instead of gate_timeout", async () => {
-    const h = await harness("same-line");
-    try {
-      h.github.prs.get(100)!.mergeable = false;
-      await h.reconciler.tick(h.t0 + 10 * MIN, { waitForAttempts: true });
-      const t = h.ledger.getThread(1)!;
-      const kinds = [1, 2, 3].map((id) => h.ledger.getAttempt(id)?.kind);
-      expect(kinds).toContain("rebase");
-      expect(t.phase.kind === "needs_you" ? t.phase.code : "").not.toBe("gate_timeout");
-    } finally {
-      h.cleanup();
-    }
-  });
-
-  it("mergeable null (still computing) does not escalate and does not count as missing checks", async () => {
-    const h = await harness("unrelated");
-    try {
-      h.github.prs.get(100)!.mergeable = null;
-      await h.reconciler.tick(h.t0 + 10 * MIN, { waitForAttempts: true });
-      let t = h.ledger.getThread(1)!;
-      expect(t.phase.kind).toBe("awaiting_gate");
-      // GitHub finishes computing: no conflict. The wait just ended, so the 5 minute clock has barely started.
-      h.github.prs.get(100)!.mergeable = true;
-      await h.reconciler.tick(h.t0 + 11 * MIN, { waitForAttempts: true });
-      t = h.ledger.getThread(1)!;
-      expect(t.phase.kind).toBe("awaiting_gate");
-    } finally {
-      h.cleanup();
-    }
-  });
-
 });

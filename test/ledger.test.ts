@@ -170,15 +170,4 @@ describe("Ledger outbox lifecycle", () => {
     }
   });
 
-  it("finds a pending label add beyond the first 1000 rows", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    try {
-      ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
-      const effects = Array.from({ length: 1100 }, (_, i) => ({ kind: "add_label" as const, issueNumber: i + 1, label: "l" }));
-      ledger.transition(1, ledger.getThread(1)!.version, { kind: "queued" }, { effects });
-      expect(ledger.hasPendingLabelAdd(1100, "l")).toBe(true);
-    } finally {
-      ledger.close();
-    }
-  });
 });

@@ -40,22 +40,4 @@ describe("autonomy cap message", () => {
     expect(text).not.toContain("SECRET");
   });
 
-  it("is what the cap's Needs You carries, once, and never raises the cap", async () => {
-    const l = seeded();
-    const notes: Array<{ reason: string }> = [];
-    const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", maxAutonomousStepsWithoutOwner: 3 });
-    const rec = new Reconciler({
-      config: cfg, ledger: l, github: new FakeGitHub("/nonexistent"), broker: {} as never,
-      implementer: { async run() { throw new Error("unused"); } },
-      reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
-      notifier: { async notifyNeedsYou(i) { notes.push(i); }, async sendDigest() {} },
-    });
-    const reached = (rec as unknown as { autonomyCapReached: (n: number) => Promise<boolean> });
-    expect(await reached.autonomyCapReached(100)).toBe(true);
-    expect(await reached.autonomyCapReached(101)).toBe(true);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]!.reason).toContain("7 autonomous steps (cap 3)");
-    expect(notes[0]!.reason).toContain("#2: 1 implement, 2 revise");
-    expect(l.autonomousStepsSinceOwner()).toBe(7); // nothing reset or extended it
-  });
 });

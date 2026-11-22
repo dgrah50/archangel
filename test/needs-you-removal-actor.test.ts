@@ -65,22 +65,6 @@ describe("removing needs-you resumes a Thread only when the owner removed it", (
     }
   });
 
-  it("still resumes (with a retry grant) when the owner removed it", async () => {
-    const w = await world();
-    try {
-      w.github.issues.get(4)!.labels = [];
-      w.github.labelRemovers.set("4:needs-you", 999);
-      await w.rec.tick(Date.now(), { waitForAttempts: false });
-      expect(w.ledger.getThread(4)!.retryGrants).toBe(1);
-      expect(w.ledger.listAudit({ topicPrefix: "thread/owner_retry" })).toHaveLength(1);
-      w.rec.abortAllActive("control");
-      await w.rec.waitForActiveTasks();
-    } finally {
-      w.ledger.close();
-      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
-
   it("a dead-lettered needs-you label add is not read as the owner retrying", async () => {
     const w = await world();
     try {

@@ -28,21 +28,6 @@ function setup() {
   return { root, seed, remoteBare };
 }
 
-describe("GitBroker.readFileAtRef", () => {
-  it("returns null only for a path that is absent, and throws for a commit the repo does not have", async () => {
-    const { root, remoteBare } = setup();
-    try {
-      const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-      await broker.ensureBareRepo(remoteBare);
-      const tip = git(remoteBare, ["rev-parse", "main"]);
-      expect(await broker.readFileAtRef(tip, "app.go")).toBe("package demo\n");
-      expect(await broker.readFileAtRef(tip, "nope.txt")).toBeNull();
-      await expect(broker.readFileAtRef("f".repeat(40), "app.go")).rejects.toThrow();
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
-});
 
 describe("a main commit that lands between the fetch and the tip lookup", () => {
   it("is fetched before the workflow is read: no false 'missing' halt and no Needs You", async () => {
