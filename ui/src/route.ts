@@ -7,6 +7,7 @@ export type Route =
   | { page: "overview" }
   | { page: "needs-you"; item: ItemRef | null }
   | { page: "threads" }
+  | { page: "thread"; item: ItemRef }
   | { page: "pipeline" }
   | { page: "not-found"; hash: string };
 
@@ -19,6 +20,7 @@ export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> 
 ];
 
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
+export const threadHash = (i: ItemRef) => `#/threads/${i.repo}/${i.issue}`;
 export const itemHash = (i: ItemRef) => `#/needs-you/${i.repo}/${i.issue}`;
 
 export function parseRoute(hash: string): Route {
@@ -27,6 +29,8 @@ export function parseRoute(hash: string): Route {
   if (path === "/pipeline") return { page: "pipeline" };
   if (path === "/threads") return { page: "threads" };
   if (path === "/needs-you") return { page: "needs-you", item: null };
+  const t = /^\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(path);
+  if (t && SLUG.test(t[1]!)) return { page: "thread", item: { repo: t[1]!, issue: Number(t[2]) } };
   const m = /^\/needs-you\/([^/]+\/[^/]+)\/(\d+)$/.exec(path);
   if (m && SLUG.test(m[1]!)) return { page: "needs-you", item: { repo: m[1]!, issue: Number(m[2]) } };
   return { page: "not-found", hash };
