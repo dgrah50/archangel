@@ -1565,6 +1565,12 @@ export class Ledger {
     return rows.map((r) => ({ account: String(r.account_id), untilTs: Number(r.until_ts), reason: String(r.reason) }));
   }
 
+  /** Every account's most recent limit error, including ended cooldowns: the last failover away from it. */
+  listAccountSwitches(): Array<{ account: string; at: number; reason: string }> {
+    const rows = this.db.prepare("SELECT account_id, updated_at, reason FROM account_cooldowns").all() as Array<{ account_id: string; updated_at: number; reason: string }>;
+    return rows.map((r) => ({ account: String(r.account_id), at: Number(r.updated_at), reason: String(r.reason) }));
+  }
+
   /** The selector's view of this Ledger: cooldowns, usage counters, and the optional free Codex reading. */
   accountState(accounts: Account[]): AccountLedger {
     const byId = new Map(accounts.map((a) => [a.id, a]));

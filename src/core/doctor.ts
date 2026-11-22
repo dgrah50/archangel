@@ -13,6 +13,9 @@ import { Ledger } from "../ledger/store.js";
 
 const execFileAsync = promisify(execFile);
 
+/** Shown by the doctor and the dashboard Accounts panel when more than one agy account is configured. */
+export const AGY_HOME_WARNING = "agy account separation via HOME is unverified: agy has no per-login setting, so each agy account's home is passed as HOME, and a token kept in the OS keychain would be shared between them";
+
 export interface DoctorCheck {
   id: string;
   name: string;
@@ -104,7 +107,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         id: "agy_accounts",
         name: "agy Accounts",
         status: "warn",
-        detail: "agy account separation via HOME is unverified: agy has no per-login setting, so each agy account's home is passed as HOME, and a token kept in the OS keychain would be shared between them",
+        detail: AGY_HOME_WARNING,
         remediation: "Log each agy account in with its own HOME and confirm they are different Google accounts before relying on two of them.",
       });
     }
