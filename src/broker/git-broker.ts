@@ -443,6 +443,21 @@ export class GitBroker {
   }
 
   /**
+   * Fetches an untrusted clone's HEAD into the bare repo under `stagingRef` and returns its sha. If a sandboxed agent (e.g.
+   * `codex --sandbox workspace-write` where `.git` is read-only) left clean working-tree edits uncommitted, they are staged
+   * and committed first with hooks disabled.
+   */
+  async stageCloneHead(cloneDir: string, stagingRef: string, commitMessage: string): Promise<string> {
+    const dirty = (await this.runGit(cloneDir, ["status", "--porcelain"])).trim();
+    if (dirty.length > 0) {
+      await this.runGit(cloneDir, ["add", "-A"]);
+      await this.runGit(cloneDir, ["commit", "--no-verify", "-m", commitMessage]);
+    }
+    await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
+    return this.resolveRef(stagingRef);
+  }
+
+  /**
    * Hardened fetch from an untrusted throwaway clone into the broker's bare repo,
    * followed by NUL-delimited (-z) protected-path, diff-bound, and optional local Gate verification.
    */
@@ -456,22 +471,8 @@ export class GitBroker {
   ): Promise<BrokerFetchValidation> {
     const { maxNonTestLines, maxTotalLines, maxFiles, extraProtectedPaths, testFileGlobs, testDataGlobs } = bounds;
 
-    // If a sandboxed agent (e.g. `codex --sandbox workspace-write` where `.git` is read-only)
-    // left clean working-tree edits uncommitted, stage and commit them safely with hooks disabled.
-    const dirty = (await this.runGit(cloneDir, ["status", "--porcelain"])).trim();
-    if (dirty.length > 0) {
-      await this.runGit(cloneDir, ["add", "-A"]);
-      await this.runGit(cloneDir, [
-        "commit",
-        "--no-verify",
-        "-m",
-        `fix(#${issueNumber}): archangel factory attempt`,
-      ]);
-    }
-
     const stagingRef = `refs/archangel/staging/${issueNumber}`;
-    await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
-    const headSha = await this.resolveRef(stagingRef);
+    const headSha = await this.stageCloneHead(cloneDir, stagingRef, `fix(#${issueNumber}): archangel factory attempt`);
 
     // Compare against merge-base(baseSha, headSha) so unrelated commits that landed on `main`
     // while a PR branch was in flight never masquerade as agent edits to protected files!

@@ -38,6 +38,7 @@
       "src/core/onboard.ts",
       "src/core/bump.ts",
       "src/core/pitch-promote.ts",
+      "src/core/self-build.ts",
       "src/core/pitch-ingest.ts",
       "src/core/owner-reply.ts",
       "src/core/metrics-block.ts",
