@@ -46,6 +46,7 @@
     "@getpaseo/client": "^0.16.2",
     "@mastra/core": "^1.85.0",
     "@mastra/libsql": "^1.31.1",
+    "@sailresearch/sdk": "0.19.0",
     "commander": "^15.1.0",
     "esbuild": "^0.28.2",
     "sharp": "^0.35.5",

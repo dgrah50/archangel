@@ -12,6 +12,17 @@ maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to ne
 maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
 maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per thread
 
+# Where Scouts run. Default is this machine. Uncomment to run Scouts in Sail Sailboxes (needs `sail auth login`; nothing
+# from this machine's environment goes into a box, and Implement/revise/review Attempts always stay local).
+# compute:
+#   provider: sail
+#   sail:
+#     app: archangel
+#     maxLifetimeSeconds: 600       # server-side kill for a leaked box
+#     maxDailyComputeUsd: 2         # new boxes are refused past this estimate (box-minutes at Sail's rates)
+#     claudeTokenSecret: CLAUDE_CODE_OAUTH_TOKEN   # the Sail secret (`sail secret set <name>`) the egress policy injects; the box sees only a placeholder
+#     remoteClaudeAttempts: false   # reserved: let Claude-chain Attempts run on Sail (off; implement/revise/review stay local)
+
 # Execution timeouts (ms unless noted)
 implementMaxTurns: 40               # agent turn cap for one implement Attempt
 implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
