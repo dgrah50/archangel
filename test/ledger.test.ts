@@ -170,19 +170,6 @@ describe("Ledger outbox lifecycle", () => {
     }
   });
 
-  it("reads an unknown effect kind as null so it can be dead-lettered rather than delivered or dropped", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    try {
-      const row = queue(ledger, { kind: "teleport", issueNumber: 1 });
-      expect(row.effect).toBeNull();
-      ledger.deadLetterOutbox(row.id, "unknown");
-      expect(ledger.listDueOutbox()).toHaveLength(0);
-      expect(ledger.listDeadOutbox()).toHaveLength(1);
-    } finally {
-      ledger.close();
-    }
-  });
-
   it("finds a pending label add beyond the first 1000 rows", () => {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     try {

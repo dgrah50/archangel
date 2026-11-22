@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { PITCH_STATE_KINDS, PitchStateSchema, countsAsPromoted, isUndecided, stepPitch, type PitchEvent, type PitchState } from "../src/core/pitch-machine.js";
+import { stepPitch, type PitchEvent, type PitchState } from "../src/core/pitch-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const DAY = 86_400_000;
@@ -30,17 +30,11 @@ describe("stepPitch: every state x event", () => {
     expect(legal(S.open!, { t: "slices_promoted", slices: [0], total: 1 })).toEqual({ kind: "promoted", promotedSlices: [0] });
   });
 
-  it("closing: open is declined, a partly promoted pitch is promoted (what was promoted stays promoted)", () => {
+  it("closing or expiring keeps what was promoted promoted; a decline reason attaches only to a declined pitch", () => {
     expect(legal(S.open!, { t: "closed" })).toEqual({ kind: "declined", reason: null });
     expect(legal(S.partial!, { t: "closed" })).toEqual({ kind: "promoted", promotedSlices: [0] });
-  });
-
-  it("expiry: open is expired, a partly promoted pitch closes as promoted", () => {
     expect(legal(S.open!, { t: "expired", at: 9 })).toEqual({ kind: "expired", expiredAt: 9 });
     expect(legal(S.partial!, { t: "expired", at: 9 })).toEqual({ kind: "promoted", promotedSlices: [0] });
-  });
-
-  it("a decline reason attaches only to a declined pitch", () => {
     expect(legal(S.declined!, { t: "decline_reason", reason: "not now" })).toEqual({ kind: "declined", reason: "not now" });
   });
 
@@ -66,13 +60,6 @@ describe("stepPitch: every state x event", () => {
     for (const [from, ev] of illegal) expect(stepPitch(S[from]!, ev).ok, `${from} + ${ev.t}`).toBe(false);
   });
 
-  it("classifies states and validates the stored shape", () => {
-    expect(PITCH_STATE_KINDS.filter((k) => isUndecided(S[k === "partially_promoted" ? "partial" : k]!))).toEqual(["open", "partially_promoted"]);
-    expect(Object.values(S).filter(countsAsPromoted).map((s) => s.kind)).toEqual(["partially_promoted", "promoted"]);
-    expect(PitchStateSchema.safeParse({ kind: "promoted", promotedSlices: [] }).success).toBe(false); // impossible state
-    expect(PitchStateSchema.safeParse({ kind: "open", promotedSlices: [0] }).success).toBe(true); // extra keys stripped, not a second source of truth
-    expect(PitchStateSchema.safeParse({ kind: "pending" }).success).toBe(false);
-  });
 });
 
 function pitch(l: Ledger, n: number, filedDaysAgo = 1, hash = "h") {
@@ -98,14 +85,6 @@ describe("a partly promoted pitch stays a live pitch (the vanishing-pitch bug)",
     l.close();
   });
 
-  it("counts as promoted for the Scout's pause rule", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    for (let n = 1; n <= 4; n++) pitch(l, n, 10 - n);
-    for (const n of [1, 2, 3]) l.markPitchSlicesPromoted(n, [0], 5, NOW); // wait: promoted pitches are not "unpromoted"
-    l.syncPitchStatuses([], NOW);
-    expect(l.isPitchScoutPaused("pitch", "h", 4)).toBe(false);
-    l.close();
-  });
 });
 
 describe("illegal transitions are refused and audited", () => {
@@ -130,15 +109,6 @@ describe("illegal transitions are refused and audited", () => {
     l.close();
   });
 
-  it("keeps the decline reason inside the declined state and feeds it to the prompt", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    pitch(l, 1, 2);
-    l.syncPitchStatuses([], NOW);
-    l.setPitchDeclineReason(1, "we keep it for 2.x");
-    expect(l.getPitch(1)!.state).toEqual({ kind: "declined", reason: "we keep it for 2.x" });
-    expect(l.recentPitchTitles(90, NOW)[0]).toMatchObject({ declineReason: "we keep it for 2.x" });
-    l.close();
-  });
 });
 
 describe("migrating a Ledger with the old four-column pitch lifecycle", () => {

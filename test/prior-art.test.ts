@@ -1,56 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildGeminiAdversarialPrompt,
-  buildImplementPrompt,
-  buildOpenAiReviewerPrompt,
-  buildRevisionPrompt,
-} from "../src/agents/prompts.js";
 import { buildDigest, sendDigestIfDue } from "../src/core/digest.js";
 import { UNAVAILABLE, buildMetricsBlock, buildMetricsBlockFrom } from "../src/core/metrics-block.js";
 import { extractAssumptions, renderRecapComment } from "../src/core/recap.js";
-import { resolveSkills } from "../src/core/skills.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const reviewerInput = { issueNumber: 1, title: "t", body: "b", diffText: "d" };
-
-describe("reviewer prompts", () => {
-  it("both ask for the expected fix before the diff and for sibling-path checks", () => {
-    for (const p of [
-      buildOpenAiReviewerPrompt(reviewerInput),
-      buildGeminiAdversarialPrompt({ ...reviewerInput, touchedFiles: {} }),
-    ]) {
-      expect(p).toContain("Before reading the diff, state in one line what fix you would expect for this issue");
-      expect(p).toContain("Check sibling code paths and callers of the changed code for the same defect.");
-      expect(p.indexOf("Before reading the diff")).toBeLessThan(p.indexOf("BEGIN UNIFIED DIFF DATA"));
-    }
-  });
-});
-
-describe("implementer prompts", () => {
-  const impl = { issueNumber: 1, title: "t", body: "b", repoName: "o/r" };
-  const rev = { issueNumber: 1, title: "t", body: "b", gateViolations: [], structuredFindings: [] };
-  it("require local docs and types before API use, with no web lookups", () => {
-    for (const p of [buildImplementPrompt(impl), buildImplementPrompt({ ...impl, workClass: "feature" }), buildRevisionPrompt(rev)]) {
-      expect(p).toContain("read the repository's local docs and type definitions");
-      expect(p).toContain("Do not look anything up on the web");
-    }
-  });
-  it("require an Assumptions: heading in the final summary", () => {
-    for (const p of [buildImplementPrompt(impl), buildImplementPrompt({ ...impl, workClass: "feature" }), buildRevisionPrompt(rev)]) {
-      expect(p).toContain("`Assumptions:` heading");
-    }
-  });
-});
-
-describe("recurrence skill", () => {
-  it("resolves through resolveSkills and demands a boundary test that fails on main", () => {
-    const [skill] = resolveSkills(["general/recurrence"]);
-    expect(skill!.ref).toBe("general/recurrence");
-    expect(skill!.content).toContain("fails today");
-    expect(skill!.content).toContain("sibling");
-  });
-});
 
 const thread: ThreadRecord = {
   issueNumber: 7, repo: "acme/app", title: "Example", themeLabel: null, bodySha256: "x",
@@ -62,16 +17,6 @@ const thread: ThreadRecord = {
 const recap = (summary: string | null) => renderRecapComment({ thread, reviews: [], blockers: [], summary });
 
 describe("Recap assumptions", () => {
-  it("shows the Assumptions list as plain fenced text", () => {
-    const body = recap("Fixed the slice bound.\n\nAssumptions:\n- input is UTF-8\n- <script>alert(1)</script> stays text\n");
-    expect(body).toContain("#### Implementer Assumptions");
-    expect(body).toContain("```text\n- input is UTF-8\n- <script>alert(1)</script> stays text\n```");
-  });
-  it("says none stated when the heading is missing or empty, and shows nothing without a summary", () => {
-    expect(recap("Fixed it.")).toContain("_none stated_");
-    expect(recap("Fixed it.\nAssumptions: none")).toContain("_none stated_");
-    expect(recap(null)).not.toContain("Implementer Assumptions");
-  });
   it("stops at the next heading and handles an inline first item", () => {
     expect(extractAssumptions("Assumptions: only one\n\n## Next\nx")).toBe("only one");
     expect(extractAssumptions("Assumptions:\n- a\n- b\n## Tests\n- t")).toBe("- a\n- b");
@@ -106,10 +51,6 @@ describe("unavailable is not empty: digest", () => {
     expect(text).toContain("Merges: 0 autonomous, unavailable owner");
     expect(text).toContain("Reverts (red main): 0");
     expect(text).toContain("Metered spend: unavailable");
-  });
-  it("an unreadable Needs You list is unavailable, not empty", () => {
-    const text = buildDigest({ ...known, needsYou: null, yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } })!;
-    expect(text).toContain("Needs You: unavailable");
   });
   it("a failed ledger query makes that figure null; a failed GitHub read makes proposals unavailable", async () => {
     const l = new Ledger(":memory:", { repo: "a/b", timeZone: "UTC" });

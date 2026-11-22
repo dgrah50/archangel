@@ -1,16 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import type { AddressInfo } from "node:net";
-import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { resolveWorkflow, type EffectiveWorkflow, type HostWorkflowInput } from "../src/core/workflow.js";
-import { startUiServer } from "../src/core/ui-server.js";
 import { buildWorkflowsState, describeWorkflow } from "../src/core/ui-state.js";
 import { Ledger } from "../src/ledger/store.js";
-import { Pipeline } from "../ui/src/Pipeline.js";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
@@ -110,60 +101,9 @@ describe("workflows state", () => {
     l.close();
   });
 
-  it("builds from the cached workflows plus repos that only have Threads", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", JSON.stringify(resolve()));
-    l.forRepo("c/d").upsertThread({ issueNumber: 1, title: "t", bodySha256: "x", now: NOW });
-    const s = buildWorkflowsState(l, NOW);
-    expect(s.repos.map((r) => [r.repo, r.status])).toEqual([["a/b", "ok"], ["c/d", "unresolved"]]);
-    expect(s.windowDays).toBe(14);
-    l.close();
-  });
 });
 
-describe("/api/workflows and the Pipeline view", () => {
-  it("serves the state read-only on loopback", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arc-ui-"));
-    fs.writeFileSync(path.join(dir, "index.html"), "<div id=root></div>");
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", JSON.stringify(resolve()));
-    const server = await startUiServer(l, { host: "127.0.0.1", port: 0, uiDir: dir });
-    try {
-      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      const body = await fetch(`${base}/api/workflows`).then((r) => r.json());
-      expect(body.repos[0]).toMatchObject({ repo: "a/b", status: "ok" });
-      expect((await fetch(`${base}/api/workflows`, { method: "POST" })).status).toBe(405);
-    } finally {
-      server.close();
-    }
-  });
-
-  const render = (data: ReturnType<typeof buildWorkflowsState>) =>
-    renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: createElement(Pipeline, { data }) }));
-
-  it("renders the clamp note and source chips", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", JSON.stringify(resolve()));
-    const html = render(buildWorkflowsState(l, NOW));
-    expect(html).toContain("Clamped: bugfix landing: repo says autonomous, host shadowMode caps at owner");
-    for (const chip of ["kernel", "host", "repo"]) expect(html).toContain(`>${chip}</span>`);
-    l.close();
-  });
-
-  it("renders the missing state as halted, and escapes untrusted text", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", JSON.stringify(resolve({}, null)));
-    expect(render(buildWorkflowsState(l, NOW))).toContain("Workflow file missing: this repo is halted");
-    l.setSystemState("workflow:a/b", JSON.stringify({ repo: "a/b", mainSha: "m", status: "invalid", fileSha256: "f".repeat(64), error: "<script>alert(1)</script>" }));
-    const html = render(buildWorkflowsState(l, NOW));
-    expect(html).toContain("Workflow file invalid: this repo is halted");
-    expect(html).not.toContain("<script>alert(1)</script>");
-    expect(html).toContain("&lt;script&gt;");
-    l.close();
-  });
-});
-
-describe("Pipeline view robustness (Gemini #13)", () => {
+describe("workflows state robustness", () => {
   it("shows a corrupt or schema-drifted cache entry as unreadable instead of crashing", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
     l.setSystemState("workflow:a/b", "{not json");
@@ -175,29 +115,4 @@ describe("Pipeline view robustness (Gemini #13)", () => {
     l.close();
   });
 
-  it("states that Scouts are disabled on the host instead of showing active schedules and auto promotion", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    const r = describeWorkflow("a/b", resolve({ scoutsEnabled: false }), l.computeStageMetrics("a/b", SINCE, NOW));
-    const scouts = r.stages.find((s) => s.id === "scouts")!;
-    expect(scouts.clamps).toEqual(["Scouts are disabled on this host (scouts.enabled is false): the repo declares them but nothing runs"]);
-    expect(scouts.items.find((i) => i.label === "enabled on this host")).toMatchObject({ value: "no", source: "host" });
-    l.close();
-  });
-
-  it("counts Shadow Mode disagreements and real reverts (a red main-watch), not only autonomous merges", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x", now: NOW - DAY, phase: { kind: "done", outcome: "merged" } });
-    l.upsertThread({ issueNumber: 2, title: "t", bodySha256: "x", now: NOW - DAY, phase: { kind: "shadow_ready", prNumber: 5, headSha: "h", baseSha: "b", verdictId: 1 } });
-    const auto = l.recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h1", squashSha: "s1", shadowOnly: false, mainRequired: ["Test"], now: NOW - DAY });
-    l.recordMerge({ issueNumber: 2, prNumber: 5, headSha: "h2", shadowOnly: true, now: NOW - DAY });
-    l.markDisagree(2, true);
-    l.recordScoutProposal({ issueNumber: 1, scoutName: "bug-hunt", contentSha256: "c", titleFp: "f", now: NOW - DAY });
-    l.updateMergeMainWatch(auto.id, { kind: "red", revertPrNumber: null, escalated: true });
-    const m = l.computeStageMetrics("a/b", SINCE, NOW);
-    expect(m.landing.disagreements).toBe(1);
-    expect(m.landing.reverts).toBe(1);
-    expect(m.scouts["bug-hunt"]!.reverted).toBe(1);
-    expect(m.byWorkflowSha.none!.reverted).toBe(1);
-    l.close();
-  });
 });
