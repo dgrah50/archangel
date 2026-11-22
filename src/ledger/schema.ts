@@ -168,6 +168,8 @@ CREATE TABLE IF NOT EXISTS threads (
   owner_reply TEXT,
   retry_grants INTEGER NOT NULL DEFAULT 0,
   workflow_sha256 TEXT,
+  /** The issue text as it was at intake (replay and eval show it to the reviewers). Null for Threads from before it was kept. */
+  issue_body TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)
@@ -335,4 +337,28 @@ CREATE TABLE IF NOT EXISTS scout_proposals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scout_proposals_fp ON scout_proposals(repo, title_fp);
+
+-- Eval vault (V6): the labelled review cases and which side of the dev / held-out split each belongs to. A split never moves
+-- from held-out back to dev, and every owner dispute is held-out.
+CREATE TABLE IF NOT EXISTS eval_vault (
+  case_id TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL CHECK (label IN ('good', 'bad')),
+  dispute INTEGER NOT NULL DEFAULT 0,
+  split TEXT NOT NULL CHECK (split IN ('dev', 'heldout')),
+  head_sha TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- Review verdicts per (prompt hash, case): the hash covers both reviewer prompt templates and the rubric, so a changed prompt misses.
+CREATE TABLE IF NOT EXISTS eval_results (
+  prompt_hash TEXT NOT NULL,
+  case_id TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('approve', 'veto')),
+  vendors TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (prompt_hash, case_id)
+);
 `;

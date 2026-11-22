@@ -595,6 +595,7 @@ export class Reconciler {
       title: issue.title,
       themeLabel,
       bodySha256: sha256(issue.body),
+      issueBody: issue.body,
       phase: { kind: "queued" },
       mode: "autonomous",
       workflowSha256: this.workflow?.fileSha256 ?? null,

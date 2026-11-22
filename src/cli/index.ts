@@ -6,7 +6,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
-import { resolveDataDir } from "./data-dir.js";
+import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
@@ -18,6 +18,9 @@ import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
+import { renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
+import { prepareCandidates } from "../core/eval-candidate.js";
+import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
@@ -653,6 +656,86 @@ program
       else for (const r of reports) console.log(renderReplay(r));
       if (reports.some((r) => r.regressions > 0)) process.exit(1);
     } finally {
+      ledger.close();
+    }
+  });
+
+const evalCmd = program.command("eval").description("Offline review eval: score a candidate prompt/rubric change against captured, labelled cases (never lands anything)");
+
+/** Every repo in the Ledger with a Broker repo on disk, as eval sources. */
+function evalSources(ledger: Ledger, dataDir: string, only?: string) {
+  const repos = only ? [only] : [...new Set(ledger.listAllThreads().map((t) => t.repo))].sort();
+  return repos.flatMap((repo) => {
+    const [githubOwner, githubRepo] = repo.split("/") as [string, string];
+    const bareRepoPath = resolvePaths({ dataDir, githubOwner, githubRepo }).brokerBareRepoPath;
+    if (!fs.existsSync(bareRepoPath)) {
+      console.error(`skipping ${repo}: no broker repo at ${bareRepoPath}`);
+      return [];
+    }
+    return [{ repo, bareRepoPath, seeds: ledger.listReplaySeeds(0, repo) }];
+  });
+}
+
+evalCmd
+  .command("status")
+  .description("Show the vault's case counts against the calibration milestones (no model calls)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--repo <owner/name>", "Only this repository")
+  .action(async (opts: { config?: string; dataDir?: string; repo?: string }) => {
+    const dataDir = resolveDataDir(opts);
+    const root = resolvePaths({ dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+    const ledger = new Ledger(root.ledgerDbPath);
+    try {
+      const { cases, skipped } = await collectEvalCases(ledger, evalSources(ledger, dataDir, opts.repo));
+      const counts = {
+        total: cases.length, dev: cases.filter((c) => c.split === "dev").length, heldout: cases.filter((c) => c.split === "heldout").length,
+        good: cases.filter((c) => c.label === "good").length, bad: cases.filter((c) => c.label === "bad").length,
+        disputes: cases.filter((c) => c.dispute).length, mutants: cases.filter((c) => c.kind === "mutant").length,
+        unreplayable: skipped, withoutIssueText: cases.filter((c) => c.body === null).length,
+      };
+      for (const line of renderCounts({ counts, milestones: milestoneProgress(cases.length) })) console.log(line);
+      if (cases.length < EVAL_THRESHOLDS.minCases) console.log(`INSUFFICIENT DATA: ${EVAL_THRESHOLDS.minCases} replayable cases are needed before \`eval run\` can score anything.`);
+    } finally {
+      ledger.close();
+    }
+  });
+
+evalCmd
+  .command("run")
+  .description("Score a candidate patch (src/agents/prompts.ts, skills/*.md, .agents/archangel.json) against the baseline with real reviewer CLIs. Exit 0 pass, 1 fail, 2 insufficient data")
+  .requiredOption("--candidate <patch>", "A git patch file, applied to a throwaway checkout of Archangel's HEAD")
+  .option("-c, --config <path>", "Path to archangel.yaml (reviewer chain)")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--repo <owner/name>", "Only this repository")
+  .option("--heldout", "Score the held-out set (default: the dev set)")
+  .option("--max-cases <n>", `Cap on cases per run (default ${EVAL_THRESHOLDS.defaultMaxCases}); each case costs reviewer calls`)
+  .option("--json", "Output JSON")
+  .action(async (opts: { candidate: string; config?: string; dataDir?: string; repo?: string; heldout?: boolean; maxCases?: string; json?: boolean }) => {
+    const host = resolveHostSettings(opts);
+    if (host.authMode !== "subscription") throw new Error("eval uses the subscription reviewer CLIs; set authMode: subscription");
+    const dataDir = host.dataDir;
+    const root = resolvePaths({ dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+    const maxCases = opts.maxCases === undefined ? undefined : Number(opts.maxCases);
+    if (maxCases !== undefined && !(Number.isInteger(maxCases) && maxCases >= 1)) throw new Error("--max-cases must be an integer >= 1");
+    const ledger = new Ledger(root.ledgerDbPath);
+    const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, opts.candidate);
+    try {
+      const report = await runEval({
+        ledger,
+        sources: evalSources(ledger, dataDir, opts.repo),
+        suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, primaryImplementerVendor: providerToVendor(host.implementerChain[0]!.provider), prompts }),
+        baseline: baseline.prompts,
+        candidate,
+        heldout: opts.heldout,
+        maxCases,
+      });
+      console.log(opts.json ? JSON.stringify(report, null, 2) : renderEval(report));
+      process.exitCode = report.result === "pass" ? 0 : report.result === "fail" ? 1 : 2;
+    } finally {
+      candidate.cleanup();
       ledger.close();
     }
   });

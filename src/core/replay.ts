@@ -120,7 +120,7 @@ const FIXED_ENV = {
   GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
 };
 
-async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string): Promise<string> {
+export async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}, input?: string): Promise<string> {
   const child = execFileP("git", ["-c", "core.hooksPath=/dev/null", ...args], {
     cwd,
     env: { PATH: process.env.PATH, HOME: os.tmpdir(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...FIXED_ENV, ...env },
@@ -137,7 +137,7 @@ interface Tree {
 }
 
 /** Builds a commit with `head`'s tree plus `edits`, parented on `base`, using only plumbing and a private index. */
-async function mutantCommit(dir: string, base: string, head: string, edits: Tree): Promise<string> {
+export async function mutantCommit(dir: string, base: string, head: string, edits: Tree): Promise<string> {
   const indexFile = path.join(dir, ".git", `replay-index-${process.pid}-${Math.random().toString(36).slice(2)}`);
   const env = { GIT_INDEX_FILE: indexFile };
   try {
@@ -157,7 +157,7 @@ async function blob(dir: string, content: string): Promise<{ mode: string; sha: 
   return { mode: "100644", sha: (await git(dir, ["hash-object", "-w", "--stdin"], {}, content)).trim() };
 }
 
-async function show(dir: string, rev: string, p: string): Promise<string | null> {
+export async function show(dir: string, rev: string, p: string): Promise<string | null> {
   try {
     return await git(dir, ["show", `${rev}:${p}`]);
   } catch {
@@ -165,13 +165,13 @@ async function show(dir: string, rev: string, p: string): Promise<string | null>
   }
 }
 
-interface Diff {
+export interface Diff {
   added: string[];
   modified: string[];
   deleted: string[];
 }
 
-async function diffFiles(dir: string, base: string, head: string): Promise<Diff> {
+export async function diffFiles(dir: string, base: string, head: string): Promise<Diff> {
   const out = await git(dir, ["diff", "--name-status", "-z", "--no-renames", base, head]);
   const parts = out.split("\0").filter(Boolean);
   const d: Diff = { added: [], modified: [], deleted: [] };
@@ -184,7 +184,7 @@ async function diffFiles(dir: string, base: string, head: string): Promise<Diff>
 
 const ASSERT_LINE = /\b(assert\w*|expect|require|t\.(Error|Errorf|Fatal|Fatalf)|toBe\w*|toEqual|toThrow\w*)\b/;
 
-interface Mutator {
+export interface Mutator {
   name: string;
   /** Needs the repo's test commands to be run to be detected (the static Gate cannot see it). */
   needsTests: boolean;
@@ -258,13 +258,13 @@ export const MUTATORS: Mutator[] = [
   },
 ];
 
-async function pinnedShas(dir: string, repo: string, issue: number): Promise<Set<string>> {
+export async function pinnedShas(dir: string, repo: string, issue: number): Promise<Set<string>> {
   const out = await git(dir, ["for-each-ref", "--format=%(objectname)", `refs/archangel/eval/${repo}/${issue}/`]);
   return new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
 }
 
 /** The base's policy, or why there is none usable (an old-format or missing file cannot be replayed). */
-async function basePolicy(dir: string, base: string): Promise<{ policy: GatePolicy } | { reason: string }> {
+export async function basePolicy(dir: string, base: string): Promise<{ policy: GatePolicy } | { reason: string }> {
   const raw = await show(dir, base, REPO_POLICY_PATH);
   if (raw === null) return { reason: `no ${REPO_POLICY_PATH} at the base commit` };
   try {
@@ -275,19 +275,32 @@ async function basePolicy(dir: string, base: string): Promise<{ policy: GatePoli
   }
 }
 
+/**
+ * A throwaway local clone of the Broker's bare repo with its pinned eval refs fetched in. The bare repo is never modified and
+ * nothing leaves this machine. `mainRef` is the clone's default branch (the base of each Thread is its merge-base with it).
+ */
+export async function openReplayClone(bareRepoPath: string): Promise<{ dir: string; mainRef: string; cleanup: () => void }> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-replay-"));
+  const cleanup = () => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  const dir = path.join(tmp, "clone");
+  try {
+    await git(tmp, ["clone", "--no-local", "--quiet", bareRepoPath, dir]);
+    // A failure here must surface: swallowing it would make every case look unpinned and the run pass vacuously.
+    await git(dir, ["fetch", "--quiet", bareRepoPath, "+refs/archangel/eval/*:refs/archangel/eval/*"]);
+    const mainRef = (await git(dir, ["rev-parse", "--verify", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || "HEAD";
+    return { dir, mainRef, cleanup };
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+}
+
 export async function runReplay(opts: ReplayOptions): Promise<ReplayReport> {
   const gate = opts.gate ?? runGate;
   const log = opts.log ?? (() => undefined);
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-replay-"));
-  const dir = path.join(tmp, "clone");
   const report: ReplayReport = { repo: opts.repo, cases: [], mutants: [], replayed: 0, regressions: 0 };
+  const { dir, mainRef, cleanup } = await openReplayClone(opts.bareRepoPath);
   try {
-    // A throwaway local clone: the bare repo is never modified, and nothing leaves this machine.
-    await git(tmp, ["clone", "--no-local", "--quiet", opts.bareRepoPath, dir]);
-    // A failure here must surface: swallowing it would make every case look unpinned and the run pass vacuously.
-    await git(dir, ["fetch", "--quiet", opts.bareRepoPath, "+refs/archangel/eval/*:refs/archangel/eval/*"]);
-    const mainRef = (await git(dir, ["rev-parse", "--verify", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || "HEAD";
-
     for (const c of deriveCases(opts.seeds)) {
       const skip = (detail: string): void => {
         report.cases.push({ ...c, status: "skipped", detail });
@@ -361,7 +374,7 @@ export async function runReplay(opts: ReplayOptions): Promise<ReplayReport> {
       }
     }
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    cleanup();
   }
   report.replayed = report.cases.filter((c) => c.status !== "skipped").length;
   report.regressions = report.cases.filter((c) => c.status === "regression").length + report.mutants.filter((m) => m.status === "regression").length;
