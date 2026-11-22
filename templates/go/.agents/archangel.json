@@ -26,5 +26,8 @@
   "requiredChecks": [
     "Gate",
     "Test"
-  ]
+  ],
+  "landing": {
+    "bugfix": "autonomous"
+  }
 }

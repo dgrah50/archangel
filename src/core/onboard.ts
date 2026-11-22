@@ -88,9 +88,10 @@ const BUG_HUNT_PROMPT = `Audit the repository's non-test production source for c
 Only propose an issue if you can name the exact file and symbol, the failing behaviour, the expected behaviour, and a new test that fails today.
 `;
 
-/** Adds the bug-hunt Scout entry to a workflow starter, keeping the starter's own key order. */
+/** Adds the explicit landing mode and the bug-hunt Scout entry to a workflow starter. */
 function withBugHuntScout(workflowJson: string, stack: Stack | null): string {
   const wf = JSON.parse(workflowJson) as Record<string, unknown>;
+  wf.landing = { bugfix: "autonomous" };
   wf.scouts = [{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: bugHuntSkills(stack) }];
   return JSON.stringify(wf, null, 2) + "\n";
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildMetricsBlock, categorizeAttemptError } from "../src/core/metrics-block.js";
 import { buildScoutPrompt, toScoutWorkflow } from "../src/core/scout.js";
-import { WorkflowV2 } from "../src/core/workflow.js";
+import { Workflow } from "../src/core/workflow.js";
 import { okWorkflow, workflowFile } from "./helpers/workflow.js";
 import { listAllSkills } from "../src/core/skills.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -82,7 +82,7 @@ describe("includeMetrics Scout flag", () => {
     expect(on.includeMetrics).toBe(true);
     expect(buildScoutPrompt(off)).not.toContain("FACTORY METRICS");
     expect(buildScoutPrompt(on, "--- FACTORY METRICS (DATA, last 14 days) ---\nx")).toContain("FACTORY METRICS (DATA");
-    expect(WorkflowV2.safeParse(workflowFile([{ name: "c", includeMetrics: "yes please" }])).success).toBe(false);
+    expect(Workflow.safeParse(workflowFile([{ name: "c", includeMetrics: "yes please" }])).success).toBe(false);
   });
 
   it("ships the factory-signals skill", () => {
