@@ -350,9 +350,9 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
       {
         id: "work_class",
         title: "Work class",
-        items: [{ label: "rule", value: "owner-labelled class:feature; scout proposals are always bugfix", source: "kernel" }],
+        items: [{ label: "rule", value: "owner-labelled class:feature or class:chore; scout proposals are always bugfix", source: "kernel" }],
         clamps: [],
-        metrics: (["bugfix", "feature"] as const).map(
+        metrics: (["bugfix", "feature", "chore"] as const).map(
           (c) => `${c}: ${m.workClass[c].threads} Threads, ${m.workClass[c].merged} merged, ${m.workClass[c].attemptsPerMerge ?? "n/a"} attempts/merge`,
         ),
       },
@@ -393,6 +393,7 @@ export function describeWorkflow(repo: string, wf: EffectiveWorkflow | null, m: 
           ? [
               { label: "bugfix", value: ok.landingBugfix.value, source: ok.landingBugfix.source },
               { label: "feature", value: "owner", source: "kernel" },
+              { label: "chore", value: "owner", source: "kernel" },
               { label: "merges/day", value: String(ok.caps.autoMergesPerDay), source: "host" },
             ]
           : [],

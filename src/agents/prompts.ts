@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import type { GatePolicy } from "../config.js";
 import type { ReviewFinding } from "../ledger/schema.js";
+import type { WorkClass } from "../core/work-class.js";
 
-function formatGateRules(gate?: Partial<GatePolicy>, workClass: "bugfix" | "feature" = "bugfix"): string[] {
+function formatGateRules(gate?: Partial<GatePolicy>, workClass: WorkClass = "bugfix"): string[] {
   const maxNonTest = gate?.maxNonTestLines ?? 150;
   const maxTotal = gate?.maxTotalLines ?? 300;
   const maxFiles = gate?.maxFiles ?? 5;
@@ -15,7 +16,7 @@ function formatGateRules(gate?: Partial<GatePolicy>, workClass: "bugfix" | "feat
     : "the repository's full test suite";
 
   return [
-    workClass === "feature"
+    workClass !== "bugfix"
       ? `1. A new test file (matching ${testGlobs}) is optional: add one only if it locks down behaviour someone relies on (see AGENTS.md: few tests, no UI tests).`
       : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
     "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
@@ -46,11 +47,12 @@ export function buildImplementPrompt(input: {
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
   factoryGuidance?: string | null;
-  workClass?: "bugfix" | "feature";
+  workClass?: WorkClass;
 }): string {
   const feature = input.workClass === "feature";
+  const chore = input.workClass === "chore";
   return [
-    `You are an autonomous ${feature ? "feature" : "bug-fix"} implementer working on ${input.repoName} in an isolated local repository clone.`,
+    `You are an autonomous ${chore ? "chore" : feature ? "feature" : "bug-fix"} implementer working on ${input.repoName} in an isolated local repository clone.`,
     `Resolve GitHub Issue #${input.issueNumber}: ${input.title}`,
     "",
     "--- BEGIN ISSUE SPECIFICATION (DATA) ---",
@@ -65,7 +67,13 @@ export function buildImplementPrompt(input: {
     "",
     ...CODE_QUALITY_RULES,
     "",
-    ...(feature
+    ...(chore
+      ? [
+          "THIS IS A CHORE, NOT A BUG FIX: cleanup and hygiene only. Make NO behaviour change and write no reproduction test; add a test only if it locks down behaviour someone relies on. The existing test suite must stay green. Follow AGENTS.md.",
+          "",
+          "Finish with a concise plain-text summary of what you cleaned up and why behaviour is unchanged.",
+        ]
+      : feature
       ? [
           "THIS IS A FEATURE, NOT A BUG FIX: there is no bug to reproduce. Do not write a reproduction test. Add a test only if it locks down behaviour someone relies on; follow AGENTS.md (few tests, no UI tests). The existing test suite must stay green.",
           "",
@@ -85,7 +93,7 @@ export function buildRevisionPrompt(input: {
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
   factoryGuidance?: string | null;
-  workClass?: "bugfix" | "feature";
+  workClass?: WorkClass;
 }): string {
   const parts: string[] = [
     `Revision Attempt for Issue #${input.issueNumber}: ${input.title}`,
@@ -286,7 +294,7 @@ export type PromptKind = "implement" | "revise" | "rebase" | "review_contract" |
  * sha256 of a prompt's fixed template (issue, diff, rubric and repo gate numbers blanked), recorded with each
  * Attempt and review so replay can tell which prompt wording produced a result. Editing the wording changes it.
  */
-export function promptTemplateSha(kind: PromptKind, workClass: "bugfix" | "feature" = "bugfix"): string {
+export function promptTemplateSha(kind: PromptKind, workClass: WorkClass = "bugfix"): string {
   const base = { issueNumber: 0, title: "", body: "" };
   const text =
     kind === "implement"

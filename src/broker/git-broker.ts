@@ -33,7 +33,7 @@ const HARDENED_GIT_FLAGS = [
   "protocol.file.allow=always",
 ];
 
-const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-)?\d+$/;
+const FACTORY_BRANCH_RE = /^factory\/(?:revert-|feature-|chore-)?\d+$/;
 /** Machine-drafted owner-review PRs (correction loop): never `factory/*`, so the daemon's own Lander can never merge them. */
 const AGENT_DRAFT_BRANCH_RE = /^agent-draft\/[a-z0-9-]{1,60}-\d+$/;
 
@@ -413,7 +413,7 @@ export class GitBroker {
   }
 
   /**
-   * Pushes a validated commit strictly to `factory/<issue>` or `factory/revert-<issue>`.
+   * Pushes a validated commit strictly to `factory/<issue>`, `factory/feature-<issue>`, `factory/chore-<issue>` or `factory/revert-<issue>`.
    */
   async pushFactoryBranch(branchName: string, headSha: string, remoteUrl: string): Promise<void> {
     if (!FACTORY_BRANCH_RE.test(branchName)) {

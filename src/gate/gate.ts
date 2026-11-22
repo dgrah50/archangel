@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { GatePolicySchema, REPO_POLICY_PATH, type GatePolicy } from "../config.js";
+import type { WorkClass } from "../core/work-class.js";
 import { attributableTo, capIds, clearReports, readReports } from "./junit.js";
 import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, Workflow, toGatePolicy } from "../core/workflow.js";
 
@@ -188,8 +189,8 @@ export interface GateRunOptions {
   skipPreCommit?: boolean;
   skipTests?: boolean;
   commandTimeoutMs?: number;
-  /** `feature` skips the red-on-base and new-test-file requirements only. Defaults to `bugfix` (full reproduction proof). */
-  workClass?: "bugfix" | "feature";
+  /** `feature` and `chore` skip the red-on-base and new-test-file requirements only. Defaults to `bugfix` (full reproduction proof). */
+  workClass?: WorkClass;
   /**
    * Commit to read `.agents/archangel.json` and the pre-commit config from (default: `baseRef`). The daemon passes the current main tip
    * so a pre-push check of an in-flight branch judges the same policy as the Reconciler instead of the (older) merge-base's.
@@ -696,8 +697,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     if (totalLines > policy.maxTotalLines) {
       report.violations.push(`total changed lines ${totalLines} exceeds limit ${policy.maxTotalLines}`);
     }
-    // Bugfixes must prove the bug with a new test; features need none (the full suite must still be green on head).
-    if (opts.workClass !== "feature" && policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
+    // Bugfixes must prove the bug with a new test; features and chores need none (the full suite must still be green on head).
+    const needsProof = !opts.workClass || opts.workClass === "bugfix";
+    if (needsProof && policy.testFileGlobs.length > 0 && newTestFiles.length === 0) {
       report.violations.push(`no new test file added matching ${policy.testFileGlobs.join(", ")}`);
     }
     if (report.violations.length > 0) {
@@ -737,9 +739,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       const junitRe = policy.junitReport ? globToRegExp(policy.junitReport) : null;
       /** Test IDs of the new test files' cases from the red base run: every one must pass on head. */
       let expectedIds: string[] | null = null;
-      // Feature work has no bug to reproduce: skip the red-on-base proof and the new-test requirement. Everything else
+      // Feature and chore work has no bug to reproduce: skip the red-on-base proof and the new-test requirement. Everything else
       // (bounds, protected paths, hooks, full head suite) is enforced above and below exactly as for bugfixes.
-      if (opts.workClass !== "feature") {
+      if (needsProof) {
         const baseCmd = policy.baseTestCmd ?? policy.testCmd;
         await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
 
@@ -837,14 +839,14 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
           );
           return report;
         }
-        if (junitRe && !(opts.workClass === "feature" && newTestFiles.length === 0)) {
+        if (junitRe && !(!needsProof && newTestFiles.length === 0)) {
           const jr = readReports(headDir, junitRe);
           if ("error" in jr) {
             report.violations.push(`head JUnit report unusable (failing closed): ${jr.error}`);
             return report;
           }
           const mine = jr.cases.filter((c) => attributableTo(c, newTestFiles));
-          // Bugfix: every case that was red on base must be present and passed. Feature (no base run): all attributable cases pass.
+          // Bugfix: every case that was red on base must be present and passed. Feature/chore (no base run): all attributable cases pass.
           const expected = expectedIds ?? mine.map((c) => c.id);
           const passed = new Set(mine.filter((c) => c.status === "passed").map((c) => c.id));
           const missing = expected.filter((id) => !passed.has(id));

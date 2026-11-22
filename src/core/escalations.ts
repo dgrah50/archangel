@@ -1,4 +1,5 @@
 import type { EscalationCode } from "./thread-machine.js";
+import type { WorkClass } from "./work-class.js";
 
 /**
  * The only kinds of decision Archangel may put in front of the owner.
@@ -118,9 +119,9 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
 export const OWNER_COMMANDS_LINE =
   "Reply `/archangel retry` with a hint, `/archangel close`, or `/archangel handoff`.";
 
-export function describeEscalation(code: EscalationCode, workClass: "bugfix" | "feature" = "bugfix"): EscalationPolicy {
+export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix"): EscalationPolicy {
   const policy = ESCALATION_POLICY[code];
-  const feature = workClass === "feature" ? " This is a feature Thread: the owner merges it." : "";
+  const feature = workClass !== "bugfix" ? ` This is a ${workClass} Thread: the owner merges it.` : "";
   return { ...policy, recommendation: `${policy.recommendation}${feature} ${OWNER_COMMANDS_LINE}` };
 }
 

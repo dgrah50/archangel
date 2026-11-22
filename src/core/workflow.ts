@@ -3,7 +3,7 @@ import { z } from "zod";
 import { GatePolicySchema, type GatePolicy } from "../config.js";
 import { FLEET_SCOUT_NAMES, FLEET_SCOUTS, type FleetScoutName } from "./fleet-scouts.js";
 import { SKILL_REF_RE } from "./skills.js";
-import type { WorkClass } from "./work-class.js";
+import { ownerMergeClass, type WorkClass } from "./work-class.js";
 
 /**
  * Pure V4 workflow core: KERNEL (invariants and maxima), the repo file schema, the resolver and the
@@ -323,9 +323,9 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
   };
 }
 
-/** Feature work always lands by owner merge; bugfix lands by the owner unless repo and host both allow autonomy. */
+/** Feature and chore work always land by owner merge; bugfix lands by the owner unless repo and host both allow autonomy. */
 export function ownerMergesOnly(wf: OkWorkflow, workClass: WorkClass): boolean {
-  return workClass === "feature" || wf.landingBugfix.value === "owner";
+  return ownerMergeClass(workClass) || wf.landingBugfix.value === "owner";
 }
 
 // ---------------------------------------------------------------------------

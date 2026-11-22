@@ -132,10 +132,11 @@ jobs:
         run: |
           git cat-file -e "${BASE_SHA}^{commit}"
           EXTRA_ARGS=()
-          # Work class comes only from the branch name. The daemon alone chooses factory/feature-<n> (from an
-          # owner-verified `class:feature` issue label); the implementer cannot name the pushed branch.
-          if [[ "$HEAD_REF" =~ ^factory/feature-[0-9]+$ ]]; then
-            EXTRA_ARGS+=(--work-class feature)
+          # Work class comes only from the branch name. The daemon alone chooses factory/feature-<n> or
+          # factory/chore-<n> (from an owner-verified `class:feature` / `class:chore` issue label); the implementer
+          # cannot name the pushed branch.
+          if [[ "$HEAD_REF" =~ ^factory/(feature|chore)-[0-9]+$ ]]; then
+            EXTRA_ARGS+=(--work-class "${BASH_REMATCH[1]}")
           fi
           if [[ "$HEAD_REF" =~ ^factory/revert-[0-9]+$ ]]; then
             git cat-file -e "${HEAD_SHA}^{commit}"

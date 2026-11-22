@@ -19,7 +19,7 @@ import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
-import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
+import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { captureAttemptInput } from "./attempt-input.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
@@ -715,15 +715,17 @@ export class Reconciler {
       return;
     }
 
-    // Work class: only an owner-authored issue carrying an owner-applied `class:feature` label is a feature.
-    // Scout proposals (including auto-promoted ones) and unverified labels are always bugfix.
-    const workClass: WorkClass =
-      isOwnerAuthored &&
-      !isVerifiedBotProposal &&
-      issue.labels.includes(this.cfg.labels.feature) &&
-      (await this.github.verifyLabelActor(issue.number, this.cfg.labels.feature, this.cfg.ownerUserId))
-        ? "feature"
-        : "bugfix";
+    // Work class: only an owner-authored issue carrying an owner-applied `class:feature` or `class:chore` label is
+    // a feature or chore. Scout proposals (including auto-promoted ones) and unverified labels are always bugfix.
+    let workClass: WorkClass = "bugfix";
+    if (isOwnerAuthored && !isVerifiedBotProposal) {
+      for (const [cls, label] of [["feature", this.cfg.labels.feature], ["chore", this.cfg.labels.chore]] as const) {
+        if (issue.labels.includes(label) && (await this.github.verifyLabelActor(issue.number, label, this.cfg.ownerUserId))) {
+          workClass = cls;
+          break;
+        }
+      }
+    }
 
     const themeLabel = issue.labels.find((l) => l.startsWith("theme:")) ?? null;
     this.ledger.upsertThread({
@@ -2335,8 +2337,8 @@ export class Reconciler {
 
     const branchUpToDateWithMain = pr.baseSha === mainSha;
 
-    // Feature Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
-    const isFeature = workClassOfBranch(thread.branchName) === "feature";
+    // Feature and chore Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
+    const isOwnerMergeClass = ownerMergeClass(workClassOfBranch(thread.branchName));
     const ownerMergesOnlyNow = ownerMergesOnly(this.workflow!, workClassOfBranch(thread.branchName));
     const blockers = computeBlockers({
       prOpen: pr.state === "open",
@@ -2359,7 +2361,7 @@ export class Reconciler {
       autoMergesToday: this.ledger.getAutoMergeCountToday(now),
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
       shadowMode: ownerMergesOnlyNow,
-      featureThread: isFeature,
+      ownerMergeThread: isOwnerMergeClass,
       agentDraft: pr.headRef.startsWith(AGENT_DRAFT_PREFIX),
     });
 
@@ -2390,8 +2392,8 @@ export class Reconciler {
     // Shadow Mode: ready except for shadow_mode_active (and optional branch_behind_main with clean merge-tree).
     if (isShadowReady(blockers) || shadowReadyWithBehind) {
       await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
-      // A feature Thread is owner-merge by class: no Shadow verdict row (it would pollute the agreement rate) and no WOULD MERGE line.
-      const verdictId = isFeature
+      // A feature or chore Thread is owner-merge by class: no Shadow verdict row (it would pollute the agreement rate) and no WOULD MERGE line.
+      const verdictId = isOwnerMergeClass
         ? null
         : this.ledger.recordMerge({
             issueNumber: thread.issueNumber,
@@ -2406,7 +2408,7 @@ export class Reconciler {
         { auditTopic: "thread/shadow_ready", now },
       );
       if (updated) {
-        await this.postRecapSafe(updated, pr, blockers, isFeature ? undefined : { wouldMerge: true });
+        await this.postRecapSafe(updated, pr, blockers, isOwnerMergeClass ? undefined : { wouldMerge: true });
       }
       return;
     }
@@ -2416,7 +2418,7 @@ export class Reconciler {
       return;
     }
 
-    if (isFeature) {
+    if (isOwnerMergeClass) {
       return; // Defence in depth: unreachable while ownerMergesOnly forces a shadow_mode_active blocker.
     }
     if (await this.autonomyCapReached(now)) {
