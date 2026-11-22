@@ -225,7 +225,7 @@ describe("a halted tick still delivers the outbox at its end", () => {
   it("flushes again after aborting active work, so effects queued by the halt are not left for the next tick", async () => {
     const r = await run(null);
     expect(r.calls).toBe(0);
-    const spy = vi.spyOn(Ledger.prototype, "listOutbox");
+    const spy = vi.spyOn(Ledger.prototype, "listDueOutbox");
     try {
       await run(null);
       // Two ticks per run, each flushing at the start and again before the halted early return.
