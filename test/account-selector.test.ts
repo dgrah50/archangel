@@ -1,0 +1,253 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { describe, expect, it } from "vitest";
+import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
+import { SubscriptionReviewerSuite } from "../src/agents/subscription-reviewers.js";
+import type { Account } from "../src/config.js";
+import { MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, readCodexUsage, selectAccount, type AccountLedger, type AccountState } from "../src/core/accounts.js";
+import { Ledger } from "../src/ledger/store.js";
+
+const NOW = Date.UTC(2026, 2, 10, 15, 0, 0);
+const claude = (id: string, extra: Partial<Account> = {}): Account => ({ id, provider: "claude", ...extra });
+const state = (o: { cooling?: string[]; today?: Record<string, number>; last?: Record<string, number>; pct?: Record<string, number> } = {}): AccountState => ({
+  cooldownUntil: (id) => (o.cooling?.includes(id) ? NOW + 60_000 : null),
+  attemptsToday: (id) => o.today?.[id] ?? 0,
+  lastUsedAt: (id) => o.last?.[id] ?? null,
+  usedPercent: (a) => o.pct?.[a.id] ?? null,
+});
+
+describe("selectAccount", () => {
+  const a = claude("a");
+  const b = claude("b");
+  const c = claude("c");
+
+  it("with no usage knowledge it is config order", () => {
+    expect(selectAccount([a, b, c], NO_ACCOUNT_STATE, NOW)?.id).toBe("a");
+  });
+
+  it("prefers the least recently used account, an account that never ran first", () => {
+    expect(selectAccount([a, b, c], state({ last: { a: 300, b: 100 } }), NOW)?.id).toBe("c");
+    expect(selectAccount([a, b], state({ last: { a: 300, b: 100 } }), NOW)?.id).toBe("b");
+  });
+
+  it("skips accounts in cooldown and accounts over their per-account daily cap", () => {
+    expect(selectAccount([a, b, c], state({ cooling: ["a"] }), NOW)?.id).toBe("b");
+    const capped = claude("a", { maxAttemptsPerDay: 2 });
+    expect(selectAccount([capped, b], state({ today: { a: 2 } }), NOW)?.id).toBe("b");
+    expect(selectAccount([capped, b], state({ today: { a: 1, b: 1 } }), NOW)?.id).toBe("a");
+  });
+
+  it("returns null when every account is cooling, capped or excluded; ignoreCooldown lifts only the cooldown", () => {
+    expect(selectAccount([a, b], state({ cooling: ["a", "b"] }), NOW)).toBeNull();
+    expect(selectAccount([a, b], state({ cooling: ["a", "b"] }), NOW, { ignoreCooldown: true })?.id).toBe("a");
+    expect(selectAccount([claude("a", { maxAttemptsPerDay: 1 })], state({ cooling: ["a"], today: { a: 1 } }), NOW, { ignoreCooldown: true })).toBeNull();
+    expect(selectAccount([a, b], NO_ACCOUNT_STATE, NOW, { exclude: new Set(["a", "b"]) })).toBeNull();
+  });
+
+  it("breaks ties deterministically: fewer attempts today, then the lower stale usage reading, then config order", () => {
+    expect(selectAccount([a, b], state({ today: { a: 3, b: 1 } }), NOW)?.id).toBe("b");
+    expect(selectAccount([a, b], state({ pct: { a: 80, b: 20 } }), NOW)?.id).toBe("b");
+    expect(selectAccount([a, b], state({ pct: { a: 20, b: 20 } }), NOW)?.id).toBe("a");
+    // the reading never outranks recency: a recently used low-usage account loses to an idle high-usage one
+    expect(selectAccount([a, b], state({ last: { a: 500 }, pct: { a: 1, b: 99 } }), NOW)?.id).toBe("b");
+  });
+});
+
+describe("Codex rate-limit reading", () => {
+  it("takes the last token_count rate_limits of the newest rollout, and nothing when there is none", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-"));
+    expect(readCodexUsage(home)).toBeNull();
+    const dir = path.join(home, "sessions", "2026", "03", "10");
+    fs.mkdirSync(dir, { recursive: true });
+    const ev = (pct: number) => JSON.stringify({ type: "event_msg", payload: { type: "token_count", rate_limits: { primary: { used_percent: pct, window_minutes: 300, resets_at: 1 } } } });
+    fs.writeFileSync(path.join(dir, "rollout-a.jsonl"), `${ev(10)}\n${ev(42)}\n{"partial":`);
+    const r = readCodexUsage(home)!;
+    expect(r.usedPercent).toBe(42);
+    expect(r.windowMinutes).toBe(300);
+    expect(readCodexUsage(path.join(home, "missing"))).toBeNull();
+  });
+});
+
+describe("Ledger account state", () => {
+  it("cools down per account, counts attempts per local day, and tracks last use across attempts and reviews", () => {
+    const l = new Ledger(":memory:", { repo: "a/b", timeZone: "UTC" });
+    l.upsertThread({ issueNumber: 1, title: "t", bodySha256: "s", now: 1 });
+    const accounts = [claude("a"), claude("b")];
+    const s = l.accountState(accounts);
+    l.setAccountCooldown("a", 60_000, "limit", NOW);
+    expect(s.cooldownUntil("a", NOW)).toBe(NOW + 60_000);
+    expect(s.cooldownUntil("b", NOW)).toBeNull();
+    expect(s.cooldownUntil("a", NOW + 61_000)).toBeNull();
+    expect(l.listActiveCooldowns(NOW)).toEqual([{ account: "a", untilTs: NOW + 60_000, reason: "limit" }]);
+
+    const at = (when: number) => {
+      const att = l.startAttempt(1, "implement", when);
+      l.recordAttemptProvenance(att.id, { provider: "claude", accountId: "a" });
+    };
+    at(NOW - 3_600_000);
+    at(NOW - 2 * 86_400_000); // not today
+    expect(s.attemptsToday("a", NOW)).toBe(1);
+    expect(s.lastUsedAt("b")).toBeNull();
+    l.recordReview({ issueNumber: 1, headSha: "h", vendor: "anthropic", verdict: "approve", findings: [], costUsd: 0, accountId: "b", now: NOW - 100 });
+    expect(s.lastUsedAt("b")).toBe(NOW - 100);
+    expect(s.lastUsedAt("a")).toBe(NOW - 3_600_000);
+    expect(l.getAttempt(1)?.accountId).toBe("a");
+    expect(l.getReviewsForSha(1, "h")[0]!.accountId).toBe("b");
+  });
+
+  it("upgrades an older database: adds account_id, drops the per-provider cooldown table, keeps old rows valid", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-mig-"));
+    const file = path.join(dir, "ledger.db");
+    const first = new Ledger(file, { repo: "a/b" });
+    first.upsertThread({ issueNumber: 1, title: "t", bodySha256: "s", now: 1 });
+    first.startAttempt(1, "implement", 1);
+    first.close();
+    const raw = new Database(file);
+    raw.exec("ALTER TABLE attempts DROP COLUMN account_id; ALTER TABLE reviews DROP COLUMN account_id; DROP TABLE account_cooldowns; CREATE TABLE provider_cooldowns (provider TEXT PRIMARY KEY, until_ts INTEGER NOT NULL, reason TEXT NOT NULL, updated_at INTEGER NOT NULL);");
+    raw.close();
+    const l = new Ledger(file, { repo: "a/b" });
+    expect(l.getAttempt(1)?.accountId).toBeNull();
+    l.setAccountCooldown("claude", 1000, "x", 5);
+    expect(l.getAccountCooldown("claude", 6)).not.toBeNull();
+    l.close();
+    const check = new Database(file);
+    expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'provider_cooldowns'").get()).toBeUndefined();
+    check.close();
+    // opening again is idempotent
+    new Ledger(file, { repo: "a/b" }).close();
+  });
+});
+
+function implementer(opts: { accounts: Account[]; chain: Array<{ provider: "claude" | "codex"; accounts?: string[] }>; limited: string[]; state?: AccountLedger }) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "arc-sel-"));
+  const ran: string[] = [];
+  const cooled: string[] = [];
+  const st: AccountLedger = opts.state ?? { ...NO_ACCOUNT_STATE, recordCooldown: (id) => void cooled.push(id) };
+  const chain = opts.chain as never;
+  const impl = new SubscriptionImplementer({
+    chains: { implement: chain, revise: chain, rebase: chain },
+    accounts: opts.accounts,
+    accountState: opts.state ?? st,
+    transcriptsDir: path.join(tmp, "t"),
+    invoker: async ({ account }) => {
+      ran.push(account!.id);
+      return opts.limited.includes(account!.id)
+        ? { code: 1, stdout: "", stderr: "HTTP 429: usage limit reached", aborted: false }
+        : { code: 0, stdout: "{}", stderr: "", aborted: false };
+    },
+  });
+  const run = () => impl.run({ issueNumber: 1, cloneDir: tmp, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role: "implement" });
+  return { run, ran, cooled };
+}
+
+describe("failover inside an Attempt", () => {
+  const accounts: Account[] = [claude("claude-a"), claude("claude-b"), { id: "codex", provider: "codex" }];
+
+  it("tries the next account of the SAME vendor before the next chain entry, cooling the limited account down", async () => {
+    const t = implementer({ accounts, chain: [{ provider: "claude" }, { provider: "codex" }], limited: ["claude-a"] });
+    const res = await t.run();
+    expect(t.ran).toEqual(["claude-a", "claude-b"]);
+    expect(t.cooled).toEqual(["claude-a"]);
+    expect(res.runBy?.accountId).toBe("claude-b");
+    expect(res.providersUsed).toEqual(["anthropic"]);
+  });
+
+  it("moves to the next vendor only after every account of the first is limited", async () => {
+    const t = implementer({ accounts, chain: [{ provider: "claude" }, { provider: "codex" }], limited: ["claude-a", "claude-b"] });
+    const res = await t.run();
+    expect(t.ran).toEqual(["claude-a", "claude-b", "codex"]);
+    expect(res.runBy?.accountId).toBe("codex");
+  });
+
+  it("stops after at most 4 switches, failing with the quota error", async () => {
+    const many = Array.from({ length: 8 }, (_, i) => claude(`c${i}`));
+    const t = implementer({ accounts: many, chain: [{ provider: "claude" }], limited: many.map((m) => m.id) });
+    await expect(t.run()).rejects.toThrow(/account switch limit \(4\) reached.*usage limit/s);
+    expect(MAX_ACCOUNT_SWITCHES).toBe(4);
+    expect(t.ran).toHaveLength(MAX_ACCOUNT_SWITCHES + 1);
+  });
+
+  it("an account cooling from an earlier Attempt is skipped next time, and a chain entry can be pinned to one account", async () => {
+    const st = { ...NO_ACCOUNT_STATE, cooldownUntil: (id: string) => (id === "claude-a" ? Date.now() + 60_000 : null), recordCooldown: () => undefined };
+    const t = implementer({ accounts, chain: [{ provider: "claude" }], limited: [], state: st });
+    await t.run();
+    expect(t.ran).toEqual(["claude-b"]);
+    const pinned = implementer({ accounts, chain: [{ provider: "claude", accounts: ["claude-b"] }], limited: [] });
+    await pinned.run();
+    expect(pinned.ran).toEqual(["claude-b"]);
+  });
+
+  it("a non-limit failure does not switch accounts", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "arc-sel-"));
+    const ran: string[] = [];
+    const chain = [{ provider: "claude" as const }];
+    const impl = new SubscriptionImplementer({
+      chains: { implement: chain, revise: chain, rebase: chain },
+      accounts,
+      transcriptsDir: path.join(tmp, "t"),
+      invoker: async ({ account }) => {
+        ran.push(account!.id);
+        return { code: 1, stdout: "", stderr: "TypeError: x is undefined", aborted: false };
+      },
+    });
+    await expect(impl.run({ issueNumber: 1, cloneDir: tmp, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role: "implement" })).rejects.toThrow(/TypeError/);
+    expect(ran).toEqual(["claude-a"]);
+  });
+});
+
+describe("reviewer independence stays by vendor with several accounts", () => {
+  const accounts: Account[] = [claude("claude-a"), claude("claude-b"), { id: "codex", provider: "codex" }, { id: "agy", provider: "agy" }];
+  const req = { issueNumber: 1, title: "t", body: "b", diffText: "d", touchedFiles: {} } as never;
+
+  it("two accounts of one vendor are never two reviewers", async () => {
+    const ran: string[] = [];
+    const suite = new SubscriptionReviewerSuite({
+      chain: [{ provider: "claude" }, { provider: "codex" }, { provider: "agy" }],
+      accounts,
+      defaultExcludeVendors: [],
+      invoker: async (i) => {
+        ran.push(`${i.provider}:${i.account!.id}`);
+        return { verdict: "approve", findings: [] };
+      },
+    });
+    const out = await suite.reviewAll(req);
+    expect(out.results.map((r) => r.vendor).sort()).toEqual(["anthropic", "openai"]);
+    expect(ran.filter((r) => r.startsWith("claude")).length).toBe(1);
+    expect(out.results.find((r) => r.vendor === "anthropic")?.accountId).toBe("claude-a");
+  });
+
+  it("a limited reviewer account fails over to another account of the same vendor, then the vendor backup", async () => {
+    const cooled: string[] = [];
+    const st: AccountLedger = { ...NO_ACCOUNT_STATE, cooldownUntil: (id) => (cooled.includes(id) ? Date.now() + 1000 : null), recordCooldown: (id) => void cooled.push(id) };
+    const ran: string[] = [];
+    const suite = new SubscriptionReviewerSuite({
+      chain: [{ provider: "claude" }, { provider: "codex" }, { provider: "agy" }],
+      accounts,
+      accountState: st,
+      defaultExcludeVendors: [],
+      invoker: async (i) => {
+        ran.push(i.account!.id);
+        if (i.account!.id === "claude-a") throw new Error("HTTP 429: usage limit reached");
+        return { verdict: "approve", findings: [] };
+      },
+    });
+    const out = await suite.reviewAll(req);
+    expect(out.errors).toEqual([]);
+    expect(out.results.find((r) => r.vendor === "anthropic")?.accountId).toBe("claude-b");
+    expect(cooled).toEqual(["claude-a"]);
+
+    // every claude account limited: the vendor backup (agy) takes the slot, still two distinct vendors
+    const all: AccountLedger = { ...NO_ACCOUNT_STATE, cooldownUntil: (id) => (id.startsWith("claude") ? Date.now() + 1000 : null) };
+    const suite2 = new SubscriptionReviewerSuite({
+      chain: [{ provider: "claude" }, { provider: "codex" }, { provider: "agy" }],
+      accounts,
+      accountState: all,
+      defaultExcludeVendors: [],
+      invoker: async () => ({ verdict: "approve", findings: [] }),
+    });
+    const out2 = await suite2.reviewAll(req);
+    expect(out2.results.map((r) => r.vendor).sort()).toEqual(["gemini", "openai"]);
+  });
+});

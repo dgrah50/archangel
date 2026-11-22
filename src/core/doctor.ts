@@ -99,6 +99,15 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   // 3. Model authentication (subscription CLIs vs metered API keys)
   if (first.authMode === "subscription") {
     // Every account any role chain can use: implement, revise, rebase, scout, triage, review.
+    if (first.accounts.filter((a) => a.provider === "agy").length > 1) {
+      checks.push({
+        id: "agy_accounts",
+        name: "agy Accounts",
+        status: "warn",
+        detail: "agy account separation via HOME is unverified: agy has no per-login setting, so each agy account's home is passed as HOME, and a token kept in the OS keychain would be shared between them",
+        remediation: "Log each agy account in with its own HOME and confirm they are different Google accounts before relying on two of them.",
+      });
+    }
     const rolesByAccount = new Map<string, { account: Account; roles: string[] }>();
     for (const [role, chain] of [...Object.entries(first.chains), ["review", first.reviewerChain] as const]) {
       for (const e of chain) {
