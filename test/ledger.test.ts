@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { stepPhase, type MachineEvent, type Mode, type Phase } from "../src/core/thread-machine.js";
+import { buildThreadDetail } from "../src/core/ui-thread.js";
 import { Ledger } from "../src/ledger/store.js";
 
 function mustStep(phase: Phase, mode: Mode, ev: MachineEvent, issueNumber = 1) {
@@ -261,4 +262,25 @@ describe("Ledger outbox lifecycle", () => {
     }
   });
 
+});
+
+describe("Ledger phase entry history", () => {
+  it("records the entered phase kind on every transition audit row, with or without an audit topic", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      const t = ledger.upsertThread({ issueNumber: 5, title: "t", bodySha256: "x", now: 1000 });
+      const att = ledger.startAttempt(5, "implement", 2000);
+      const w = ledger.transition(5, t.version, mustStep(t.phase, t.mode, { t: "start_working", attemptId: att.id, attempt: "implement", fromSha: "b" }, 5), { now: 2000, auditTopic: "x/y", auditPayload: { a: 1 } })!;
+      ledger.transition(5, w.version, mustStep(w.phase, w.mode, { t: "escalate", code: "gate_failed", reason: "r" }, 5), { now: 62_000 });
+      const rows = ledger.listAudit({ repo: "acme/app", issueNumber: 5, limit: 10 });
+      expect(rows.find((r) => r.topic === "x/y")?.payloadJson).toBe(JSON.stringify({ a: 1, phase: "working" }));
+      expect(rows.find((r) => r.topic === "thread/phase_entered")?.payloadJson).toBe(JSON.stringify({ phase: "needs_you" }));
+      expect(buildThreadDetail(ledger, "acme/app", 5, 100_000)!.phaseDurations).toEqual([
+        { kind: "working", ms: 60_000, running: false, limitMs: null },
+        { kind: "needs_you", ms: 38_000, running: true, limitMs: null },
+      ]);
+    } finally {
+      ledger.close();
+    }
+  });
 });

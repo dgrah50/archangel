@@ -558,8 +558,14 @@ export class Ledger {
       if (replyText !== undefined) {
         this.appendAudit("thread/owner_reply", issueNumber, "owner", { chars: replyText?.length ?? 0 }, now, repo);
       }
+      // Phase entry history: every transition's audit row carries the entered phase kind; a transition with no audit topic gets a `thread/phase_entered` row.
+      const entered = { phase: validated.kind };
       if (opts.auditTopic) {
-        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+        const payload = opts.auditPayload ?? { next: validated.kind };
+        const body = typeof payload === "object" && payload !== null && !Array.isArray(payload) ? { ...payload, ...entered } : { value: payload, ...entered };
+        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", body, now, repo);
+      } else {
+        this.appendAudit("thread/phase_entered", issueNumber, "archangel", entered, now, repo);
       }
       for (const a of opts.extraAudits ?? []) {
         this.appendAudit(a.topic, issueNumber, a.actor, a.payload, now, repo);
