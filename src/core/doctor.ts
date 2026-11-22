@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { REPO_POLICY_PATH, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { REPO_POLICY_PATH, loadProjectConfigs, providerToVendor, resolvePaths, resolveRequiredReviewers, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
 import { Ledger } from "../ledger/store.js";
 
@@ -131,6 +131,16 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         name: "Subscription CLI Providers",
         status: "pass",
         detail: `${verified.join(", ")} (chain: impl=${first.implementerChain.map((e) => e.provider).join("->")}, rev=${first.reviewerChain.map((e) => e.provider).join("->")})`,
+      });
+    }
+    const gaps = findReviewerIndependenceGaps(first);
+    if (gaps.length > 0) {
+      checks.push({
+        id: "reviewer_independence",
+        name: "Independent Reviewers",
+        status: "warn",
+        detail: `Fewer than 2 reviewers independent of implementer vendor(s): ${gaps.join(", ")}`,
+        remediation: "Add reviewerChain providers from other vendors, or the thread escalates review_outage after implementing",
       });
     }
     if (opts.smoke) {
@@ -437,4 +447,12 @@ function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolea
     sock.once("connect", () => done(true));
     sock.once("error", () => done(false));
   });
+}
+
+/** Implementer vendors for which the reviewerChain cannot supply 2 independent reviewers. */
+export function findReviewerIndependenceGaps(
+  cfg: Pick<ArchangelConfig, "authMode" | "implementerChain" | "reviewerChain">,
+): string[] {
+  const vendors = [...new Set(cfg.implementerChain.map((e) => providerToVendor(e.provider)))];
+  return vendors.filter((v) => resolveRequiredReviewers(cfg, [v]).length < 2);
 }
