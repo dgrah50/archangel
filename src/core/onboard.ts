@@ -86,8 +86,9 @@ export interface OnboardPlan {
 
 /** Refuses unless the Archangel checkout is clean and HEAD is on origin/main; returns the pin. */
 export async function pinnedSha(runner: OnboardRunner, root: string, what = "onboard"): Promise<string> {
-  if ((await runner.run("git", ["status", "--porcelain"], { cwd: root })).trim() !== "") {
-    throw new Error(`Refusing to ${what}: the Archangel checkout has uncommitted changes.`);
+  const dirty = (await runner.run("git", ["status", "--porcelain"], { cwd: root })).trim();
+  if (dirty !== "") {
+    throw new Error(`Refusing to ${what}: the Archangel checkout has uncommitted changes:\n${dirty}`);
   }
   await runner.run("git", ["fetch", "origin", "main", "--quiet"], { cwd: root });
   const sha = (await runner.run("git", ["rev-parse", "HEAD"], { cwd: root })).trim();
