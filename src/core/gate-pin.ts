@@ -60,7 +60,13 @@ export async function assessPinDrift(
         await runner.run("git", ["merge-base", "--is-ancestor", pin, latest], { cwd: root });
         reasons.push(`pin ${pin.slice(0, 10)} is older than the latest gate-relevant commit ${latest.slice(0, 10)}`);
       } catch {
-        // pin is not an ancestor of latest, so it already contains it (newer or equal gate code).
+        // Not older than latest. It must also descend from latest: a pin on a divergent (unmerged) line
+        // is unreviewed gate code, not "newer".
+        try {
+          await runner.run("git", ["merge-base", "--is-ancestor", latest, pin], { cwd: root });
+        } catch {
+          reasons.push(`pin ${pin.slice(0, 10)} is not a descendant of the latest gate-relevant commit ${latest.slice(0, 10)} (divergent history)`);
+        }
       }
     }
   }
