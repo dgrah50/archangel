@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { describe, expect, it } from "bun:test";
 import { isProtectedPath, isTestOrFixtureFile } from "../src/gate/gate.js";
@@ -9,7 +8,10 @@ describe("Archangel's own protected paths", () => {
   const workflow = JSON.parse(fs.readFileSync(".agents/archangel.json", "utf8")) as { gate: { protectedPaths: string[] } };
   const leaves = new Set((JSON.parse(fs.readFileSync(".agents/leaf-modules.json", "utf8")) as { files: string[] }).files);
   const protectedPaths = workflow.gate.protectedPaths;
-  const tracked = execFileSync("git", ["ls-files", "src"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  // Filesystem walk, not git: the Gate runs the base suite in a git-archive copy with no .git.
+  const listFiles = (dir: string): string[] =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listFiles(`${dir}/${e.name}`) : [`${dir}/${e.name}`]));
+  const tracked = listFiles("src");
 
   it("protects every src file that is not an owner-listed leaf", () => {
     const unclassified = tracked.filter((f) => !leaves.has(f) && !isProtectedPath(f, protectedPaths));
@@ -19,7 +21,7 @@ describe("Archangel's own protected paths", () => {
   it("makes every existing test helper immutable, so a factory PR cannot weaken tests by editing the fakes they run against", () => {
     const g = (JSON.parse(fs.readFileSync(".agents/archangel.json", "utf8")) as { gate: { testFileGlobs: string[]; testDataGlobs?: string[] } }).gate;
     const policy = { testFileGlobs: g.testFileGlobs, testDataGlobs: g.testDataGlobs ?? [] };
-    const helpers = execFileSync("git", ["ls-files", "test/helpers"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    const helpers = listFiles("test/helpers");
     expect(helpers.length).toBeGreaterThan(0);
     for (const f of helpers) expect(isTestOrFixtureFile(f, policy), f).toBe(true);
   });
