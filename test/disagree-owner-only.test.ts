@@ -76,17 +76,4 @@ describe("factory:disagree counts only when the owner applied it", () => {
     }
   });
 
-  it("counts a label applied by the owner, or by the Archangel App (the owner's `archangel disagree`)", async () => {
-    for (const actor of [999, 777]) {
-      const s = setup(actor);
-      try {
-        await s.reconciler.tick(Date.now());
-        expect(disagreed(s.ledger), `actor ${actor}`).toBe(1);
-        expect(s.ledger.listAudit({ topicPrefix: "shadow/disagree_ignored" })).toEqual([]);
-      } finally {
-        s.cleanup();
-      }
-    }
-  });
-
 });

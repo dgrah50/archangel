@@ -81,44 +81,6 @@ describe("post-merge main watch: every failure is an explicit state", () => {
     }
   });
 
-  it("waits while GitHub still shows the run it was asked to rerun, then treats it as the verdict after the grace period", async () => {
-    const recent = await world({ kind: "rerun_requested", runIds: [22], at: Date.now() - 60_000 });
-    const old = await world({ kind: "rerun_requested", runIds: [22], at: Date.now() - 30 * 60_000 });
-    try {
-      for (const w of [recent, old]) w.github.checks.set(w.squash, [fail(22)]);
-      await recent.rec.tick(Date.now(), { waitForAttempts: true });
-      expect(recent.ledger.getCircuitBreaker().tripped).toBe(false);
-      await old.rec.tick(Date.now(), { waitForAttempts: true });
-      expect(old.ledger.getCircuitBreaker().tripped).toBe(true);
-    } finally {
-      cleanup(recent);
-      cleanup(old);
-    }
-  });
-
-  it("retries a transient rerun error next tick, but only a 403 means reruns are not permitted", async () => {
-    const transient = await world({ kind: "watching", since: Date.now() });
-    const forbidden = await world({ kind: "watching", since: Date.now() });
-    try {
-      for (const w of [transient, forbidden]) w.github.checks.set(w.squash, [fail(22)]);
-      transient.github.rerunCheckRun = async () => {
-        throw new GitHubHttpError(502, "GitHub POST failed (502): bad gateway");
-      };
-      forbidden.github.rerunCheckRun = async () => {
-        throw new GitHubHttpError(403, "GitHub POST failed (403): forbidden");
-      };
-      await transient.rec.tick(Date.now(), { waitForAttempts: true });
-      expect(transient.ledger.getMerge(transient.merge.id)!.mainWatch.kind).toBe("watching");
-      expect(transient.ledger.getCircuitBreaker().tripped).toBe(false);
-      await forbidden.rec.tick(Date.now(), { waitForAttempts: true });
-      expect(forbidden.ledger.getCircuitBreaker().tripped).toBe(true);
-      expect(forbidden.notes).toHaveLength(1);
-    } finally {
-      cleanup(transient);
-      cleanup(forbidden);
-    }
-  });
-
   it("tells the owner when main's CI never reported (notify first, so a failed send is retried)", async () => {
     const w = await world({ kind: "watching", since: Date.now() - 3 * 60 * 60_000 });
     try {

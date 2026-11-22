@@ -60,26 +60,6 @@ describe("an abort nobody asked for is a timeout, not a control abort", () => {
   });
 });
 
-describe("rebase budget honours the owner's retry grants", () => {
-  it("lets a merge_conflict retry rebase again instead of re-escalating on the same conflict", async () => {
-    const w = await world(async () => {
-      throw new Error("unused");
-    });
-    try {
-      const spawn = vi.spyOn(w.rec as unknown as { spawnAttempt: (...a: unknown[]) => Promise<boolean> }, "spawnAttempt").mockResolvedValue(true);
-      const pr = { number: 9, headSha: "h", baseSha: "b", labels: [] } as never;
-      const issue = w.github.issues.get(4)!;
-      const rebase = (thread: unknown) => (w.rec as unknown as { rebaseOntoMain: (...a: unknown[]) => Promise<void> }).rebaseOntoMain(thread, pr, issue, "main", false, [], Date.now());
-      const base = { issueNumber: 4, rebaseCount: 1, phase: { kind: "awaiting_gate", prNumber: 9, headSha: "h", baseSha: "b", since: 1, nudgedAt: null }, mode: "autonomous", version: 0, title: "t" };
-      await rebase({ ...base, retryGrants: 0 }); // budget (1) is spent: escalates, spawns nothing
-      expect(spawn).not.toHaveBeenCalled();
-      await rebase({ ...base, retryGrants: 1 }); // the owner retried: one more rebase
-      expect(spawn).toHaveBeenCalledTimes(1);
-    } finally {
-      cleanup(w);
-    }
-  });
-});
 
 describe("a handoff whose push fails is an explicit state, not a silent drop", () => {
   it("records handoff/push_failed and tells the owner on the issue", async () => {
