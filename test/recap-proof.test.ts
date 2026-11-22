@@ -33,6 +33,16 @@ const thread: ThreadRecord = {
 const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"]) =>
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
+describe("Recap proof unavailable vs not captured", () => {
+  it("says why when the proof could not be read, and keeps 'not captured' for a Gate run without proof", () => {
+    const body = renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null, gateProofError: "GitHub 502\n`bad`" });
+    expect(body).toContain("**On base (expected to fail):**\n_Gate proof unavailable: GitHub 502 bad_");
+    expect(body).toContain("**On head (expected to pass):**\n_Gate proof unavailable: GitHub 502 bad_");
+    expect(body).not.toContain("_not captured_");
+    expect(renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null })).toContain("_not captured_");
+  });
+});
+
 describe("Recap reproduction-test proof", () => {
   it("shows base (failing) and head (passing) output in labelled fenced blocks", () => {
     const body = render({ base_output: "FAIL add: expected -3 got 7", head_output: "ok add" });

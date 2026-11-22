@@ -2263,13 +2263,15 @@ export class Reconciler {
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     let gateProof: GateProof | null = null;
+    let gateProofError: string | null = null;
     try {
       const gate = (await this.github.getCheckRunsForRef(pr.headSha)).find(
         (c) => c.name === "Gate" && c.appSlug === "github-actions" && c.status === "completed",
       );
       if (gate) gateProof = await this.github.getGateProof(gate.id, pr.headSha);
     } catch (err) {
-      this.logger.warn("recap/gate_proof_unavailable", err instanceof Error ? err.message : String(err), {
+      gateProofError = err instanceof Error ? err.message : String(err);
+      this.logger.warn("recap/gate_proof_unavailable", gateProofError, {
         repo: this.ledger.repo,
         issue: thread.issueNumber,
       });
@@ -2283,6 +2285,7 @@ export class Reconciler {
           blockers,
           wouldMerge: opts.wouldMerge,
           gateProof,
+          gateProofError,
         }),
       );
     } catch (err) {
