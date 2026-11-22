@@ -6,9 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { BENCH, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
-
+import { captureAttemptInput } from "../src/core/attempt-input.js";
 import { Ledger } from "../src/ledger/store.js";
-import type { AddressInfo } from "node:net";
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -19,7 +18,7 @@ const write = (root: string, rel: string, content: string) => {
 };
 const POLICY = { version: 1, gate: { testFileGlobs: ["tests/*.test.mjs"], testCmd: "true" }, requiredChecks: ["Gate", "Test"] };
 
-async function world(good: number) {
+async function world(good: number, kind: "implement" | "revise" | "rebase" = "implement") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-bench-test-"));
   const work = path.join(root, "work");
   fs.mkdirSync(work);
@@ -40,6 +39,25 @@ async function world(good: number) {
     heads[n] = git(work, ["rev-parse", "HEAD"]);
     git(work, ["checkout", "-q", "main"]);
   }
+  // revise and rebase start from a weak head (the fix without its test) the factory produced earlier
+  const weak: Record<number, string> = {};
+  if (kind !== "implement") {
+    for (let n = 1; n <= good; n++) {
+      git(work, ["checkout", "-q", "-b", `weak/${n}`, "main"]);
+      write(work, "calc.mjs", `export function add(a, b) {\n  return a + b; // weak ${n}\n}\n`);
+      git(work, ["add", "-A"]);
+      git(work, ["commit", "-qm", `weak ${n}`]);
+      weak[n] = git(work, ["rev-parse", "HEAD"]);
+      git(work, ["checkout", "-q", "main"]);
+    }
+  }
+  let conflictBase = "";
+  if (kind === "rebase") {
+    write(work, "other.mjs", "export const other = 1;\n");
+    git(work, ["add", "-A"]);
+    git(work, ["commit", "-qm", "main moves"]);
+    conflictBase = git(work, ["rev-parse", "HEAD"]);
+  }
   const bare = path.join(root, "broker.git");
   git(root, ["clone", "-q", "--bare", work, bare]);
   const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(root, "clones") });
@@ -49,9 +67,24 @@ async function world(good: number) {
     ledger.upsertThread({ issueNumber: n, title: `Bug ${n}`, bodySha256: "b", branchName: `factory/${n}`, now: 1, issueBody: `Issue text ${n}`, phase: { kind: "done", outcome: "merged" } as never });
     const a = ledger.startAttempt(n, "implement", 1);
     ledger.finishAttempt(a.id, { status: "succeeded", headSha: head }, 2);
+    if (kind !== "implement") {
+      await broker.pinEvalRef("acme/app", n, weak[n]!);
+      if (kind === "rebase") await broker.pinEvalRef("acme/app", n, conflictBase);
+      const r = ledger.startAttempt(n, kind, 3);
+      ledger.recordAttemptInput(
+        r.id,
+        weak[n]!,
+        captureAttemptInput(kind, {
+          mainSha: conflictBase,
+          gateViolations: ["no new test file added matching tests/*.test.mjs"],
+          structuredFindings: [{ vendor: "openai", findings: [{ file: "calc.mjs", severity: "major", summary: "add a test for the fix" }] }],
+        }),
+      );
+      ledger.finishAttempt(r.id, { status: "succeeded", headSha: head }, 4);
+    }
     ledger.recordMerge({ issueNumber: n, prNumber: n, headSha: head, squashSha: "s", shadowOnly: false, mainRequired: ["Test"], now: 1 });
   }
-  return { root, bare, ledger, sources: () => [{ repo: "acme/app", bareRepoPath: bare, seeds: ledger.listReplaySeeds(0, "acme/app") }] };
+  return { root, bare, ledger, sources: () => [{ repo: "acme/app", bareRepoPath: bare, seeds: ledger.listReplaySeeds(0, "acme/app"), attemptInputs: ledger.listAttemptInputs("acme/app") }] };
 }
 const cleanup = (w: { root: string; ledger: Ledger }) => {
   w.ledger.close();
@@ -59,12 +92,13 @@ const cleanup = (w: { root: string; ledger: Ledger }) => {
 };
 
 /** A chain whose first provider is `agy` writes the fix and a test; `codex` writes only the fix (the static Gate rejects it); `claude` throws. */
-function fakeImplementers(counts: { runs: Record<string, number> }): BenchOptions["implementerFor"] {
+function fakeImplementers(counts: { runs: Record<string, number>; prompts?: string[] }): BenchOptions["implementerFor"] {
   return (chain) => {
     const who = chain[0]!.provider;
     const impl: Implementer = {
       async run(input) {
         counts.runs[who] = (counts.runs[who] ?? 0) + 1;
+        counts.prompts?.push(input.prompt);
         if (who === "claude") throw new Error("provider down");
         write(input.cloneDir, "calc.mjs", `export function add(a, b) {\n  return a + b;\n}\n`);
         if (who === "agy") write(input.cloneDir, `tests/new${input.issueNumber}.test.mjs`, 'import assert from "node:assert/strict";\nassert.equal(1, 1);\n');
@@ -75,7 +109,7 @@ function fakeImplementers(counts: { runs: Record<string, number> }): BenchOption
   };
 }
 
-const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> & { counts: { runs: Record<string, number> } }): BenchOptions => ({
+const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> & { counts: { runs: Record<string, number>; prompts?: string[] } }): BenchOptions => ({
   ledger: w.ledger,
   sources: w.sources(),
   role: "implement",
@@ -156,4 +190,25 @@ describe("bench-tiers", () => {
     }
   });
 
+  it("replays captured revisions with their findings and Gate violations, scored by the Gate", async () => {
+    const w = await world(5, "revise");
+    try {
+      const counts = { runs: {} as Record<string, number>, prompts: [] as string[] };
+      const r = await runBenchTiers(base(w, { counts, role: "revise" }));
+      expect(r.comparable).toBe(5);
+      expect(r.current).toMatchObject({ passRate: 0 });
+      expect(r.candidate).toMatchObject({ passRate: 1 });
+      expect(r.verdict).toBe("matched_or_beat");
+      expect(r.snippet).toContain("  revise:");
+      expect(counts.prompts[0]).toContain("Revision Attempt");
+      expect(counts.prompts[0]).toContain("add a test for the fix"); // the captured finding
+      expect(counts.prompts[0]).toContain("no new test file added"); // the captured Gate violation
+    } finally {
+      cleanup(w);
+    }
+  });
+
+  it("captured inputs drop secrets rather than store them", () => {
+    expect(captureAttemptInput("revise", { mainSha: "a".repeat(40), gateViolations: ["token ghp_" + "a".repeat(36)], structuredFindings: [] })).toBeNull();
+  });
 });

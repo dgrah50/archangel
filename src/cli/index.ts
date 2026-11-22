@@ -740,7 +740,7 @@ function evalSources(ledger: Ledger, dataDir: string, only?: string) {
       console.error(`skipping ${repo}: no broker repo at ${bareRepoPath}`);
       return [];
     }
-    return [{ repo, bareRepoPath, seeds: ledger.listReplaySeeds(0, repo) }];
+    return [{ repo, bareRepoPath, seeds: ledger.listReplaySeeds(0, repo), attemptInputs: ledger.listAttemptInputs(repo) }];
   });
 }
 

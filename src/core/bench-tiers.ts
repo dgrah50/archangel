@@ -3,11 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Implementer } from "../agents/implementer.js";
-import { buildImplementPrompt, promptTemplateSha } from "../agents/prompts.js";
+import { buildImplementPrompt, buildRebasePrompt, buildRevisionPrompt, promptTemplateSha } from "../agents/prompts.js";
 import { GitBroker } from "../broker/git-broker.js";
-import { ProviderEntrySchema, WRITER_ROLES, type ProviderEntry, type WriterRole } from "../config.js";
+import { ProviderEntrySchema, WRITER_ROLES, type GatePolicy, type ProviderEntry, type WriterRole } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
+import type { AttemptInput } from "./attempt-input.js";
 import { basePolicy, deriveCases, git, openReplayClone, pinnedShas } from "./replay.js";
+import { workClassOfBranch } from "./work-class.js";
 
 /**
  * Model-tier benchmark (L4): replays captured implementation cases with a candidate provider chain and with the current one, and
@@ -24,6 +26,11 @@ export const BENCH = {
 
 export interface BenchCase {
   id: string;
+  role: WriterRole;
+  /** The head the Attempt started from (the base for implement; the pre-revision or pre-rebase head otherwise). */
+  startSha: string;
+  /** Captured input of a revise or rebase Attempt. */
+  input: AttemptInput | null;
   repo: string;
   issueNumber: number;
   title: string;
@@ -47,6 +54,7 @@ export interface BenchSource {
   repo: string;
   bareRepoPath: string;
   seeds: ReturnType<Ledger["listReplaySeeds"]>;
+  attemptInputs: ReturnType<Ledger["listAttemptInputs"]>;
 }
 
 /** `codex:gpt-5,agy` -> provider entries; an unknown provider or empty entry is an error. */
@@ -61,38 +69,52 @@ export function parseChain(spec: string): ProviderEntry[] {
 
 export const chainLabel = (chain: ProviderEntry[]): string => chain.map((e) => (e.model ? `${e.provider}:${e.model}` : e.provider)).join(",");
 
-/** Known-good merged fixes whose issue text was kept at intake and whose head is still pinned: the replayable implementation cases. */
-export async function collectBenchCases(sources: BenchSource[]): Promise<{ cases: BenchCase[]; skipped: number }> {
+/**
+ * The replayable cases for a role. implement: known-good merged fixes. revise and rebase: Attempts whose input was captured.
+ * Every case needs its issue text, its start head (and, for a rebase, its conflicting base) still pinned, and a base to score against.
+ */
+export async function collectBenchCases(sources: BenchSource[], role: WriterRole): Promise<{ cases: BenchCase[]; skipped: number }> {
   const cases: BenchCase[] = [];
   let skipped = 0;
   for (const src of sources) {
     const clone = await openReplayClone(src.bareRepoPath);
     try {
-      for (const c of deriveCases(src.seeds)) {
-        if (c.kind !== "merged_fix" || c.label !== "good") continue;
-        const seed = src.seeds.find((s) => s.issueNumber === c.issueNumber)!;
-        if (seed.issueBody === null || !(await pinnedShas(clone.dir, src.repo, c.issueNumber)).has(c.headSha)) {
+      const candidates: Array<{ issueNumber: number; startSha: string; input: AttemptInput | null; idSuffix: string; conflictBase?: string }> =
+        role === "implement"
+          ? deriveCases(src.seeds)
+              .filter((c) => c.kind === "merged_fix" && c.label === "good")
+              .map((c) => ({ issueNumber: c.issueNumber, startSha: c.headSha, input: null, idSuffix: "" }))
+          : src.attemptInputs
+              .filter((a) => a.kind === role)
+              .map((a) => ({ issueNumber: a.issueNumber, startSha: a.fromSha, input: a.input, idSuffix: `:${role}${a.attemptId}`, conflictBase: a.input.kind === "rebase" ? a.input.conflictBase : undefined }));
+      for (const c of candidates) {
+        const seed = src.seeds.find((s) => s.issueNumber === c.issueNumber);
+        const pinned = await pinnedShas(clone.dir, src.repo, c.issueNumber);
+        if (!seed || seed.issueBody === null || !pinned.has(c.startSha) || (c.conflictBase !== undefined && !pinned.has(c.conflictBase))) {
           skipped++;
           continue;
         }
         let base: string;
         try {
-          base = (await git(clone.dir, ["merge-base", c.headSha, clone.mainRef])).trim();
+          base = c.conflictBase ?? (await git(clone.dir, ["merge-base", c.startSha, clone.mainRef])).trim();
         } catch {
           skipped++;
           continue;
         }
-        if (base === c.headSha) {
+        if (base === c.startSha) {
           skipped++;
           continue;
         }
         cases.push({
-          id: `${src.repo}#${c.issueNumber}:${base.slice(0, 12)}`,
+          id: `${src.repo}#${c.issueNumber}:${(role === "implement" ? base : c.startSha).slice(0, 12)}${c.idSuffix}`,
+          role,
+          startSha: role === "implement" ? base : c.startSha,
+          input: c.input,
           repo: src.repo,
           issueNumber: c.issueNumber,
           title: seed.title,
           body: seed.issueBody,
-          workClass: c.workClass,
+          workClass: workClassOfBranch(seed.branchName),
           baseSha: base,
           bareRepoPath: src.bareRepoPath,
         });
@@ -114,7 +136,7 @@ function pick(cases: BenchCase[], max: number): BenchCase[] {
 export function cacheKey(role: WriterRole, chain: ProviderEntry[], runTests: boolean): string {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify({ role, chain, runTests, prompt: promptTemplateSha("implement") }))
+    .update(JSON.stringify({ role, chain, runTests, prompt: promptTemplateSha(role) }))
     .digest("hex");
 }
 
@@ -163,17 +185,30 @@ export interface BenchReport {
   snippet: string | null;
 }
 
+function promptFor(c: BenchCase, gate: GatePolicy): string {
+  if (c.role === "implement") return buildImplementPrompt({ issueNumber: c.issueNumber, title: c.title, body: c.body, repoName: c.repo, gate, workClass: c.workClass });
+  if (c.role === "revise") {
+    const input = c.input?.kind === "revise" ? c.input : { findings: [], gateViolations: [] };
+    return buildRevisionPrompt({ issueNumber: c.issueNumber, title: c.title, body: c.body, gateViolations: input.gateViolations, structuredFindings: input.findings, gate, workClass: c.workClass });
+  }
+  return buildRebasePrompt({ issueNumber: c.issueNumber, title: c.title, baseBranch: "main", gate });
+}
+
 async function runArm(c: BenchCase, chain: ProviderEntry[], opts: BenchOptions, broker: GitBroker, role: WriterRole): Promise<ArmResult> {
   const started = Date.now();
   const policy = await basePolicy(c.bareRepoPath, c.baseSha);
   if ("reason" in policy) throw new Error(`cannot replay ${c.id}: ${policy.reason}`);
-  const clone = await broker.createThrowawayClone(c.issueNumber, c.baseSha);
+  const clone = await broker.createThrowawayClone(c.issueNumber, c.startSha);
   try {
+    if (c.role === "rebase") {
+      // The rebase prompt names the default branch: point it at the base the Attempt conflicted with, as it was then.
+      await git(clone, ["branch", "-f", "main", c.baseSha]);
+    }
     await broker.runRepoSetup(clone, c.baseSha, opts.setupTimeoutMs);
     const result = await opts.implementerFor(chain, role).run({
       issueNumber: c.issueNumber,
       cloneDir: clone,
-      prompt: buildImplementPrompt({ issueNumber: c.issueNumber, title: c.title, body: c.body, repoName: c.repo, gate: policy.policy, workClass: c.workClass }),
+      prompt: promptFor(c, policy.policy),
       abortController: new AbortController(),
       maxTurns: opts.implementMaxTurns ?? 60,
       timeoutMs: opts.implementTimeoutMs ?? 20 * 60_000,
@@ -220,11 +255,10 @@ export function chainSnippet(role: WriterRole, chain: ProviderEntry[]): string {
 export async function runBenchTiers(opts: BenchOptions): Promise<BenchReport> {
   if (!(WRITER_ROLES as readonly string[]).includes(opts.role)) throw new Error(`unknown role ${opts.role}`);
   const runTests = opts.runTests ?? false;
-  const { cases, skipped } = await collectBenchCases(opts.sources);
+  const { cases, skipped } = await collectBenchCases(opts.sources, opts.role);
   const chosen = pick(cases, opts.maxCases ?? BENCH.defaultMaxCases);
 
-  // Revise and rebase need the review feedback or the conflict, which are not captured: only `implement` has replayable inputs.
-  const replayable = opts.role === "implement" ? chosen : [];
+  const replayable = chosen;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-bench-"));
   let cacheHits = 0;
   const current: Array<ArmResult | null> = [];
@@ -271,10 +305,7 @@ export async function runBenchTiers(opts: BenchOptions): Promise<BenchReport> {
   const cand = summarize(opts.candidateChain, candidate);
   let verdict: BenchReport["verdict"];
   let verdictLine: string;
-  if (opts.role !== "implement") {
-    verdict = "insufficient";
-    verdictLine = `insufficient data: no replayable ${opts.role} cases (the review feedback and conflicts they start from are not captured); only implement can be benchmarked`;
-  } else if (both.length < BENCH.minCases) {
+  if (both.length < BENCH.minCases) {
     verdict = "insufficient";
     verdictLine = `insufficient data: ${both.length} case(s) scored on both chains; at least ${BENCH.minCases} are required (${cases.length} replayable, ${skipped} not)`;
   } else if ((cand.passRate ?? 0) >= (cur.passRate ?? 0)) {

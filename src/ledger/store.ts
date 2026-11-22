@@ -28,6 +28,7 @@ import {
   type Phase,
   type PhaseKind,
 } from "../core/thread-machine.js";
+import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
 import {
   LEDGER_SCHEMA_SQL,
   type AttemptErrorCategory,
@@ -172,7 +173,7 @@ export class Ledger {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
       };
-      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category"]);
+      addCols("attempts", ["provider", "model", "account_id", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
       addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
       this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
@@ -801,6 +802,22 @@ export class Ledger {
            prompt_sha256 = COALESCE(?, prompt_sha256), workflow_sha256 = COALESCE(?, workflow_sha256) WHERE id = ?`,
       )
       .run(p.provider ?? null, p.model ?? null, p.accountId ?? null, p.promptSha256 ?? null, p.workflowSha256 ?? null, attemptId);
+  }
+
+  /** Replay capture for a revise or rebase Attempt: the head it started from and its sanitized input (null when not capturable). */
+  recordAttemptInput(attemptId: number, fromSha: string, inputJson: string | null): void {
+    this.db.prepare(`UPDATE attempts SET from_sha = ?, input_json = ? WHERE id = ?`).run(fromSha, inputJson, attemptId);
+  }
+
+  /** Revise and rebase Attempts with a captured input, oldest first. */
+  listAttemptInputs(repo = this.repo): Array<{ attemptId: number; issueNumber: number; kind: "revise" | "rebase"; fromSha: string; input: AttemptInput }> {
+    const rows = this.db
+      .prepare(`SELECT id, issue_number, kind, from_sha, input_json FROM attempts WHERE repo = ? AND kind IN ('revise', 'rebase') AND from_sha IS NOT NULL AND input_json IS NOT NULL ORDER BY id`)
+      .all(repo) as Array<Record<string, unknown>>;
+    return rows.flatMap((r) => {
+      const input = parseAttemptInput(String(r.input_json));
+      return input && input.kind === r.kind ? [{ attemptId: Number(r.id), issueNumber: Number(r.issue_number), kind: input.kind, fromSha: String(r.from_sha), input }] : [];
+    });
   }
 
   finishAttempt(
