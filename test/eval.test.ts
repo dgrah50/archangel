@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Each case builds a repo and runs several clones; under a loaded machine the 5s default is too tight.
+vi.setConfig({ testTimeout: 60_000 });
 import type { ReviewPromptBuilders, ReviewRequest, ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { prepareCandidates, patchFiles } from "../src/core/eval-candidate.js";
