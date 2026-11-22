@@ -31,7 +31,7 @@ function seed(
     ledger.recordReview({ issueNumber: issue, headSha: `h${issue}`, vendor, verdict: "approve", findings: [], costUsd: o.reviewUsd ?? 0, now, repo });
   }
   if (o.outcome) {
-    ledger.recordMerge({ issueNumber: issue, prNumber: issue, headSha: `h${issue}`, shadowOnly: o.shadow ?? false, now, repo });
+    ledger.recordMerge({ issueNumber: issue, prNumber: issue, headSha: `h${issue}`, shadowOnly: o.shadow ?? false, mainRequired: ["Test"], now, repo });
     ledger.transition(issue, t.version, { kind: "done", outcome: o.outcome }, { now, repo });
   }
 }
