@@ -41,7 +41,7 @@ function setup(over: { liveBody?: string; state?: string; labels?: string[]; noJ
     title: PITCH.title,
     titleFp: "fp",
     contentSha256: scoutContentHash(PITCH.title, BODY),
-    pitchJson: over.noJson ? undefined : JSON.stringify(PITCH),
+    pitchJson: over.noJson ? "" : JSON.stringify(PITCH),
   });
   if (over.status === "declined") ledger.syncPitchStatuses([]);
   const calls: string[][] = [];
@@ -112,7 +112,7 @@ describe("archangel pitch promote", () => {
     const declined = setup({ status: "declined" });
     await expect(promotePitch(declined.runner, declined.ledger, { ...declined.base, yes: true, confirm: async () => true })).rejects.toThrow(/already declined/);
     const old = setup({ noJson: true });
-    await expect(promotePitch(old.runner, old.ledger, { ...old.base, yes: true, confirm: async () => true })).rejects.toThrow(/no stored pitch text/);
+    await expect(promotePitch(old.runner, old.ledger, { ...old.base, yes: true, confirm: async () => true })).rejects.toThrow(SyntaxError); // no special-case message for rows without text: they simply do not parse
   });
 
   it("a failure after the first issue was created marks the pitch promoted and names what exists, so a rerun cannot duplicate it", async () => {
@@ -138,8 +138,17 @@ describe("archangel pitch promote", () => {
 
   it("a promoted pitch counts toward the pause rule (the Scout does not pause after it)", async () => {
     const { ledger, runner, base } = setup();
-    for (let n = 1; n <= 3; n++) ledger.recordPitch({ issueNumber: n, scoutName: "pitch", trustHash: "h", title: `t${n} title long`, titleFp: `f${n}`, contentSha256: "c", now: n });
+    for (let n = 1; n <= 3; n++) ledger.recordPitch({ issueNumber: n, scoutName: "pitch", trustHash: "h", title: `t${n} title long`, titleFp: `f${n}`, contentSha256: "c", pitchJson: "{}", now: n });
     await promotePitch(runner, ledger, { ...base, yes: true, confirm: async () => true });
     expect(ledger.isPitchScoutPaused("pitch", "h", 4)).toBe(false);
+  });
+});
+
+describe("no compatibility path for pitches without stored text", () => {
+  it("requires the pitch text when a pitch is recorded", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    // @ts-expect-error pitchJson is required: there is no "older build" shape to tolerate.
+    void (() => ledger.recordPitch({ issueNumber: 1, scoutName: "p", trustHash: "h", title: "t", titleFp: "f", contentSha256: "c" }));
+    ledger.close();
   });
 });
