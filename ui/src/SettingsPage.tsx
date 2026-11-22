@@ -140,7 +140,7 @@ function Independence({ f }: { f: HostForm }) {
   const ind = checkIndependence(f);
   if (ind.problems.length > 0) {
     return (
-      <Box role="alert" color="red.fg" textStyle="body13" ml={{ md: "68px" }}>
+      <Box role="alert" color="owner" textStyle="body13" ml={{ md: "68px" }}>
         <Text textStyle="label">Reviewers are not independent of the writers.</Text>
         {ind.problems.map((p) => <Text key={p}>{p}</Text>)}
       </Box>
@@ -280,7 +280,7 @@ function RepoPolicyDraft({ repo, flip, currentSha, onDiscard }: { repo: string; 
         <Button size="sm" borderRadius="12px" disabled={busy || stale || url !== null || preview === null || preview.changes.length === 0} onClick={() => void run(false)}>Open the PR</Button>
         <Button size="sm" variant="outline" borderRadius="12px" onClick={onDiscard}>Discard</Button>
       </Flex>
-      {message ? <Text role="alert" textStyle="meta" color="red.fg">{message}</Text> : null}
+      {message ? <Text role="alert" textStyle="meta" color="owner">{message}</Text> : null}
       {preview ? <PreviewView preview={preview} /> : null}
       {url ? <Text textStyle="body13">Opened <Text as="span" textStyle="command">{url}</Text>. It is not merged; review it on GitHub.</Text> : null}
       {url ? <PrStatusCard repo={repo} url={url} /> : null}
@@ -395,7 +395,7 @@ function Machine({ s, draft, wf, flips, onFlip }: { s: SettingsState; draft: Hos
   const b = readForm(draft.base ?? "");
   if (draft.loadError) return <LoadFailed draft={draft} />;
   if (!draft.read) return <Text textStyle="body13" color="fg.muted">Loading archangel.yaml...</Text>;
-  if (!f || !b) return <Text role="alert" textStyle="body13" color="red.fg">The text on the Raw file tab does not parse as YAML, so the form cannot show it. Fix it there first.</Text>;
+  if (!f || !b) return <Text role="alert" textStyle="body13" color="owner">The text on the Raw file tab does not parse as YAML, so the form cannot show it. Fix it there first.</Text>;
   return (
     <Flex direction="column" borderTopWidth="1px" borderTopColor="fg">
       <Models f={f} b={b} onOp={draft.change} />

@@ -1,7 +1,7 @@
 import { Box, Button, Flex, Text, chakra } from "@chakra-ui/react";
 import { useState } from "react";
 import type { ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
-import type { Feed } from "./AppView";
+import { Notice, type Feed } from "./AppView";
 import { age } from "./common";
 import { Dot, LinkButton, Ref } from "./page";
 import type { ItemRef } from "./route";
@@ -99,7 +99,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
         {thread.error === null ? (
           <Text color="fg.muted">Loading thread...</Text>
         ) : (
-          <Box role="alert" borderWidth="1px" borderColor="owner" rounded="md" p="3">
+          <Notice tone="red">
             <Text fontWeight="medium">
               {item.repo}#{item.issue} could not be loaded.
             </Text>
@@ -107,7 +107,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
             <Button size="sm" mt="2" onClick={onRetry}>
               Retry
             </Button>
-          </Box>
+          </Notice>
         )}
       </Box>
     );
@@ -141,9 +141,9 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
         ) : null}
       </Flex>
       {thread.error ? (
-        <Box role="alert" borderWidth="1px" borderColor="owner" rounded="md" px="3" py="2" textStyle="sm">
-          Refresh failed ({thread.error}); showing the last loaded copy.
-        </Box>
+        <Notice tone="red">
+          <Text textStyle="sm">Refresh failed ({thread.error}); showing the last loaded copy.</Text>
+        </Notice>
       ) : null}
       <PhaseRail phase={d.phase} />
       <Flex direction={{ base: "column", xl: "row" }} gap="8" align="flex-start">

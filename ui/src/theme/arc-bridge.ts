@@ -231,10 +231,6 @@ interface PaletteSystem {
 }
 
 let warned = false
-/** Test hook: lets a unit test observe the one-time warning more than once per process. */
-export function resetAccentScopeWarning() {
-  warned = false
-}
 
 /**
  * Adds the accent aliases to the style block Chakra emits wherever `colorPalette` is set, so Arc components

@@ -20,8 +20,8 @@ const TITLE: Record<HostError["kind"], string> = {
 /** A problem: a hairline rule and plain text, no box. Used for every failure state on the Settings page. */
 export function Problem({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
-    <Box role="alert" borderTopWidth="1px" borderTopColor="red.solid" pt="2" mt="4">
-      <Text textStyle="label" color="red.fg">{title}</Text>
+    <Box role="alert" borderTopWidth="1px" borderTopColor="owner" pt="2" mt="4">
+      <Text textStyle="label" color="owner">{title}</Text>
       {children}
     </Box>
   );
@@ -43,7 +43,7 @@ export function PreviewPanel({ preview, confirm, onConfirm, onApply, busy, block
     <Flex direction="column" gap="2" borderTopWidth="1px" borderTopColor="border" pt="3" mt="3">
       <Text textStyle="label">The file change</Text>
       {!preview.valid ? (
-        <Box role="alert" textStyle="meta" color="red.fg">
+        <Box role="alert" textStyle="meta" color="owner">
           <Text textStyle="label">archangel.yaml would be invalid:</Text>
           {preview.errors.map((e) => <Text key={e}>{e}</Text>)}
         </Box>
@@ -63,7 +63,7 @@ export function PreviewPanel({ preview, confirm, onConfirm, onApply, busy, block
               </Checkbox.Root>
             </Flex>
           ) : null}
-          {blocked ? <Text textStyle="meta" color="red.fg">{blocked}</Text> : null}
+          {blocked ? <Text textStyle="meta" color="owner">{blocked}</Text> : null}
           <Flex><Button size="sm" borderRadius="12px" onClick={onApply} disabled={busy || blocked !== null || (loosens && !confirm)}>Save to file</Button></Flex>
         </>
       ) : null}
@@ -191,7 +191,7 @@ export function RawFile({ draft: d }: { draft: HostDraft }) {
         <Text textStyle="body13" color="fg.muted">Applies after the daemon restarts.</Text>
         {d.read?.state === "missing" ? <Text textStyle="body13">No archangel.yaml yet: saving creates it.</Text> : <Text textStyle="body13" color="fg.muted">Comments and layout outside your edits are kept.</Text>}
       </Flex>
-      {!readForm(d.text) ? <Text role="alert" textStyle="body13" color="red.fg">The text does not parse as YAML. Fix it here before previewing.</Text> : null}
+      {!readForm(d.text) ? <Text role="alert" textStyle="body13" color="owner">The text does not parse as YAML. Fix it here before previewing.</Text> : null}
       <Textarea textStyle="command" rows={28} spellCheck={false} aria-label="archangel.yaml" value={d.text} borderColor={d.dirty ? "unsent" : undefined} onChange={(e) => d.setRaw(e.target.value)} />
     </Flex>
   );

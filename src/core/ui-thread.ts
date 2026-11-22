@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import type { Ledger } from "../ledger/store.js";
 
 /** Read-only views for the Thread detail page. Every string here is untrusted text: the UI renders it only as React children. */
@@ -132,50 +131,4 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     gate,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
-}
-
-export interface LogEntry {
-  ts: string;
-  level: string;
-  event: string;
-  message: string;
-}
-export interface LogsPayload {
-  generatedAt: number;
-  /** The log file does not exist (distinct from "exists but nothing for this Thread"). */
-  missing: boolean;
-  entries: LogEntry[];
-}
-
-const TAIL_BYTES = 2_000_000;
-export const LOG_MAX = 500;
-
-/** Tails the JSONL log for one Thread. Only ts/level/event/message are returned, never the free-form `data`. */
-export function readLogs(file: string | null, repo: string, issueNumber: number, limit: number, now = Date.now()): LogsPayload {
-  if (file === null || !fs.existsSync(file)) return { generatedAt: now, missing: true, entries: [] };
-  const size = fs.statSync(file).size;
-  const fd = fs.openSync(file, "r");
-  let text: string;
-  try {
-    const len = Math.min(size, TAIL_BYTES);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    text = buf.toString("utf8");
-  } finally {
-    fs.closeSync(fd);
-  }
-  const lines = text.split("\n");
-  if (size > TAIL_BYTES) lines.shift(); // the first line is probably cut
-  const entries: LogEntry[] = [];
-  for (const line of lines) {
-    if (!line) continue;
-    try {
-      const r = JSON.parse(line) as Record<string, unknown>;
-      if (r.repo !== repo || r.issue !== issueNumber) continue;
-      entries.push({ ts: String(r.ts ?? ""), level: String(r.level ?? "info"), event: String(r.event ?? ""), message: clip(String(r.message ?? ""), 500) });
-    } catch {
-      // a torn or foreign line is skipped
-    }
-  }
-  return { generatedAt: now, missing: false, entries: entries.slice(-Math.min(Math.max(1, limit), LOG_MAX)) };
 }
