@@ -65,7 +65,8 @@ export interface GitHubClient {
   getRemoteUrlWithToken(): Promise<string>;
   listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]>;
   getIssue(issueNumber: number): Promise<GitHubIssue>;
-  verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean>;
+  /** True when the latest application of the label (strictly after `sinceMs`, when given) was by `expectedOwnerId`. */
+  verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number, sinceMs?: number): Promise<boolean>;
   /** True only if the most recent `unlabeled` event for this label on the issue was made by `expectedOwnerId`. */
   verifyLabelRemovedBy(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean>;
   getBranchTipSha(branch: string): Promise<string>;
@@ -317,6 +318,7 @@ export class GitHubAppClient implements GitHubClient {
     issueNumber: number,
     labelName: string,
     expectedOwnerId: number,
+    sinceMs?: number,
   ): Promise<boolean> {
     const events = await this.requestAllPages<Record<string, unknown>>(
       `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueNumber}/timeline?per_page=100`,
@@ -324,7 +326,7 @@ export class GitHubAppClient implements GitHubClient {
     );
     let lastActorId: number | null = null;
     for (const ev of events) {
-      if (ev.event === "labeled") {
+      if (ev.event === "labeled" && (sinceMs === undefined || Date.parse(String(ev.created_at ?? "")) > sinceMs)) {
         const lbl = (ev.label ?? {}) as { name?: string };
         const actor = (ev.actor ?? {}) as { id?: number };
         if (lbl.name === labelName) {
