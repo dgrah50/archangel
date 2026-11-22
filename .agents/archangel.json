@@ -44,7 +44,8 @@
       "src/core/ui-propose.ts",
       "src/core/pitch.ts",
       "test/protected-paths.test.ts",
-      "src/core/failure-clusters.ts"
+      "src/core/failure-clusters.ts",
+      "src/core/replay.ts"
     ]
   },
   "requiredChecks": [

@@ -18,6 +18,7 @@ import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
+import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { renderStages } from "../core/status-text.js";
@@ -610,6 +611,45 @@ workflowCmd
         isRevoked: () => false,
       },
     });
+  });
+
+program
+  .command("replay")
+  .description("Re-run the Gate offline over captured Threads and seeded corruptions of known-good fixes; exits 1 on any regression (local only, no GitHub, no model)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--repo <owner/name>", "Only this repository (default: every repository in the Ledger)")
+  .option("--since <days>", "Only Threads updated in the last N days")
+  .option("--run-tests", "Also run the repo's test commands (full Gate on good fixes, and the mutants only tests can catch). Executes repo code on this machine.")
+  .option("--json", "Output JSON")
+  .action(async (opts: { config?: string; dataDir?: string; repo?: string; since?: string; runTests?: boolean; json?: boolean }) => {
+    const dataDir = resolveDataDirFromOpts(opts);
+    const root = resolvePaths({ dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) {
+      console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+      return;
+    }
+    const ledger = new Ledger(root.ledgerDbPath, { readonly: true });
+    try {
+      const days = opts.since ? Number(opts.since) : 0;
+      const sinceMs = days > 0 ? Date.now() - days * 86_400_000 : 0;
+      const repos = opts.repo ? [opts.repo] : [...new Set(ledger.listAllThreads().map((t) => t.repo))].sort();
+      const reports: ReplayReport[] = [];
+      for (const repo of repos) {
+        const [githubOwner, githubRepo] = repo.split("/") as [string, string];
+        const bareRepoPath = resolvePaths({ dataDir, githubOwner, githubRepo }).brokerBareRepoPath;
+        if (!fs.existsSync(bareRepoPath)) {
+          console.error(`skipping ${repo}: no broker repo at ${bareRepoPath}`);
+          continue;
+        }
+        reports.push(await runReplay({ repo, bareRepoPath, seeds: ledger.listReplaySeeds(sinceMs, repo), runTests: opts.runTests }));
+      }
+      if (opts.json) console.log(JSON.stringify(reports, null, 2));
+      else for (const r of reports) console.log(renderReplay(r));
+      if (reports.some((r) => r.regressions > 0)) process.exit(1);
+    } finally {
+      ledger.close();
+    }
   });
 
 program
