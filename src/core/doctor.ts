@@ -320,24 +320,27 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
           throw new Error(`GitHub policy fetch failed (${response.status})`);
         } else {
           const file = (await response.json()) as { content?: string; encoding?: string };
-          if (typeof file.content !== "string" || (file.encoding && file.encoding !== "base64")) {
-            policyStatus = "warn";
-            policyDetail = `${REPO_POLICY_PATH}=present but content unavailable`;
-          } else {
-            let policy: unknown;
+          if (typeof file.content !== "string" || file.encoding !== "base64") {
+            throw new Error("GitHub response did not include base64 file content");
+          }
+          let policy: unknown;
+          try {
+            policy = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+          } catch (err) {
+            policyStatus = "fail";
+            policyDetail = `${REPO_POLICY_PATH}: invalid JSON (${err instanceof Error ? err.message : String(err)})`;
+          }
+          if (policyStatus !== "fail") {
             try {
-              policy = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+              RepoPolicySchema.parse(policy);
             } catch (err) {
-              policyStatus = "fail";
-              policyDetail = `${REPO_POLICY_PATH}: invalid JSON (${err instanceof Error ? err.message : String(err)})`;
-            }
-            if (policyStatus !== "fail") {
-              const parsed = RepoPolicySchema.safeParse(policy);
-              if (!parsed.success) {
-                const issue = parsed.error.issues[0]!;
+              if (err instanceof Error && "issues" in err && Array.isArray(err.issues)) {
+                const issue = err.issues[0] as { path: (string | number)[]; message: string };
                 const issuePath = issue.path.length > 0 ? issue.path.join(".") : "<root>";
                 policyStatus = "fail";
                 policyDetail = `${REPO_POLICY_PATH}: ${issuePath}: ${issue.message}`;
+              } else {
+                throw err;
               }
             }
           }
