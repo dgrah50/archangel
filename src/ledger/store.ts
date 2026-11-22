@@ -1068,6 +1068,26 @@ export class Ledger {
     }
   }
 
+  /** Most recent Scout proposals across all repos (read-only; used by the dashboard). */
+  listScoutProposals(limit = 25): ScoutProposalRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at
+         FROM scout_proposals ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(limit) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      repo: String(row.repo),
+      issueNumber: Number(row.issue_number),
+      scoutName: String(row.scout_name),
+      contentSha256: String(row.content_sha256),
+      titleFp: String(row.title_fp),
+      fileSha256: row.file_sha256 === null || row.file_sha256 === undefined ? null : String(row.file_sha256),
+      autoPromoted: Number(row.auto_promoted) === 1,
+      createdAt: Number(row.created_at),
+    }));
+  }
+
   hasScoutTitleFingerprint(titleFp: string, repo = this.repo): boolean {
     try {
       const row = this.db

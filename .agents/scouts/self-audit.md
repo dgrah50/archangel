@@ -2,6 +2,7 @@
 name: self-audit
 schedule: daily
 maxProposals: 2
+skills: [general/bug-hunt, general/error-handling, typescript/async-and-promises, typescript/type-holes]
 ---
 Audit ONLY Archangel's non-kernel leaf modules (`src/core/doctor.ts`, `src/core/recap.ts`, `src/core/notifier.ts`, `src/core/logger.ts`, `src/core/studio.ts`, `src/handoff/paseo.ts`) for concrete, reproducible reliability or edge-case bugs.
 
