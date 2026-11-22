@@ -326,3 +326,74 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
     }
   });
 });
+
+describe("Gate work classes", () => {
+  const passingTest =
+    'import assert from "node:assert/strict";\nimport { add } from "../calc.mjs";\nassert.equal(add(1, 1), 2);\n';
+
+  it("feature skips the red-on-base proof; bugfix (default) still rejects a test that passes on base", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  if (b < 0) return a - b;\n  return a + b;\n}\nexport const VERSION = 2;\n");
+      writeFile(repoDir, "tests/feature.test.mjs", passingTest);
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "feature"]);
+
+      const bugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true });
+      expect(bugfix.passed).toBe(false);
+      expect(bugfix.already_fixed).toBe(true);
+
+      const explicitBugfix = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true, workClass: "bugfix" });
+      expect(explicitBugfix.passed).toBe(false);
+
+      const feature = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", policyFromBase: true, workClass: "feature" });
+      expect(feature.violations).toEqual([]);
+      expect(feature.passed).toBe(true);
+      expect(feature.new_test_files).toEqual(["tests/feature.test.mjs"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("feature still fails on a missing new test, protected paths, bounds, and a failing head test", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    const feature = (name: string) =>
+      runGate({ repoDir, baseRef: baseSha, headRef: name, policyFromBase: true, workClass: "feature" });
+    try {
+      git(repoDir, ["checkout", "-b", "no-test", baseSha]);
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a + b;\n}\n");
+      git(repoDir, ["commit", "-qam", "no test"]);
+      const noTest = await feature("no-test");
+      expect(noTest.passed).toBe(false);
+      expect(noTest.violations.some((v) => v.includes("no new test file"))).toBe(true);
+
+      git(repoDir, ["checkout", "-b", "protected", baseSha]);
+      writeFile(repoDir, "lock.json", '{"v":2}\n');
+      writeFile(repoDir, "tests/feature.test.mjs", passingTest);
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-qm", "protected"]);
+      const prot = await feature("protected");
+      expect(prot.passed).toBe(false);
+      expect(prot.violations.some((v) => v.includes("protected path modified"))).toBe(true);
+
+      git(repoDir, ["checkout", "-b", "big", baseSha]);
+      writeFile(repoDir, "calc.mjs", Array.from({ length: 40 }, (_, i) => `export const c${i} = ${i};`).join("\n") + "\n");
+      writeFile(repoDir, "tests/feature.test.mjs", passingTest);
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-qm", "big"]);
+      const big = await feature("big");
+      expect(big.passed).toBe(false);
+      expect(big.violations.some((v) => v.includes("exceeds limit"))).toBe(true);
+
+      git(repoDir, ["checkout", "-b", "red-head", baseSha]);
+      writeFile(repoDir, "tests/feature.test.mjs", 'import assert from "node:assert/strict";\nassert.equal(1, 2);\n');
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-qm", "red head"]);
+      const redHead = await feature("red-head");
+      expect(redHead.passed).toBe(false);
+      expect(redHead.violations.some((v) => v.includes("head testCmd failed"))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});

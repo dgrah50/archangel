@@ -1,5 +1,6 @@
 import type { Blocker } from "./blockers.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord } from "../ledger/schema.js";
@@ -35,7 +36,9 @@ export function renderRecapComment(input: {
   if (thread.themeLabel) {
     lines.push(`| **Theme** | \`${thread.themeLabel}\` |`);
   }
-  if (thread.mode === "advisory") {
+  if (workClassOfBranch(thread.branchName) === "feature") {
+    lines.push(`| **Class** | \`feature\` |`, `| **Landing** | Feature: owner merges |`);
+  } else if (thread.mode === "advisory") {
     lines.push(`| **Landing** | Advisory only — owner merges manually |`);
   }
   if (input.wouldMerge) {
@@ -45,7 +48,7 @@ export function renderRecapComment(input: {
     );
   }
   if (thread.phase.kind === "needs_you") {
-    const policy = describeEscalation(thread.phase.code);
+    const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName));
     lines.push(
       "",
       `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${thread.phase.reason}`,
@@ -63,7 +66,9 @@ export function renderRecapComment(input: {
     "_Machine output from the Gate run, shown verbatim (last lines only); not written by Archangel._",
     "",
     "**On base (expected to fail):**",
-    ...fencedOutput(input.gateProof?.base_output),
+    ...(workClassOfBranch(thread.branchName) === "feature"
+      ? ["_not applicable: feature Threads add tests for new behaviour, with no red-on-base proof_"]
+      : fencedOutput(input.gateProof?.base_output)),
     "",
     "**On head (expected to pass):**",
     ...fencedOutput(input.gateProof?.head_output),

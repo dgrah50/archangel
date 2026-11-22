@@ -30,6 +30,8 @@ export interface LandingSnapshot {
   autoMergesToday: number;
   maxAutoMergesPerDay: number;
   shadowMode: boolean;
+  /** Feature Threads: the owner merges, so the blocker explains that instead of Shadow Mode. */
+  featureThread?: boolean;
 }
 
 export interface Blocker {
@@ -172,7 +174,12 @@ export function computeBlockers(s: LandingSnapshot): Blocker[] {
       message: `Daily auto-merge cap reached (${s.autoMergesToday}/${s.maxAutoMergesPerDay})`,
     });
   }
-  if (s.shadowMode) {
+  if (s.shadowMode && s.featureThread) {
+    blockers.push({
+      code: "shadow_mode_active",
+      message: "Feature: owner merges (feature Threads never merge autonomously)",
+    });
+  } else if (s.shadowMode) {
     blockers.push({
       code: "shadow_mode_active",
       message:

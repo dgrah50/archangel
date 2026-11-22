@@ -100,6 +100,11 @@ jobs:
         run: |
           git cat-file -e "${BASE_SHA}^{commit}"
           EXTRA_ARGS=()
+          # Work class comes only from the branch name. The daemon alone chooses factory/feature-<n> (from an
+          # owner-verified `class:feature` issue label); the implementer cannot name the pushed branch.
+          if [[ "$HEAD_REF" =~ ^factory/feature-[0-9]+$ ]]; then
+            EXTRA_ARGS+=(--work-class feature)
+          fi
           if [[ "$HEAD_REF" =~ ^factory/revert-[0-9]+$ ]]; then
             git cat-file -e "${HEAD_SHA}^{commit}"
             REVERT_OF=$(git log -1 --format=%B "$HEAD_SHA" | sed -nE 's/^This reverts commit ([0-9a-f]{40})\..*/\1/p' | head -n 1)

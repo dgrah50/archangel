@@ -197,6 +197,8 @@ export interface GateRunOptions {
   skipPreCommit?: boolean;
   skipTests?: boolean;
   commandTimeoutMs?: number;
+  /** `feature` skips the red-on-base requirement only. Defaults to `bugfix` (full reproduction proof). */
+  workClass?: "bugfix" | "feature";
 }
 
 interface PreCommitHook {
@@ -708,54 +710,59 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
     // 4. Language-agnostic Pristine-Base-Green -> Overlaid-Base-Red -> Head-Green verification.
     if (!opts.skipTests && policy.testCmd) {
-      const baseCmd = policy.baseTestCmd ?? policy.testCmd;
-      await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
-
-      // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
-      const pristineEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: "" };
-      const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, pristineEnv);
-      if (!pristineRes.ok) {
-        report.violations.push(
-          `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
-            .split("\n")
-            .slice(0, 6)
-            .join(" | ")}`,
-        );
-        return report;
-      }
-
-      // 4b. Overlay newly added test files + fixtures onto baseDir.
-      for (const rel of overlayFiles) {
-        const dest = path.join(baseDir, rel);
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        const bytes = await readGitFileBuffer(opts.repoDir, headSha, rel, env);
-        fs.writeFileSync(dest, bytes);
-      }
-
       const testEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: newTestFiles.join(" ") };
-      if (policy.testBuildCmd) {
-        const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, testEnv);
-        if (!buildRes.ok) {
+      // Feature work has no bug to reproduce: skip the red-on-base proof. Everything else (new test file,
+      // bounds, protected paths, hooks, head tests) is enforced above and below exactly as for bugfixes.
+      if (opts.workClass !== "feature") {
+        const baseCmd = policy.baseTestCmd ?? policy.testCmd;
+        await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
+
+        // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
+        const pristineEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: "" };
+        const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, pristineEnv);
+        if (!pristineRes.ok) {
           report.violations.push(
-            `base build failed (new test must compile against base APIs): ${buildRes.output
+            `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
               .split("\n")
               .slice(0, 6)
               .join(" | ")}`,
           );
           return report;
         }
-      }
 
-      for (let i = 1; i <= baseRuns; i++) {
-        const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
-        if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
-        if (baseTestRes.ok) {
-          report.already_fixed = true;
-          report.violations.push(
-            `reproduction test already passed on base (run ${i}/${baseRuns}) — issue may already be fixed or test does not reproduce the bug`,
-          );
-          return report;
+        // 4b. Overlay newly added test files + fixtures onto baseDir.
+        for (const rel of overlayFiles) {
+          const dest = path.join(baseDir, rel);
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          const bytes = await readGitFileBuffer(opts.repoDir, headSha, rel, env);
+          fs.writeFileSync(dest, bytes);
         }
+
+        if (policy.testBuildCmd) {
+          const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, testEnv);
+          if (!buildRes.ok) {
+            report.violations.push(
+              `base build failed (new test must compile against base APIs): ${buildRes.output
+                .split("\n")
+                .slice(0, 6)
+                .join(" | ")}`,
+            );
+            return report;
+          }
+        }
+
+        for (let i = 1; i <= baseRuns; i++) {
+          const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
+          if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
+          if (baseTestRes.ok) {
+            report.already_fixed = true;
+            report.violations.push(
+              `reproduction test already passed on base (run ${i}/${baseRuns}) — issue may already be fixed or test does not reproduce the bug`,
+            );
+            return report;
+          }
+        }
+
       }
 
       // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
