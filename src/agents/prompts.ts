@@ -179,6 +179,24 @@ export function formatFactoryNote(note: string | null | undefined): string[] {
   ];
 }
 
+/** Reference for a fresh implement after a merge conflict: the previous diff (capped) and the reviewers' findings, as data. */
+export function buildConflictReference(input: {
+  baseBranch: string;
+  diffText: string;
+  findings: Array<{ vendor: string; findings: ReviewFinding[] }>;
+}): string {
+  const lines = [
+    `Your previous attempt on this issue conflicts with the new \`${input.baseBranch}\` and could not be rebased.`,
+    "Re-implement the same fix on the current code. Use the previous diff only as reference: do not copy it blindly, and keep every Mechanical Gate rule.",
+    "",
+    "Previous diff (reference data):",
+    input.diffText.slice(0, 40_000),
+  ];
+  const found = input.findings.flatMap((g) => g.findings.map((f) => `- [${g.vendor}][${f.severity}] ${f.line ? `${f.file}:${f.line}` : f.file}: ${f.summary}`));
+  if (found.length > 0) lines.push("", "Findings from the previous attempt's reviews:", ...found);
+  return lines.join("\n");
+}
+
 const REVIEWER_EXPECT_LINE =
   "Before reading the diff, state in one line what fix you would expect for this issue, then compare the diff against it.";
 const REVIEWER_SIBLING_LINE = "Check sibling code paths and callers of the changed code for the same defect.";

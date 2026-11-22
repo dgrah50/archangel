@@ -6,6 +6,7 @@ import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from 
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
+  buildConflictReference,
   buildRebasePrompt,
   buildRevisionPrompt,
   promptTemplateSha,
@@ -24,7 +25,7 @@ import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
 import { runScoutsForProject, scoutContentHash } from "./scout.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
-import { ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
+import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import {
   classifyGate,
@@ -1087,6 +1088,8 @@ export class Reconciler {
     structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>,
     now: number,
     explicitStartSha?: string,
+    /** The Thread's kernel-fixed factory retry: not counted against, and not blocked by, the implement budget. */
+    factoryRetry = false,
   ): Promise<boolean> {
     if (this.runningTasks.has(thread.issueNumber) || !this.workflow) {
       return false;
@@ -1098,7 +1101,7 @@ export class Reconciler {
     if (await this.autonomyCapReached(now)) {
       return false;
     }
-    if (thread.implementCount >= this.cfg.maxImplementAttemptsPerThread + thread.retryGrants) {
+    if (!factoryRetry && thread.implementCount >= this.cfg.maxImplementAttemptsPerThread + thread.retryGrants) {
       this.applyMachineEvent(
         thread,
         {
@@ -1145,7 +1148,7 @@ export class Reconciler {
         prNumber: extractPrFromPhase(thread.phase)?.prNumber ?? null,
       },
       {
-        incImplement: true,
+        incImplement: !factoryRetry,
         incRevision: kind === "revise",
         incRebase: kind === "rebase",
         auditTopic: "thread/working",
@@ -1904,6 +1907,7 @@ export class Reconciler {
       await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
       return;
     }
+    if (issue && (await this.retryConflictFromMain(thread, pr, issue, mainSha, now))) return;
     const escalated = this.applyMachineEvent(
       thread,
       {
@@ -1916,6 +1920,45 @@ export class Reconciler {
     if (escalated) {
       await this.postRecapSafe(escalated, pr, blockers);
     }
+  }
+
+  /**
+   * The rebase budget is spent. When the repo opted in (`escalations.factoryRetry: "once"`) and the Thread has its factory
+   * retry left, re-implement the same fix once from the new main, with the old diff and findings as reference. Returns true when
+   * the retry is running or waiting for a slot; false means escalate as before. The retry is not renewable and never touches
+   * the implement budget; the autonomy cap, daily spend and slot limits still apply.
+   */
+  private async retryConflictFromMain(
+    thread: ThreadRecord,
+    pr: GitHubPr,
+    issue: GitHubIssue,
+    mainSha: string,
+    now: number,
+  ): Promise<boolean> {
+    if (this.workflow?.factoryRetry.value !== "once" || thread.mode !== "autonomous") return false;
+    if (thread.factoryRetries >= KERNEL.factoryRetriesPerThread || thread.retryGrants > 0 || thread.ownerReply !== null) return false;
+    if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return true; // all slots busy: wait, do not escalate
+    if (await this.autonomyCapReached(now)) return true;
+    const { diffText } = await this.broker.getDiffAndTouchedFiles(mainSha, pr.headSha);
+    const findings = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha).map((r) => ({
+      vendor: r.vendor,
+      findings: JSON.parse(r.findingsJson) as ReviewFinding[],
+    }));
+    const claimed = this.ledger.claimFactoryRetry(
+      thread.issueNumber,
+      {
+        code: "merge_conflict",
+        guidance: buildConflictReference({ baseBranch: this.cfg.defaultBranch, diffText, findings }),
+        perThread: KERNEL.factoryRetriesPerThread,
+        perRepoPerDay: KERNEL.factoryRetriesPerRepoPerDay,
+      },
+      now,
+    );
+    if (!claimed) return false;
+    const fresh = this.ledger.getThread(thread.issueNumber);
+    if (!fresh) return false;
+    // One fresh implement from the new main: this is not the rebase Attempt, so the old branch's conflict is simply not inherited.
+    return this.spawnAttempt(fresh, issue, "implement", mainSha, [], [], now, mainSha, true);
   }
 
   private async reconcileLanding(
