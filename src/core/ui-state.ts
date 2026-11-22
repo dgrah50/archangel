@@ -190,7 +190,7 @@ export function groupThreads(
     const stage = stageOf(t.phase, t.updatedAt, now);
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
-      const p = describeEscalation(t.phase.code);
+      const p = describeEscalation(t.phase.code, undefined, t.phase.cause);
       needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason, threadRecommendation: recommendationOf(t) });
     }
   }

@@ -2446,7 +2446,7 @@ export class Ledger {
     const needsYou = attempt(() =>
       this.listAllThreads(["needs_you"]).flatMap((t) =>
         t.phase.kind === "needs_you"
-          ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
+          ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, cause: t.phase.cause, since: t.updatedAt }]
           : [],
       ),
     );
@@ -2592,7 +2592,7 @@ export class Ledger {
     for (const t of threads) {
       if (t.phase.kind !== "needs_you") continue;
       escalations[t.phase.code] = (escalations[t.phase.code] ?? 0) + 1;
-      const cls = describeEscalation(t.phase.code).decisionClass;
+      const cls = describeEscalation(t.phase.code, undefined, t.phase.cause).decisionClass;
       byDecisionClass[cls] = (byDecisionClass[cls] ?? 0) + 1;
     }
 
