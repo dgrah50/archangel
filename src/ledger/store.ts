@@ -1,5 +1,6 @@
 import { EscalationCodeSchema } from "../core/thread-machine.js";
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
+import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
 import { categorizeAttemptError } from "../core/metrics-block.js";
@@ -116,6 +117,7 @@ export class Ledger {
     this.repo = opts.repo ?? "default";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
+      this.migratePitchesToStateMachine();
       this.db.exec(LEDGER_SCHEMA_SQL);
       const cols = this.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === "implementer_vendors_json")) {
@@ -140,12 +142,7 @@ export class Ledger {
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
         this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
       }
-      const pitchCols = this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>;
-      if (!pitchCols.some((c) => c.name === "decline_reason")) this.db.exec("ALTER TABLE pitches ADD COLUMN decline_reason TEXT");
       if (!cols.some((c) => c.name === "issue_body")) this.db.exec("ALTER TABLE threads ADD COLUMN issue_body TEXT");
-      if (!pitchCols.some((c) => c.name === "expired_at")) this.db.exec("ALTER TABLE pitches ADD COLUMN expired_at INTEGER");
-      if (!pitchCols.some((c) => c.name === "promoted_slices")) this.db.exec("ALTER TABLE pitches ADD COLUMN promoted_slices TEXT NOT NULL DEFAULT '[]'");
-      if (!pitchCols.some((c) => c.name === "pitch_json")) this.db.exec("ALTER TABLE pitches ADD COLUMN pitch_json TEXT NOT NULL DEFAULT ''");
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
         this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
@@ -205,17 +202,22 @@ export class Ledger {
     return tx();
   }
 
-  heartbeatDaemonLock(ownerId: string, now = Date.now()): void {
-    const existing = this.getSystemState("daemon_lock");
-    if (!existing) return;
-    try {
-      const parsed = JSON.parse(existing) as { ownerId: string };
-      if (parsed.ownerId === ownerId) {
-        this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+  /** Refreshes the lock if this daemon still owns it. False means the lock is gone, unreadable or another daemon's: the caller must stop. */
+  heartbeatDaemonLock(ownerId: string, now = Date.now()): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const existing = this.getSystemState("daemon_lock");
+      if (!existing) return false;
+      let owner: unknown;
+      try {
+        owner = (JSON.parse(existing) as { ownerId?: unknown }).ownerId;
+      } catch {
+        return false;
       }
-    } catch {
-      // Ignore
-    }
+      if (owner !== ownerId) return false;
+      this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
+      return true;
+    });
+    return tx.immediate();
   }
 
   releaseDaemonLock(ownerId: string): void {
@@ -612,11 +614,13 @@ export class Ledger {
     now = Date.now(),
   ): AttemptRecord {
     const cost = Math.max(0, result.costUsd ?? 0);
-    this.db
+    // An Attempt is finished once. A second finish (a late error handler after the first outcome was recorded) must not
+    // rewrite the outcome or settle the budget twice.
+    const done = this.db
       .prepare(
         `UPDATE attempts
          SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, finished_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'running'`,
       )
       .run(
         result.status,
@@ -627,6 +631,7 @@ export class Ledger {
         now,
         attemptId,
       );
+    if (done.changes === 0) return this.getAttempt(attemptId)!;
     if (result.reservedUsd !== undefined) {
       this.settleBudget(result.reservedUsd, cost, now);
     } else if (cost > 0) {
@@ -1464,54 +1469,70 @@ export class Ledger {
     return tx();
   }
 
-  // ---- Pitches (V5): owner-decided proposals from pitch Scouts; separate from bug proposals ----
+  // ---- Pitches: owner-decided proposals from pitch Scouts, an explicit state machine (core/pitch-machine.ts) ----
 
   recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, status_at, pitch_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, state_json, state_at, pitch_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now, input.pitchJson);
+      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, JSON.stringify({ kind: "open" }), now, input.pitchJson);
   }
 
-  /** Pitches whose issue is no longer open (closed by the owner or expired) become `declined`. `promoted` is set only by the owner's promote command. */
+  /**
+   * The only way a pitch changes state: read, `stepPitch`, compare-and-set on `version`. An illegal move changes nothing and writes a
+   * `pitch/illegal_transition` audit row. Returns the new state, or the reason it was refused.
+   */
+  stepPitchState(issueNumber: number, ev: PitchEvent, now = Date.now(), repo = this.repo): { ok: true; state: PitchState } | { ok: false; reject: string } {
+    const row = this.db.prepare(`SELECT state_json, version FROM pitches WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as
+      | { state_json: string; version: number }
+      | undefined;
+    if (!row) return { ok: false, reject: `no pitch #${issueNumber}` };
+    const state = PitchStateSchema.parse(JSON.parse(row.state_json));
+    const step = stepPitch(state, ev);
+    if (!step.ok) {
+      this.appendAudit("pitch/illegal_transition", issueNumber, "archangel", { from: state.kind, event: ev.t, reason: step.reject.slice(0, 200) }, now, repo);
+      return step;
+    }
+    const res = this.db
+      .prepare(`UPDATE pitches SET state_json = ?, state_at = ?, version = version + 1 WHERE repo = ? AND issue_number = ? AND version = ?`)
+      .run(JSON.stringify(step.next), now, repo, issueNumber, row.version);
+    if (res.changes !== 1) return { ok: false, reject: "the pitch changed concurrently; retry" };
+    return { ok: true, state: step.next };
+  }
+
+  /** Pitches whose issue is no longer open become declined (nothing promoted) or promoted (some slices were). Returns the declined ones. */
   syncPitchStatuses(openIssueNumbers: readonly number[], now = Date.now(), repo = this.repo): Array<{ issueNumber: number; filedAt: number }> {
     const open = new Set(openIssueNumbers);
     const declined: Array<{ issueNumber: number; filedAt: number }> = [];
-    for (const row of this.db.prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND status = 'open'`).all(repo) as Array<{ issue_number: number; filed_at: number }>) {
-      if (!open.has(row.issue_number)) {
-        this.db.prepare(`UPDATE pitches SET status = 'declined', status_at = ? WHERE repo = ? AND issue_number = ?`).run(now, repo, row.issue_number);
-        declined.push({ issueNumber: row.issue_number, filedAt: row.filed_at });
-      }
+    for (const row of this.db.prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND state IN ('open', 'partially_promoted')`).all(repo) as Array<{ issue_number: number; filed_at: number }>) {
+      if (open.has(row.issue_number)) continue;
+      const r = this.stepPitchState(row.issue_number, { t: "closed" }, now, repo);
+      if (r.ok && r.state.kind === "declined") declined.push({ issueNumber: row.issue_number, filedAt: row.filed_at });
     }
     return declined;
   }
 
-  /** Open pitches filed at or before `cutoffMs` (candidates for the 14-day expiry). */
+  /** Undecided pitches (open or partially promoted) filed at or before `cutoffMs`: candidates for the 14-day expiry. */
   listOpenPitchesFiledBefore(cutoffMs: number, repo = this.repo): Array<{ issueNumber: number; filedAt: number }> {
     return (
       this.db
-        .prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND status = 'open' AND filed_at <= ? ORDER BY filed_at ASC`)
+        .prepare(`SELECT issue_number, filed_at FROM pitches WHERE repo = ? AND state IN ('open', 'partially_promoted') AND filed_at <= ? ORDER BY filed_at ASC`)
         .all(repo, cutoffMs) as Array<{ issue_number: number; filed_at: number }>
     ).map((r) => ({ issueNumber: r.issue_number, filedAt: r.filed_at }));
   }
 
-  /**
-   * The bot closed an open pitch nobody decided in 14 days. Stored as `declined` with `expired_at` set (the status CHECK cannot
-   * change on an existing Ledger), so the pause rule counts it as not promoted, exactly like a decline.
-   */
+  /** The bot closed a pitch nobody decided in 14 days. */
   markPitchExpired(issueNumber: number, now = Date.now(), repo = this.repo): void {
-    this.db
-      .prepare(`UPDATE pitches SET status = 'declined', status_at = ?, expired_at = ? WHERE repo = ? AND issue_number = ? AND status = 'open'`)
-      .run(now, now, repo, issueNumber);
+    this.stepPitchState(issueNumber, { t: "expired", at: now }, now, repo);
   }
 
-  /** Open pitches across every repo, oldest first, for the daily digest. */
+  /** Undecided pitches across every repo, oldest first, for the daily digest. */
   listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; filedAt: number }> {
     return (
-      this.db.prepare(`SELECT repo, issue_number, scout_name, filed_at FROM pitches WHERE status = 'open' ORDER BY filed_at ASC`).all() as Array<{
+      this.db.prepare(`SELECT repo, issue_number, scout_name, filed_at FROM pitches WHERE state IN ('open', 'partially_promoted') ORDER BY filed_at ASC`).all() as Array<{
         repo: string;
         issue_number: number;
         scout_name: string;
@@ -1521,25 +1542,89 @@ export class Ledger {
   }
 
   /**
-   * Pitch outcomes for the dashboard: counts of pitches filed in the window by how they ended, vetoes (audit rows: a vetoed pitch is
+   * Pitch outcomes for the dashboard: counts of pitches filed in the window by state, vetoes (audit rows: a vetoed pitch is
    * never filed), and the promotion rate over the most recent decided pitches (V7's entry trigger is at least 1 in 3 over 6).
    */
   pitchMetrics(sinceMs: number, repo = this.repo): PitchMetrics {
     const rows = this.db
-      .prepare(`SELECT status, expired_at, filed_at FROM pitches WHERE repo = ? ORDER BY filed_at DESC, issue_number DESC`)
-      .all(repo) as Array<{ status: string; expired_at: number | null; filed_at: number }>;
+      .prepare(`SELECT state, filed_at FROM pitches WHERE repo = ? ORDER BY filed_at DESC, issue_number DESC`)
+      .all(repo) as Array<{ state: PitchStateKind; filed_at: number }>;
     const inWindow = rows.filter((r) => r.filed_at >= sinceMs);
-    const decided = rows.filter((r) => r.status !== "open").slice(0, PITCH_RATE_WINDOW);
+    const undecided = (k: PitchStateKind) => k === "open" || k === "partially_promoted";
+    const promoted = (k: PitchStateKind) => k === "promoted" || k === "partially_promoted";
+    const decided = rows.filter((r) => !undecided(r.state)).slice(0, PITCH_RATE_WINDOW);
     return {
       filed: inWindow.length,
-      promoted: inWindow.filter((r) => r.status === "promoted").length,
-      declined: inWindow.filter((r) => r.status === "declined" && r.expired_at === null).length,
-      expired: inWindow.filter((r) => r.expired_at !== null).length,
-      open: rows.filter((r) => r.status === "open").length,
+      promoted: inWindow.filter((r) => promoted(r.state)).length,
+      declined: inWindow.filter((r) => r.state === "declined").length,
+      expired: inWindow.filter((r) => r.state === "expired").length,
+      open: rows.filter((r) => undecided(r.state)).length,
       vetoed: (this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'pitch/vetoed' AND ts >= ?`).get(repo, sinceMs) as { n: number }).n,
       lastDecided: decided.length,
-      lastDecidedPromoted: decided.filter((r) => r.status === "promoted").length,
+      lastDecidedPromoted: decided.filter((r) => r.state === "promoted").length,
     };
+  }
+
+  setPitchDeclineReason(issueNumber: number, reason: string, repo = this.repo): void {
+    this.stepPitchState(issueNumber, { t: "decline_reason", reason }, Date.now(), repo);
+  }
+
+  getPitch(
+    issueNumber: number,
+    repo = this.repo,
+  ): { issueNumber: number; state: PitchState; contentSha256: string; pitchJson: string } | null {
+    const r = this.db
+      .prepare(`SELECT issue_number, state_json, content_sha256, pitch_json FROM pitches WHERE repo = ? AND issue_number = ?`)
+      .get(repo, issueNumber) as { issue_number: number; state_json: string; content_sha256: string; pitch_json: string } | undefined;
+    return r ? { issueNumber: r.issue_number, state: PitchStateSchema.parse(JSON.parse(r.state_json)), contentSha256: r.content_sha256, pitchJson: r.pitch_json } : null;
+  }
+
+  /**
+   * Only `archangel pitch promote` (the owner's `gh`) calls this. Records which slices (0-based) became owner-authored issues: the
+   * pitch is `partially_promoted` until every one of `total` is, then `promoted`. Counts as promoted for the pause rule either way.
+   * Refused (and audited) for a decided pitch or a slice that is already promoted.
+   */
+  markPitchSlicesPromoted(issueNumber: number, slices: readonly number[], total: number, now = Date.now(), repo = this.repo): boolean {
+    return this.stepPitchState(issueNumber, { t: "slices_promoted", slices: [...slices], total }, now, repo).ok;
+  }
+
+  /** One-shot: an older Ledger kept the pitch lifecycle in four separate columns; fold each row into `state_json` and drop the old table. */
+  private migratePitchesToStateMachine(): void {
+    const cols = (this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.length === 0 || !cols.includes("status")) return;
+    this.db.transaction(() => {
+      this.db.exec("ALTER TABLE pitches RENAME TO pitches_v1");
+      this.db.exec(LEDGER_SCHEMA_SQL);
+      const rows = this.db.prepare("SELECT * FROM pitches_v1").all() as Array<Record<string, unknown>>;
+      const insert = this.db.prepare(
+        `INSERT INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, state_json, state_at, pitch_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const r of rows) {
+        const slices = JSON.parse(String(r.promoted_slices ?? "[]")) as number[];
+        let total = slices.length;
+        try {
+          const parsed = JSON.parse(String(r.pitch_json ?? "")) as { slices?: unknown[] };
+          if (Array.isArray(parsed.slices)) total = parsed.slices.length;
+        } catch {
+          // no stored text: treat the recorded slices as the whole pitch
+        }
+        const state: PitchState =
+          r.status === "promoted"
+            ? slices.length === 0
+              ? { kind: "declined", reason: null }
+              : slices.length < total
+                ? { kind: "partially_promoted", promotedSlices: slices, totalSlices: total }
+                : { kind: "promoted", promotedSlices: slices }
+            : r.status === "declined"
+              ? r.expired_at !== null && r.expired_at !== undefined
+                ? { kind: "expired", expiredAt: Number(r.expired_at) }
+                : { kind: "declined", reason: r.decline_reason === null || r.decline_reason === undefined ? null : String(r.decline_reason) }
+              : { kind: "open" };
+        insert.run(r.repo, r.issue_number, r.scout_name, r.trust_hash, r.title, r.title_fp, r.content_sha256, r.filed_at, JSON.stringify(state), r.status_at, String(r.pitch_json ?? ""));
+      }
+      this.db.exec("DROP TABLE pitches_v1");
+    })();
   }
 
   // ---- Eval vault and result cache (V6) ----
@@ -1574,24 +1659,6 @@ export class Ledger {
       .run(promptHash, caseId, verdict, vendors, now);
   }
 
-  setPitchDeclineReason(issueNumber: number, reason: string, repo = this.repo): void {
-    this.db.prepare(`UPDATE pitches SET decline_reason = ? WHERE repo = ? AND issue_number = ?`).run(reason, repo, issueNumber);
-  }
-
-  getPitch(
-    issueNumber: number,
-    repo = this.repo,
-  ): { issueNumber: number; status: "open" | "declined" | "promoted"; contentSha256: string; pitchJson: string; promotedSlices: number[] } | null {
-    const r = this.db
-      .prepare(`SELECT issue_number, status, content_sha256, pitch_json, promoted_slices FROM pitches WHERE repo = ? AND issue_number = ?`)
-      .get(repo, issueNumber) as
-      | { issue_number: number; status: "open" | "declined" | "promoted"; content_sha256: string; pitch_json: string; promoted_slices: string }
-      | undefined;
-    return r
-      ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json, promotedSlices: JSON.parse(r.promoted_slices) as number[] }
-      : null;
-  }
-
   /**
    * Gives back the budget an Attempt consumed when it ended without doing real work (an owner pause/stop or a policy halt):
    * a flapping control label or workflow must not exhaust `max*AttemptsPerThread` with nothing built.
@@ -1604,18 +1671,6 @@ export class Ledger {
          WHERE repo = ? AND issue_number = ?`,
       )
       .run(kind === "revise" ? 1 : 0, kind === "rebase" ? 1 : 0, repo, issueNumber);
-  }
-
-  /**
-   * Only `archangel pitch promote` (the owner's `gh`) calls this. Records which slices (0-based) became owner-authored issues; the pitch
-   * counts as promoted (for the Scout's pause rule) as soon as any slice is, while the remaining slices can still be promoted later.
-   */
-  markPitchSlicesPromoted(issueNumber: number, slices: readonly number[], now = Date.now(), repo = this.repo): void {
-    const current = this.getPitch(issueNumber, repo)?.promotedSlices ?? [];
-    const merged = [...new Set([...current, ...slices])].sort((a, b) => a - b);
-    this.db
-      .prepare(`UPDATE pitches SET status = 'promoted', status_at = ?, promoted_slices = ? WHERE repo = ? AND issue_number = ?`)
-      .run(now, JSON.stringify(merged), repo, issueNumber);
   }
 
   addThreadDependency(issueNumber: number, dependsOn: number, now = Date.now(), repo = this.repo): void {
@@ -1637,14 +1692,17 @@ export class Ledger {
   }
 
   countOpenPitches(repo = this.repo): number {
-    return (this.db.prepare(`SELECT COUNT(*) AS n FROM pitches WHERE repo = ? AND status = 'open'`).get(repo) as { n: number }).n;
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM pitches WHERE repo = ? AND state IN ('open', 'partially_promoted')`).get(repo) as { n: number }).n;
   }
 
   /** Titles of pitches that are open or were decided in the last `days` days (for the prompt and the duplicate check). */
   recentPitchTitles(days: number, now = Date.now(), repo = this.repo): Array<{ title: string; titleFp: string; declineReason: string | null }> {
     return (
       this.db
-        .prepare(`SELECT title, title_fp, decline_reason FROM pitches WHERE repo = ? AND (status = 'open' OR status_at >= ?) ORDER BY filed_at DESC`)
+        .prepare(
+          `SELECT title, title_fp, json_extract(state_json, '$.reason') AS decline_reason FROM pitches
+           WHERE repo = ? AND (state IN ('open', 'partially_promoted') OR state_at >= ?) ORDER BY filed_at DESC`,
+        )
         .all(repo, now - days * 86_400_000) as Array<{ title: string; title_fp: string; decline_reason: string | null }>
     ).map((r) => ({ title: r.title, titleFp: r.title_fp, declineReason: r.decline_reason }));
   }
@@ -1652,9 +1710,9 @@ export class Ledger {
   /** A pitch Scout pauses for one exact `trustHash` after `n` consecutive pitches that were not promoted. Editing the Scout (a new hash) resumes it. */
   isPitchScoutPaused(scoutName: string, trustHash: string, n: number, repo = this.repo): boolean {
     const rows = this.db
-      .prepare(`SELECT status FROM pitches WHERE repo = ? AND scout_name = ? AND trust_hash = ? ORDER BY filed_at DESC, issue_number DESC LIMIT ?`)
-      .all(repo, scoutName, trustHash, n) as Array<{ status: string }>;
-    return rows.length === n && rows.every((r) => r.status !== "promoted");
+      .prepare(`SELECT state FROM pitches WHERE repo = ? AND scout_name = ? AND trust_hash = ? ORDER BY filed_at DESC, issue_number DESC LIMIT ?`)
+      .all(repo, scoutName, trustHash, n) as Array<{ state: PitchStateKind }>;
+    return rows.length === n && rows.every((r) => r.state !== "promoted" && r.state !== "partially_promoted");
   }
 
   /** Did this Scout start a run at or after `sinceMs`? (weekly schedule) */

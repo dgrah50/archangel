@@ -219,6 +219,7 @@ export class Reconciler {
       this.abortAllActive("control");
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
+      await this.flushOutbox(); // effects queued by the aborts above, and any already waiting, still go out while halted
       return;
     }
     if (this.ledger.getSystemState(noticeKey)) this.ledger.setSystemState(noticeKey, "", now);
@@ -1210,7 +1211,11 @@ export class Reconciler {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
 
+      // The implementer said it did not finish (budget or turn limit, an execution error): an explicit failed Attempt, with its cost.
+      if (result.failure && !result.aborted) throw new Error(`implementer ended with ${result.failure}`);
+
       // The repo may have been halted while the implementer ran: treat that like a control abort.
+
       if (result.aborted || !this.workflow) {
         const cause = task.abortCause ?? (this.workflow ? "timeout" : "control");
         this.ledger.finishAttempt(attemptId, {
@@ -1445,7 +1450,7 @@ export class Reconciler {
       // A halt or kill switch that landed while the Attempt was still cloning or in repo setup is an abort, not a failure
       // (the policy getters throw once the workflow is gone): return the Thread to where it resumes.
       if (!this.workflow || task.abortController.signal.aborted) {
-        const cause = task.abortCause ?? "control";
+        const cause = task.abortCause ?? (this.workflow ? "timeout" : "control"); // an abort nobody asked for is the Attempt timing out: never refund it
         this.ledger.finishAttempt(attemptId, {
           status: "aborted",
           costUsd: actualCostUsd,
@@ -1780,10 +1785,10 @@ export class Reconciler {
     blockers: ReturnType<typeof computeBlockers>,
     now: number,
   ): Promise<void> {
-    if (
-      cleanMergeTree &&
-      thread.rebaseCount < this.cfg.maxRebasesPerThread
-    ) {
+    // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
+    // re-escalate on the very same conflict at once.
+    const rebaseBudget = this.cfg.maxRebasesPerThread + thread.retryGrants;
+    if (cleanMergeTree && thread.rebaseCount < rebaseBudget) {
       const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
       if (rebased.ok) {
         const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -1813,7 +1818,7 @@ export class Reconciler {
         return;
       }
     }
-    if (issue && thread.rebaseCount < this.cfg.maxRebasesPerThread) {
+    if (issue && thread.rebaseCount < rebaseBudget) {
       if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
       await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
       return;
@@ -2161,15 +2166,24 @@ export class Reconciler {
         issue: thread.issueNumber,
       });
     }
-    await this.github.upsertRecapComment(
-      pr.number,
-      renderRecapComment({
-        thread,
-        reviews,
-        blockers,
-        wouldMerge: opts.wouldMerge,
-        gateProof,
-      }),
-    );
+    try {
+      await this.github.upsertRecapComment(
+        pr.number,
+        renderRecapComment({
+          thread,
+          reviews,
+          blockers,
+          wouldMerge: opts.wouldMerge,
+          gateProof,
+        }),
+      );
+    } catch (err) {
+      // The Recap is a report of a decision that is already recorded; failing to post it must not undo or re-run that decision.
+      // A later transition posts the Recap again.
+      this.logger.warn("recap/post_failed", err instanceof Error ? err.message : String(err), {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+    }
   }
 }
