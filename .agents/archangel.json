@@ -36,6 +36,7 @@
       "src/core/metrics-block.ts",
       "src/core/skills.ts",
       "src/core/ui-server.ts",
+      "src/core/ui-pitches.ts",
       "ui/**",
       "src/core/workflow.ts",
       "src/core/workflow-load.ts",
