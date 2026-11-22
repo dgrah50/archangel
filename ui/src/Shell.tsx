@@ -1,6 +1,6 @@
 import { Badge, Box, Flex, Heading, Link, Text } from "@chakra-ui/react";
 import type { UiState } from "../../src/core/ui-state.js";
-import { NAV, type Route } from "./route";
+import { NAV, itemHash, type Route } from "./route";
 
 /** Left nav on wide screens, a top bar on narrow ones, plus a persistent header strip (daemon status, Needs You count). */
 export function Shell({ route, state, children }: { route: Route; state: UiState | null; children: React.ReactNode }) {
@@ -25,7 +25,10 @@ export function Shell({ route, state, children }: { route: Route; state: UiState
           {needs === null ? null : needs === 0 ? (
             <Text color="fg.muted">Nothing needs you</Text>
           ) : (
-            <Badge colorPalette="orange">{needs} need you</Badge>
+            <>
+              <Badge colorPalette="orange">{needs} need you</Badge>
+              <Link href={nextHash(state, route)}>Next</Link>
+            </>
           )}
         </Flex>
         {children}
@@ -39,4 +42,13 @@ function Daemon({ state }: { state: UiState | null }) {
   const beat = state.daemonHeartbeatAt;
   const live = beat !== null && state.generatedAt - beat <= 3 * 60_000;
   return <Badge colorPalette={live ? "green" : "red"}>{live ? "daemon running" : "daemon offline"}</Badge>;
+}
+
+/** "Next" opens the item after the one on screen, or the oldest when none is open. */
+function nextHash(state: UiState | null, route: Route): string {
+  const q = state?.needsYou ?? [];
+  if (q.length === 0) return "#/needs-you";
+  const at = route.page === "needs-you" && route.item ? q.findIndex((i) => i.repo === route.item!.repo && i.issueNumber === route.item!.issue) : -1;
+  const n = q[(at + 1) % q.length]!;
+  return itemHash({ repo: n.repo, issue: n.issueNumber });
 }

@@ -1,74 +1,12 @@
-import { Badge, Box, Card, Heading, Link, SimpleGrid, Stack, Stat, Table, Text } from "@chakra-ui/react";
+import { Box, Card, Heading, SimpleGrid, Stat, Table, Text } from "@chakra-ui/react";
 import { correctionCategories } from "../../src/core/corrections.js";
-import type { UiItem, UiState } from "../../src/core/ui-state.js";
+import type { UiState } from "../../src/core/ui-state.js";
+import { GhLink } from "./common";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
 
-// "Needs you" is shown prominently above; "Done" is collapsed behind its count.
-const ACTIVE_STAGES = ["Working", "Waiting on CI", "In review", "Ready for owner", "Owner driving", "Queued"] as const satisfies ReadonlyArray<keyof UiState["stages"]>;
-
-const STATUS_PALETTE: Record<string, string> = {
-  working: "blue",
-  awaiting_gate: "yellow",
-  reviewing: "purple",
-  landing: "purple",
-  shadow_ready: "green",
-  owner_driving: "cyan",
-  queued: "gray",
-  merged: "green",
-  "owner merged": "green",
-  "PR closed": "gray",
-  abandoned: "gray",
-  reverted: "red",
-};
-
-function age(ms: number): string {
-  const min = Math.max(0, Math.floor(ms / 60_000));
-  if (min < 60) return `${min}m`;
-  const h = Math.floor(min / 60);
-  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
-}
-
 const n = (v: number | null, unit = "") => (v === null ? "n/a" : `${Math.round(v * 10) / 10}${unit}`);
-
-function GhLink({ repo, kind, num, children }: { repo: string; kind: "issues" | "pull"; num: number; children: string }) {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return <>{children}</>;
-  return (
-    <Link href={`https://github.com/${repo}/${kind}/${num}`} rel="noreferrer noopener" target="_blank">
-      {children}
-    </Link>
-  );
-}
-
-function ThreadTable({ items, now }: { items: UiItem[]; now: number }) {
-  return (
-    <Table.Root size="sm" variant="line">
-      <Table.Body>
-        {items.map((i) => (
-          <Table.Row key={`${i.repo}#${i.issueNumber}`}>
-            <Table.Cell whiteSpace="nowrap">
-              <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink>
-              {i.prNumber ? (
-                <>
-                  {" "}
-                  <GhLink repo={i.repo} kind="pull" num={i.prNumber}>{`PR #${i.prNumber}`}</GhLink>
-                </>
-              ) : null}
-            </Table.Cell>
-            <Table.Cell>{i.title}</Table.Cell>
-            <Table.Cell whiteSpace="nowrap">
-              <Badge colorPalette={STATUS_PALETTE[i.phase] ?? "gray"}>{i.phase.replace(/_/g, " ")}</Badge>
-            </Table.Cell>
-            <Table.Cell whiteSpace="nowrap" color="fg.muted" textAlign="end">
-              {age(now - i.since)}
-            </Table.Cell>
-          </Table.Row>
-        ))}
-      </Table.Body>
-    </Table.Root>
-  );
-}
 
 function StatTile({ label, value, help }: { label: string; value: string | number; help?: string }) {
   return (
@@ -131,8 +69,6 @@ export function Dashboard({ state: s }: { state: UiState }) {
   const o = s.outcomes;
   const repos = Object.keys(s.autonomySteps);
   const mergedToday = s.daily[s.daily.length - 1]?.merged ?? 0;
-  const done = s.stages["Done in last 7 days"];
-  const activeCount = ACTIVE_STAGES.reduce((t, st) => t + s.stages[st].length, 0);
   return (
     <Box maxW="64rem" mx="auto" p="6">
       <Heading size="2xl">Archangel</Heading>
@@ -148,59 +84,6 @@ export function Dashboard({ state: s }: { state: UiState }) {
           <StatTile key={r} label={r} value={s.autonomySteps[r] ?? 0} help="autonomous steps since owner" />
         ))}
       </SimpleGrid>
-
-      <Section title="Needs You">
-        {s.needsYou.length === 0 ? (
-          <Box borderWidth="1px" borderStyle="dashed" rounded="xl" p="5" color="fg.muted" textAlign="center">
-            Nothing needs you.
-          </Box>
-        ) : (
-          <Stack gap="3">
-            {s.needsYou.map((i) => (
-              <Card.Root key={`${i.repo}#${i.issueNumber}`} borderLeftWidth="4px" borderLeftColor="orange.solid">
-                <Card.Body>
-                  <Text fontWeight="medium">
-                    <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink> {i.title}
-                  </Text>
-                  <Text color="fg.muted" textStyle="sm" mt="1">
-                    <Badge colorPalette="orange" mr="2">
-                      {i.decisionClass}
-                    </Badge>
-                    waiting {age(s.generatedAt - i.since)}
-                  </Text>
-                  <Text mt="2">{i.recommendation}</Text>
-                </Card.Body>
-              </Card.Root>
-            ))}
-          </Stack>
-        )}
-      </Section>
-
-      <Section title="Threads" hint={`${activeCount} in flight, ${done.length} finished in the last 7 days`}>
-        {activeCount === 0 ? <Text color="fg.muted">No Threads in flight.</Text> : null}
-        {ACTIVE_STAGES.filter((st) => s.stages[st].length > 0).map((st) => (
-          <Box key={st} mb="5">
-            <Heading size="md" mb="1">
-              {st}{" "}
-              <Badge variant="subtle" ml="1">
-                {s.stages[st].length}
-              </Badge>
-            </Heading>
-            <ThreadTable items={s.stages[st]} now={s.generatedAt} />
-          </Box>
-        ))}
-        {done.length > 0 ? (
-          <Box as="details" borderWidth="1px" rounded="xl" px="4" py="2">
-            <Box as="summary" cursor="pointer" fontWeight="medium" py="1">
-              Done in last 7 days{" "}
-              <Badge variant="subtle" ml="1">
-                {done.length}
-              </Badge>
-            </Box>
-            <ThreadTable items={done} now={s.generatedAt} />
-          </Box>
-        ) : null}
-      </Section>
 
       <Section title="Outcomes" hint="All time, per merged fix. Merge count is volume, not success.">
         <Text mb="3">
