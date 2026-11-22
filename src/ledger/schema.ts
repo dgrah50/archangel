@@ -47,10 +47,38 @@ export interface ThreadRecord {
   factoryRetries: number;
   /** Machine-written note for the factory retry's Attempt: kept apart from `ownerReply`, shown to the implementer only, cleared by an owner retry. */
   factoryGuidance: string | null;
+  /** `pending`: escalated to Needs You but held back (no label, no notification) while triage decides; `done`: triage has run. */
+  factoryTriage: "pending" | "done" | null;
   /** sha256 of the workflow file (`.agents/archangel.json`) in force when the Thread was created. */
   workflowSha256: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Why an Attempt ended unsuccessfully, recorded at the source (never scraped from prose later). */
+export const ATTEMPT_ERROR_CATEGORIES = [
+  "cas_rejected",
+  "aborted",
+  "no_change",
+  "timeout",
+  "provider_unavailable",
+  "setup_failed",
+  "implementer_failed",
+  "static_rejection",
+  "gate_or_policy",
+  "other",
+] as const;
+export type AttemptErrorCategory = (typeof ATTEMPT_ERROR_CATEGORIES)[number];
+
+/** Thrown inside an Attempt where the cause is known, so the catch-all records a real category instead of "other". */
+export class AttemptError extends Error {
+  constructor(
+    readonly category: AttemptErrorCategory,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AttemptError";
+  }
 }
 
 export interface AttemptRecord {
@@ -63,6 +91,8 @@ export interface AttemptRecord {
   costUsd: number;
   transcriptPath: string | null;
   errorMessage: string | null;
+  /** null while running, on success, and on rows from before the category was recorded. */
+  errorCategory: AttemptErrorCategory | null;
   startedAt: number;
   finishedAt: number | null;
   /** Replay provenance, set when the Attempt ran (null for rows from before capture). */
@@ -179,6 +209,7 @@ CREATE TABLE IF NOT EXISTS threads (
   retry_grants INTEGER NOT NULL DEFAULT 0,
   factory_retries INTEGER NOT NULL DEFAULT 0,
   factory_guidance TEXT,
+  factory_triage TEXT CHECK (factory_triage IN ('pending', 'done')),
   workflow_sha256 TEXT,
   /** The issue text as it was at intake (replay and eval show it to the reviewers). Null for Threads from before it was kept. */
   issue_body TEXT,
@@ -389,5 +420,14 @@ CREATE TABLE IF NOT EXISTS eval_results (
   vendors TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (prompt_hash, case_id)
+);
+
+-- Model-tier benchmark results per (chain/role/prompt key, case): real implementer runs are expensive, so they are never repeated.
+CREATE TABLE IF NOT EXISTS bench_results (
+  cache_key TEXT NOT NULL,
+  case_id TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (cache_key, case_id)
 );
 `;

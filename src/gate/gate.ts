@@ -155,9 +155,13 @@ export async function runGateForActions(
   proofHeadSha?: string,
 ): Promise<GateReport> {
   log(`::stop-commands::${token}`);
-  const report = await run(opts);
-  log(JSON.stringify(report, null, 2));
-  log(`::${token}::`);
+  let report: GateReport;
+  try {
+    report = await run(opts);
+    log(JSON.stringify(report, null, 2));
+  } finally {
+    log(`::${token}::`);
+  }
   if (report.proof && proofHeadSha !== undefined && /^[0-9a-f]{40}$/.test(proofHeadSha)) {
     const message = JSON.stringify({ head_sha: proofHeadSha, ...report.proof })
       .replace(/%/g, "%25")
@@ -253,23 +257,15 @@ async function runGit(repoDir: string, args: string[], env: NodeJS.ProcessEnv): 
   return stdout;
 }
 
-async function gitObjectExists(repoDir: string, spec: string, env: NodeJS.ProcessEnv): Promise<boolean> {
-  try {
-    await runGit(repoDir, ["cat-file", "-e", spec], env);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function readGitFileStrict(
   repoDir: string,
   ref: string,
   relPath: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
-  const exists = await gitObjectExists(repoDir, `${ref}:${relPath}`, env);
-  if (!exists) return null;
+  // Use ls-tree so a path absent from a valid tree returns null, while git/object errors throw (fail closed).
+  const listed = await runGit(repoDir, ["ls-tree", "--name-only", ref, "--", relPath], env);
+  if (listed.trim() === "") return null;
   return runGit(repoDir, ["show", `${ref}:${relPath}`], env);
 }
 
@@ -404,6 +400,26 @@ function hashFileIfExists(fullPath: string): string | null {
   return crypto.createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
 }
 
+function compilePreCommitRegex(
+  pattern: unknown,
+  label: string,
+  violations: string[],
+): { ok: true; re: RegExp | null } | { ok: false } {
+  if (pattern === undefined || pattern === null || pattern === "") return { ok: true, re: null };
+  if (typeof pattern !== "string") {
+    violations.push(`invalid ${label} regex: expected string, got ${typeof pattern}`);
+    return { ok: false };
+  }
+  try {
+    return { ok: true, re: new RegExp(pattern) };
+  } catch (err) {
+    violations.push(
+      `invalid ${label} regex '${pattern}': ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ok: false };
+  }
+}
+
 async function runRepoPreCommit(
   worktreeDir: string,
   configRaw: string,
@@ -430,8 +446,13 @@ async function runRepoPreCommit(
   const localRepos = repos.filter((r) => r.repo === "local");
 
   // Fail closed on top-level files/exclude filters if running natively without pre-commit CLI.
-  const topInclude = typeof parsed.files === "string" ? new RegExp(parsed.files) : null;
-  const topExclude = typeof parsed.exclude === "string" ? new RegExp(parsed.exclude) : null;
+  const topIncludeRes = compilePreCommitRegex(parsed.files, `${configFilename} 'files'`, violations);
+  const topExcludeRes = compilePreCommitRegex(parsed.exclude, `${configFilename} 'exclude'`, violations);
+  if (!topIncludeRes.ok || !topExcludeRes.ok) {
+    return { hooksRun, violations };
+  }
+  const topInclude = topIncludeRes.re;
+  const topExclude = topExcludeRes.re;
 
   const beforeHashes = new Map<string, string | null>();
   for (const rel of changedFiles) {
@@ -466,8 +487,13 @@ async function runRepoPreCommit(
         continue;
       }
 
-      const includeRe = hook.files ? new RegExp(hook.files) : null;
-      const excludeRe = hook.exclude ? new RegExp(hook.exclude) : null;
+      const includeRes = compilePreCommitRegex(hook.files, `pre-commit hook '${hook.id}' 'files'`, violations);
+      const excludeRes = compilePreCommitRegex(hook.exclude, `pre-commit hook '${hook.id}' 'exclude'`, violations);
+      if (!includeRes.ok || !excludeRes.ok) {
+        continue;
+      }
+      const includeRe = includeRes.re;
+      const excludeRe = excludeRes.re;
       const matched = changedFiles.filter((f) => {
         if (topInclude && !topInclude.test(f)) return false;
         if (topExclude && topExclude.test(f)) return false;

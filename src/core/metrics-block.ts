@@ -1,31 +1,9 @@
 import { correctionCategories } from "./corrections.js";
 import { EscalationCodeSchema } from "./thread-machine.js";
-import type { ReviewerVendor } from "../ledger/schema.js";
+import { ATTEMPT_ERROR_CATEGORIES, type AttemptErrorCategory, type ReviewerVendor } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 
 export const METRICS_WINDOW_DAYS = 14;
-
-export const ATTEMPT_ERROR_CATEGORIES = [
-  "cas_rejected",
-  "aborted",
-  "no_change",
-  "timeout",
-  "provider_unavailable",
-  "gate_or_policy",
-  "other",
-] as const;
-export type AttemptErrorCategory = (typeof ATTEMPT_ERROR_CATEGORIES)[number];
-
-/** Maps a raw (untrusted) attempt error message to a fixed category; the message itself is never kept. */
-export function categorizeAttemptError(message: string): AttemptErrorCategory {
-  if (/CAS transition/i.test(message)) return "cas_rejected";
-  if (/^Aborted/i.test(message)) return "aborted";
-  if (/no new changes/i.test(message)) return "no_change";
-  if (/time.?out|timed out/i.test(message)) return "timeout";
-  if (/ENOENT|not logged in|exited \d+|rate.?limit|quota|unavailable/i.test(message)) return "provider_unavailable";
-  if (/protected|violation|gate|bound|exceed/i.test(message)) return "gate_or_policy";
-  return "other";
-}
 
 /** The keys of the `name: value` lines in the metrics block; a pitch may cite only these. */
 export const METRIC_KEYS = [

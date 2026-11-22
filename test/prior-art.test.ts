@@ -56,7 +56,7 @@ const thread: ThreadRecord = {
   issueNumber: 7, repo: "acme/app", title: "Example", themeLabel: null, bodySha256: "x",
   phase: { kind: "awaiting_gate", prNumber: 10, headSha: "abcdef1234567890", baseSha: "b1", since: 0, nudgedAt: null },
   state: "awaiting_gate", version: 1, mode: "autonomous", branchName: "factory/7", lastSummary: null,
-  implementCount: 1, revisionCount: 0, rebaseCount: 0, implementerVendors: [], ownerReply: null, retryGrants: 0, factoryRetries: 0, factoryGuidance: null,
+  implementCount: 1, revisionCount: 0, rebaseCount: 0, implementerVendors: [], ownerReply: null, retryGrants: 0, factoryRetries: 0, factoryGuidance: null, factoryTriage: null,
   workflowSha256: null, createdAt: 0, updatedAt: 0,
 };
 const recap = (summary: string | null) => renderRecapComment({ thread, reviews: [], blockers: [], summary });

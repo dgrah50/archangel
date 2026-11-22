@@ -1,5 +1,6 @@
 import type { Ledger } from "../ledger/store.js";
-import { ATTEMPT_ERROR_CATEGORIES, METRICS_WINDOW_DAYS, UNAVAILABLE, categorizeAttemptError } from "./metrics-block.js";
+import { ATTEMPT_ERROR_CATEGORIES, type AttemptErrorCategory } from "../ledger/schema.js";
+import { METRICS_WINDOW_DAYS, UNAVAILABLE } from "./metrics-block.js";
 import { EscalationCodeSchema } from "./thread-machine.js";
 import { workClassOfBranch } from "./work-class.js";
 
@@ -32,14 +33,14 @@ const REPO_RE = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const BUCKET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 
 /** Maps a failed Attempt's recorded violations to Gate violation kinds; the text itself is never kept. */
-export function gateViolationKinds(message: string): GateViolationKind[] {
+export function gateViolationKinds(message: string, category: string | null): GateViolationKind[] {
   const kinds = new Set<GateViolationKind>();
   if (/protected path modified/i.test(message)) kinds.add("protected_path");
   if (/exceeds limit|changed files \d+|non-test changed lines|total changed lines|binary file modified|diff is empty/i.test(message)) kinds.add("bounds");
   if (/no new test file added/i.test(message)) kinds.add("no_new_test");
   if (/already passed on base/i.test(message)) kinds.add("already_fixed");
   if (/base failed for reasons unrelated/i.test(message)) kinds.add("unrelated_base_failure");
-  if (kinds.size === 0 && categorizeAttemptError(message) === "gate_or_policy") kinds.add("other");
+  if (kinds.size === 0 && (category === "gate_or_policy" || category === "static_rejection")) kinds.add("other");
   return [...kinds];
 }
 
@@ -155,9 +156,9 @@ export function buildClusterBlock(rows: ClusterRows | null, now: number): string
     if (a.status !== "failed" || !a.errorMessage) continue;
     if (week === "This") attempts.failedThis++;
     else attempts.failedPrev++;
-    const cat = categorizeAttemptError(a.errorMessage);
-    att.add(ATTEMPT_ERROR_CATEGORIES.includes(cat) ? cat : "other", a.ts, now);
-    for (const k of gateViolationKinds(a.errorMessage)) gate.add(k, a.ts, now);
+    const cat = a.errorCategory ?? "other"; // rows from before the category was recorded
+    att.add((ATTEMPT_ERROR_CATEGORIES as readonly string[]).includes(cat) ? cat : "other", a.ts, now);
+    for (const k of gateViolationKinds(a.errorMessage, a.errorCategory)) gate.add(k, a.ts, now);
   }
 
   return [

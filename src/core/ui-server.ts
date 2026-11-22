@@ -9,9 +9,10 @@ import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doctor.js";
 import { buildHostStatus } from "./host-facts.js";
+import { listReports } from "./eval-reports.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
-import { buildUiState, buildWorkflowsState } from "./ui-state.js";
+import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -34,6 +35,8 @@ export function assertBindable(host: string, allowRemote: boolean): void {
   }
 }
 
+/** Error code for a read that hit a table or column the daemon has not migrated into the Ledger yet. */
+export const SCHEMA_BEHIND = "ledger_schema_behind";
 export const TOKEN_HEADER = "x-archangel-token";
 const PROPOSE_PATH = /^\/api\/workflows\/([^/]+)\/propose$/;
 const MAX_BODY_BYTES = 1_000_000;
@@ -69,7 +72,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; doctor?: DoctorRunner },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; dataDir?: string; doctor?: DoctorRunner },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -151,6 +154,7 @@ export async function startUiServer(
         }
         return sendJson(res, 200, await doctor(scope as DoctorScope, smoke));
       }
+      if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));
       if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -184,9 +188,10 @@ export async function startUiServer(
     } catch (err) {
       // Bodies are built before any header is written, so a failure here can still answer with an error.
       const message = err instanceof Error ? err.message : "error";
-      const status = err instanceof URIError ? 400 : 500;
+      const behind = isSchemaBehind(err);
+      const status = err instanceof URIError ? 400 : behind ? 503 : 500;
       if (res.headersSent) res.destroy();
-      else if ((req.url ?? "").startsWith("/api/")) sendJson(res, status, { error: message });
+      else if ((req.url ?? "").startsWith("/api/")) sendJson(res, status, behind ? { error: SCHEMA_BEHIND, detail: message } : { error: message });
       else res.writeHead(status).end(message);
     }
   });

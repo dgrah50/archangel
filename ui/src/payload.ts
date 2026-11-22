@@ -1,5 +1,6 @@
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { EvalsState } from "../../src/core/eval-reports.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
@@ -22,6 +23,7 @@ export function isUiState(v: unknown): v is UiState {
     obj(v.autonomySteps) &&
     Array.isArray(v.daily) &&
     Array.isArray(v.scouts) &&
+    (Array.isArray(v.faults) || v.faults === null) &&
     (v.daemonHeartbeatAt === null || typeof v.daemonHeartbeatAt === "number")
   );
 }
@@ -42,8 +44,22 @@ export function isSettingsState(v: unknown): v is SettingsState {
   return obj(v) && obj(v.host) && typeof v.host.state === "string" && obj(v.status) && Array.isArray(v.env) && obj(v.kernel) && Array.isArray(v.kernel.universalProtected);
 }
 
+export function isEvalsState(v: unknown): v is EvalsState {
+  return obj(v) && typeof v.generatedAt === "number" && Array.isArray(v.runs) && v.runs.every((r) => obj(r) && typeof r.file === "string" && typeof r.savedAt === "number" && typeof r.unreadable === "boolean");
+}
+
 export function isLogs(v: unknown): v is LogsPayload {
   return obj(v) && typeof v.missing === "boolean" && Array.isArray(v.entries);
+}
+
+export const SCHEMA_BEHIND = "ledger_schema_behind";
+export const SCHEMA_BEHIND_MESSAGE = "The Ledger schema is older than this dashboard. Restart the daemon (`archangel daemon install` or a restart) so it can migrate.";
+
+/** A feed failure that carries the server's error code, so the UI can show a specific state instead of a generic one. */
+export class FeedError extends Error {
+  constructor(message: string, readonly code: string | null) {
+    super(message);
+  }
 }
 
 /** One feed polled independently of the others, validated before it is trusted. */
@@ -56,7 +72,11 @@ export async function fetchFeed<T>(url: string, valid: (v: unknown) => v is T): 
   } catch {
     throw new Error(`${url}: HTTP ${res.status}, reply is not JSON`);
   }
-  if (!res.ok) throw new Error(`${url}: ${(body as { error?: string } | null)?.error ?? `HTTP ${res.status}`}`);
+  if (!res.ok) {
+    const b = body as { error?: string; detail?: string } | null;
+    if (b?.error === SCHEMA_BEHIND) throw new FeedError(`${url}: ${SCHEMA_BEHIND_MESSAGE}${b.detail ? ` (${b.detail})` : ""}`, SCHEMA_BEHIND);
+    throw new FeedError(`${url}: ${b?.error ?? `HTTP ${res.status}`}`, null);
+  }
   if (!valid(body)) throw new Error(`${url}: unexpected data shape (partial or corrupt reply)`);
   return body;
 }

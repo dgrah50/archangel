@@ -54,13 +54,17 @@
       "src/core/command-machine.ts",
       "src/core/corrections.ts",
       "src/core/pitch-machine.ts",
+      "src/core/triage.ts",
+      "src/core/factory-retry.ts",
       "src/core/eval.ts",
       "src/core/eval-candidate.ts",
+      "src/core/bench-tiers.ts",
       "src/core/ui-thread.ts",
       "src/core/host-facts.ts",
       "src/core/ui-doctor.ts",
       "src/core/ui-settings.ts",
-      "src/core/accounts.ts"
+      "src/core/accounts.ts",
+      "src/core/eval-reports.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
