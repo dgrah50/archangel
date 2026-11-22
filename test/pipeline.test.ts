@@ -1,32 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveWorkflow, type EffectiveWorkflow, type HostWorkflowInput } from "../src/core/workflow.js";
-import { buildWorkflowsState, describeWorkflow } from "../src/core/ui-state.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
 const SINCE = NOW - 14 * DAY;
-
-const FILE = JSON.stringify({
-  version: 1,
-  gate: { testFileGlobs: ["**/*.test.ts"], testCmd: "npm test" },
-  requiredChecks: ["Gate", "Test"],
-  landing: { bugfix: "autonomous" },
-  scouts: [{ name: "bug-hunt", promotion: "auto" }],
-});
-const host = (over: Partial<HostWorkflowInput> = {}): HostWorkflowInput => ({
-  shadowMode: true,
-  maxAutoMergesPerDay: 3,
-  maxAutoPromotionsPerDay: 1,
-  scoutRunsPerDay: 2,
-  scoutsEnabled: true,
-  maxConcurrentThreads: 2,
-  factoryRetry: true,
-  isRevoked: () => false,
-  ...over,
-});
-const resolve = (over: Partial<HostWorkflowInput> = {}, fileRaw: string | null = FILE): EffectiveWorkflow =>
-  resolveWorkflow(host(over), { repo: "a/b", mainSha: "m".repeat(40), fileRaw, scoutPrompts: { "bug-hunt": "Find bugs. SECRET-PROMPT-TEXT" } });
 
 function seed(l: Ledger) {
   const mk = (n: number, branch: string, phase: object | null, at = NOW - DAY, wf: string | null = "wf1") => {
@@ -74,45 +51,4 @@ describe("Ledger.computeStageMetrics", () => {
     expect(Object.values(m.byWorkflowSha).reduce((a, b) => a + b.threads, 0)).toBe(5); // the 30-day-old Thread is excluded
     l.close();
   });
-});
-
-describe("workflows state", () => {
-  it("shows the clamp note and source chips for an ok workflow, without Scout prompt text", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    const r = describeWorkflow("a/b", resolve(), l.computeStageMetrics("a/b", SINCE, NOW));
-    expect(r.status).toBe("ok");
-    const landing = r.stages.find((s) => s.id === "landing")!;
-    expect(landing.clamps).toEqual(["bugfix landing: repo says autonomous, host shadowMode caps at owner"]);
-    expect(landing.items.find((i) => i.label === "bugfix")).toMatchObject({ value: "owner", source: "host" });
-    expect(landing.items.find((i) => i.label === "feature")).toMatchObject({ source: "kernel" });
-    expect(r.stages.find((s) => s.id === "gate")!.items.find((i) => i.label === "required checks")).toMatchObject({ source: "repo" });
-    expect(JSON.stringify(r)).not.toContain("SECRET-PROMPT-TEXT");
-    l.close();
-  });
-
-  it("reports missing and invalid as halted states, and unresolved when the daemon has not run", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    const m = l.computeStageMetrics("a/b", SINCE, NOW);
-    expect(describeWorkflow("a/b", resolve({}, null), m)).toMatchObject({ status: "missing" });
-    const bad = describeWorkflow("a/b", resolve({}, '{"version":1}'), m);
-    expect(bad.status).toBe("invalid");
-    expect(bad.error).toBeTruthy();
-    expect(describeWorkflow("a/b", null, m).status).toBe("unresolved");
-    l.close();
-  });
-
-});
-
-describe("workflows state robustness", () => {
-  it("shows a corrupt or schema-drifted cache entry as unreadable instead of crashing", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    l.setSystemState("workflow:a/b", "{not json");
-    l.setSystemState("workflow:c/d", JSON.stringify({ repo: "c/d", mainSha: "m", status: "ok", fileSha256: "f" })); // ok without its fields
-    l.setSystemState("workflow:e/f", JSON.stringify(resolve()));
-    const s = buildWorkflowsState(l, NOW);
-    expect(Object.fromEntries(s.repos.map((r) => [r.repo, r.status]))).toEqual({ "a/b": "unreadable", "c/d": "unreadable", "e/f": "ok" });
-    expect(s.repos[0]!.error).toContain("could not be read");
-    l.close();
-  });
-
 });

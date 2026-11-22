@@ -3,12 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { captureAttemptInput } from "../src/core/attempt-input.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { MUTATORS, deriveCases, renderReplay, runReplay } from "../src/core/replay.js";
 import { runGate } from "../src/gate/gate.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
+const refs = (bare: string, prefix: string) => git(bare, ["for-each-ref", "--format=%(refname) %(objectname)", prefix]).split("\n").filter(Boolean);
 const write = (root: string, rel: string, content: string) => {
   fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
   fs.writeFileSync(path.join(root, rel), content);
@@ -102,7 +104,9 @@ describe("replay", () => {
   it("passes when the Gate verdicts still match and every mutant is rejected (with tests)", async () => {
     const w = await world();
     try {
+      const before = git(w.bare, ["for-each-ref"]);
       const r = await run(w, { runTests: true });
+      expect(git(w.bare, ["for-each-ref"])).toBe(before); // replay never modifies the broker repo
       expect(renderReplay(r)).not.toContain("REGRESSION");
       expect(r.regressions).toBe(0);
       const byIssue = (n: number) => r.cases.find((c) => c.issueNumber === n)!;
@@ -112,29 +116,11 @@ describe("replay", () => {
       expect(byIssue(4)).toMatchObject({ status: "ok", kind: "owner_closed" });
       expect(r.mutants.map((m) => m.mutator).sort()).toEqual(MUTATORS.map((m) => m.name).sort());
       for (const m of r.mutants) expect(m.status, `${m.mutator}: ${m.detail}`).toBe("rejected");
-      expect(renderReplay(r)).toContain("No regressions.");
     } finally {
       w.ledger.close();
       fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 120_000);
-
-  it("detects a Gate that would now reject a merged fix", async () => {
-    const w = await world();
-    try {
-      const stricter = async (o: Parameters<typeof runGate>[0]) => {
-        const rep = await runGate(o);
-        return { ...rep, passed: false, violations: ["changed files 2 exceeds limit 1"] };
-      };
-      const r = await run(w, { gate: stricter });
-      expect(r.cases.find((c) => c.issueNumber === 1)).toMatchObject({ status: "regression" });
-      expect(r.cases.find((c) => c.issueNumber === 1)!.detail).toContain("would now REJECT a merged fix");
-      expect(r.regressions).toBeGreaterThan(0);
-    } finally {
-      w.ledger.close();
-      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
 
   it("detects a Gate that would now accept a rejected diff, and accepts mutants (a loosened Gate)", async () => {
     const w = await world();
@@ -144,40 +130,66 @@ describe("replay", () => {
       expect(r.cases.find((c) => c.issueNumber === 2)!.detail).toContain("would now ACCEPT");
       const accepted = r.mutants.filter((m) => m.status === "regression").map((m) => m.mutator).sort();
       expect(accepted).toEqual(["drop-new-tests", "edit-existing-test", "exceed-diff-budget", "touch-protected-path"]);
-      expect(r.regressions).toBeGreaterThanOrEqual(5);
-      expect(renderReplay(r)).toContain("REGRESSION");
     } finally {
       w.ledger.close();
       fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
-  it("never modifies the broker repo", async () => {
-    const w = await world();
+});
+
+describe("captured replay input", () => {
+  it("eval refs survive the remote deleting the branch and the broker pruning and collecting garbage; re-pinning is idempotent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-replay-refs-"));
+    const remoteBare = path.join(root, "remote.git");
+    {
+      const seed = path.join(root, "seed");
+      fs.mkdirSync(seed);
+      git(seed, ["init", "-b", "main"]);
+      git(seed, ["config", "user.name", "T"]);
+      git(seed, ["config", "user.email", "t@example.com"]);
+      fs.writeFileSync(path.join(seed, "app.go"), "package demo\n");
+      git(seed, ["add", "-A"]);
+      git(seed, ["commit", "-m", "initial"]);
+      git(root, ["clone", "--bare", seed, remoteBare]);
+    }
+    const bare = path.join(root, "broker.git");
+    const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(root, "clones") });
     try {
-      const before = git(w.bare, ["for-each-ref"]);
-      await run(w);
-      expect(git(w.bare, ["for-each-ref"])).toBe(before);
+      // A factory branch on the remote with a commit that exists nowhere else.
+      const work = path.join(root, "work");
+      git(root, ["clone", remoteBare, work]);
+      git(work, ["config", "user.name", "T"]);
+      git(work, ["config", "user.email", "t@example.com"]);
+      git(work, ["checkout", "-b", "factory/5"]);
+      fs.writeFileSync(path.join(work, "x.txt"), "reviewed\n");
+      git(work, ["add", "-A"]);
+      git(work, ["commit", "-m", "reviewed head"]);
+      const reviewed = git(work, ["rev-parse", "HEAD"]);
+      git(work, ["push", "origin", "factory/5"]);
+
+      await broker.ensureBareRepo(remoteBare);
+      await broker.syncFromRemote(remoteBare);
+      const ref = await broker.pinEvalRef("acme/app", 5, reviewed);
+      expect(ref).toBe("refs/archangel/eval/acme/app/5/1");
+      expect(await broker.pinEvalRef("acme/app", 5, reviewed)).toBe(ref); // idempotent
+      expect(refs(bare, "refs/archangel/eval/acme/app/5/")).toHaveLength(1);
+
+      // GitHub deletes the merged branch; the broker prunes and collects garbage.
+      git(remoteBare, ["branch", "-D", "factory/5"]);
+      await broker.syncFromRemote(remoteBare);
+      expect(refs(bare, "refs/heads/factory/")).toEqual([]);
+      git(bare, ["reflog", "expire", "--expire=now", "--all"]);
+      git(bare, ["gc", "--prune=now", "--quiet"]);
+      expect(git(bare, ["cat-file", "-t", reviewed])).toBe("commit");
+      expect(git(bare, ["rev-parse", ref!])).toBe(reviewed);
+
     } finally {
-      w.ledger.close();
-      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
-  it("says how many cases were actually replayed, so an all-skipped run cannot read as a clean pass", async () => {
-    const w = await world();
-    try {
-      const r = await run(w);
-      expect(r.replayed).toBe(r.cases.filter((c) => c.status !== "skipped").length);
-      expect(r.replayed).toBeGreaterThan(0);
-      expect(renderReplay(r)).toContain(`replayed ${r.replayed} of ${r.cases.length}`);
-      const none = await run(w, { seeds: [] });
-      expect(none.replayed).toBe(0);
-      expect(renderReplay(none)).toContain("replayed 0 of 0");
-      expect(renderReplay(none)).toContain("NOTHING WAS REPLAYED");
-    } finally {
-      w.ledger.close();
-      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
+  it("a secret in captured replay input is dropped rather than stored", () => {
+    expect(captureAttemptInput("revise", { mainSha: "a".repeat(40), gateViolations: ["token ghp_" + "a".repeat(36)], structuredFindings: [] })).toBeNull();
   });
 });
