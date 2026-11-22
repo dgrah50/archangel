@@ -7,6 +7,7 @@ import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Accou
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import { promptTemplateSha } from "./prompts.js";
+import { timeReview } from "../core/telemetry.js";
 import {
   DEFAULT_REVIEW_PROMPTS,
   parseStrictVerdict,
@@ -301,7 +302,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
       }
     };
 
-    const settled = await Promise.allSettled(active.map((item, idx) => runEntry(item, idx)));
+    const settled = await Promise.allSettled(active.map((item, idx) => timeReview(item.vendor, runEntry(item, idx))));
     const results: VendorReviewResult[] = [];
     const errors: Array<{ vendor: ReviewerVendor; error: string }> = [];
 

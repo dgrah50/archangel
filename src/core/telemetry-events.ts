@@ -7,7 +7,7 @@
 const ID = "id" as const;
 type TagSpec = readonly string[] | typeof ID;
 
-const GITHUB_ENDPOINTS = ["issues", "pulls", "checks", "git", "contents", "reviews", "signals", "auth", "other"] as const;
+const GITHUB_ENDPOINTS = ["issues", "pulls", "checks", "git", "contents", "signals", "auth", "other"] as const;
 const STATUS_CLASSES = ["2xx", "4xx", "5xx", "429", "error"] as const;
 const PROVIDERS = ["claude", "codex", "agy"] as const;
 const ATTEMPT_KINDS = ["plan", "implement", "revise", "rebase"] as const;
@@ -27,7 +27,6 @@ export const TELEMETRY_EVENTS = {
   scout_run: { purpose: "One Scout run finished (value 1) by outcome.", tags: { outcome: ["ran", "partial_error", "failed_output", "skipped", "paused", "dry_run"] } },
   signal_ingested: { purpose: "Signals newly recorded by the adapters in one pass, by kind (value is the count).", tags: { kind: ["pr_merged", "release", "advisory", "schedule", "telemetry_anomaly"] } },
   signal_action: { purpose: "A signal rule acted (value 1) by action and outcome.", tags: { action: ["file_issue", "run_scout", "run_pitch"], outcome: ["done", "failed", "rejected"] } },
-  ui_request: { purpose: "One dashboard server request (value 1) by route class and status class.", tags: { route: ["state", "api", "asset", "write"], status: STATUS_CLASSES } },
   daemon_start: { purpose: "The daemon started (value 1); a burst of these is a restart loop.", tags: {} },
 } as const satisfies Record<string, { purpose: string; tags: Record<string, TagSpec> }>;
 

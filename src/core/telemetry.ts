@@ -35,3 +35,16 @@ export function emit<N extends TelemetryName>(name: N, value: number, tags: Tele
     lastDrop = err instanceof Error ? err.message : String(err);
   }
 }
+
+/** Times one reviewer run: records its latency with the verdict it gave (or "error" when it threw), and passes the outcome through untouched. */
+export async function timeReview<T extends { verdict: "approve" | "veto" }>(vendor: TelemetryTags<"review_ms">["vendor"], run: Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  try {
+    const result = await run;
+    emit("review_ms", Date.now() - t0, { vendor, verdict: result.verdict });
+    return result;
+  } catch (err) {
+    emit("review_ms", Date.now() - t0, { vendor, verdict: "error" });
+    throw err;
+  }
+}

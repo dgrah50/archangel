@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { REPO_SLUG_RE, type GatePolicy } from "../config.js";
+import { emit } from "../core/telemetry.js";
 import {
   getDiffStats,
   isProtectedPath,
@@ -127,12 +128,14 @@ export class GitBroker {
   async ensureBareRepo(remoteUrl: string): Promise<void> {
     fs.mkdirSync(path.dirname(this.bareRepoPath), { recursive: true });
     if (!fs.existsSync(this.bareRepoPath)) {
+      const t0 = Date.now();
       await this.runGit(path.dirname(this.bareRepoPath), [
         "clone",
         "--bare",
         remoteUrl,
         this.bareRepoPath,
       ]);
+      emit("broker_ms", Date.now() - t0, { op: "clone" });
       // Never retain embedded token URLs inside bare repo config.
       await this.runGit(this.bareRepoPath, ["remote", "remove", "origin"]);
       return;
@@ -141,6 +144,7 @@ export class GitBroker {
   }
 
   async syncFromRemote(remoteUrl: string): Promise<void> {
+    const t0 = Date.now();
     await this.runGit(this.bareRepoPath, [
       "fetch",
       "--prune",
@@ -148,6 +152,7 @@ export class GitBroker {
       `+refs/heads/${this.defaultBranch}:refs/heads/${this.defaultBranch}`,
       "+refs/heads/factory/*:refs/heads/factory/*",
     ]);
+    emit("broker_ms", Date.now() - t0, { op: "fetch" });
   }
 
   /**
@@ -196,7 +201,9 @@ export class GitBroker {
   async createThrowawayClone(issueNumber: number, startRef: string): Promise<string> {
     fs.mkdirSync(this.clonesDir, { recursive: true });
     const cloneDir = path.join(this.clonesDir, `issue-${issueNumber}-${Date.now()}`);
+    const t0 = Date.now();
     await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, cloneDir]);
+    emit("broker_ms", Date.now() - t0, { op: "clone" });
     // Ensure unpushed staging refs (`refs/archangel/staging/<n>`) are reachable before checkout.
     const hasStart = await this.hasCommitIn(cloneDir, startRef);
     if (!hasStart) {
@@ -346,17 +353,27 @@ export class GitBroker {
     policyRef: string,
     workClass?: WorkClass,
   ): Promise<LocalGateReport> {
-    return runGate({
-      workClass,
-      policyRef,
-      repoDir: this.bareRepoPath,
-      baseRef: baseSha,
-      headRef: headSha,
-      skipTests: this.localGateSkipTests,
-      baseRunsOverride: 1,
-      headRunsOverride: 1,
-      commandTimeoutMs: this.localGateTimeoutMs,
-    });
+    const t0 = Date.now();
+    let report: LocalGateReport | undefined;
+    try {
+      report = await runGate({
+        workClass,
+        policyRef,
+        repoDir: this.bareRepoPath,
+        baseRef: baseSha,
+        headRef: headSha,
+        skipTests: this.localGateSkipTests,
+        baseRunsOverride: 1,
+        headRunsOverride: 1,
+        commandTimeoutMs: this.localGateTimeoutMs,
+      });
+      return report;
+    } finally {
+      const ms = Date.now() - t0;
+      // The Gate does not report a timeout as such: a failed run that lasted at least the command timeout hit it.
+      const outcome = !report ? "error" : report.passed ? "passed" : ms >= this.localGateTimeoutMs ? "timeout" : "failed";
+      emit("gate_ms", ms, { outcome });
+    }
   }
 
   /**
