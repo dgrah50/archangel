@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
-import { GatePolicySchema, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -87,9 +87,21 @@ export class Reconciler {
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
-  private effectiveGate: GatePolicy = GatePolicySchema.parse({});
-  private effectiveRequiredChecks: string[] = ["Gate"];
-  private effectiveReviewRubric: string | undefined;
+
+  /** The resolved workflow, or an error when the repo is halted: nothing falls back to defaults. */
+  private requireWorkflow(): OkWorkflow {
+    if (!this.workflow) throw new Error("no valid workflow for this repo (halted)");
+    return this.workflow;
+  }
+  private get effectiveGate(): GatePolicy {
+    return this.requireWorkflow().gate;
+  }
+  private get effectiveRequiredChecks(): string[] {
+    return this.requireWorkflow().requiredChecks;
+  }
+  private get effectiveReviewRubric(): string | undefined {
+    return this.requireWorkflow().rubric;
+  }
 
   constructor(deps: ReconcilerDeps) {
     this.cfg = deps.config;
@@ -175,12 +187,7 @@ export class Reconciler {
     const resolved = await loadWorkflow(this.broker, this.cfg, this.ledger, mainSha);
     this.cacheWorkflow(resolved, now);
     const policyError = workflowError(resolved);
-    if (resolved.status === "ok") {
-      this.workflow = resolved;
-      this.effectiveGate = resolved.gate;
-      this.effectiveRequiredChecks = resolved.requiredChecks;
-      this.effectiveReviewRubric = resolved.rubric;
-    }
+    this.workflow = resolved.status === "ok" ? resolved : null;
 
     if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
 
@@ -205,6 +212,9 @@ export class Reconciler {
           this.logger.warn("config/repo_policy_notify_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
         }
       }
+      // Halted: in-flight Attempts must not keep spending or pushing under a policy that is gone. Aborting with
+      // cause "control" returns each Thread to where it resumes once the workflow is valid again.
+      this.abortAllActive("control");
       await this.processPendingCommands(mainSha, now);
       await this.reconcilePostMergeMain(mainSha, now);
       return;
@@ -909,7 +919,7 @@ export class Reconciler {
     now: number,
     explicitStartSha?: string,
   ): Promise<boolean> {
-    if (this.runningTasks.has(thread.issueNumber)) {
+    if (this.runningTasks.has(thread.issueNumber) || !this.workflow) {
       return false;
     }
     if (thread.mode === "advisory") {
@@ -1082,8 +1092,9 @@ export class Reconciler {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
 
-      if (result.aborted) {
-        const cause = task.abortCause ?? "timeout";
+      // The repo may have been halted while the implementer ran: treat that like a control abort.
+      if (result.aborted || !this.workflow) {
+        const cause = task.abortCause ?? (this.workflow ? "timeout" : "control");
         this.ledger.finishAttempt(attemptId, {
           status: "aborted",
           costUsd: actualCostUsd,
