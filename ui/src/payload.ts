@@ -56,7 +56,7 @@ export function isLogs(v: unknown): v is LogsPayload {
 }
 
 export const SCHEMA_BEHIND = "ledger_schema_behind";
-export const SCHEMA_BEHIND_MESSAGE = "The Ledger schema is older than this dashboard. Restart the daemon (`archangel daemon install` or a restart) so it can migrate.";
+export const SCHEMA_BEHIND_MESSAGE = "The Ledger schema is older than this dashboard. Restart the daemon (`archangel daemon restart`) so it can migrate.";
 
 /** A feed failure that carries the server's error code, so the UI can show a specific state instead of a generic one. */
 export class FeedError extends Error {

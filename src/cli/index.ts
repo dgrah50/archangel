@@ -1222,6 +1222,23 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
   });
 
 daemonCmd
+  .command("restart")
+  .description("Restart the loaded launchd agent (launchctl kickstart -k)")
+  .action(() => {
+    if (process.platform !== "darwin") {
+      throw new Error("`archangel daemon restart` currently supports macOS (launchd) only.");
+    }
+    const target = `gui/${process.getuid!()}/${LAUNCHD_LABEL}`;
+    try {
+      execFileSync("launchctl", ["print", target], { stdio: "ignore" });
+    } catch {
+      throw new Error(`${LAUNCHD_LABEL} is not loaded in launchd. Run \`archangel daemon install\` first.`);
+    }
+    execFileSync("launchctl", ["kickstart", "-k", target], { stdio: "inherit" });
+    console.log(`Restarted ${LAUNCHD_LABEL}.`);
+  });
+
+daemonCmd
   .command("uninstall")
   .description("Unload and remove ~/Library/LaunchAgents/com.archangel.daemon.plist")
   .action(() => {

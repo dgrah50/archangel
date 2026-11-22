@@ -311,7 +311,7 @@ export function SetupPage({ repo, state, settings, workflows, onRetry }: { repo:
           ) : null}
           {open === 6 ? (
             <Box mt="4">
-              {settings.data?.status.restartPending ? <><Alert tone="orange" title="Restart pending: the daemon has not loaded the file on disk." /><Cmd text="archangel daemon install" /></> : null}
+              {settings.data?.status.restartPending ? <><Alert tone="orange" title="Restart pending: the daemon has not loaded the file on disk." /><Cmd text="archangel daemon restart" /></> : null}
               {settings.data && !settings.data.status.reported ? <Alert tone="orange" title="No daemon has reported its loaded config yet. Start or restart the daemon." /> : null}
               {state.daemonHeartbeatAt === null ? <Alert title="Daemon offline: no daemon lock is held. Run `archangel start`." /> : null}
               {repo ? (() => {

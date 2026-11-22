@@ -9,8 +9,7 @@ import { CopyCommand, LinkButton, Metric, Meter, Owed, Page, PageHeadline, Ref, 
 
 /** The autonomy count is "near its cap" from this share of the cap. */
 const NEAR_CAP = 0.8;
-/** `launchctl kickstart -k` restarts the launchd agent that `archangel daemon install` writes. */
-const RESTART_COMMAND = "launchctl kickstart -k gui/$(id -u)/com.archangel.daemon";
+const RESTART_COMMAND = "archangel daemon restart";
 
 const gap = (ms: number) => age(ms).replace(/(\d)([a-z])/, "$1 $2");
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -49,7 +48,7 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
                   title={i.title}
                   meta={
                     <>
-                      {i.decisionClass.charAt(0).toUpperCase() + i.decisionClass.slice(1)} · <Ref repo={i.repo} num={i.issueNumber} /> · {i.recommendation}
+                      {i.decisionClass.charAt(0).toUpperCase() + i.decisionClass.slice(1)} · <Ref repo={i.repo} num={i.issueNumber} /> · {i.recommendationShort}
                     </>
                   }
                   action={
@@ -88,11 +87,15 @@ function StatusLine({ state: s }: { state: UiState }) {
   const live = beat !== null && s.generatedAt - beat <= 3 * 60_000;
   const at = new Date(s.generatedAt);
   const when = `${at.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, ${at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+  const heard = Math.max(0, ...Object.values(s.ownerLastHeardAt).map((v) => v ?? 0));
+  const heardAt = new Date(heard);
+  const heardDay = heardAt.toDateString() === at.toDateString() ? "" : `${heardAt.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, `;
+  const lastHeard = heard > 0 ? ` · you were last heard from at ${heardDay}${heardAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : "";
   return (
     <Flex align="center" gap="2">
       <Box w="7px" h="7px" rounded="full" flexShrink={0} bg={live ? "passed" : "owner"} />
       <Text textStyle="meta" lineHeight="18px" color="fg.subtle">
-        {when} · {live ? "daemon running" : "daemon offline"}
+        {when} · {live ? "daemon running" : "daemon offline"}{lastHeard}
       </Text>
     </Flex>
   );

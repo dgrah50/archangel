@@ -1453,6 +1453,12 @@ export class Ledger {
     };
   }
 
+  /** Timestamp of the latest owner audit row for the repo: the row that resets `autonomousStepsSinceOwner`. */
+  ownerLastHeardAt(repo = this.repo): number | null {
+    const row = this.db.prepare(`SELECT ts FROM audit_log WHERE repo = ? AND actor = 'owner' ORDER BY id DESC LIMIT 1`).get(repo) as { ts: number } | undefined;
+    return row?.ts ?? null;
+  }
+
   autonomousStepsSinceOwner(repo = this.repo): number {
     const row = this.db
       .prepare(
