@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ARCHANGEL_ROOT, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } from "./onboard.js";
+import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
 export const GATE_RELEVANT_PATHS = ["src/gate", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
@@ -77,14 +78,7 @@ export async function assessPinDrift(
 }
 
 async function readWorkflow(runner: OnboardRunner, repo: string, ref: string): Promise<{ content: string; blobSha: string } | null> {
-  try {
-    const raw = await runner.run("gh", ["api", `repos/${repo}/contents/${GATE_WORKFLOW_PATH}?ref=${ref}`, "--jq", "[.sha, .content] | @tsv"]);
-    const [blobSha, b64] = raw.trim().split("\t");
-    if (!blobSha || !b64) return null;
-    return { blobSha, content: Buffer.from(b64, "base64").toString("utf8") };
-  } catch {
-    return null;
-  }
+  return readRepoFile(runner, repo, ref, GATE_WORKFLOW_PATH);
 }
 
 /**
