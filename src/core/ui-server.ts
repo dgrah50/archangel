@@ -13,6 +13,8 @@ import { listReports } from "./eval-reports.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
+import { makeOnboardHandler } from "./ui-onboard.js";
+import { makeGhReads, type GhRead } from "./ui-gh.js";
 import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -40,6 +42,8 @@ export function assertBindable(host: string, allowRemote: boolean): void {
 export const SCHEMA_BEHIND = "ledger_schema_behind";
 export const TOKEN_HEADER = "x-archangel-token";
 const PROPOSE_PATH = /^\/api\/workflows\/([^/]+)\/propose$/;
+const ONBOARD_PATH = /^\/api\/onboard\/([^/]+)$/;
+const GH_PATH = /^\/api\/gh\/(repos|user|pr|protection)$/;
 const HOST_CONFIG_PATH = "/api/host-config";
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -77,7 +81,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void } },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -88,10 +92,15 @@ export async function startUiServer(
   const proposeEnabled = Boolean(opts.proposeRunner) && !opts.allowRemote;
   /** The token is embedded in the page whenever something that needs it is enabled; never in remote mode. */
   const hostConfigEnabled = Boolean(opts.hostConfig) && !opts.allowRemote;
+  /** W3 and R-gh use the owner's `gh` through the same runner as propose; never in remote mode. */
+  const onboardEnabled = proposeEnabled && Boolean(opts.onboardAudit);
+  const ghReadsEnabled = proposeEnabled;
   const tokenEnabled = !opts.allowRemote && (proposeEnabled || Boolean(opts.doctor) || hostConfigEnabled);
   const tokenOk = (given: string | string[] | undefined): boolean =>
     typeof given === "string" && given.length === token.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(token));
   const hostConfig = opts.hostConfig && hostConfigEnabled ? makeHostConfigHandler(opts.hostConfig) : null;
+  const onboard = onboardEnabled ? makeOnboardHandler({ runner: opts.proposeRunner!, audit: opts.onboardAudit! }) : null;
+  const ghReads = ghReadsEnabled ? makeGhReads({ runner: opts.proposeRunner! }) : null;
   const doctor = opts.doctor ? makeDoctorHandler(opts.doctor) : null;
   /** Loopback origins (and the bound host) on the port actually bound, which differs from opts.port when it is 0. */
   const originAllowed = (origin: string | undefined): boolean => {
@@ -107,18 +116,19 @@ export async function startUiServer(
     }
     const urlPath = (req.url ?? "").split("?")[0]!;
     const proposeMatch = PROPOSE_PATH.exec(urlPath);
-    if (req.method === "POST" && (proposeMatch || urlPath === HOST_CONFIG_PATH)) {
+    const onboardMatch = ONBOARD_PATH.exec(urlPath);
+    if (req.method === "POST" && (proposeMatch || onboardMatch || urlPath === HOST_CONFIG_PATH)) {
       // Every write route passes the same guards: enabled (never in remote mode), token, loopback Origin, JSON, capped body.
-      const enabled = proposeMatch ? proposeEnabled : hostConfigEnabled;
-      if (!enabled) return sendJson(res, 403, { error: proposeMatch ? "proposing is disabled (remote mode, or no gh runner)" : "host config writes are disabled (remote mode, or not wired)" });
+      const enabled = proposeMatch ? proposeEnabled : onboardMatch ? onboardEnabled : hostConfigEnabled;
+      if (!enabled) return sendJson(res, 403, { error: proposeMatch ? "proposing is disabled (remote mode, or no gh runner)" : onboardMatch ? "onboarding is disabled (remote mode, or not wired)" : "host config writes are disabled (remote mode, or not wired)" });
       if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
       if (!originAllowed(req.headers.origin)) return sendJson(res, 403, { error: "Origin not allowed" });
       if ((req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() !== "application/json") {
         return sendJson(res, 415, { error: "Content-Type must be application/json" });
       }
       try {
-        const repo = proposeMatch ? decodeURIComponent(proposeMatch[1]!) : "";
-        if (proposeMatch && !REPO_SLUG_RE.test(repo)) throw new ProposeRefusal(400, "repo must be owner/name");
+        const repo = proposeMatch || onboardMatch ? decodeURIComponent((proposeMatch ?? onboardMatch)![1]!) : "";
+        if ((proposeMatch || onboardMatch) && !REPO_SLUG_RE.test(repo)) throw new ProposeRefusal(400, "repo must be owner/name");
         let body: unknown;
         try {
           body = JSON.parse(await readBody(req));
@@ -126,7 +136,7 @@ export async function startUiServer(
           if (err instanceof ProposeRefusal) throw err;
           throw new ProposeRefusal(400, "body is not valid JSON");
         }
-        sendJson(res, 200, proposeMatch ? await handlePropose(ledger, opts.proposeRunner!, repo, body) : hostConfig!(body));
+        sendJson(res, 200, proposeMatch ? await handlePropose(ledger, opts.proposeRunner!, repo, body) : onboardMatch ? await onboard!(repo, body) : hostConfig!(body));
       } catch (err) {
         if (err instanceof ProposeRefusal) sendJson(res, err.status, { error: err.message });
         else sendJson(res, 500, { error: err instanceof Error ? err.message : "error" });
@@ -163,6 +173,18 @@ export async function startUiServer(
           if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
         }
         return sendJson(res, 200, await doctor(scope as DoctorScope, smoke));
+      }
+      const ghMatch = GH_PATH.exec(pathname);
+      if (ghMatch) {
+        // Reads with the owner's gh: token required (forces a preflight from other origins), never served remotely.
+        if (!ghReads) return sendJson(res, 403, { error: "gh reads are disabled (remote mode, or no gh runner)" });
+        if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
+        try {
+          return sendJson(res, 200, await ghReads(ghMatch[1] as GhRead, new URL(req.url ?? "/", "http://localhost").searchParams));
+        } catch (err) {
+          if (err instanceof ProposeRefusal) return sendJson(res, err.status, { error: err.message });
+          throw err;
+        }
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));
