@@ -32,7 +32,8 @@ import { recordDaemonFacts } from "../core/host-facts.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
-import { runScoutsForProject } from "../core/scout.js";
+import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
+import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
@@ -161,6 +162,8 @@ program
         : "Auth mode: api (metered keys)",
     );
 
+    /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
+    const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -206,12 +209,43 @@ program
         notifier,
         logger,
         workerId: daemonOwnerId,
+        // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
+        correctionDrafts:
+          cfg.authMode === "subscription"
+            ? {
+                invoker: defaultScoutCliInvoker,
+                cwd: ARCHANGEL_ROOT,
+                skills: listAllSkills(),
+                evaluate: async (patchFile, heldout) => {
+                  const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+                  try {
+                    return await runEval({
+                      ledger: rootLedger,
+                      sources: evalSources(rootLedger, sharedPaths.dataDir),
+                      suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
+                      baseline: baseline.prompts,
+                      candidate,
+                      heldout,
+                    });
+                  } finally {
+                    candidate.cleanup();
+                  }
+                },
+                openPr: (draft, body, ctx) => {
+                  const client = appClients.get(ARCHANGEL_REPO);
+                  if (!client) throw new Error(`${ARCHANGEL_REPO} is not a watched project, so there is no App client to open the draft PR with`);
+                  return openDraftPr(client, draft, body, ctx);
+                },
+                prStatus: (url) => ghPrStatus(execRunner, url),
+              }
+            : undefined,
       });
       const swept = rec.startupSweep();
       if (swept.length > 0) {
         console.log(`[archangel] [${repoSlug}] Stale-working sweep recovered threads: ${swept.join(", ")}`);
       }
       digestSources.push({ repoSlug, github, agentProposedLabel: cfg.labels.agentProposed });
+      appClients.set(repoSlug, { github, broker, defaultBranch: cfg.defaultBranch });
       return { repoSlug, rec };
     });
 
