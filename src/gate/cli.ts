@@ -3,7 +3,7 @@
  * Lightweight standalone CLI entrypoint for `archangel gate`.
  * Bundled into `bin/archangel-gate.mjs` via esbuild so GitHub Actions runs Gate in <1s with ZERO `npm ci`.
  */
-import { runGate } from "./gate.js";
+import { runGate, runGateForActions } from "./gate.js";
 
 function parseArgs(argv: string[]): {
   repo: string;
@@ -48,7 +48,7 @@ function parseArgs(argv: string[]): {
 (async () => {
   try {
     const opts = parseArgs(process.argv.slice(2));
-    const report = await runGate({
+    const runOpts = {
       repoDir: opts.repo,
       baseRef: opts.base,
       headRef: opts.head,
@@ -58,8 +58,14 @@ function parseArgs(argv: string[]): {
       headRunsOverride: opts.headRuns,
       skipPreCommit: opts.skipPreCommit,
       skipTests: opts.skipTests,
-    });
-    console.log(JSON.stringify(report, null, 2));
+    };
+    let report;
+    if (process.env.GITHUB_ACTIONS === "true") {
+      report = await runGateForActions(runOpts, console.log);
+    } else {
+      report = await runGate(runOpts);
+      console.log(JSON.stringify(report, null, 2));
+    }
     process.exit(report.passed ? 0 : 1);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

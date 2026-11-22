@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { GateProof } from "../../src/gate/gate.js";
 import type { CheckStatus } from "../../src/core/blockers.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../../src/github/client.js";
 
@@ -90,6 +91,10 @@ export class FakeGitHub implements GitHubClient {
   }
   async rerunCheckRun(checkRunId: number): Promise<void> {
     this.rerunCalls.push(checkRunId);
+  }
+  gateProofs = new Map<string, GateProof>();
+  async getGateProof(_checkRunId: number, headSha: string): Promise<GateProof | null> {
+    return this.gateProofs.get(headSha) ?? null;
   }
   async upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void> {
     const list = this.comments.get(issueOrPrNumber) ?? [];

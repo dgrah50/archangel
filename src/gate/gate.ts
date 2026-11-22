@@ -141,6 +141,48 @@ export interface GateReport {
   hooks_run: string[];
   violations: string[];
   file_stats: GateFileStat[];
+  /** Trimmed reproduction-test output (machine output, for the Recap). Absent if the run never got that far. */
+  proof?: GateProof;
+}
+
+export interface GateProof {
+  base_output?: string;
+  head_output?: string;
+}
+
+export const GATE_PROOF_ANNOTATION_TITLE = "archangel-gate-proof";
+export const PROOF_MAX_LINES = 40;
+export const PROOF_MAX_CHARS = 3000;
+
+/**
+ * Runs the Gate for GitHub Actions with workflow commands disabled while any repo-authored code
+ * (setup, build, tests, hooks) runs, so nothing it prints can forge an annotation. Commands are
+ * resumed with a random token only after every repo command has finished, then the proof is emitted.
+ */
+export async function runGateForActions(
+  opts: GateRunOptions,
+  log: (line: string) => void,
+  run: (o: GateRunOptions) => Promise<GateReport> = runGate,
+  token: string = crypto.randomBytes(16).toString("hex"),
+): Promise<GateReport> {
+  log(`::stop-commands::${token}`);
+  const report = await run(opts);
+  log(JSON.stringify(report, null, 2));
+  log(`::${token}::`);
+  if (report.proof) {
+    const message = JSON.stringify({ head_sha: report.head_sha, ...report.proof })
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A");
+    log(`::notice title=${GATE_PROOF_ANNOTATION_TITLE}::${message}`);
+  }
+  return report;
+}
+
+/** Last ~40 lines, capped at 3,000 chars (keeping the end, where failures and summaries are). */
+export function tailOutput(text: string): string {
+  const tail = text.trim().split("\n").slice(-PROOF_MAX_LINES).join("\n");
+  return tail.length > PROOF_MAX_CHARS ? tail.slice(-PROOF_MAX_CHARS) : tail;
 }
 
 export interface GateRunOptions {
@@ -706,6 +748,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
       for (let i = 1; i <= baseRuns; i++) {
         const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
+        if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
         if (baseTestRes.ok) {
           report.already_fixed = true;
           report.violations.push(
@@ -718,6 +761,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
         const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, testEnv);
+        report.proof = { ...report.proof, head_output: tailOutput(headTestRes.output) };
         if (!headTestRes.ok) {
           report.violations.push(
             `head testCmd failed (run ${i}/${headRuns}): ${headTestRes.output
