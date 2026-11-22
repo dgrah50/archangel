@@ -57,7 +57,7 @@ jobs:
 
       - name: Checkout PR merge ref with full history (no persisted credentials)
         if: steps.classify.outputs.is_factory == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
