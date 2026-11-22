@@ -42,7 +42,7 @@ describe("pitch expiry", () => {
     expect(gh.closedIssues).toEqual([1]);
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain("expired");
-    expect(l.getPitch(1)!.status).toBe("declined");
+    expect(l.getPitch(1)!.state.kind).toBe("expired");
     expect(l.pitchMetrics(0)).toMatchObject({ expired: 1, declined: 0, open: 1 });
     expect(l.listAudit({ topicPrefix: "pitch/expired" })).toHaveLength(1);
     // idempotent: nothing left to expire
@@ -58,8 +58,8 @@ describe("pitch expiry", () => {
     gh.addComment(1, OWNER, "interesting, let me think", NOW - 3 * DAY);
     expect(await expireStalePitches(l, gh, cfg, NOW)).toEqual([]);
     expect(gh.closedIssues).toEqual([]);
-    expect(l.getPitch(1)!.status).toBe("open");
-    expect(l.getPitch(2)!.status).toBe("open");
+    expect(l.getPitch(1)!.state.kind).toBe("open");
+    expect(l.getPitch(2)!.state.kind).toBe("open");
   });
 
   it("retries next time when closing fails, and records nothing", async () => {
@@ -71,7 +71,7 @@ describe("pitch expiry", () => {
       throw new Error("github down");
     };
     await expect(expireStalePitches(l, gh, cfg, NOW)).rejects.toThrow(/github down/);
-    expect(l.getPitch(1)!.status).toBe("open");
+    expect(l.getPitch(1)!.state.kind).toBe("open");
     expect(l.listAudit({ topicPrefix: "pitch/expired" })).toHaveLength(0);
   });
 
@@ -87,7 +87,7 @@ describe("pitch expiry", () => {
     const m = new Ledger(":memory:", { repo: "a/b" });
     for (const n of [1, 2, 3, 4]) pitch(m, n, 40 - n);
     for (const n of [1, 2, 4]) m.markPitchExpired(n, NOW);
-    m.markPitchSlicesPromoted(3, [0], NOW);
+    m.markPitchSlicesPromoted(3, [0], 1, NOW);
     expect(m.isPitchScoutPaused("pitch", "h1", 4)).toBe(false);
   });
 
@@ -131,7 +131,7 @@ describe("pitch metrics", () => {
   it("counts filed, promoted, declined, expired, vetoed and open pitches, and the promotion rate over the last decided", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
     for (let n = 1; n <= 9; n++) pitch(l, n, 10 - n * 0.5); // #1 oldest ... #9 newest, all inside the window
-    l.markPitchSlicesPromoted(1, [0], NOW); // oldest decided
+    l.markPitchSlicesPromoted(1, [0], 1, NOW); // oldest decided
     l.markPitchExpired(2, NOW);
     l.syncPitchStatuses([3, 9], NOW); // 3 and 9 stay open; the rest not listed: closed by the owner
     // statuses now: 1 promoted, 2 expired, 3 open, 4-8 declined, 9 open
@@ -142,7 +142,7 @@ describe("pitch metrics", () => {
     // the last 6 decided (newest first): 8,7,6,5,4,2 -> none promoted (the promoted one, #1, is older than the window of 6)
     expect(m.lastDecided).toBe(PITCH_RATE_WINDOW);
     expect(m.lastDecidedPromoted).toBe(0);
-    l.markPitchSlicesPromoted(5, [0], NOW);
+    l.markPitchSlicesPromoted(3, [0], 1, NOW); // #3 was still open: now decided and promoted, inside the last 6
     expect(l.pitchMetrics(0).lastDecidedPromoted).toBe(1);
   });
 
@@ -151,7 +151,7 @@ describe("pitch metrics", () => {
     expect(pitchMetricLines(l.pitchMetrics(0))).toEqual([]);
     pitch(l, 1, 3);
     pitch(l, 2, 2);
-    l.markPitchSlicesPromoted(1, [0], NOW);
+    l.markPitchSlicesPromoted(1, [0], 1, NOW);
     l.markPitchExpired(2, NOW);
     const sm = l.computeStageMetrics("a/b", NOW - 14 * DAY, NOW);
     expect(sm.pitches).toMatchObject({ filed: 2, promoted: 1, expired: 1 });
