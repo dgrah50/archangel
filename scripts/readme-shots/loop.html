@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1600" />
+<title>Archangel Loop Diagram</title>
+<script>
+  (function () {
+    const p = new URLSearchParams(window.location.search);
+    const theme = p.get("theme") === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
+<style>
+  :root {
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    --canvas-bg: #f4f4f8;
+    --mesh-1: rgba(119, 71, 255, 0.08);
+    --mesh-2: rgba(56, 138, 228, 0.075);
+    --mesh-3: rgba(232, 168, 118, 0.07);
+
+    --ink: #141418;
+    --muted: #565763;
+    --subtle: #787988;
+
+    --card-bg: #ffffff;
+    --card-border: rgba(18, 20, 32, 0.10);
+    --card-shadow:
+      0 1px 2px rgba(18, 20, 32, 0.04),
+      0 10px 26px -8px rgba(18, 20, 32, 0.08);
+
+    --icon-bg: #f3f3f8;
+    --icon-fg: #3b3d4a;
+
+    --accent-bg: rgba(119, 71, 255, 0.09);
+    --accent-border: rgba(119, 71, 255, 0.30);
+    --accent-fg: #5830cf;
+
+    --green-bg: rgba(22, 148, 96, 0.09);
+    --green-border: rgba(22, 148, 96, 0.28);
+    --green-fg: #12704a;
+
+    --owner-bg: rgba(224, 140, 38, 0.07);
+    --owner-border: rgba(196, 116, 20, 0.38);
+    --owner-fg: #945208;
+    --owner-sub: #6c5334;
+    --owner-pill-bg: #faf4ec;
+    --owner-line: rgba(196, 116, 20, 0.52);
+
+    --line: rgba(24, 28, 44, 0.28);
+    --chip-bg: #f1f2f6;
+    --chip-fg: #484a58;
+    --rule: rgba(18, 20, 32, 0.09);
+  }
+
+  html[data-theme="dark"] {
+    --canvas-bg: #0c0d12;
+    --mesh-1: rgba(138, 102, 255, 0.14);
+    --mesh-2: rgba(68, 134, 218, 0.10);
+    --mesh-3: rgba(48, 150, 146, 0.06);
+
+    --ink: #f3f4f8;
+    --muted: #a4a7b5;
+    --subtle: #787c8d;
+
+    --card-bg: #15161c;
+    --card-border: rgba(255, 255, 255, 0.10);
+    --card-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.35),
+      0 14px 32px -10px rgba(0, 0, 0, 0.55);
+
+    --icon-bg: rgba(255, 255, 255, 0.06);
+    --icon-fg: #c9ccd8;
+
+    --accent-bg: rgba(167, 139, 255, 0.14);
+    --accent-border: rgba(167, 139, 255, 0.36);
+    --accent-fg: #bca6ff;
+
+    --green-bg: rgba(86, 208, 152, 0.13);
+    --green-border: rgba(86, 208, 152, 0.30);
+    --green-fg: #6cd9a4;
+
+    --owner-bg: rgba(238, 174, 82, 0.085);
+    --owner-border: rgba(238, 174, 82, 0.38);
+    --owner-fg: #f1bc6c;
+    --owner-sub: #c6b497;
+    --owner-pill-bg: #1d1914;
+    --owner-line: rgba(238, 174, 82, 0.48);
+
+    --line: rgba(226, 230, 245, 0.28);
+    --chip-bg: rgba(255, 255, 255, 0.07);
+    --chip-fg: #c4c7d4;
+    --rule: rgba(255, 255, 255, 0.09);
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    width: 1600px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: var(--canvas-bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  .canvas {
+    width: 1600px;
+    padding: 56px 80px 60px;
+    background-color: var(--canvas-bg);
+    background-image:
+      radial-gradient(900px 520px at 12% 0%, var(--mesh-1), transparent 64%),
+      radial-gradient(860px 500px at 90% 8%, var(--mesh-2), transparent 62%),
+      radial-gradient(820px 460px at 50% 105%, var(--mesh-3), transparent 65%);
+  }
+
+  .topbar {
+    width: 1440px;
+    margin-bottom: 38px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+
+  .kicker {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent-fg);
+  }
+
+  .heading {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 30px;
+    font-weight: 650;
+    letter-spacing: -0.028em;
+    line-height: 1.15;
+    color: var(--ink);
+  }
+
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding-bottom: 4px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    background: var(--card-bg);
+    border: 1.5px solid var(--card-border);
+  }
+
+  .swatch.owner {
+    background: var(--owner-bg);
+    border: 1.5px dashed var(--owner-border);
+  }
+
+  .stage {
+    position: relative;
+    width: 1440px;
+    height: 592px;
+  }
+
+  .connectors {
+    position: absolute;
+    inset: 0;
+    width: 1440px;
+    height: 592px;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .card {
+    position: absolute;
+    width: 318px;
+    height: 160px;
+    padding: 20px 22px;
+    border-radius: 18px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .card.gate {
+    border-color: var(--accent-border);
+  }
+
+  .card.merge {
+    border-color: var(--green-border);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .step {
+    font-size: 11.5px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--subtle);
+  }
+
+  .card.gate .step {
+    color: var(--accent-fg);
+  }
+
+  .card.merge .step {
+    color: var(--green-fg);
+  }
+
+  .icon-box {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: var(--icon-bg);
+    color: var(--icon-fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .card.gate .icon-box {
+    background: var(--accent-bg);
+    color: var(--accent-fg);
+  }
+
+  .card.merge .icon-box {
+    background: var(--green-bg);
+    color: var(--green-fg);
+  }
+
+  .card-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 19.5px;
+    font-weight: 630;
+    letter-spacing: -0.02em;
+    line-height: 1.22;
+    color: var(--ink);
+  }
+
+  .card-sub {
+    margin: 6px 0 0;
+    font-size: 14.5px;
+    line-height: 1.38;
+    color: var(--muted);
+  }
+
+  .chips {
+    margin-top: auto;
+    padding-top: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--chip-bg);
+    color: var(--chip-fg);
+  }
+
+  .owner-bridge {
+    position: absolute;
+    left: 386px;
+    top: 26px;
+    width: 294px;
+    height: 108px;
+    padding: 16px 20px;
+    border-radius: 16px;
+    background: var(--owner-bg);
+    border: 1.5px dashed var(--owner-border);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+  }
+
+  .owner-kicker {
+    font-size: 11px;
+    font-weight: 680;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--owner-fg);
+  }
+
+  .owner-bridge-text {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 540;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    color: var(--owner-sub);
+  }
+
+  .branch-pill {
+    position: absolute;
+    left: 266px;
+    top: 425px;
+    width: 160px;
+    height: 26px;
+    border-radius: 999px;
+    background: var(--owner-pill-bg);
+    border: 1px dashed var(--owner-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 580;
+    color: var(--owner-fg);
+  }
+
+  .needs-you {
+    position: absolute;
+    left: 16px;
+    top: 484px;
+    width: 660px;
+    height: 108px;
+    padding: 18px 24px;
+    border-radius: 18px;
+    background: var(--owner-bg);
+    border: 1.5px dashed var(--owner-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  .needs-you-main {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .needs-you-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 640;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .needs-you-desc {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.4;
+    color: var(--owner-sub);
+  }
+
+  .cmd-list {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .cmd {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 7px;
+    background: var(--owner-pill-bg);
+    border: 1px solid var(--owner-border);
+    color: var(--owner-fg);
+    white-space: nowrap;
+  }
+
+  .footnote {
+    position: absolute;
+    left: 748px;
+    top: 484px;
+    width: 692px;
+    height: 108px;
+    padding: 18px 0 18px 28px;
+    border-left: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 7px;
+  }
+
+  .footnote-kicker {
+    font-size: 11.5px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--subtle);
+  }
+
+  .footnote-text {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.48;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <div class="canvas">
+    <div class="topbar">
+      <div>
+        <p class="kicker">How it works</p>
+        <h1 class="heading">The autonomous bugfix loop</h1>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span class="legend-item"><span class="swatch"></span>Automated step</span>
+        <span class="legend-item"><span class="swatch owner"></span>Owner touchpoint</span>
+      </div>
+    </div>
+
+    <div class="stage">
+      <svg class="connectors" viewBox="0 0 1440 592" fill="none" aria-hidden="true">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 1 1.5 L 8 5 L 1 8.5" stroke="var(--line)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+          </marker>
+          <marker id="arrow-owner" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 1 1.5 L 8 5 L 1 8.5" stroke="var(--owner-line)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+          </marker>
+        </defs>
+
+        <!-- Row 1: Scout -> Promotion bridge -> Issue -> Implement -->
+        <path d="M 318 80 L 384 80" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+        <path d="M 680 80 L 746 80" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+        <path d="M 1066 80 L 1120 80" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+
+        <!-- Row 1 -> Row 2: Implement -> Gate -->
+        <path d="M 1281 160 L 1281 184 Q 1281 200 1265 200 L 175 200 Q 159 200 159 216 L 159 238"
+              stroke="var(--line)" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+
+        <!-- Row 2: Gate -> Reviewers -> Merge -> Watch main -->
+        <path d="M 318 320 L 372 320" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+        <path d="M 692 320 L 746 320" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+        <path d="M 1066 320 L 1120 320" stroke="var(--line)" stroke-width="2" marker-end="url(#arrow)" />
+
+        <!-- Owner branch: Gate & Reviewers -> Needs You -->
+        <path d="M 159 400 L 159 424 Q 159 438 173 438 L 266 438"
+              stroke="var(--owner-line)" stroke-width="1.8" stroke-dasharray="5 5" stroke-linecap="round" />
+        <path d="M 533 400 L 533 424 Q 533 438 519 438 L 426 438"
+              stroke="var(--owner-line)" stroke-width="1.8" stroke-dasharray="5 5" stroke-linecap="round" />
+        <path d="M 346 451 L 346 482"
+              stroke="var(--owner-line)" stroke-width="1.8" stroke-dasharray="5 5" marker-end="url(#arrow-owner)" />
+      </svg>
+
+      <!-- Row 1 -->
+      <article class="card" style="left: 0; top: 0;">
+        <div class="card-head">
+          <span class="step">01 · Scout</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Scout finds a bug</h2>
+        <p class="card-sub">Read-only audit on main with secret scan and dedupe.</p>
+      </article>
+
+      <aside class="owner-bridge">
+        <span class="owner-kicker">Owner touchpoint</span>
+        <p class="owner-bridge-text">You promote, or it auto-promotes (capped)</p>
+      </aside>
+
+      <article class="card" style="left: 748px; top: 0;">
+        <div class="card-head">
+          <span class="step">02 · Issue</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Issue</h2>
+        <p class="card-sub">Verified label actor and pinned issue body hash.</p>
+        <div class="chips"><span class="chip">ready-for-agent</span></div>
+      </article>
+
+      <article class="card" style="left: 1122px; top: 0;">
+        <div class="card-head">
+          <span class="step">03 · Implement</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="8 9 12 12 8 15" /><line x1="14" y1="15" x2="18" y2="15" /><rect x="3" y="4" width="18" height="16" rx="3" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Implement</h2>
+        <p class="card-sub">Your CLI subscriptions, with failover.</p>
+        <div class="chips">
+          <span class="chip">codex</span>
+          <span class="chip">claude</span>
+          <span class="chip">agy</span>
+        </div>
+      </article>
+
+      <!-- Row 2 -->
+      <article class="card gate" style="left: 0; top: 240px;">
+        <div class="card-head">
+          <span class="step">04 · Mechanical Gate</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3 5 6v6c0 4.5 3 7.8 7 9 4-1.2 7-4.5 7-9V6l-7-3Z" /><path d="m9 12 2 2 4-4" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Gate</h2>
+        <p class="card-sub">Red on main, green on fix. Enforces diff bounds and protected paths.</p>
+      </article>
+
+      <article class="card" style="left: 374px; top: 240px;">
+        <div class="card-head">
+          <span class="step">05 · Review</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="3.5" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a3.5 3.5 0 0 1 0 6.75" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Two independent reviewers</h2>
+        <p class="card-sub">Different vendors from the implementer. Models can only veto.</p>
+      </article>
+
+      <article class="card merge" style="left: 748px; top: 240px;">
+        <div class="card-head">
+          <span class="step">06 · Land</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 21V9a9 9 0 0 0 9 9" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Merge</h2>
+        <p class="card-sub">Squash-merges the exact verified SHA when autonomous landing is on.</p>
+      </article>
+
+      <article class="card" style="left: 1122px; top: 240px;">
+        <div class="card-head">
+          <span class="step">07 · Post-merge</span>
+          <span class="icon-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 20 9 4 6 12 2 12" />
+            </svg>
+          </span>
+        </div>
+        <h2 class="card-title">Watch main</h2>
+        <p class="card-sub">Trips circuit breaker and opens an exact auto-revert PR if main goes red.</p>
+      </article>
+
+      <!-- Subtle owner touchpoint branch -->
+      <div class="branch-pill">if blocked or vetoed</div>
+
+      <aside class="needs-you">
+        <div class="needs-you-main">
+          <span class="owner-kicker">Owner touchpoint</span>
+          <h3 class="needs-you-title">Needs You</h3>
+          <p class="needs-you-desc">Six decision classes with a recommendation. Inline PR comments reach the next Attempt.</p>
+        </div>
+        <div class="cmd-list" aria-hidden="true">
+          <span class="cmd">/archangel retry</span>
+          <span class="cmd">/archangel close · handoff</span>
+        </div>
+      </aside>
+
+      <div class="footnote">
+        <span class="footnote-kicker">Trust Kernel invariants</span>
+        <p class="footnote-text">Workflow read only from main · protected paths never touched · shadow mode on by default · autonomy cap pauses without you.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
