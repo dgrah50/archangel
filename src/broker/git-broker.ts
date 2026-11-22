@@ -293,8 +293,15 @@ export class GitBroker {
     await this.runGit(this.bareRepoPath, ["fetch", cloneDir, `+HEAD:${stagingRef}`]);
     const headSha = await this.resolveRef(stagingRef);
 
+    // Compare against merge-base(baseSha, headSha) so unrelated commits that landed on `main`
+    // while a PR branch was in flight never masquerade as agent edits to protected files!
+    const effectiveBase =
+      (
+        await this.runGit(this.bareRepoPath, ["merge-base", baseSha, headSha]).catch(() => baseSha)
+      ).trim() || baseSha;
+
     // Use Gate's NUL-delimited `-z` diff parser so non-ASCII/quoted paths cannot dodge protection (Opus S1).
-    const stats = await getDiffStats(this.bareRepoPath, baseSha, headSha, {
+    const stats = await getDiffStats(this.bareRepoPath, effectiveBase, headSha, {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: os.tmpdir(),
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -339,7 +346,7 @@ export class GitBroker {
     const diffText = await this.runGit(this.bareRepoPath, [
       "diff",
       "--no-color",
-      baseSha,
+      effectiveBase,
       headSha,
     ]);
 
@@ -357,7 +364,7 @@ export class GitBroker {
 
     let gateReport: LocalGateReport | undefined;
     if (this.enableLocalGate && protectedViolations.length === 0) {
-      gateReport = await this.runLocalGate(baseSha, headSha, bounds);
+      gateReport = await this.runLocalGate(effectiveBase, headSha, bounds);
     }
 
     return {

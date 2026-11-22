@@ -101,6 +101,39 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
     }
   });
 
+  it("diffs against merge-base so main advancing on a protected path does not fail an in-flight branch", async () => {
+    const { root, remoteBare, baseSha } = createFixtureRemote();
+    const seed = path.join(root, "seed");
+    try {
+      const broker = new GitBroker({
+        bareRepoPath: path.join(root, "broker.git"),
+        clonesDir: path.join(root, "clones"),
+      });
+      await broker.ensureBareRepo(remoteBare);
+
+      // Branch from original baseSha and edit only app.go
+      const cloneDir = await broker.createThrowawayClone(4, baseSha);
+      fs.writeFileSync(path.join(cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 3 }\n");
+      git(cloneDir, ["add", "-A"]);
+      git(cloneDir, ["commit", "-m", "fix app"]);
+
+      // Meanwhile main advances with an edit to a protected workflow file
+      fs.mkdirSync(path.join(seed, ".github", "workflows"), { recursive: true });
+      fs.writeFileSync(path.join(seed, ".github", "workflows", "archangel-gate.yml"), "name: Gate\n");
+      git(seed, ["add", "-A"]);
+      git(seed, ["commit", "-m", "update gate workflow on main"]);
+      git(seed, ["push", remoteBare, "main"]);
+      await broker.syncFromRemote(remoteBare);
+      const newMainSha = git(remoteBare, ["rev-parse", "refs/heads/main"]);
+
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 4, newMainSha);
+      expect(val.protectedViolations).toEqual([]);
+      expect(val.changedFiles).toEqual(["app.go"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("runs .agents/setup strictly from mainSha with scrubbed env and enforces extraProtectedPaths", async () => {
     const { root, remoteBare } = createFixtureRemote();
     const seed = path.join(root, "seed");
