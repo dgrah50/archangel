@@ -1670,7 +1670,10 @@ export class Reconciler {
           const backToQueued = this.applyMachineEvent(
             latest,
             { t: "attempt_aborted", cause: "control", now: Date.now() },
-            { auditTopic: "gate/local_failed_revising", auditPayload: { violations: rep.violations } },
+            {
+              auditTopic: "gate/local_failed_revising",
+              auditPayload: { violations: rep.violations, diff: { files: validation.changedFiles.length, nonTestLines: validation.nonTestLines, totalLines: validation.totalLines } },
+            },
           );
           if (backToQueued) {
             // Release current runningTasks entry before spawning the pre-push revision.
@@ -1791,7 +1794,11 @@ export class Reconciler {
             pr: { prNumber: pr.number, headSha: validation.headSha, baseSha: pr.baseSha },
             now: Date.now(),
           },
-          { lastSummary: result.summary, auditTopic: "thread/pr_pushed" },
+          {
+            lastSummary: result.summary,
+            auditTopic: "thread/pr_pushed",
+            auditPayload: { diff: { files: validation.changedFiles.length, nonTestLines: validation.nonTestLines, totalLines: validation.totalLines } },
+          },
         );
         if (updated) {
           await this.postRecapSafe(updated, pr, [

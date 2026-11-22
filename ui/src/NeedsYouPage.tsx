@@ -1,4 +1,5 @@
 import { Box, Flex, Link, Text } from "@chakra-ui/react";
+import type { ReactNode } from "react";
 import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
@@ -162,6 +163,26 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
                 ["Attempts", d.recap.attempts],
                 ["Implementer", d.recap.implementers.join(", ") || "none"],
                 ["Reviews", d.recap.reviews.map((r) => `${r.vendor} ${r.verdict}`).join(" · ") || "none on this head"],
+                [
+                  "Gate",
+                  d.gate.length === 0 ? (
+                    "not recorded"
+                  ) : (
+                    <>
+                      {d.gate.map((g, k) => (
+                        <Box as="span" display="block" key={k}>
+                          {g.passed ? <Box as="span" color="passed">✓ Gate passed</Box> : g.label}
+                        </Box>
+                      ))}
+                    </>
+                  ),
+                ],
+                [
+                  "Diff",
+                  d.diff === null
+                    ? "not recorded"
+                    : `${d.diff.nonTestLines} non-test lines in ${d.diff.files} files${d.diff.limits ? ` of ${d.diff.limits.maxNonTestLines} / ${d.diff.limits.maxFiles} allowed` : ""}`,
+                ],
               ]}
             />
           </Section>
@@ -215,7 +236,7 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
   );
 }
 
-function Facts({ rows }: { rows: Array<[string, string]> }) {
+function Facts({ rows }: { rows: Array<[string, ReactNode]> }) {
   return (
     <Flex direction="column" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
       {rows.map(([k, v]) => (

@@ -22,6 +22,8 @@ export interface ThreadDetail {
   events: TimelineEvent[];
   /** Latest Gate result recorded in the Ledger audit (`gate/*` rows): one passed check, or one failed check per violation. Empty when none. */
   gate: Array<{ label: string; passed: boolean }>;
+  /** Diff size the Broker recorded in the latest `thread/pr_pushed` or `gate/local_failed_revising` audit row, with the repo's cached Gate limits (null when none cached). Null when no row recorded it. */
+  diff: { files: number; nonTestLines: number; totalLines: number; limits: { maxNonTestLines: number; maxTotalLines: number; maxFiles: number } | null } | null;
   /** From the Ledger only (live check state lives on GitHub): what the latest Recap would say about the head. */
   recap: { headSha: string | null; themeLabel: string | null; implementers: string[]; attempts: string; reviews: Array<{ vendor: string; verdict: string }> };
   /** What holds this Thread, from the Ledger: an owner decision, or a review veto on the head. Empty when nothing is recorded. */
@@ -43,6 +45,13 @@ function reviewFindings(json: string, limit = 1): string[] {
   });
 }
 
+function gateLimits(ledger: Ledger, repo: string): NonNullable<ThreadDetail["diff"]>["limits"] {
+  const wf = ledger.listCachedWorkflows().find((c) => c.repo === repo)?.workflow as { status?: unknown; gate?: Record<string, unknown> } | null | undefined;
+  const g = wf?.status === "ok" ? wf.gate : undefined;
+  if (!g || typeof g.maxNonTestLines !== "number" || typeof g.maxTotalLines !== "number" || typeof g.maxFiles !== "number") return null;
+  return { maxNonTestLines: g.maxNonTestLines, maxTotalLines: g.maxTotalLines, maxFiles: g.maxFiles };
+}
+
 /** Pure read; null when the Ledger has no such Thread. */
 export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: number, now = Date.now()): ThreadDetail | null {
   const view = ledger.forRepo(repo);
@@ -62,6 +71,16 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
       if (Array.isArray(v)) violations = v;
     }
     gate = violations.length > 0 ? violations.slice(0, 10).map((v) => ({ label: clip(String(v), 200), passed: false })) : [{ label: "Gate failed", passed: false }];
+  }
+  let diff: ThreadDetail["diff"] = null;
+  for (const a of audit) {
+    if (a.topic !== "thread/pr_pushed" && a.topic !== "gate/local_failed_revising") continue;
+    const p = tryParseJson(a.payloadJson);
+    const d = p.ok && typeof p.value === "object" && p.value !== null ? (p.value as { diff?: Partial<Record<"files" | "nonTestLines" | "totalLines", unknown>> }).diff : undefined;
+    if (d && typeof d.files === "number" && typeof d.nonTestLines === "number" && typeof d.totalLines === "number") {
+      diff = { files: d.files, nonTestLines: d.nonTestLines, totalLines: d.totalLines, limits: gateLimits(ledger, repo) };
+      break;
+    }
   }
   for (const a of [...audit].reverse()) {
     events.push({ ts: a.ts, kind: "audit", title: a.topic, tone: /fail|reject|error|veto/i.test(a.topic) ? "failed" : "info", details: [{ label: "actor", value: a.actor }, { label: "payload", value: clip(a.payloadJson) }] });
@@ -126,6 +145,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     blockers,
     events,
     gate,
+    diff,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
 }
