@@ -154,3 +154,37 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
     }
   });
 });
+
+describe("GitHubAppClient.verifyLabelRemovedBy", () => {
+  it("is true only when the most recent unlabeled event for that label was made by the expected user", async () => {
+    const timeline: Array<Record<string, unknown>> = [
+      { event: "labeled", label: { name: "needs-you" }, actor: { id: 1 } },
+      { event: "unlabeled", label: { name: "needs-you" }, actor: { id: 999 } },
+      { event: "labeled", label: { name: "needs-you" }, actor: { id: 1 } },
+      { event: "unlabeled", label: { name: "other" }, actor: { id: 5 } },
+    ];
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      res.writeHead(url.pathname.endsWith("/access_tokens") ? 201 : 200, { "Content-Type": "application/json" });
+      if (url.pathname.endsWith("/access_tokens")) {
+        res.end(JSON.stringify({ token: "t", expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: { issues: "write" } }));
+      } else {
+        res.end(JSON.stringify(timeline));
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const client = new GitHubAppClient({
+        owner: "acme", repo: "app", appId: "1", installationId: 777, privateKeyPem: generateTestRsaKey(),
+        apiBaseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      });
+      expect(await client.verifyLabelRemovedBy(4, "needs-you", 999)).toBe(true);
+      expect(await client.verifyLabelRemovedBy(4, "needs-you", 1)).toBe(false);
+      expect(await client.verifyLabelRemovedBy(4, "never-removed", 999)).toBe(false);
+      timeline.push({ event: "unlabeled", label: { name: "needs-you" }, actor: { id: 555 } }); // a later removal by someone else wins
+      expect(await client.verifyLabelRemovedBy(4, "needs-you", 999)).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+});

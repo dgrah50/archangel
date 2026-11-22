@@ -791,6 +791,24 @@ export class Reconciler {
         !combinedLabels.includes(this.cfg.labels.needsYou) &&
         !this.ledger.hasPendingLabelAdd(thread.issueNumber, this.cfg.labels.needsYou)
       ) {
+        // Only the owner's removal resumes the Thread (like the owner's `ready-for-agent`, it is checked against the
+        // issue timeline). Anyone else's removal is undone and recorded; the owner can still `retry` by comment or CLI.
+        let byOwner = false;
+        try {
+          byOwner = await this.github.verifyLabelRemovedBy(thread.issueNumber, this.cfg.labels.needsYou, this.cfg.ownerUserId);
+        } catch (err) {
+          this.logger.warn("thread/needs_you_removal_check_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+          return;
+        }
+        if (!byOwner) {
+          this.ledger.appendAudit("thread/needs_you_label_removed_by_other", thread.issueNumber, "archangel", {}, now);
+          try {
+            await this.github.addLabels(thread.issueNumber, [this.cfg.labels.needsYou]);
+          } catch (err) {
+            this.logger.warn("thread/needs_you_restore_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+          }
+          return;
+        }
         const retried = await this.ownerRetry(thread, issue, "label_removed", now);
         if (retried) {
           thread = retried;
