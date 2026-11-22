@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
+import { GatePolicySchema } from "../src/config.js";
 import { runGate } from "../src/gate/gate.js";
 
 function git(cwd: string, args: string[]): string {
@@ -292,7 +293,7 @@ describe("language-agnostic Gate (hardened post-Opus review)", () => {
       );
       git(cloneDir, ["add", "-A"]);
       git(cloneDir, ["commit", "-m", "already passing"]);
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 7, baseSha);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 7, baseSha, GatePolicySchema.parse({}));
       expect(val.gateReport?.passed).toBe(false);
       expect(val.gateReport?.already_fixed).toBe(true);
       broker.removeClone(cloneDir);
