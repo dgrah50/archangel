@@ -1,6 +1,6 @@
 import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
-import { useState } from "react";
-import type { PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
+import { useEffect, useState } from "react";
+import type { PitchAttachment, PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
 import { CopyCommand, LinkButton, Page, PageHeadline, Ref, Section } from "./page";
 
@@ -83,9 +83,10 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
                   <Text as="h3" textStyle="rowTitle" color="fg" mt="1">
                     {p.pitch.title}
                   </Text>
-                  <Box mt="1" color="fg.muted">
+                  <Flex mt="1" gap="2" color="fg.muted" align="baseline">
                     <Ref repo={p.repo} num={p.issueNumber} />
-                  </Box>
+                    {p.attachments.length > 0 ? <Text textStyle="meta" color="fg.subtle">has pictures</Text> : null}
+                  </Flex>
                 </Box>
               ))}
             </Section>
@@ -132,6 +133,7 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
       <Text as="h2" textStyle="title" color="fg">
         {p.title}
       </Text>
+      {row.attachments.length > 0 ? <Pictures items={row.attachments} /> : null}
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
         <Flex direction="column" gap="4" flex="1" minW="0">
           <Field label="The problem">{p.problem}</Field>
@@ -204,6 +206,59 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
         </Flex>
       </Flex>
     </Section>
+  );
+}
+
+const assetUrl = (a: PitchAttachment) => `/api/pitch-asset/${a.sha256}`;
+
+/** Host-validated images from the repo. Only the stored image is shown, by its hash; captions and paths are React text. */
+function Pictures({ items }: { items: PitchAttachment[] }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const paths = [...new Set(items.map((a) => a.path))];
+  return (
+    <Section gap="3">
+      <Flex gap="10" direction={{ base: "column", xl: "row" }} justify="space-between">
+        <Box minW="0" maxW="320px">
+          <Text textStyle="body13" color="fg.subtle">Pictures, {items.length}</Text>
+          <Text textStyle="meta" color="fg.muted" mt="1">From the repo</Text>
+          {paths.map((path) => (
+            <Text key={path} textStyle="ref" color="fg.muted" wordBreak="break-all">{path}</Text>
+          ))}
+        </Box>
+        <Flex gap="4" wrap="wrap" align="flex-start">
+          {items.map((a, i) => (
+            <Box key={a.sha256} w="160px">
+              <Box as="button" cursor="zoom-in" display="block" w="160px" borderWidth="1px" borderColor="border" onClick={() => setOpen(i)} aria-label={`Open picture: ${a.caption}`}>
+                <img src={assetUrl(a)} alt="" width="160" style={{ display: "block", width: "160px", height: "auto" }} />
+              </Box>
+              <Text textStyle="meta" color="fg.subtle" mt="1">{a.caption}</Text>
+            </Box>
+          ))}
+        </Flex>
+      </Flex>
+      {open !== null ? <Lightbox items={items} index={open} onIndex={setOpen} onClose={() => setOpen(null)} /> : null}
+    </Section>
+  );
+}
+
+function Lightbox({ items, index, onIndex, onClose }: { items: PitchAttachment[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight") onIndex((index + 1) % items.length);
+      else if (e.key === "ArrowLeft") onIndex((index - 1 + items.length) % items.length);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, items.length, onIndex, onClose]);
+  const a = items[index]!;
+  return (
+    <Flex role="dialog" aria-modal="true" aria-label="Picture" position="fixed" inset="0" zIndex="overlay" bg="blackAlpha.800" direction="column" align="center" justify="center" gap="3" p="6" onClick={onClose}>
+      <img src={assetUrl(a)} alt="" style={{ maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain" }} onClick={(e) => e.stopPropagation()} />
+      <Text textStyle="body13" color="white" onClick={(e) => e.stopPropagation()}>
+        {a.caption} <Text as="span" color="whiteAlpha.700">({index + 1} of {items.length})</Text>
+      </Text>
+    </Flex>
   );
 }
 

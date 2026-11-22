@@ -10,6 +10,21 @@ import { PitchStateSchema, isUndecided, type PitchState } from "./pitch-machine.
 const DAY_MS = 86_400_000;
 const DECIDED_SHOWN = 8;
 
+/** A host-validated image stored for a pitch; the bytes are served by `/api/pitch-asset/<sha256>`. `path` is the repo file it came from. */
+const AttachmentSchema = z
+  .object({
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    kind: z.literal("repo"),
+    mime: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    caption: z.string(),
+    source: z.string().min(3),
+  })
+  .strict()
+  .transform(({ source, ...a }) => ({ ...a, path: source.slice(0, source.lastIndexOf("@")) }));
+export type PitchAttachment = z.output<typeof AttachmentSchema>;
+
 export interface PitchRow {
   repo: string;
   issueNumber: number;
@@ -19,6 +34,7 @@ export interface PitchRow {
   expiresAt: number;
   state: PitchState;
   pitch: PitchItem;
+  attachments: PitchAttachment[];
 }
 
 /** One repo's pitch Scout, from its cached effective workflow; `scout` is null when the repo declares none. */
@@ -84,11 +100,16 @@ function pitchScouts(ledger: Ledger, now: number): PitchScoutInfo[] {
 export function buildPitchesState(ledger: Ledger, now = Date.now()): PitchesState {
   const open: PitchRow[] = [];
   const decided: Array<PitchesState["decided"][number] & { stateAt: number }> = [];
+  const attachments = new Map<string, PitchAttachment[]>();
+  for (const { repo, issueNumber, ...a } of ledger.listPitchAttachments()) {
+    const key = `${repo}#${issueNumber}`;
+    attachments.set(key, [...(attachments.get(key) ?? []), AttachmentSchema.parse(a)]);
+  }
   for (const r of ledger.listPitchRows()) {
     const state = PitchStateSchema.parse(JSON.parse(r.stateJson));
     if (isUndecided(state)) {
       // Validated by PitchOutputSchema when it was filed.
-      open.push({ repo: r.repo, issueNumber: r.issueNumber, scoutName: r.scoutName, filedAt: r.filedAt, expiresAt: r.filedAt + PITCH_EXPIRY_DAYS * DAY_MS, state, pitch: JSON.parse(r.pitchJson) as PitchItem });
+      open.push({ repo: r.repo, issueNumber: r.issueNumber, scoutName: r.scoutName, filedAt: r.filedAt, expiresAt: r.filedAt + PITCH_EXPIRY_DAYS * DAY_MS, state, pitch: JSON.parse(r.pitchJson) as PitchItem, attachments: attachments.get(`${r.repo}#${r.issueNumber}`) ?? [] });
     } else {
       decided.push({ repo: r.repo, issueNumber: r.issueNumber, title: r.title, state, stateAt: r.stateAt });
     }
