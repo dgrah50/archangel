@@ -66,4 +66,31 @@ require("http").createServer((q,r)=>r.end("ok")).listen(Number(process.env.PORT)
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  // The install runs agent-written package.json files. CI has no sandbox-exec, so this runs only on a dev Mac with bun installed.
+  const installOnMac = it.skipIf(!darwin || !!process.env.CI || !Bun.which("bun"));
+  installOnMac("a malicious postinstall cannot reach a home outside the workspace, and scripts are skipped by default", async () => {
+    const { root, ws, provider } = fixture();
+    try {
+      const home = path.join(root, "fakehome");
+      fs.mkdirSync(path.join(home, ".ssh"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".ssh", "id"), "secret");
+      const outside = path.join(root, "outside.txt");
+      const probe = `const fs=require("fs");let leaked="no";try{fs.readFileSync(${JSON.stringify(path.join(home, ".ssh", "id"))});leaked="yes"}catch{}
+try{fs.writeFileSync(${JSON.stringify(outside)},"x")}catch{}fs.writeFileSync("report.txt","ran leaked="+leaked)`;
+      fs.writeFileSync(path.join(ws.path, "probe.js"), probe);
+      fs.writeFileSync(path.join(ws.path, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { postinstall: "node probe.js" } }));
+
+      const skipped = await provider.install(ws, { argv: ["bun", "install"], timeoutMs: 60_000 });
+      expect(skipped.code).toBe(0);
+      expect(fs.existsSync(path.join(ws.path, "report.txt"))).toBe(false);
+
+      const allowed = await provider.install(ws, { argv: ["bun", "install"], timeoutMs: 60_000, allowScripts: true });
+      expect(allowed.code).toBe(0);
+      expect(fs.readFileSync(path.join(ws.path, "report.txt"), "utf8")).toBe("ran leaked=no");
+      expect(fs.existsSync(outside)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

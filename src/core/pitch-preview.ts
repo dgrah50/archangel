@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { PREVIEW_TTL_MS } from "../compute/sandbox-exec.js";
@@ -11,8 +10,8 @@ import { screenshotUrl } from "../compute/browser-shots.js";
 import { Preview } from "./workflow.js";
 
 /**
- * Running a built PoC. Dependencies are installed at build time, OUTSIDE the sandbox, because Seatbelt cannot allow registry hosts
- * for one step. The preview itself then runs the installed workspace under the sandbox provider only. `expose` throws on a provider
+ * Running a built PoC. Dependencies are installed at build time through the sandbox provider's install profile (open network, no
+ * credentials, no home access, no lifecycle scripts by default). The preview itself then runs the installed workspace under the sandbox provider only. `expose` throws on a provider
  * with no sandbox, and nothing is written to the Ledger until it has returned, so a preview never starts unsandboxed.
  * The URL lives in the runner's memory. Its port is derived from the issue number so the dashboard can link to it without storing it.
  */
@@ -34,28 +33,22 @@ export function cachedWebPreview(ledger: Ledger, repo: string): WebPreview | nul
   return parsed?.success && parsed.data.kind === "web" ? parsed.data : null;
 }
 
-/** Runs the repo's declared install in `ws` with a scrubbed environment and no inherited credentials, like the repo setup script. */
-export async function installPreviewDeps(compute: Pick<ComputeProvider, "exec">, ws: Workspace, install: string[], timeoutMs: number): Promise<void> {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-install-home-"));
-  try {
-    const res = await compute.exec(ws, {
-      cmd: install[0]!,
-      args: install.slice(1),
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin", HOME: home, TMPDIR: home, LANG: "en_US.UTF-8", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", CI: "1" },
-      timeoutMs,
-    });
-    if (res.code !== 0) throw new Error(`install exited ${res.code}: ${res.stderr.slice(-300)}`);
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  }
+/**
+ * Runs the repo's declared install in `ws` through the sandbox provider (the install profile, lifecycle scripts off unless the
+ * owner's `allowInstallScripts` says otherwise). The code being installed is agent-written, so a provider with no sandbox
+ * throws and nothing is installed: there is no unsandboxed fallback.
+ */
+export async function installPreviewDeps(sandbox: Pick<ComputeProvider, "install">, ws: Workspace, preview: WebPreview, timeoutMs: number): Promise<void> {
+  const res = await sandbox.install(ws, { argv: preview.install, timeoutMs, allowScripts: preview.allowInstallScripts });
+  if (res.code !== 0) throw new Error(`install exited ${res.code}: ${res.stderr.slice(-300)}`);
 }
 
 export interface PocPreviewDeps {
   ledger: Ledger;
   broker: { resolveRef(ref: string): Promise<string> };
-  /** Prepares and installs (outside any sandbox). */
-  local: Pick<ComputeProvider, "prepare" | "exec" | "destroy">;
-  /** Runs the app. Must be a sandboxing provider. */
+  /** Prepares the clone. */
+  local: Pick<ComputeProvider, "prepare" | "destroy">;
+  /** Installs and runs the app. Must be a sandboxing provider. */
   sandbox: ComputeProvider;
   preview: WebPreview;
   dataDir: string;
@@ -86,10 +79,10 @@ export async function startPocPreview(deps: PocPreviewDeps, issueNumber: number,
   const dir = pocWorkspaceDir(deps.dataDir, ledger.repo, issueNumber);
   let ws: Workspace = { id: dir, path: dir };
   if (!fs.existsSync(dir)) {
-    // The build could not keep its installed workspace: clone the ref and install again, still outside the sandbox.
+    // The build could not keep its installed workspace: clone the ref and install again, inside the sandbox.
     const fresh = await deps.local.prepare({ issueNumber, startSha: headSha });
     try {
-      await installPreviewDeps(deps.local, fresh, preview.install, deps.installTimeoutMs);
+      await installPreviewDeps(deps.sandbox, fresh, preview, deps.installTimeoutMs);
       fs.mkdirSync(path.dirname(dir), { recursive: true });
       fs.renameSync(fresh.path, dir);
     } finally {

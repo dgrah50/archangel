@@ -197,6 +197,10 @@ export class SailProvider implements ComputeProvider {
     throw new Error("Sail can't expose a port yet: the SDK only offers a public HTTPS URL or public SSH, never a loopback forward");
   }
 
+  async install(): Promise<ExecResult> {
+    throw new Error("no sandbox: Sail does not run the sandbox-exec install profile");
+  }
+
   async list(prefix: string): Promise<ListedPreview[]> {
     return (await this.o.client.list(prefix)).map((b) => ({ id: b.id, pgid: 0 }));
   }

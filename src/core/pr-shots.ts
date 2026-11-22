@@ -67,9 +67,9 @@ export function setPrShots(ledger: Ledger, pr: number, headSha: string, links: S
 export interface PrShotDeps {
   github: Pick<GitHubClient, "publishAssets">;
   repoSlug: string;
-  /** Prepares and installs the PR head (outside any sandbox). */
-  local: Pick<ComputeProvider, "prepare" | "exec" | "destroy">;
-  /** Runs the app. Must be a sandboxing provider. */
+  /** Prepares the clone of the PR head. */
+  local: Pick<ComputeProvider, "prepare" | "destroy">;
+  /** Installs and runs the app. Must be a sandboxing provider. */
   sandbox: ComputeProvider;
   preview: WebPreview;
   dataDir: string;
@@ -81,7 +81,7 @@ export interface PrShotDeps {
 export async function capturePrShots(deps: PrShotDeps, input: { issueNumber: number; prNumber: number; headSha: string }): Promise<ShotLink[]> {
   const ws = await deps.local.prepare({ issueNumber: input.issueNumber, startSha: input.headSha });
   try {
-    await installPreviewDeps(deps.local, ws, deps.preview.install, deps.installTimeoutMs);
+    await installPreviewDeps(deps.sandbox, ws, deps.preview, deps.installTimeoutMs);
     const [cmd, ...args] = deps.preview.start;
     const exposed = await deps.sandbox.expose(ws, { port: deps.preview.port, ttlMs: PR_SHOT_TTL_MS, cmd: cmd!, args, readyPath: deps.preview.readyPath });
     try {

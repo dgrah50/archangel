@@ -24,7 +24,7 @@ export interface PocBuildDeps {
   cfg: Pick<ArchangelConfig, "maxDailyUsd" | "implementMaxTurns" | "implementTimeoutMs" | "setupTimeoutMs" | "githubOwner" | "githubRepo">;
   gate: GatePolicy;
   /** The repo's web preview block; with it, a finished build installs its dependencies and keeps the workspace. */
-  preview?: { policy: WebPreview; workspaceDir: (issueNumber: number) => string } | null;
+  preview?: { policy: WebPreview; sandbox: ComputeProvider; workspaceDir: (issueNumber: number) => string } | null;
 }
 
 /** The brief is the pitch's smallest version plus slice 1's acceptance. The pitch is agent-written text, so the prompt frames it as data. */
@@ -101,10 +101,10 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
     await broker.savePocRef(issueNumber, validation.headSha);
     const diffStat = (await broker.diffStat(mainSha, validation.headSha)).slice(0, DIFF_STAT_MAX_CHARS);
     if (deps.preview) {
-      // Outside any sandbox (Seatbelt cannot allow registry hosts for one step), scrubbed env, the repo setup's timeout. A failed
-      // install does not fail the build: the preview installs again when it starts.
+      // Through the sandbox provider's install profile (never on the host), the repo setup's timeout. A failed or refused
+      // install does not fail the build: the preview installs again when it starts, and refuses the same way.
       try {
-        await installPreviewDeps(compute, workspace, deps.preview.policy.install, cfg.setupTimeoutMs);
+        await installPreviewDeps(deps.preview.sandbox, workspace, deps.preview.policy, cfg.setupTimeoutMs);
         const dir = deps.preview.workspaceDir(issueNumber);
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(path.dirname(dir), { recursive: true });

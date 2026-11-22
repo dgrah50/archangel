@@ -19,6 +19,16 @@ Archangel is designed as a **single-owner, locally hosted software factory**. It
 3. **Owner identity verification:** Author, label actor, and command checks use numeric GitHub user IDs (`ownerUserId`), never usernames.
 4. **Prompt-injection & exfiltration defenses:** Read-only Scout sandboxes, scrubbed subprocess environments, whitelist-only metrics/cluster blocks, and outbound secret scanning.
 
+### Preview install trust model
+
+A preview (PoC build, or a factory PR head shot for screenshots) installs the repo's `preview.install` before it runs, and the code being installed is agent-written. The install therefore never runs on the host:
+
+- It runs under a dedicated macOS `sandbox-exec` install profile. Reads: the workspace, one per-run directory (which is `HOME`, `TMPDIR` and the package-manager cache, deleted afterwards), the read-only toolchain and the install binary itself. Nothing else under the user's home is readable. Writes: the workspace and that directory only.
+- **Outbound network is open during install.** Seatbelt filters by IP and port, not hostname, so registry hosts cannot be allowed alone. What bounds this is that the install has no credentials in its env, no home access, and (by default) no scripts, so there is nothing to send and nothing local to read.
+- The env is only a minimal `PATH`, `HOME`, `TMPDIR` and the cache dirs.
+- Lifecycle scripts are off by default: `--ignore-scripts` is added for bun, npm and pnpm, and yarn gets its env switches. A different declared install command still runs inside the profile. Only the owner can turn scripts on, with `preview.allowInstallScripts: true` in `.agents/archangel.json` on the default branch; they then still run inside the profile.
+- If the platform cannot sandbox the install (not macOS), the preview refuses. There is no unsandboxed fallback.
+
 ### Out of Scope (Known Local Boundaries)
 
 - **Local OS/container sandboxing:** Throwaway clones and scrubbed environments are **advisory** isolation on the owner's machine, not a multi-tenant VM/container boundary.

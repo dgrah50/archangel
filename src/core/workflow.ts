@@ -98,6 +98,8 @@ export const Preview = z.discriminatedUnion("kind", [
       readyPath: PreviewPath,
       /** Up to 2 more pages to screenshot after `readyPath`. */
       shots: z.array(PreviewPath).max(2).default([]),
+      /** Owner policy: let the install's lifecycle scripts (`postinstall`, ...) run. They still run inside the sandbox. Default off. */
+      allowInstallScripts: z.boolean().default(false),
     })
     .strict(),
   z.object({ kind: z.literal("demo"), commands: z.array(Argv).min(1).max(5) }).strict(),
