@@ -41,8 +41,9 @@ export function renderRecapComment(input: {
   if (thread.themeLabel) {
     lines.push(`| **Theme** | \`${thread.themeLabel}\` |`);
   }
-  if (workClassOfBranch(thread.branchName) === "feature") {
-    lines.push(`| **Class** | \`feature\` |`, `| **Landing** | Feature: owner merges |`);
+  const workClass = workClassOfBranch(thread.branchName);
+  if (workClass !== "bugfix") {
+    lines.push(`| **Class** | \`${workClass}\` |`, `| **Landing** | ${workClass === "feature" ? "Feature" : "Chore"}: owner merges |`);
   } else if (thread.mode === "advisory") {
     lines.push(`| **Landing** | Advisory only — owner merges manually |`);
   }
@@ -87,8 +88,8 @@ export function renderRecapComment(input: {
     "_Machine output from the Gate run, shown verbatim (last lines only); not written by Archangel._",
     "",
     "**On base (expected to fail):**",
-    ...(workClassOfBranch(thread.branchName) === "feature"
-      ? ["_not applicable: feature Threads need no new test, so there is no red-on-base proof_"]
+    ...(workClassOfBranch(thread.branchName) !== "bugfix"
+      ? ["_not applicable: feature and chore Threads need no new test, so there is no red-on-base proof_"]
       : proofBlock(input.gateProof?.base_output)),
     "",
     "**On head (expected to pass):**",

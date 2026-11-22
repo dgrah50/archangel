@@ -9,7 +9,7 @@ import { ProviderEntrySchema, WRITER_ROLES, type GatePolicy, type ProviderEntry,
 import type { Ledger } from "../ledger/store.js";
 import type { AttemptInput } from "./attempt-input.js";
 import { basePolicy, deriveCases, git, openReplayClone, pinnedShas } from "./replay.js";
-import { workClassOfBranch } from "./work-class.js";
+import { workClassOfBranch, type WorkClass } from "./work-class.js";
 
 /**
  * Model-tier benchmark (L4): replays captured implementation cases with a candidate provider chain and with the current one, and
@@ -35,7 +35,7 @@ export interface BenchCase {
   issueNumber: number;
   title: string;
   body: string;
-  workClass: "bugfix" | "feature";
+  workClass: WorkClass;
   baseSha: string;
   bareRepoPath: string;
 }

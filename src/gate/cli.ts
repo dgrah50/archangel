@@ -4,6 +4,7 @@
  * Bundled into `bin/archangel-gate.mjs` via esbuild so GitHub Actions runs Gate in <1s with ZERO `npm ci`.
  */
 import { runGate, runGateForActions } from "./gate.js";
+import type { WorkClass } from "../core/work-class.js";
 
 function parseArgs(argv: string[]): {
   repo: string;
@@ -14,7 +15,7 @@ function parseArgs(argv: string[]): {
   headRuns?: number;
   skipPreCommit: boolean;
   skipTests: boolean;
-  workClass: "bugfix" | "feature";
+  workClass: WorkClass;
   proofHeadSha?: string;
 } {
   let repo = ".";
@@ -25,7 +26,7 @@ function parseArgs(argv: string[]): {
   let headRuns: number | undefined;
   let skipPreCommit = false;
   let skipTests = false;
-  let workClass: "bugfix" | "feature" = "bugfix";
+  let workClass: WorkClass = "bugfix";
   let proofHeadSha: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
@@ -43,7 +44,7 @@ function parseArgs(argv: string[]): {
     else if (a === "--skip-tests") skipTests = true;
     else if (a === "--work-class" && argv[i + 1]) {
       const v = argv[++i]!;
-      if (v !== "bugfix" && v !== "feature") throw new Error(`--work-class must be bugfix or feature (got ${v})`);
+      if (v !== "bugfix" && v !== "feature" && v !== "chore") throw new Error(`--work-class must be bugfix, feature or chore (got ${v})`);
       workClass = v;
     }
   }

@@ -365,6 +365,27 @@ describe("Gate work classes", () => {
     }
   });
 
+  it("chore needs no new test but fails when the existing suite is red on head", async () => {
+    const { root, repoDir, baseSha } = createRepoFixture();
+    try {
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  if (b < 0) return a - b;\n  return a + b;\n}\nexport const VERSION = 2;\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "chore green"]);
+      const green = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", workClass: "chore" });
+      expect(green.violations).toEqual([]);
+      expect(green.passed).toBe(true);
+
+      writeFile(repoDir, "calc.mjs", "export function add(a, b) {\n  return a - b;\n}\n");
+      git(repoDir, ["add", "-A"]);
+      git(repoDir, ["commit", "-m", "chore red"]);
+      const red = await runGate({ repoDir, baseRef: baseSha, headRef: "HEAD", workClass: "chore" });
+      expect(red.passed).toBe(false);
+      expect(red.violations.join("\n")).toContain("head testCmd failed");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("feature skips the red-on-base proof; bugfix (default) still rejects a test that passes on base", async () => {
     const { root, repoDir, baseSha } = createRepoFixture();
     try {

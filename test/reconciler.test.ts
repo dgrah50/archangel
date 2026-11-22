@@ -535,13 +535,15 @@ describe("Work classes (owner-labelled features)", () => {
     }
   });
 
-  it("a feature Thread never auto-merges, even with shadowMode false, and shows the owner-merge line", async () => {
+  for (const cls of ["feature", "chore"] as const) {
+  it(`a ${cls} Thread never auto-merges, even with shadowMode false, and shows the owner-merge line`, async () => {
     const h = harness({ shadowMode: false });
     try {
-      h.addIssue(5, ["ready-for-agent", "class:feature"]);
+      h.addIssue(5, ["ready-for-agent", `class:${cls}`]);
       h.github.labelActors.set("5:ready-for-agent", 999);
-      h.github.labelActors.set("5:class:feature", 999);
+      h.github.labelActors.set(`5:class:${cls}`, 999);
       await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(h.ledger.getThread(5)?.branchName).toBe(`factory/${cls}-5`);
       const p = h.ledger.getThread(5)!.phase;
       expect(p.kind).toBe("awaiting_gate");
       const headSha = p.kind === "awaiting_gate" ? p.headSha : "";
@@ -554,13 +556,14 @@ describe("Work classes (owner-labelled features)", () => {
       expect(h.ledger.getAutoMergeCountToday()).toBe(0);
       expect(h.github.prs.get(100)?.merged).toBe(false);
       const recap = (h.github.comments.get(100) ?? []).at(-1) ?? "";
-      expect(recap).toContain("Feature: owner merges");
+      expect(recap).toContain("owner merges");
       expect(recap).not.toContain("WOULD MERGE");
       expect(h.ledger.getShadowStats().total).toBe(0);
     } finally {
       h.cleanup();
     }
   });
+  }
 });
 
 describe("Owner comment commands", () => {
