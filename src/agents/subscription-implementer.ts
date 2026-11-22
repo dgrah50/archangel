@@ -14,8 +14,27 @@ export interface ProviderCooldownStore {
   recordCooldown(provider: CliProvider, durationMs: number, reason: string, now?: number): void;
 }
 
-const RATE_LIMIT_RE =
-  /rate.?limit|quota|usage.?limit|limit.?reached|too many requests|429|capacity|overloaded|try again later|exhausted/i;
+// Real quota signals only: stderr can carry arbitrary tool or test output ("foo_test.go:429:", "memory exhausted"),
+// so a bare number or word is not enough. Known shapes: "HTTP 429: usage limit reached", "429 Too Many Requests",
+// "You've hit your usage limit", "5-hour limit reached", "rate_limit_error", "overloaded_error", "RESOURCE_EXHAUSTED",
+// "Quota exceeded for quota metric".
+const RATE_LIMIT_RE = new RegExp(
+  [
+    String.raw`rate[ _-]?limit`,
+    String.raw`usage[ _-]?limit`,
+    String.raw`limit[ _-]?reached`,
+    String.raw`hit your (?:usage |rate )?limit`,
+    String.raw`too many requests`,
+    String.raw`\bquota\b`,
+    String.raw`resource[ _]exhausted`,
+    String.raw`overloaded_error`,
+    String.raw`(?:http|status(?: code)?|error|code)[ :=]*429\b`,
+    String.raw`\b429[ :]+(?:too many|rate|quota|usage)`,
+    String.raw`\b(?:overloaded|capacity|exhausted)\b[^\n]{0,40}\b(?:rate|quota|usage|limit|try again)`,
+    String.raw`\b(?:rate|quota|usage|limit)\b[^\n]{0,40}\b(?:overloaded|capacity|exhausted)\b`,
+  ].join("|"),
+  "i",
+);
 
 export function isRateLimitOrQuotaError(text: string): boolean {
   return RATE_LIMIT_RE.test(text);
@@ -226,6 +245,14 @@ function hasWorkspaceEdits(cloneDir: string): boolean {
   }
 }
 
+function headSha(cloneDir: string): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
 function captureWorkspaceContinuityContext(cloneDir: string): string {
   try {
     const status = execFileSync("git", ["status", "--short"], { cwd: cloneDir, encoding: "utf8" }).trim();
@@ -340,6 +367,7 @@ export class SubscriptionImplementer implements Implementer {
           `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, ts: Date.now() })}\n`,
         );
 
+        const headBefore = headSha(input.cloneDir);
         const res = await this.invoker({
           provider: entry.provider,
           model: entry.model,
@@ -393,7 +421,8 @@ export class SubscriptionImplementer implements Implementer {
         errors.push(`${entry.provider} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
 
         // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
-        if (hasWorkspaceEdits(input.cloneDir)) {
+        // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
+        if (hasWorkspaceEdits(input.cloneDir) || headSha(input.cloneDir) !== headBefore) {
           const vendor = providerToVendor(entry.provider);
           if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
         }
