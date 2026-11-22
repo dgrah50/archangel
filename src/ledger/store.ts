@@ -1,3 +1,4 @@
+import { categorizeAttemptError } from "../core/metrics-block.js";
 import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -1311,7 +1312,15 @@ export class Ledger {
     };
   }
 
-  computeMetrics(opts: { repo?: string | null; sinceMs?: number; now?: number } = {}): {
+  computeMetrics(
+    opts: {
+      repo?: string | null;
+      sinceMs?: number;
+      now?: number;
+      /** Exclude Threads whose issue was filed by any of these Scouts (loop guard). */
+      excludeScouts?: string[];
+    } = {},
+  ): {
     windowDays: number | null;
     threads: {
       total: number;
@@ -1328,6 +1337,8 @@ export class Ledger {
       p50DurationSec: number | null;
       p95DurationSec: number | null;
       topErrors: Array<{ error: string; count: number }>;
+      /** Failed attempts bucketed into fixed categories (never contains error text). */
+      errorCategories: Record<string, number>;
     };
     reviews: {
       byVendor: Record<string, { approve: number; veto: number }>;
@@ -1341,7 +1352,19 @@ export class Ledger {
     const since = opts.sinceMs ?? 0;
     const repoFilter = opts.repo ?? null;
 
-    const allThreads = repoFilter ? this.listThreads(undefined, repoFilter) : this.listAllThreads();
+    const excludedIssues = new Set<number>();
+    for (const scout of opts.excludeScouts ?? []) {
+      const rows = this.db
+        .prepare(`SELECT issue_number FROM scout_proposals WHERE scout_name = ? ${repoFilter ? "AND repo = ?" : ""}`)
+        .all(...(repoFilter ? [scout, repoFilter] : [scout])) as Array<{ issue_number: number }>;
+      for (const r of rows) excludedIssues.add(Number(r.issue_number));
+    }
+    const excludedList = [...excludedIssues].join(",");
+    const notExcluded = (col: string) => (excludedList ? ` AND (${col} IS NULL OR ${col} NOT IN (${excludedList}))` : "");
+
+    const allThreads = (repoFilter ? this.listThreads(undefined, repoFilter) : this.listAllThreads()).filter(
+      (t) => !excludedIssues.has(t.issueNumber),
+    );
     const threads = since > 0 ? allThreads.filter((t) => t.createdAt >= since) : allThreads;
 
     const byPhase: Record<string, number> = {};
@@ -1359,7 +1382,8 @@ export class Ledger {
     }
 
     const attParams: unknown[] = [since];
-    const attWhere = repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?";
+    const attWhere =
+      (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
       .prepare(`SELECT status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
@@ -1375,6 +1399,7 @@ export class Ledger {
     let aborted = 0;
     const durationsSec: number[] = [];
     const errorCounts = new Map<string, number>();
+    const errorCategories: Record<string, number> = {};
 
     for (const a of attemptRows) {
       if (a.status === "succeeded") succeeded++;
@@ -1386,6 +1411,8 @@ export class Ledger {
       if (a.status === "failed" && a.error_message) {
         const key = a.error_message.slice(0, 120);
         errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
+        const cat = categorizeAttemptError(a.error_message);
+        errorCategories[cat] = (errorCategories[cat] ?? 0) + 1;
       }
     }
 
@@ -1397,7 +1424,8 @@ export class Ledger {
     };
 
     const revParams: unknown[] = [since];
-    const revWhere = repoFilter ? "WHERE created_at >= ? AND repo = ?" : "WHERE created_at >= ?";
+    const revWhere =
+      (repoFilter ? "WHERE created_at >= ? AND repo = ?" : "WHERE created_at >= ?") + notExcluded("issue_number");
     if (repoFilter) revParams.push(repoFilter);
     const reviewRows = this.db
       .prepare(`SELECT vendor, verdict FROM reviews ${revWhere}`)
@@ -1412,7 +1440,8 @@ export class Ledger {
     }
 
     const outParams: unknown[] = ["review/outage_started", since];
-    const outWhere = repoFilter ? "WHERE topic = ? AND ts >= ? AND repo = ?" : "WHERE topic = ? AND ts >= ?";
+    const outWhere =
+      (repoFilter ? "WHERE topic = ? AND ts >= ? AND repo = ?" : "WHERE topic = ? AND ts >= ?") + notExcluded("issue_number");
     if (repoFilter) outParams.push(repoFilter);
     const outageRow = this.db
       .prepare(`SELECT COUNT(*) AS cnt FROM audit_log ${outWhere}`)
@@ -1444,6 +1473,7 @@ export class Ledger {
         p50DurationSec: percentile(durationsSec, 0.5),
         p95DurationSec: percentile(durationsSec, 0.95),
         topErrors,
+        errorCategories,
       },
       reviews: {
         byVendor,
