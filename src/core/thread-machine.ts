@@ -90,7 +90,8 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
     prNumber: z.number().int().positive(),
     headSha: z.string().min(1),
     baseSha: z.string().min(1),
-    verdictId: z.number().int().positive(),
+    /** The Shadow Mode verdict row; null for a feature Thread, which is owner-merge by class and never a Shadow verdict. */
+    verdictId: z.number().int().positive().nullable(),
   }),
   z.object({
     kind: z.literal("needs_you"),
@@ -152,7 +153,7 @@ export type MachineEvent =
   | { t: "head_moved"; pr: PrRef; now: number }
   | { t: "review_outage"; now: number }
   | { t: "reviews_approved" }
-  | { t: "shadow_recorded"; verdictId: number }
+  | { t: "shadow_recorded"; verdictId: number | null }
   | { t: "landed"; mergeId: number }
   | { t: "pr_observed"; status: "merged" | "closed"; mergeId?: number }
   | { t: "escalate"; code: EscalationCode; reason: string }

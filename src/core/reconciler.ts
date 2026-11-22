@@ -1924,20 +1924,23 @@ export class Reconciler {
     // Shadow Mode: ready except for shadow_mode_active (and optional branch_behind_main with clean merge-tree).
     if (isShadowReady(blockers) || shadowReadyWithBehind) {
       await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
-      const verdict = this.ledger.recordMerge({
-        issueNumber: thread.issueNumber,
-        prNumber: pr.number,
-        headSha: pr.headSha,
-        shadowOnly: true,
-        now,
-      });
+      // A feature Thread is owner-merge by class: no Shadow verdict row (it would pollute the agreement rate) and no WOULD MERGE line.
+      const verdictId = isFeature
+        ? null
+        : this.ledger.recordMerge({
+            issueNumber: thread.issueNumber,
+            prNumber: pr.number,
+            headSha: pr.headSha,
+            shadowOnly: true,
+            now,
+          }).id;
       const updated = this.applyMachineEvent(
         thread,
-        { t: "shadow_recorded", verdictId: verdict.id },
+        { t: "shadow_recorded", verdictId },
         { auditTopic: "thread/shadow_ready", now },
       );
       if (updated) {
-        await this.postRecapSafe(updated, pr, blockers, { wouldMerge: true });
+        await this.postRecapSafe(updated, pr, blockers, isFeature ? undefined : { wouldMerge: true });
       }
       return;
     }
