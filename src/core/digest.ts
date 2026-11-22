@@ -24,12 +24,19 @@ function age(ms: number): string {
 }
 
 /**
- * Plain-text daily digest, or null when there is nothing to say: Needs You is known to be empty and every figure of
- * yesterday is a known zero. A figure that could not be computed is never treated as zero, so it keeps the digest alive.
+ * Plain-text daily digest, or null when there is nothing to say: Needs You, pitches and proposals are all known to be
+ * empty and every figure of yesterday is a known zero. Anything that could not be read (null) is never treated as empty,
+ * and anything waiting on the owner (pitches, proposals) keeps the digest alive.
  */
 export function buildDigest(input: DigestInput): string | null {
   const y = input.yesterday;
-  if (input.needsYou?.length === 0 && !input.pitches?.length && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
+  if (
+    input.needsYou?.length === 0 &&
+    input.pitches?.length === 0 &&
+    input.proposals?.length === 0 &&
+    y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 &&
+    y.spendUsd === 0
+  ) {
     return null;
   }
   const n = (v: number | null) => (v === null ? UNAVAILABLE : String(v));

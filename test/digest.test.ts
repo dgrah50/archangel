@@ -31,6 +31,15 @@ describe("buildDigest", () => {
     ).toBeNull();
   });
 
+  const quiet = { now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [] };
+  it("is not quiet when pitches or proposals could not be read, or are waiting on the owner", () => {
+    expect(buildDigest({ ...quiet, pitches: null })).toContain("Pitches awaiting you: unavailable");
+    expect(buildDigest({ ...quiet, proposals: null })).toContain("Scout proposals awaiting you: unavailable");
+    expect(buildDigest({ ...quiet, proposals: [{ repo: "a/b", issueNumber: 9, scoutName: "bug-hunt" }] })).toContain("a/b#9 (bug-hunt)");
+    expect(buildDigest({ ...quiet, pitches: [{ repo: "a/b", issueNumber: 8, scoutName: "pitch", since: NOW - HOUR }] })).toContain("a/b#8 (pitch)");
+    expect(buildDigest(quiet)).toBeNull();
+  });
+
   it("shows class, age and recommendation for Needs You items", () => {
     const text = buildDigest({
       now: NOW,

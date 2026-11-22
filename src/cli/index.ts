@@ -24,7 +24,7 @@ import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
-import { renderStages } from "../core/status-text.js";
+import { computeHealth, renderHealth, renderStages } from "../core/status-text.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
@@ -406,7 +406,7 @@ program
     const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     if (!fs.existsSync(paths.ledgerDbPath)) {
-      const empty = { message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
+      const empty = { status: "no_ledger", message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
       console.log(opts.json ? JSON.stringify(empty, null, 2) : empty.message);
       return;
     }
@@ -420,8 +420,10 @@ program
       const breakers = Object.fromEntries(repos.map((r) => [r, ledger.getCircuitBreaker(r)]));
       const now = Date.now();
       const grouped = groupThreads(threads, now);
+      const health = computeHealth(ledger, now, repos);
 
       const payload = {
+        health,
         spendTodayUsd: Number(spend.spentUsd.toFixed(4)),
         reservedUsd: Number(spend.reservedUsd.toFixed(4)),
         autoMergesToday,
@@ -441,6 +443,7 @@ program
         return;
       }
 
+      for (const line of renderHealth(health)) console.log(line);
       console.log(`Spend today:      $${payload.spendTodayUsd.toFixed(2)} (reserved: $${payload.reservedUsd.toFixed(2)})`);
       console.log(`Auto-merges:      ${autoMergesToday}`);
       console.log(
