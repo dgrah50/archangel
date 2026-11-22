@@ -36,7 +36,7 @@ export function isWorkflowsState(v: unknown): v is WorkflowsState {
 }
 
 export function isThreadDetail(v: unknown): v is ThreadDetail {
-  return obj(v) && typeof v.repo === "string" && typeof v.issueNumber === "number" && typeof v.title === "string" && Array.isArray(v.events) && v.events.every((e) => obj(e) && typeof e.ts === "number" && typeof e.title === "string" && Array.isArray(e.details));
+  return obj(v) && typeof v.repo === "string" && typeof v.issueNumber === "number" && typeof v.title === "string" && Array.isArray(v.events) && obj(v.recap) && Array.isArray(v.blockers) && v.events.every((e) => obj(e) && typeof e.ts === "number" && typeof e.title === "string" && Array.isArray(e.details));
 }
 
 export function isHostStatus(v: unknown): v is HostStatus {

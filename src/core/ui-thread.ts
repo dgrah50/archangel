@@ -20,12 +20,29 @@ export interface ThreadDetail {
   phase: string;
   prNumber: number | null;
   events: TimelineEvent[];
+  /** From the Ledger only (live check state lives on GitHub): what the latest Recap would say about the head. */
+  recap: { headSha: string | null; themeLabel: string | null; implementers: string[]; attempts: string; reviews: Array<{ vendor: string; verdict: string }> };
+  /** What holds this Thread, from the Ledger: an owner decision, or a review veto on the head. Empty when nothing is recorded. */
+  blockers: Array<{ title: string; detail: string; owner: boolean }>;
   /** The audit log was cut at AUDIT_LIMIT rows (newest kept). */
   auditTruncated: boolean;
 }
 
 export const AUDIT_LIMIT = 500;
 const clip = (s: string, n = 400) => (s.length > n ? `${s.slice(0, n)}...` : s);
+
+function reviewFindings(json: string, limit = 1): string[] {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, limit).map((f) => {
+      const o = (typeof f === "object" && f !== null ? f : {}) as Record<string, unknown>;
+      return clip(`${String(o.severity ?? "?")} ${String(o.file ?? "")}: ${String(o.summary ?? "")}`, 300);
+    });
+  } catch {
+    return ["findings unreadable"];
+  }
+}
 
 /** Pure read; null when the Ledger has no such Thread. */
 export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: number, now = Date.now()): ThreadDetail | null {
@@ -54,18 +71,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     });
   }
   for (const r of view.listReviewsFor(issueNumber)) {
-    let findings: string[] = [];
-    try {
-      const parsed: unknown = JSON.parse(r.findingsJson);
-      if (Array.isArray(parsed)) {
-        findings = parsed.slice(0, 10).map((f) => {
-          const o = (typeof f === "object" && f !== null ? f : {}) as Record<string, unknown>;
-          return clip(`${String(o.severity ?? "?")} ${String(o.file ?? "")}: ${String(o.summary ?? "")}`, 300);
-        });
-      }
-    } catch {
-      findings = ["findings unreadable"];
-    }
+    const findings = reviewFindings(r.findingsJson, 10);
     events.push({
       ts: r.createdAt,
       kind: "review",
@@ -85,6 +91,13 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
   }
   events.sort((a, b) => a.ts - b.ts);
   const phase = thread.phase;
+  const headSha = "headSha" in phase && typeof phase.headSha === "string" ? phase.headSha : null;
+  const atHead = headSha === null ? [] : view.listReviewsFor(issueNumber).filter((r) => r.headSha === headSha);
+  const blockers: ThreadDetail["blockers"] = [];
+  if (phase.kind === "needs_you") blockers.push({ title: "Owner decision pending", detail: phase.reason, owner: true });
+  for (const r of atHead.filter((x) => x.verdict === "veto")) {
+    blockers.push({ title: `Review veto from ${r.vendor}`, detail: reviewFindings(r.findingsJson)[0] ?? "no findings recorded", owner: false });
+  }
   return {
     generatedAt: now,
     repo,
@@ -92,6 +105,14 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     title: thread.title,
     phase: phase.kind,
     prNumber: "prNumber" in phase && typeof phase.prNumber === "number" ? phase.prNumber : null,
+    recap: {
+      headSha: headSha === null ? null : headSha.slice(0, 8),
+      themeLabel: thread.themeLabel,
+      implementers: thread.implementerVendors,
+      attempts: `implement ${thread.implementCount}, revision ${thread.revisionCount}, rebase ${thread.rebaseCount}`,
+      reviews: atHead.map((r) => ({ vendor: r.vendor, verdict: r.verdict })),
+    },
+    blockers,
     events,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
