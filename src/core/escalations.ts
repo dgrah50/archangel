@@ -132,6 +132,11 @@ export const MAIN_ESCALATION_POLICY = {
     recommendation:
       "Fix .agents/archangel.json on the default branch with an owner-merged PR (`archangel doctor` shows the parse error). Archangel takes no new work in this repo until it parses.",
   },
+  post_merge_unverified: {
+    decisionClass: "live_infrastructure",
+    recommendation:
+      "Archangel could not confirm main's CI result for this merge. Check the default branch's checks by hand; nothing is retried automatically.",
+  },
   red_main_manual: {
     decisionClass: "live_infrastructure",
     recommendation:

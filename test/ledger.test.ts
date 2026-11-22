@@ -115,11 +115,81 @@ describe("Ledger outbox ordering", () => {
       const effects = Array.from({ length: 51 }, (_, i) => ({ kind: "add_label" as const, issueNumber: i + 1, label: "needs-you" }));
       const t = ledger.getThread(1)!;
       ledger.transition(1, t.version, { kind: "queued" }, { effects });
-      const first = ledger.listOutbox();
+      const first = ledger.listDueOutbox();
       expect(first).toHaveLength(50);
       for (const row of first) ledger.failOutbox(row.id, "poison");
-      const next = ledger.listOutbox().map((r) => r.effect);
+      const next = ledger.listDueOutbox().map((r) => r.effect);
+      expect(next).toHaveLength(1);
       expect(next[0]).toMatchObject({ issueNumber: 51 });
+    } finally {
+      ledger.close();
+    }
+  });
+});
+
+describe("daemon lock heartbeat", () => {
+  it("returns false once the lock is gone, unreadable or taken by another daemon, and never rewrites it", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // no lock row
+      expect(ledger.acquireDaemonLock("a", 1000)).toBe(true);
+      expect(ledger.heartbeatDaemonLock("a")).toBe(true);
+      ledger.setSystemState("daemon_lock", JSON.stringify({ ownerId: "b", pid: 1, heartbeatAt: 1 }));
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // stolen
+      expect(JSON.parse(ledger.getSystemState("daemon_lock")!).ownerId).toBe("b");
+      ledger.setSystemState("daemon_lock", "not json");
+      expect(ledger.heartbeatDaemonLock("a")).toBe(false); // unreadable
+    } finally {
+      ledger.close();
+    }
+  });
+});
+
+describe("Ledger outbox lifecycle", () => {
+  const queue = (ledger: Ledger, effect: unknown) => {
+    ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
+    ledger.transition(1, ledger.getThread(1)!.version, { kind: "queued" }, { effects: [effect as never] });
+    return ledger.listDueOutbox()[0]!;
+  };
+
+  it("backs off a failed row, then dead-letters it after the attempt cap, auditing once", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      const row = queue(ledger, { kind: "add_label", issueNumber: 1, label: "x" });
+      ledger.failOutbox(row.id, "boom", 1_000);
+      expect(ledger.listDueOutbox(1_000)).toHaveLength(0);
+      expect(ledger.listDueOutbox(1_000 + 30_000)).toHaveLength(1);
+      expect(ledger.hasPendingLabelAdd(1, "x")).toBe(true);
+      for (let i = 0; i < 9; i++) ledger.failOutbox(row.id, "boom", 1_000);
+      expect(ledger.listDueOutbox(Number.MAX_SAFE_INTEGER)).toHaveLength(0);
+      expect(ledger.listDeadOutbox()[0]).toMatchObject({ state: "dead_letter", attempts: 10, lastError: "boom" });
+      expect(ledger.hasPendingLabelAdd(1, "x")).toBe(false);
+      expect(ledger.listAudit({ topicPrefix: "outbox/dead_letter" })).toHaveLength(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("reads an unknown effect kind as null so it can be dead-lettered rather than delivered or dropped", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      const row = queue(ledger, { kind: "teleport", issueNumber: 1 });
+      expect(row.effect).toBeNull();
+      ledger.deadLetterOutbox(row.id, "unknown");
+      expect(ledger.listDueOutbox()).toHaveLength(0);
+      expect(ledger.listDeadOutbox()).toHaveLength(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("finds a pending label add beyond the first 1000 rows", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
+      const effects = Array.from({ length: 1100 }, (_, i) => ({ kind: "add_label" as const, issueNumber: i + 1, label: "l" }));
+      ledger.transition(1, ledger.getThread(1)!.version, { kind: "queued" }, { effects });
+      expect(ledger.hasPendingLabelAdd(1100, "l")).toBe(true);
     } finally {
       ledger.close();
     }
