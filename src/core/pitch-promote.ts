@@ -80,17 +80,27 @@ export async function promotePitch(
   }
 
   const created: number[] = [];
-  for (const d of drafts) {
-    const url = (
-      await runner.run("gh", [
-        "issue", "create", "--repo", input.repo, "--title", d.title, "--body", d.body,
-        "--label", input.labels.readyForAgent, "--label", input.labels.feature,
-      ])
-    ).trim();
-    const m = /\/issues\/(\d+)\s*$/.exec(url);
-    if (!m) throw new Error(`Could not read the new issue number from: ${url}`);
-    created.push(Number(m[1]));
-    input.log(`Opened ${url}`);
+  try {
+    for (const d of drafts) {
+      const url = (
+        await runner.run("gh", [
+          "issue", "create", "--repo", input.repo, "--title", d.title, "--body", d.body,
+          "--label", input.labels.readyForAgent, "--label", input.labels.feature,
+        ])
+      ).trim();
+      const m = /\/issues\/(\d+)\s*$/.exec(url);
+      if (!m) throw new Error(`Could not read the new issue number from: ${url}`);
+      created.push(Number(m[1]));
+      input.log(`Opened ${url}`);
+    }
+  } catch (err) {
+    if (created.length === 0) throw err;
+    // Some owner-authored issues already exist. Mark the pitch decided so a rerun cannot duplicate them, and say what is left.
+    ledger.markPitchPromoted(input.issue, input.now);
+    ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, partial: true }, input.now);
+    throw new Error(
+      `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Pitch #${input.issue} is marked promoted and left open; open the remaining slices by hand.`,
+    );
   }
   ledger.markPitchPromoted(input.issue, input.now);
   ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created }, input.now);

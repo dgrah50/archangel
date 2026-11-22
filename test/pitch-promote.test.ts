@@ -115,6 +115,27 @@ describe("archangel pitch promote", () => {
     await expect(promotePitch(old.runner, old.ledger, { ...old.base, yes: true, confirm: async () => true })).rejects.toThrow(/no stored pitch text/);
   });
 
+  it("a failure after the first issue was created marks the pitch promoted and names what exists, so a rerun cannot duplicate it", async () => {
+    const { ledger, calls, base } = setup();
+    let creates = 0;
+    const flaky: OnboardRunner = {
+      async run(_cmd, args) {
+        calls.push(args);
+        if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ title: PITCH.title, body: BODY, state: "OPEN", labels: [{ name: "agent-pitch" }] });
+        if (args[0] === "issue" && args[1] === "create") {
+          if (++creates === 2) throw new Error("gh: network down");
+          return "https://github.com/acme/app/issues/100\n";
+        }
+        return "";
+      },
+    };
+    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/#100.*network down|network down.*#100/s);
+    expect(ledger.getPitch(40)!.status).toBe("promoted");
+    expect(ledger.listAudit({ topicPrefix: "pitch/promoted" })).toHaveLength(1);
+    // a rerun refuses instead of creating #100 again
+    await expect(promotePitch(flaky, ledger, { ...base, yes: true, confirm: async () => true })).rejects.toThrow(/already promoted/);
+  });
+
   it("a promoted pitch counts toward the pause rule (the Scout does not pause after it)", async () => {
     const { ledger, runner, base } = setup();
     for (let n = 1; n <= 3; n++) ledger.recordPitch({ issueNumber: n, scoutName: "pitch", trustHash: "h", title: `t${n} title long`, titleFp: `f${n}`, contentSha256: "c", now: n });

@@ -179,4 +179,21 @@ describe("replay", () => {
       fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  it("says how many cases were actually replayed, so an all-skipped run cannot read as a clean pass", async () => {
+    const w = await world();
+    try {
+      const r = await run(w);
+      expect(r.replayed).toBe(r.cases.filter((c) => c.status !== "skipped").length);
+      expect(r.replayed).toBeGreaterThan(0);
+      expect(renderReplay(r)).toContain(`replayed ${r.replayed} of ${r.cases.length}`);
+      const none = await run(w, { seeds: [] });
+      expect(none.replayed).toBe(0);
+      expect(renderReplay(none)).toContain("replayed 0 of 0");
+      expect(renderReplay(none)).toContain("NOTHING WAS REPLAYED");
+    } finally {
+      w.ledger.close();
+      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });

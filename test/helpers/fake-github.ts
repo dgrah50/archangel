@@ -67,6 +67,12 @@ export class FakeGitHub implements GitHubClient {
     if (!issue) throw new Error(`Issue #${issueNumber} not found`);
     return { ...issue, labels: [...issue.labels] };
   }
+  /** Who removed a label, when a test cares; labels removed without an entry here count as removed by the owner. */
+  labelRemovers = new Map<string, number>();
+  async verifyLabelRemovedBy(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean> {
+    const who = this.labelRemovers.get(`${issueNumber}:${labelName}`);
+    return who === undefined || who === expectedOwnerId;
+  }
   async verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean> {
     return this.labelActors.get(`${issueNumber}:${labelName}`) === expectedOwnerId;
   }

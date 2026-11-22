@@ -291,17 +291,20 @@ export class Reconciler {
     for (const scout of wf.scouts) {
       if (scout.promotion !== "auto" || !this.ledger.isScoutAutoPromoteWasted(scout.name, scout.trustHash)) continue;
       if (this.ledger.scoutWasteNoticeSent(scout.name, scout.trustHash)) continue;
-      this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
       const policy = MAIN_ESCALATION_POLICY.scout_auto_promote_revoked;
-      await this.notifier
-        .notifyNeedsYou({
+      // Mark only after delivery: a failed send is retried on the next tick instead of being lost.
+      try {
+        await this.notifier.notifyNeedsYou({
           issueNumber: null,
           title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: Scout '${scout.name}' lost auto-promotion (3 unmerged in a row)`,
           reason: `The last 3 auto-promoted Threads from Scout '${scout.name}' ended without a merge.`,
           decisionClass: formatDecisionClass(policy.decisionClass),
           recommendation: policy.recommendation,
-        })
-        .catch(() => undefined);
+        });
+        this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
+      } catch (err) {
+        this.logger.warn("scout/waste_notice_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
     }
   }
 
@@ -788,6 +791,24 @@ export class Reconciler {
         !combinedLabels.includes(this.cfg.labels.needsYou) &&
         !this.ledger.hasPendingLabelAdd(thread.issueNumber, this.cfg.labels.needsYou)
       ) {
+        // Only the owner's removal resumes the Thread (like the owner's `ready-for-agent`, it is checked against the
+        // issue timeline). Anyone else's removal is undone and recorded; the owner can still `retry` by comment or CLI.
+        let byOwner = false;
+        try {
+          byOwner = await this.github.verifyLabelRemovedBy(thread.issueNumber, this.cfg.labels.needsYou, this.cfg.ownerUserId);
+        } catch (err) {
+          this.logger.warn("thread/needs_you_removal_check_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+          return;
+        }
+        if (!byOwner) {
+          this.ledger.appendAudit("thread/needs_you_label_removed_by_other", thread.issueNumber, "archangel", {}, now);
+          try {
+            await this.github.addLabels(thread.issueNumber, [this.cfg.labels.needsYou]);
+          } catch (err) {
+            this.logger.warn("thread/needs_you_restore_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+          }
+          return;
+        }
         const retried = await this.ownerRetry(thread, issue, "label_removed", now);
         if (retried) {
           thread = retried;
