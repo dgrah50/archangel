@@ -24,6 +24,7 @@
       "src/core/thread-machine.ts",
       "src/core/reconciler.ts",
       "src/core/scout.ts",
+      "src/core/secrets.ts",
       "src/core/spawn-group.ts",
       "src/compute/**",
       "templates/**",

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tryParseJson } from "./json.js";
-import { scanForSecrets } from "./scout.js";
+import { scanForSecrets } from "./secrets.js";
 
 /**
  * What fed a revise or LLM-rebase Attempt, kept so the model-tier benchmark can replay it. Structured and bounded on purpose:

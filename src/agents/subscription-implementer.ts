@@ -7,7 +7,7 @@ import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
-import type { ReviewerVendor } from "../ledger/schema.js";
+import { AttemptError, type AttemptErrorCategory, type ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
 
 // Real quota signals only: stderr can carry arbitrary tool or test output ("foo_test.go:429:", "memory exhausted"),
@@ -34,6 +34,73 @@ const RATE_LIMIT_RE = new RegExp(
 
 export function isRateLimitOrQuotaError(text: string): boolean {
   return RATE_LIMIT_RE.test(text);
+}
+
+/** Why a CLI run failed, from stderr and the CLI's own final result envelope only. `quota` is handled by account failover. */
+export type CliFailureReason = "quota" | "provider_network" | "auth" | "context_overflow" | "permission_denied" | "unknown";
+
+// Numeric statuses need a keyword and non-alphanumeric boundaries so "foo_test.go:429", "15290ms" and "c429f4b" never match.
+const CONTEXT_RE = /prompt is too long|context[ _-]?(?:length|window)[^\n]{0,40}(?:exceed|too long|limit)|exceeds? (?:the )?(?:maximum )?context|maximum context length/i;
+const AUTH_RE =
+  /not logged in|please (?:run )?\/?login|invalid (?:api key|token|credentials)|(?:expired|revoked) (?:token|credentials|session|login)|authentication[ _]?(?:failed|error|required)|(?:http|status(?: code)?|error|code)[ :=]*40[13](?![A-Za-z0-9])/i;
+const NETWORK_RE =
+  /econnreset|etimedout|econnrefused|enotfound|socket hang up|connection (?:reset|closed|was closed|lost|error)|network (?:error|is unreachable)|stream (?:closed|disconnected|error)|(?:http|status(?: code)?|error|code)[ :=]*5\d\d(?![A-Za-z0-9])|internal server error|bad gateway|service unavailable|gateway time-?out/i;
+const DENIED_RE = /auto-denied|permission[^\n]{0,40}headless mode cannot prompt/i;
+
+function finalResult(stdout: string): Record<string, unknown> | null {
+  const line = stdout.trim().split("\n").at(-1)?.trim();
+  if (!line?.startsWith("{")) return null;
+  const parsed = tryParseJson(line);
+  return parsed.ok && typeof parsed.value === "object" && parsed.value !== null ? (parsed.value as Record<string, unknown>) : null;
+}
+
+/** Classifies a non-zero exit. Test output on stdout is never inspected: only stderr and the final error envelope. */
+export function classifyCliFailure(run: { stdout: string; stderr: string }): CliFailureReason {
+  const signal = `${run.stderr}\n${extractErrorEnvelope(run.stdout)}`;
+  if (isRateLimitOrQuotaError(signal)) return "quota";
+  if (finalResult(run.stdout)?.terminal_reason === "prompt_too_long" || CONTEXT_RE.test(signal)) return "context_overflow";
+  if (AUTH_RE.test(signal)) return "auth";
+  if (DENIED_RE.test(run.stderr)) return "permission_denied";
+  if (NETWORK_RE.test(signal)) return "provider_network";
+  return "unknown";
+}
+
+/**
+ * A run that exited 0 but did not work: Claude ended its turn for a reason other than `completed`, or a tool was denied in headless
+ * mode. Only when the workspace is untouched, so real work is never turned into a failure.
+ */
+function exitZeroFailure(run: { stdout: string; stderr: string }, mutated: boolean): CliFailureReason | null {
+  const result = finalResult(run.stdout);
+  if (result?.terminal_reason === "prompt_too_long") return "context_overflow";
+  if (mutated) return null;
+  const denials = result?.permission_denials;
+  if ((Array.isArray(denials) && denials.length > 0) || DENIED_RE.test(run.stderr)) return "permission_denied";
+  if (typeof result?.terminal_reason === "string" && result.terminal_reason !== "completed") return "unknown";
+  return null;
+}
+
+const FAILURE_CATEGORY: Record<CliFailureReason, AttemptErrorCategory> = {
+  quota: "quota",
+  provider_network: "provider_network",
+  auth: "auth",
+  context_overflow: "context_overflow",
+  permission_denied: "permission_denied",
+  unknown: "implementer_failed",
+};
+
+/** One automatic retry of the same account after a network drop, per Attempt. */
+export const NETWORK_RETRY_WAIT_MS = 5_000;
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 export interface CliExecResult {
@@ -68,6 +135,7 @@ export interface SubscriptionImplementerOptions {
   /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
   accountState?: AccountLedger;
   cooldownDurationMs?: number;
+  networkRetryWaitMs?: number;
   logger?: Logger;
 }
 
@@ -262,6 +330,7 @@ export class SubscriptionImplementer implements Implementer {
   private readonly invoker: CliInvoker;
   private readonly state: AccountLedger;
   private readonly cooldownDurationMs: number;
+  private readonly networkRetryWaitMs: number;
   private readonly logger: Logger;
 
   constructor(opts: SubscriptionImplementerOptions) {
@@ -274,6 +343,7 @@ export class SubscriptionImplementer implements Implementer {
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.cooldownDurationMs = opts.cooldownDurationMs ?? ACCOUNT_COOLDOWN_MS;
+    this.networkRetryWaitMs = opts.networkRetryWaitMs ?? NETWORK_RETRY_WAIT_MS;
     this.logger = opts.logger ?? NOOP_LOGGER;
   }
 
@@ -310,6 +380,7 @@ export class SubscriptionImplementer implements Implementer {
     // MAX_ACCOUNT_SWITCHES switches happen in one Attempt.
     const tried = new Set<string>();
     let switches = 0;
+    let networkRetried = false;
     let runIndex = 0;
     let durationMs = 0;
     let peakRssKb: number | undefined;
@@ -343,6 +414,9 @@ export class SubscriptionImplementer implements Implementer {
             timeoutMs: input.timeoutMs,
             goCacheDir,
             outputFile,
+          }).catch((err: unknown) => {
+            if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`);
+            throw err;
           });
 
           durationMs += res.durationMs ?? 0;
@@ -366,7 +440,10 @@ export class SubscriptionImplementer implements Implementer {
             return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
           }
 
-          if (res.code === 0) {
+          const mutated = mayHaveMutated(input.cloneDir, headBefore);
+          const reason = res.code === 0 ? exitZeroFailure(res, mutated) : classifyCliFailure(res);
+
+          if (reason === null) {
             const vendor = providerToVendor(entry.provider);
             if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
             return {
@@ -382,23 +459,34 @@ export class SubscriptionImplementer implements Implementer {
 
           // Only inspect stderr + final error envelope, never match test output on stdout (Opus B2).
           const errorSignal = `${res.stderr}\n${extractErrorEnvelope(res.stdout)}`.trim();
-          const isQuota = isRateLimitOrQuotaError(errorSignal);
-          errors.push(`${label} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
+          errors.push(`${label} (exit ${res.code}, ${reason}): ${(errorSignal || res.stdout).slice(0, 300)}`);
 
           // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
           // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
-          if (mayHaveMutated(input.cloneDir, headBefore)) {
+          if (mutated) {
             const vendor = providerToVendor(entry.provider);
             if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
           }
 
-          if (!isQuota) throw new Error(errors.join(" | "));
+          // A network drop gets one retry of the same account per Attempt; anything else that is not quota fails now.
+          if (reason === "provider_network" && !networkRetried) {
+            networkRetried = true;
+            fs.appendFileSync(
+              transcriptPath,
+              `${JSON.stringify({ event: "network_retry", account: account.id, waitMs: this.networkRetryWaitMs, ts: Date.now() })}\n`,
+            );
+            await abortableSleep(this.networkRetryWaitMs, input.abortController.signal);
+            if (input.abortController.signal.aborted) return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
+            tried.delete(account.id);
+            continue;
+          }
+          if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "));
 
           // Continuity failover: cool this account down, then move on (same vendor's next account, else the next entry).
           this.state.recordCooldown(account.id, this.cooldownDurationMs, errorSignal.slice(0, 200));
           switches++;
           if (switches > MAX_ACCOUNT_SWITCHES) {
-            throw new Error(`account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
+            throw new AttemptError("quota", `account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
           }
           this.logger.warn(
             "implementer/continuity_failover",
@@ -412,7 +500,7 @@ export class SubscriptionImplementer implements Implementer {
         }
       }
 
-      throw new Error(`All fallback subscription providers exhausted: ${errors.join(" | ")}`);
+      throw new AttemptError("quota", `All fallback subscription providers exhausted: ${errors.join(" | ")}`);
     } finally {
       fs.rmSync(attemptTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
