@@ -3,11 +3,12 @@ import type {
   MainWatch,
   Mode,
   OutboxEffect,
+  OutboxState,
   Phase,
   PhaseKind,
 } from "../core/thread-machine.js";
 
-export type { AttemptKind, MainWatch, Mode, OutboxEffect, Phase, PhaseKind };
+export type { AttemptKind, MainWatch, Mode, OutboxEffect, OutboxState, Phase, PhaseKind };
 
 export type ReviewerVendor = "openai" | "gemini" | "anthropic";
 
@@ -104,8 +105,11 @@ export interface MergeRecord {
 export interface OutboxRecord {
   id: number;
   repo: string;
-  effect: OutboxEffect;
+  /** null when the stored effect does not parse as an OutboxEffect (it is dead-lettered, never delivered). */
+  effect: OutboxEffect | null;
+  state: OutboxState;
   attempts: number;
+  nextAttemptAt: number;
   lastError: string | null;
   createdAt: number;
 }
@@ -255,6 +259,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   repo TEXT NOT NULL,
   effect_json TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'retrying', 'dead_letter')),
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at INTEGER NOT NULL
 );

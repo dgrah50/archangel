@@ -1,4 +1,10 @@
-import { EscalationCodeSchema } from "../core/thread-machine.js";
+import {
+  EscalationCodeSchema,
+  OUTBOX_BACKOFF_BASE_MS,
+  OUTBOX_BACKOFF_MAX_MS,
+  OUTBOX_MAX_ATTEMPTS,
+  OutboxEffectSchema,
+} from "../core/thread-machine.js";
 import { findingCategory, type CorrectionCounts } from "../core/corrections.js";
 import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type PitchStateKind } from "../core/pitch-machine.js";
 import { describeEscalation } from "../core/escalations.js";
@@ -118,6 +124,7 @@ export class Ledger {
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
       this.migratePitchesToStateMachine();
+      migrateOutbox(this.db);
       this.db.exec(LEDGER_SCHEMA_SQL);
       const cols = this.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === "implementer_vendors_json")) {
@@ -474,34 +481,23 @@ export class Ledger {
 
   // --- Durable Outbox (Opus L3) ---
 
-  /** Least-failed first, so rows that keep failing cannot starve newer effects out of the batch limit. */
-  listOutbox(repo = this.repo, limit = 50): OutboxRecord[] {
+  /** Deliverable rows: not dead-lettered and past their backoff. Least-failed first, so rows that keep failing cannot starve newer effects out of the batch limit. */
+  listDueOutbox(now = Date.now(), repo = this.repo, limit = 50): OutboxRecord[] {
     const rows = this.db
-      .prepare(`SELECT * FROM outbox WHERE repo = ? ORDER BY attempts ASC, id ASC LIMIT ?`)
-      .all(repo, limit) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: Number(r.id),
-      repo: String(r.repo),
-      effect: JSON.parse(String(r.effect_json)) as OutboxEffect,
-      attempts: Number(r.attempts),
-      lastError: r.last_error === null ? null : String(r.last_error),
-      createdAt: Number(r.created_at),
-    }));
+      .prepare(
+        `SELECT * FROM outbox WHERE repo = ? AND state != 'dead_letter' AND next_attempt_at <= ?
+         ORDER BY attempts ASC, id ASC LIMIT ?`,
+      )
+      .all(repo, now, limit) as Record<string, unknown>[];
+    return rows.map(outboxRecord);
   }
 
-  /** Outbox effects that have failed at least `minAttempts` times (stuck: they are retried forever and never delivered). */
+  /** Outbox effects that have failed at least `minAttempts` times, dead-lettered ones included (stuck: never delivered). */
   listStuckOutbox(minAttempts = 3): OutboxRecord[] {
     const rows = this.db
-      .prepare(`SELECT * FROM outbox WHERE attempts >= ? ORDER BY id ASC`)
+      .prepare(`SELECT * FROM outbox WHERE attempts >= ? OR state = 'dead_letter' ORDER BY id ASC`)
       .all(minAttempts) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: Number(r.id),
-      repo: String(r.repo),
-      effect: JSON.parse(String(r.effect_json)) as OutboxEffect,
-      attempts: Number(r.attempts),
-      lastError: r.last_error === null ? null : String(r.last_error),
-      createdAt: Number(r.created_at),
-    }));
+    return rows.map(outboxRecord);
   }
 
   /** The autonomy cap was reached and the owner has not been heard from since (an owner audit row clears it). */
@@ -516,10 +512,25 @@ export class Ledger {
     );
   }
 
-  /** True while an `add_label` for this label on this issue is still queued (not yet delivered to GitHub). */
+  /** Dead-lettered rows, kept so the owner can see what never went out. */
+  listDeadOutbox(repo = this.repo): OutboxRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM outbox WHERE repo = ? AND state = 'dead_letter' ORDER BY id ASC`)
+      .all(repo) as Record<string, unknown>[];
+    return rows.map(outboxRecord);
+  }
+
+  /** True while an `add_label` for this label on this issue is still queued (not delivered, not dead-lettered). */
   hasPendingLabelAdd(issueNumber: number, label: string, repo = this.repo): boolean {
-    return this.listOutbox(repo, 1000).some(
-      (o) => o.effect.kind === "add_label" && o.effect.issueNumber === issueNumber && o.effect.label === label,
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 FROM outbox WHERE repo = ? AND state != 'dead_letter'
+             AND json_extract(effect_json, '$.kind') = 'add_label'
+             AND json_extract(effect_json, '$.issueNumber') = ?
+             AND json_extract(effect_json, '$.label') = ? LIMIT 1`,
+        )
+        .get(repo, issueNumber, label) !== undefined
     );
   }
 
@@ -527,10 +538,28 @@ export class Ledger {
     this.db.prepare(`DELETE FROM outbox WHERE id = ?`).run(id);
   }
 
-  failOutbox(id: number, error: string): void {
+  /** A failed delivery: exponential backoff, then dead-letter after OUTBOX_MAX_ATTEMPTS. */
+  failOutbox(id: number, error: string, now = Date.now()): void {
+    const row = this.db.prepare(`SELECT attempts FROM outbox WHERE id = ?`).get(id) as { attempts: number } | undefined;
+    if (!row) return;
+    const attempts = row.attempts + 1;
+    if (attempts >= OUTBOX_MAX_ATTEMPTS) {
+      this.db
+        .prepare(`UPDATE outbox SET attempts = ?, state = 'dead_letter', last_error = ? WHERE id = ?`)
+        .run(attempts, error, id);
+      this.appendAudit("outbox/dead_letter", null, "archangel", { id, attempts, error });
+      return;
+    }
+    const delay = Math.min(OUTBOX_BACKOFF_BASE_MS * 2 ** (attempts - 1), OUTBOX_BACKOFF_MAX_MS);
     this.db
-      .prepare(`UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?`)
-      .run(error, id);
+      .prepare(`UPDATE outbox SET attempts = ?, state = 'retrying', next_attempt_at = ?, last_error = ? WHERE id = ?`)
+      .run(attempts, now + delay, error, id);
+  }
+
+  /** A row that cannot be delivered at all (unknown or malformed effect): straight to dead letter, never dropped. */
+  deadLetterOutbox(id: number, error: string): void {
+    this.db.prepare(`UPDATE outbox SET state = 'dead_letter', last_error = ? WHERE id = ?`).run(error, id);
+    this.appendAudit("outbox/dead_letter", null, "archangel", { id, error });
   }
 
   // --- Daemon Commands Queue (Handoff across CLI <-> Daemon, Opus Step 6 / R5) ---
@@ -2463,5 +2492,33 @@ function mapCommand(r: Record<string, unknown>): DaemonCommandRecord {
     errorMessage: r.error_message === null ? null : String(r.error_message),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
+  };
+}
+
+/** An outbox table from before explicit states gains `state` and `next_attempt_at`; existing rows stay deliverable. */
+function migrateOutbox(db: Database.Database): void {
+  const cols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  if (cols.length === 0 || cols.some((c) => c.name === "state")) return;
+  db.exec("ALTER TABLE outbox ADD COLUMN state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'retrying', 'dead_letter'))");
+  db.exec("ALTER TABLE outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0");
+}
+
+function outboxRecord(r: Record<string, unknown>): OutboxRecord {
+  let parsed: OutboxEffect | null = null;
+  try {
+    const res = OutboxEffectSchema.safeParse(JSON.parse(String(r.effect_json)));
+    parsed = res.success ? res.data : null;
+  } catch {
+    parsed = null;
+  }
+  return {
+    id: Number(r.id),
+    repo: String(r.repo),
+    effect: parsed,
+    state: r.state as OutboxRecord["state"],
+    attempts: Number(r.attempts),
+    nextAttemptAt: Number(r.next_attempt_at),
+    lastError: r.last_error === null ? null : String(r.last_error),
+    createdAt: Number(r.created_at),
   };
 }
