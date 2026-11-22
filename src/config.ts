@@ -260,6 +260,8 @@ export const ConfigSchema = z.object({
   factoryRetry: z.boolean().default(true),
   /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
+  /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
+  fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -356,6 +358,8 @@ export const HostYamlSchema = z.object({
   factoryRetry: z.boolean().default(true),
   /** Bundled fleet Scouts enabled on this machine; they run on every project unless its workflow file opts out. */
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
+  /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
+  fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -521,6 +525,7 @@ export function loadProjectConfigs(opts: {
       shadowMode: proj.shadowMode,
       factoryRetry: host.factoryRetry,
       fleetScouts: host.fleetScouts,
+      fleetMinerSeeds: host.fleetMinerSeeds,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

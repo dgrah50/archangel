@@ -61,7 +61,7 @@ describe("kernel bounds", () => {
 });
 
 describe("fleet Scouts", () => {
-  const fleetHost = host({ fleetScouts: ["anti-slop-bugs", "anti-slop-cleanup"] });
+  const fleetHost = host({ fleetScouts: ["anti-slop-bugs", "anti-slop-cleanup", "fleet-pr-miner"] });
   const names = (file: unknown) => {
     const r = resolveWorkflow(fleetHost, repo(file));
     if (r.status !== "ok") throw new Error(r.status === "invalid" ? r.error : r.status);
@@ -70,10 +70,10 @@ describe("fleet Scouts", () => {
 
   it("run on a repo unless it opts out, and are never auto-promoted even when the host allows auto", () => {
     const on = names(baseFile());
-    expect(on.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs", "anti-slop-cleanup"]);
-    expect(on.scouts.filter((s) => s.fleet).map((s) => s.promotionEffective.value)).toEqual(["owner", "owner"]);
+    expect(on.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs", "anti-slop-cleanup", "fleet-pr-miner"]);
+    expect(on.scouts.filter((s) => s.fleet).map((s) => s.promotionEffective.value)).toEqual(["owner", "owner", "owner"]);
     const out = names({ ...baseFile(), fleetScouts: { optOut: ["anti-slop-cleanup"] } });
-    expect(out.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs"]);
+    expect(out.scouts.filter((s) => s.fleet).map((s) => s.name)).toEqual(["anti-slop-bugs", "fleet-pr-miner"]);
     expect(resolveWorkflow(host(), repo(baseFile()))).toMatchObject({ scouts: [{ name: "bug-hunt", fleet: false }] });
   });
 });
