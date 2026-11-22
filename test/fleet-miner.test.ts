@@ -78,7 +78,7 @@ describe("fleet PR-Miner", () => {
       type: "feature", title: "Skill: reuse the dead-code check", problem: "Recurring cleanup commits.",
       evidence: [ev(note), { ...ev("util.ts repeats it"), file: "util.ts" }], proposal: "Add a Skill.", smallestVersion: "One Skill file.",
       optionsConsidered: ["Do nothing: cheap", "Add the Skill"], slices: [{ title: "Add Skill", acceptance: "It exists." }],
-      measurement: "", recommendation: "do", size: "S",
+      measurement: "", figures: [], recommendation: "do", size: "S",
     });
     const run = (answer: unknown, now: number) =>
       runScoutsForProject({

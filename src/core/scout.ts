@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { GitBroker } from "../broker/git-broker.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { NO_ACCOUNT_STATE, selectAccount, type AccountState } from "./accounts.js";
-import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, resolveRequiredReviewers, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
+import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, resolveRequiredReviewers, resolvePaths, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
@@ -32,6 +32,7 @@ import {
   pitchJsonSchema,
   renderPitchBody,
 } from "./pitch.js";
+import { ingestImage, type IngestedImage } from "./pitch-ingest.js";
 import { resolveSkills, type Skill } from "./skills.js";
 import type { EffectiveScout, OkWorkflow } from "./workflow.js";
 
@@ -623,8 +624,19 @@ async function runPitchScout(opts: {
       return { ...summary, status: "failed_output" };
     }
     const fps = new Set(recent.map((r) => r.titleFp));
+    const dataDir = resolvePaths(opts.config).dataDir;
+    const source = { repo: ledger.repo, mainSha: opts.mainSha };
     for (const pitch of parsed.data.pitches.slice(0, 1)) {
+      const ingested = new Map<string, IngestedImage>();
       const reason = await checkPitch(pitch, {
+        source,
+        ingestFigure: async (file) => {
+          const bytes = await opts.broker.readBinaryAtRef(opts.mainSha, file);
+          if (bytes === null) throw new Error("file is missing at main");
+          const image = await ingestImage(bytes, dataDir);
+          ingested.set(file, image);
+          return image;
+        },
         fileExists: async (file) => (await opts.broker.readFileAtRef(opts.mainSha, file)) !== null,
         metricsGiven,
         secretScan: scanForSecrets,
@@ -640,7 +652,7 @@ async function runPitchScout(opts: {
         ledger.appendAudit("pitch/dropped", null, wf.name, { reason: "cites no mined commit", title: pitch.title.slice(0, 60) }, now);
         continue;
       }
-      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch)}`;
+      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source)}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {
         ledger.appendAudit("pitch/vetoed", null, wf.name, { reason: veto.slice(0, 300), title: pitch.title.slice(0, 60) }, now);
@@ -657,6 +669,10 @@ async function runPitchScout(opts: {
         pitchJson: JSON.stringify(pitch),
         now,
       });
+      for (const f of pitch.figures) {
+        const image = ingested.get(f.path)!;
+        ledger.recordPitchAttachment({ issueNumber: created.number, kind: "repo", ...image, caption: f.caption, source: `${f.path}@${opts.mainSha}`, now });
+      }
       summary.filedIssues.push(created.number);
     }
   } finally {

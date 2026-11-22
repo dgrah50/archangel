@@ -94,8 +94,8 @@ export class GitBroker {
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
   }
 
-  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-    const cleanEnv: NodeJS.ProcessEnv = {
+  private gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return {
       PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -103,10 +103,23 @@ export class GitBroker {
       GIT_TERMINAL_PROMPT: "0",
       ...env,
     };
+  }
+
+  private async runGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
     const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
       cwd,
-      env: cleanEnv,
+      env: this.gitEnv(env),
       maxBuffer: 20 * 1024 * 1024,
+    });
+    return stdout;
+  }
+
+  private async runGitBytes(cwd: string, args: string[]): Promise<Buffer> {
+    const { stdout } = await execFileAsync("git", [...HARDENED_GIT_FLAGS, ...args], {
+      cwd,
+      env: this.gitEnv(),
+      maxBuffer: 20 * 1024 * 1024,
+      encoding: "buffer",
     });
     return stdout;
   }
@@ -198,6 +211,13 @@ export class GitBroker {
     const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
     if (listed.trim() === "") return null;
     return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
+  }
+
+  /** Binary-safe `readFileAtRef`: the exact bytes of a blob, or null when the path does not exist at that ref. */
+  async readBinaryAtRef(ref: string, relPath: string): Promise<Buffer | null> {
+    const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
+    if (listed.trim() === "") return null;
+    return this.runGitBytes(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
   }
 
   private async hasCommitIn(repoDir: string, ref: string): Promise<boolean> {

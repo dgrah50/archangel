@@ -424,6 +424,23 @@ CREATE TABLE IF NOT EXISTS pitches (
   PRIMARY KEY (repo, issue_number)
 );
 
+-- Host-validated images shown with a pitch. The re-encoded bytes live in <dataDir>/pitch-assets/<sha256>.<ext>, never in the Ledger.
+CREATE TABLE IF NOT EXISTS pitch_attachments (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('repo')),
+  mime TEXT NOT NULL CHECK (mime IN ('image/png','image/jpeg','image/webp')),
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  bytes INTEGER NOT NULL,
+  caption TEXT NOT NULL,
+  -- repo: "<path>@<mainSha>"
+  source TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number, sha256)
+);
+
 CREATE TABLE IF NOT EXISTS scout_proposals (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
