@@ -28,7 +28,7 @@ export interface ImplementResult {
   /** Set when the run ended without finishing the job (e.g. the SDK's `error_max_turns`); the Attempt then fails with this cause. */
   failure?: string;
   /** The provider and model that produced this result (replay provenance); absent when none finished. */
-  runBy?: { provider: string; model: string | null };
+  runBy?: { provider: string; model: string | null; accountId?: string };
 }
 
 export interface Implementer {

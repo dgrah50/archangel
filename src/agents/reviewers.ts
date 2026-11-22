@@ -44,6 +44,8 @@ export interface VendorReviewResult {
   /** Replay provenance: who actually reviewed, and with which prompt template. */
   provider?: string;
   model?: string | null;
+  /** Which configured account (login) of the vendor reviewed. */
+  accountId?: string;
   promptSha256?: string;
 }
 
