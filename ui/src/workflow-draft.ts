@@ -16,7 +16,7 @@ export interface DraftForm {
   landing: "owner" | "autonomous";
   scouts: Array<{
     name: string;
-    schedule: "daily" | "manual";
+    schedule: "daily" | "weekly" | "manual";
     maxProposals: number;
     promotion: "owner" | "auto";
     includeMetrics: boolean;

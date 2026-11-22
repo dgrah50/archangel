@@ -98,7 +98,7 @@ export function WorkflowEditor({ repo, initial, baseFileSha256 }: { repo: string
               <Text textStyle="sm" fontWeight="medium">
                 Scout {s.name}
               </Text>
-              {field("schedule", <select value={s.schedule} onChange={(e) => up({ schedule: e.target.value as "daily" | "manual" })}><option value="manual">manual</option><option value="daily">daily</option></select>)}
+              {field("schedule", <select value={s.schedule} onChange={(e) => up({ schedule: e.target.value as "daily" | "weekly" | "manual" })}><option value="manual">manual</option><option value="daily">daily</option><option value="weekly">weekly</option></select>)}
               {field("max proposals per run (1-3)", <Input size="sm" type="number" value={s.maxProposals} onChange={(e) => up({ maxProposals: num(e.target.value, s.maxProposals) })} />)}
               {field("promotion", <select value={s.promotion} onChange={(e) => up({ promotion: e.target.value as "owner" | "auto" })}><option value="owner">owner</option><option value="auto">auto</option></select>)}
               {field("include factory metrics", <input type="checkbox" checked={s.includeMetrics} onChange={(e) => up({ includeMetrics: e.target.checked })} />)}
