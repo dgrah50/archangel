@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import { GatePolicySchema, type GatePolicy } from "../config.js";
+import { FLEET_SCOUT_NAMES, FLEET_SCOUTS, type FleetScoutName } from "./fleet-scouts.js";
 import { SKILL_REF_RE } from "./skills.js";
 import type { WorkClass } from "./work-class.js";
 
@@ -105,6 +106,8 @@ export const Workflow = z
     /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
     escalations: z.object({ factoryRetry: z.enum(["off", "once"]).default("off") }).strict().default({ factoryRetry: "off" }),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
+    /** Fleet Scouts the host enables run here unless named in `optOut`. Unknown names are invalid, so a typo never silently keeps one running. */
+    fleetScouts: z.object({ optOut: z.array(z.enum(FLEET_SCOUT_NAMES)).max(FLEET_SCOUT_NAMES.length) }).strict().default({ optOut: [] }),
   })
   .strict()
   .superRefine((wf, ctx) => {
@@ -114,7 +117,7 @@ export const Workflow = z
     if (wf.gate.maxTotalLines < wf.gate.maxNonTestLines) {
       ctx.addIssue({ code: "custom", path: ["gate", "maxTotalLines"], message: "maxTotalLines must be >= maxNonTestLines" });
     }
-    const seen = new Set<string>();
+    const seen = new Set<string>(FLEET_SCOUT_NAMES);
     wf.scouts.forEach((s, i) => {
       if (seen.has(s.name)) ctx.addIssue({ code: "custom", path: ["scouts", i, "name"], message: `duplicate scout name '${s.name}'` });
       seen.add(s.name);
@@ -178,6 +181,8 @@ export interface HostWorkflowInput {
   factoryRetry: boolean;
   /** True when auto-promotion of this exact Scout version was revoked (disagreed, reverted, or red main). */
   isRevoked: (scoutName: string, trustHash: string) => boolean;
+  /** `fleetScouts` in archangel.yaml: bundled Scouts that run on this repo unless its workflow file opts out. */
+  fleetScouts: readonly FleetScoutName[];
 }
 
 /** The repo's contribution at `mainSha`: the raw workflow file (null if absent) and `.agents/scouts/<name>.md` bodies. */
@@ -193,6 +198,8 @@ export interface EffectiveScout extends ScoutSpec {
   trustHash: string;
   promotionEffective: Effective<"owner" | "auto">;
   revoked: boolean;
+  /** Bundled and enabled on this machine, not declared by the repo. */
+  fleet: boolean;
 }
 
 export type EffectiveWorkflow =
@@ -209,6 +216,8 @@ export type EffectiveWorkflow =
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
       scouts: EffectiveScout[];
+      /** Fleet Scouts this repo opted out of in its workflow file. */
+      fleetOptOut: FleetScoutName[];
       caps: { autoMergesPerDay: number; autoPromotionsPerDay: number; scoutRunsPerDay: number; scoutsEnabled: boolean; concurrent: number };
     };
 
@@ -278,8 +287,10 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
       ? { value: "off", source: "host", declared: declaredRetry }
       : { value: declaredRetry, source: "repo" };
 
-  const scouts: EffectiveScout[] = wf.scouts.map((spec) => {
-    const prompt = repoIn.scoutPrompts[spec.name]!.trim();
+  const fleetOptOut = wf.fleetScouts.optOut;
+  const declared = wf.scouts.map((spec) => ({ spec, prompt: repoIn.scoutPrompts[spec.name]!.trim(), fleet: false }));
+  const fleet = host.fleetScouts.filter((n) => !fleetOptOut.includes(n)).map((n) => ({ ...FLEET_SCOUTS[n], fleet: true }));
+  const scouts: EffectiveScout[] = [...declared, ...fleet].map(({ spec, prompt, fleet }) => {
     const hash = trustHash(spec, prompt);
     const revoked = host.isRevoked(spec.name, hash);
     let promotionEffective: Effective<"owner" | "auto"> = { value: spec.promotion, source: "repo" };
@@ -288,7 +299,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     } else if (spec.promotion === "auto" && host.maxAutoPromotionsPerDay === 0) {
       promotionEffective = { value: "owner", source: "host", declared: "auto" };
     }
-    return { ...spec, prompt, trustHash: hash, promotionEffective, revoked };
+    return { ...spec, prompt, trustHash: hash, promotionEffective, revoked, fleet };
   });
 
   return {
@@ -301,6 +312,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     landingBugfix,
     factoryRetry,
     scouts,
+    fleetOptOut,
     caps: {
       autoMergesPerDay: host.maxAutoMergesPerDay,
       autoPromotionsPerDay: host.maxAutoPromotionsPerDay,
@@ -376,6 +388,7 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
     }
   }
   for (const name of before.keys()) if (!after.has(name)) add(`scouts.${name}`, "tighten");
+  if (!eq([...prev.fleetScouts.optOut].sort(), [...next.fleetScouts.optOut].sort())) add("fleetScouts.optOut", "changed");
   return out;
 }
 

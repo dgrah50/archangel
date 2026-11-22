@@ -44,6 +44,7 @@ export async function loadWorkflow(
       scoutsEnabled: cfg.scouts.enabled,
       maxConcurrentThreads: cfg.maxConcurrentThreads,
       factoryRetry: cfg.factoryRetry,
+      fleetScouts: cfg.fleetScouts,
       isRevoked: (name, hash) => ledger.isScoutAutoPromoteRevoked(name, hash),
     },
     { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, mainSha, fileRaw, scoutPrompts },

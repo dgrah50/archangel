@@ -682,6 +682,7 @@ workflowCmd
         scoutsEnabled: cfg.scouts.enabled,
         maxConcurrentThreads: cfg.maxConcurrentThreads,
         factoryRetry: cfg.factoryRetry,
+        fleetScouts: cfg.fleetScouts,
         isRevoked: () => false,
       },
     });
