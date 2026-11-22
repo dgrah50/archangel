@@ -14,7 +14,7 @@ Instead, report suspected vulnerabilities privately using [GitHub Security Advis
 
 Archangel is designed as a **single-owner, locally hosted software factory**. Its hard security boundaries are:
 
-1. **Least-privilege GitHub App & branch protection:** The daemon's GitHub App holds only `contents:write`, `pull_requests:write`, `issues:write`, and `checks:read` (never `workflows`, `administration`, or `checks:write`).
+1. **Least-privilege GitHub App & branch protection:** The daemon's GitHub App holds only `contents:write`, `pull_requests:write`, `issues:write`, and `checks:read` (never `workflows`, `administration`, or `checks:write`). Its one push that is not a factory branch is `publishAssets`, which can only add `prs/<n>/<sha256>.png` and `pitches/<n>/<sha256>.png` files to the orphan branch `archangel/assets` (re-encoded screenshots, embedded by commit-pinned URLs); it refuses any other ref or path.
 2. **Mechanical Gate & protected paths:** Enforced independently by the local Broker, the pinned CI Gate (`ARCHANGEL_GATE_SHA`), and the Lander, using `.agents/archangel.json` read strictly from the default branch.
 3. **Owner identity verification:** Author, label actor, and command checks use numeric GitHub user IDs (`ownerUserId`), never usernames.
 4. **Prompt-injection & exfiltration defenses:** Read-only Scout sandboxes, scrubbed subprocess environments, whitelist-only metrics/cluster blocks, and outbound secret scanning.

@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { PREVIEW_TTL_MS } from "../compute/sandbox-exec.js";
+import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import { ingestImage } from "./pitch-ingest.js";
+import { publishShots, renderShotImages } from "./pr-shots.js";
 import { screenshotUrl } from "../compute/browser-shots.js";
 import { Preview } from "./workflow.js";
 
@@ -58,6 +60,8 @@ export interface PocPreviewDeps {
   preview: WebPreview;
   dataDir: string;
   installTimeoutMs: number;
+  /** With it, the captures are also published small to `archangel/assets` and shown in a comment on the pitch issue. */
+  github?: Pick<GitHubClient, "publishAssets" | "upsertMarkedComment">;
   /** Takes one PNG of a loopback URL; defaults to the sandboxed browser. */
   screenshot?: (url: string) => Promise<Buffer>;
 }
@@ -118,16 +122,30 @@ export async function startPocPreview(deps: PocPreviewDeps, issueNumber: number,
   return { url: exposed.url, expiresAt, close: () => ((byOwner = true), exposed.close()), closed };
 }
 
-/** Screenshots go through the same ingest as every image (sniffed, bounded, re-encoded) before the Ledger or the dashboard sees them. */
+export const PITCH_FIGURES_MARKER = "<!-- archangel:pitch-figures -->";
+
+/**
+ * Screenshots go through the same ingest as every image (sniffed, bounded, re-encoded) before the Ledger or the dashboard sees them.
+ * On GitHub they go in a host comment, never the issue body: promotion pins `contentSha256` of the title and body, so editing the
+ * body would block it, and a comment does not touch the pin.
+ */
 async function captureShots(deps: PocPreviewDeps, issueNumber: number, headSha: string, url: string): Promise<void> {
   const shoot = deps.screenshot ?? screenshotUrl;
-  const shots: Array<{ page: string; png: Awaited<ReturnType<typeof ingestImage>> }> = [];
-  for (const page of shotPaths(deps.preview)) {
-    shots.push({ page, png: await ingestImage(await shoot(`${url}${page}`), deps.dataDir) });
-  }
+  const raw: Array<{ page: string; png: Buffer }> = [];
+  for (const page of shotPaths(deps.preview)) raw.push({ page, png: await shoot(`${url}${page}`) });
+  const stored = [];
+  for (const { page, png } of raw) stored.push({ page, img: await ingestImage(png, deps.dataDir) });
   deps.ledger.clearPitchCaptures(issueNumber);
-  for (const { page, png } of shots) {
-    deps.ledger.recordPitchAttachment({ issueNumber, kind: "capture", caption: `Page ${page}`, source: `${page}@${headSha}`, ...png });
+  for (const { page, img } of stored) {
+    deps.ledger.recordPitchAttachment({ issueNumber, kind: "capture", caption: `Page ${page}`, source: `${page}@${headSha}`, ...img });
+  }
+  if (deps.github) {
+    const links = await publishShots(deps.github, deps.ledger.repo, deps.dataDir, "pitches", issueNumber, raw);
+    await deps.github.upsertMarkedComment(
+      issueNumber,
+      PITCH_FIGURES_MARKER,
+      [PITCH_FIGURES_MARKER, "### Figures", "Screenshots of a throwaway proof of concept, taken by Archangel in a sandbox. The proof of concept stays on the owner's machine and is never pushed.", "", renderShotImages(links)].join("\n"),
+    );
   }
 }
 
