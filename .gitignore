@@ -5,17 +5,10 @@ dist/
 *.db-wal
 *.db-shm
 .env
-.env.*
-!.env.example
-*.pem
-*.key
-*.log
+.env.local
 archangel.yaml
 coverage/
 .DS_Store
-Thumbs.db
-.vscode/
-.idea/
 
 # Local-only design docs (kept off public remote)
 FACTORY-DESIGN.md

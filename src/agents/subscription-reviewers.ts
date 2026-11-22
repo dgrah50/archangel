@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountEnv, firstAccount, providerToVendor, type Account, type CliProvider, type ProviderEntry } from "../config.js";
+import { providerToVendor, type CliProvider, type ProviderEntry } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import { promptTemplateSha } from "./prompts.js";
 import {
@@ -46,7 +46,6 @@ const KILL_GRACE_MS = 2000;
 export type ReviewerCliInvoker = (input: {
   provider: CliProvider;
   model?: string;
-  account?: Account;
   prompt: string;
   timeoutMs: number;
 }) => Promise<unknown>;
@@ -108,7 +107,6 @@ export function parseJsonEnvelope(stdout: string): unknown {
 export function defaultReviewerCliInvoker(input: {
   provider: CliProvider;
   model?: string;
-  account?: Account;
   prompt: string;
   timeoutMs: number;
 }): Promise<unknown> {
@@ -128,7 +126,6 @@ export function defaultReviewerCliInvoker(input: {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
-    ...accountEnv(input.account),
   };
 
   let bin: string;
@@ -243,7 +240,6 @@ export function defaultReviewerCliInvoker(input: {
 
 export interface SubscriptionReviewerOptions {
   chain: ProviderEntry[];
-  accounts?: Account[];
   /** Vendors excluded when a request names none: the first provider of each writing role's chain. */
   defaultExcludeVendors: ReviewerVendor[];
   timeoutMs?: number;
@@ -262,7 +258,6 @@ export interface SubscriptionReviewerOptions {
  */
 export class SubscriptionReviewerSuite implements ReviewerSuite {
   private readonly chain: ProviderEntry[];
-  private readonly accounts: Account[];
   private readonly defaultExcludeVendors: ReviewerVendor[];
   private readonly timeoutMs: number;
   private readonly invoker: ReviewerCliInvoker;
@@ -271,7 +266,6 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
   constructor(opts: SubscriptionReviewerOptions) {
     this.prompts = opts.prompts ?? DEFAULT_REVIEW_PROMPTS;
     this.chain = opts.chain;
-    this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.defaultExcludeVendors = opts.defaultExcludeVendors;
     this.timeoutMs = opts.timeoutMs ?? 180_000;
     this.invoker = opts.invoker ?? defaultReviewerCliInvoker;
@@ -307,7 +301,6 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
       const raw = await this.invoker({
         provider: item.entry.provider,
         model: item.entry.model,
-        account: firstAccount(this.accounts, item.entry),
         prompt,
         timeoutMs: this.timeoutMs,
       });

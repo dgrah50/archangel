@@ -1841,6 +1841,28 @@ export class Ledger {
     return split;
   }
 
+  getBenchResult(cacheKey: string, caseId: string): unknown | null {
+    const row = this.db.prepare("SELECT result_json FROM bench_results WHERE cache_key = ? AND case_id = ?").get(cacheKey, caseId) as { result_json: string } | undefined;
+    return row ? JSON.parse(row.result_json) : null;
+  }
+
+  putBenchResult(cacheKey: string, caseId: string, result: unknown, now = Date.now()): void {
+    this.db
+      .prepare("INSERT INTO bench_results (cache_key, case_id, result_json, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key, case_id) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at")
+      .run(cacheKey, caseId, JSON.stringify(result), now);
+  }
+
+  saveEvalReport(kind: string, report: unknown, now = Date.now()): number {
+    return Number(this.db.prepare("INSERT INTO eval_reports (kind, created_at, report_json) VALUES (?, ?, ?)").run(kind, now, JSON.stringify(report)).lastInsertRowid);
+  }
+
+  listEvalReports(kind?: string, limit = 20): Array<{ id: number; kind: string; createdAt: number; report: unknown }> {
+    const rows = this.db
+      .prepare(`SELECT id, kind, created_at, report_json FROM eval_reports ${kind ? "WHERE kind = ?" : ""} ORDER BY id DESC LIMIT ?`)
+      .all(...(kind ? [kind, limit] : [limit])) as Array<{ id: number; kind: string; created_at: number; report_json: string }>;
+    return rows.map((r) => ({ id: r.id, kind: r.kind, createdAt: r.created_at, report: JSON.parse(r.report_json) }));
+  }
+
   getEvalResult(promptHash: string, caseId: string): { verdict: "approve" | "veto"; vendors: string } | null {
     return (this.db.prepare(`SELECT verdict, vendors FROM eval_results WHERE prompt_hash = ? AND case_id = ?`).get(promptHash, caseId) as { verdict: "approve" | "veto"; vendors: string } | undefined) ?? null;
   }

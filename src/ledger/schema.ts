@@ -385,4 +385,21 @@ CREATE TABLE IF NOT EXISTS eval_results (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (prompt_hash, case_id)
 );
+
+-- Model-tier benchmark results per (chain/role/prompt key, case): real implementer runs are expensive, so they are never repeated.
+CREATE TABLE IF NOT EXISTS bench_results (
+  cache_key TEXT NOT NULL,
+  case_id TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (cache_key, case_id)
+);
+
+-- Saved eval-family reports (model-tier benchmarks), for the dashboard's Evals page.
+CREATE TABLE IF NOT EXISTS eval_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  report_json TEXT NOT NULL
+);
 `;
