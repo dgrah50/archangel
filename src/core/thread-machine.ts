@@ -148,7 +148,6 @@ export type MachineEvent =
   | { t: "attempt_aborted"; cause: "timeout" | "control" | "handoff"; now: number }
   | { t: "attempt_failed"; code: EscalationCode; reason: string }
   | { t: "gate_passed" }
-  | { t: "gate_nudged"; now: number }
   | { t: "head_moved"; pr: PrRef; now: number }
   | { t: "review_outage"; now: number }
   | { t: "reviews_approved" }
@@ -452,13 +451,6 @@ export function stepPhase(
           effects: [],
         };
       }
-      if (ev.t === "gate_nudged") {
-        return {
-          ok: true,
-          next: { ...phase, nudgedAt: ev.now },
-          effects: [],
-        };
-      }
       if (ev.t === "gate_passed") {
         return {
           ok: true,
@@ -630,7 +622,6 @@ export function stepPhase(
 
 export type GateClassification =
   | { status: "missing_grace"; missing: string[] }
-  | { status: "missing_nudge"; missing: string[] }
   | { status: "pending"; pending: string[] }
   | { status: "timeout"; detail: string }
   | { status: "untrusted"; names: string[] }
@@ -646,9 +637,10 @@ export function classifyGate(input: {
   requiredChecks: string[];
   checks: Array<CheckStatus & { id?: number }>;
   since: number;
-  nudgedAt: number | null;
   now: number;
+  /** A required check that has not appeared at all by this point stops the wait. */
   graceMs: number;
+  /** Required checks that appeared but are still pending by this point stop the wait. */
   timeoutMs: number;
 }): GateClassification {
   const byName = new Map<string, CheckStatus & { id?: number }>();
@@ -688,18 +680,28 @@ export function classifyGate(input: {
   if (untrusted.length > 0) {
     return { status: "untrusted", names: untrusted };
   }
+  const observed = () =>
+    input.requiredChecks
+      .map((req) => {
+        const run = byName.get(req);
+        return `${req}=${run ? (run.status === "completed" ? (run.conclusion ?? "unknown") : run.status) : "missing"}`;
+      })
+      .join(", ");
   if (missing.length > 0) {
-    if (waitMs > input.timeoutMs) {
-      return { status: "timeout", detail: `Required checks never appeared: ${missing.join(", ")}` };
-    }
-    if (waitMs > input.graceMs && input.nudgedAt === null) {
-      return { status: "missing_nudge", missing };
+    if (waitMs > input.graceMs) {
+      return {
+        status: "timeout",
+        detail: `Required checks never appeared within ${Math.round(input.graceMs / 60_000)} min of the head SHA: ${missing.join(", ")}. Observed: ${observed()}`,
+      };
     }
     return { status: "missing_grace", missing };
   }
   if (pending.length > 0) {
     if (waitMs > input.timeoutMs) {
-      return { status: "timeout", detail: `Required checks timed out: ${pending.join(", ")}` };
+      return {
+        status: "timeout",
+        detail: `Required checks still pending after ${Math.round(input.timeoutMs / 60_000)} min: ${pending.join(", ")}. Observed: ${observed()}`,
+      };
     }
     return { status: "pending", pending };
   }
