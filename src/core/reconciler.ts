@@ -159,6 +159,14 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+    if (!(await this.broker.hasCommit(mainSha))) {
+      // A commit landed between our fetch and the tip lookup. Fetch again; if it is still absent, skip this tick
+      // rather than reading the workflow from a commit we do not have (that would look like a missing file).
+      await this.broker.syncFromRemote(remoteUrl);
+      if (!(await this.broker.hasCommit(mainSha))) {
+        throw new Error(`main tip ${mainSha.slice(0, 10)} is not in the broker repo after a re-fetch; retrying next tick`);
+      }
+    }
     await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
@@ -411,8 +419,13 @@ export class Reconciler {
     const proposal = this.ledger.getScoutProposal(issueNumber);
     if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
     const scout = this.workflow?.scouts.find((s) => s.name === proposal.scoutName);
+    // Revocation is re-read live: it can land (red main, `archangel disagree`) after this tick's snapshot was resolved.
     return Boolean(
-      scout && scout.promotionEffective.value === "auto" && scout.trustHash === proposal.fileSha256 && !scout.revoked,
+      scout &&
+        scout.promotionEffective.value === "auto" &&
+        scout.trustHash === proposal.fileSha256 &&
+        !scout.revoked &&
+        !this.ledger.isScoutAutoPromoteRevoked(scout.name, scout.trustHash),
     );
   }
 
@@ -1853,7 +1866,12 @@ export class Reconciler {
     // Each merge is watched against the checks recorded when it merged, so an invalid or edited
     // workflow can never leave a red main unwatched.
     for (const m of pending) {
-      if (m.mainRequired.length === 0) continue;
+      if (m.mainRequired.length === 0) {
+        // Only rows from before checks were recorded can get here. Nothing can be verified, so close the row loudly.
+        this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
+        this.ledger.appendAudit("post_merge/missing_required_checks", m.issueNumber, "archangel", { mergeId: m.id }, now);
+        continue;
+      }
       try {
         await this.reconcileOnePostMerge(m, m.mainRequired, mainSha, now);
       } catch (err) {
