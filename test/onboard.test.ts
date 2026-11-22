@@ -19,7 +19,7 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
         return "";
       }
       if (line.startsWith("gh repo view")) return `${opts.branch ?? "main"}\n`;
-      if (line.includes("/check-runs")) return (opts.checks ?? ["Gate", "Test"]).join("\n");
+      if (line.startsWith("gh pr list") && line.includes("--state merged")) return (opts.checks ?? ["Gate", "Test"]).join("\n");
       if (line.includes("/git/trees/")) return opts.tree.join("\n");
       if (line.startsWith("gh label list")) return (opts.labels ?? []).join("\n");
       if (line.includes("contents/package.json")) return JSON.stringify(opts.pkg ?? {});

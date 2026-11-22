@@ -108,9 +108,15 @@ export function withBranch(workflow: string, branch: string): string {
   return workflow.replace(line, `$1 [${JSON.stringify(branch)}]`);
 }
 
-/** Distinct names of the check runs that succeeded on the default branch tip: the repo's real CI, read-only. */
+/**
+ * Distinct names of the checks that succeeded on the latest merged PR into the default branch: the CI that actually runs on
+ * pull requests, read-only. (The branch tip also carries push-only and scheduled workflows that never gate a PR.)
+ */
 async function ciCheckNames(runner: OnboardRunner, repo: string, branch: string): Promise<string[]> {
-  const out = await runner.run("gh", ["api", `repos/${repo}/commits/${branch}/check-runs?per_page=100`, "--jq", '.check_runs[] | select(.conclusion == "success") | .name']);
+  const out = await runner.run("gh", [
+    "pr", "list", "--repo", repo, "--base", branch, "--state", "merged", "--limit", "1", "--json", "statusCheckRollup",
+    "-q", '.[0].statusCheckRollup[]? | select((.conclusion // .state) == "SUCCESS") | (.name // .context)',
+  ]);
   return [...new Set(out.split("\n").map((l) => l.trim()).filter(Boolean))].filter((n) => n !== "Gate").sort();
 }
 
@@ -184,7 +190,8 @@ async function starterPolicy(
     base = { version: 1, gate: { testFileGlobs: globs, testCmd, protectedPaths } };
   }
   const checks = await ciCheckNames(runner, repo, defaultBranch);
-  if (checks.length === 0) return skip(`no successful CI check runs found on ${defaultBranch}, so the required checks are unknown`);
+  if (checks.length === 0) return skip(`no successful CI checks found on the latest merged PR into ${defaultBranch}, so the required checks are unknown`);
+  notes.push(`requiredChecks in ${POLICY_PATH} are every check that passed on the latest merged PR into ${defaultBranch}: remove any that should not block a merge.`);
   return { ...base, requiredChecks: ["Gate", ...checks] };
 }
 
