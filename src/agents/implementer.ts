@@ -13,6 +13,7 @@ export interface ImplementInput {
   maxTurns: number;
   timeoutMs: number;
   maxBudgetUsd: number;
+  preferVendors?: ReviewerVendor[];
 }
 
 export interface ImplementResult {
