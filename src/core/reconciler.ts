@@ -317,14 +317,8 @@ export class Reconciler {
   private async raiseCorrectionSignals(now: number): Promise<void> {
     const windowStart = now - CORRECTION_WINDOW_DAYS * 86_400_000;
     const counts = this.ledger.computeCorrections({ repo: this.ledger.repo, sinceMs: windowStart, now });
-    const already = new Set(
-      this.ledger
-        .listAudit({ topicPrefix: "corrections/needs_you", limit: 500 })
-        .filter((a) => a.ts >= windowStart)
-        .map((a) => (JSON.parse(a.payloadJson) as { category?: string }).category),
-    );
     for (const { category, count } of repeatedCategories(counts)) {
-      if (already.has(category)) continue;
+      if (this.ledger.hasAudit({ topic: "corrections/needs_you", sinceMs: windowStart, payload: { key: "category", value: category } })) continue;
       const policy = MAIN_ESCALATION_POLICY.correction_repeated;
       try {
         await this.notifier.notifyNeedsYou({
@@ -841,7 +835,7 @@ export class Reconciler {
             disagreed ||= await this.github.verifyLabelActor(where, this.cfg.labels.disagree, actor);
           }
         }
-        if (!disagreed && this.ledger.listAudit({ topicPrefix: "shadow/disagree_ignored", issueNumber: thread.issueNumber, limit: 1 }).length === 0) {
+        if (!disagreed && !this.ledger.hasAudit({ topic: "shadow/disagree_ignored", issueNumber: thread.issueNumber })) {
           this.ledger.appendAudit("shadow/disagree_ignored", thread.issueNumber, "archangel", { label: this.cfg.labels.disagree, reason: "not applied by the owner" }, now);
         }
       }
