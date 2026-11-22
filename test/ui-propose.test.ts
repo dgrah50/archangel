@@ -6,15 +6,15 @@ import type { AddressInfo } from "node:net";
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective, lineDiff, previewDraft } from "../src/core/ui-propose.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { buildWorkflowsState } from "../src/core/ui-state.js";
 import { Workflow, resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
-import { PreviewView, WorkflowEditor } from "../ui/src/WorkflowEditor.js";
-import { fromForm, toForm } from "../ui/src/workflow-draft.js";
+import { PreviewView, StaleNotice, WorkflowEditor, isStale } from "../ui/src/WorkflowEditor.js";
+import { fromForm, propose, toForm } from "../ui/src/workflow-draft.js";
 import { hostInput, workflowFile } from "./helpers/workflow.js";
 
 const FILE = workflowFile([{ name: "bug-hunt", promotion: "auto" }], { landing: { bugfix: "autonomous" } });
@@ -289,5 +289,38 @@ describe("the editor's draft keeps every field of the current workflow", () => {
     const wf = resolveWorkflow(hostInput(), { repo: "a/b", mainSha: "m".repeat(40), fileRaw: JSON.stringify(file), scoutPrompts: { s1: "p" } });
     if (wf.status !== "ok") throw new Error("not ok");
     expect(draftFromEffective(wf)).toEqual(Workflow.parse(file));
+  });
+});
+
+describe("workflow editor error and stale states", () => {
+  const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: el }));
+  const stubFetch = (impl: () => Promise<Response>) => {
+    vi.stubGlobal("document", { querySelector: () => null });
+    vi.stubGlobal("fetch", vi.fn(impl));
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("a draft is stale once the polled base sha differs from the one it was started from", () => {
+    expect(isStale("a".repeat(64), "a".repeat(64))).toBe(false);
+    expect(isStale("a".repeat(64), "b".repeat(64))).toBe(true);
+  });
+
+  it("shows a role=alert reload prompt when the workflow changed upstream", () => {
+    const out = html(createElement(StaleNotice, { onReload: () => {} }));
+    expect(out).toContain('role="alert"');
+    expect(out).toContain("Workflow changed upstream: reload draft");
+  });
+
+  it("a rejected fetch becomes an error result (so the editor re-enables its buttons) instead of throwing", async () => {
+    stubFetch(() => Promise.reject(new Error("connection refused")));
+    expect(await propose("a/b", draft(), "0".repeat(64), true)).toEqual({ error: "network error: connection refused" });
+  });
+
+  it("a non-JSON error body is reported with its status and text, not discarded", async () => {
+    stubFetch(async () => new Response("<html>Bad Gateway</html>", { status: 502 }));
+    const out = await propose("a/b", draft(), "0".repeat(64), true);
+    expect(out).toEqual({ error: "HTTP 502: <html>Bad Gateway</html>" });
+    stubFetch(async () => new Response(JSON.stringify({ error: "stale base" }), { status: 409 }));
+    expect(await propose("a/b", draft(), "0".repeat(64), true)).toEqual({ error: "stale base" });
   });
 });
