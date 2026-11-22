@@ -39,10 +39,8 @@ function Halted({ r }: { r: PipelineRepo }) {
 
 export function Pipeline({ data }: { data: WorkflowsState }) {
   return (
-    <Box as="section" mt="10">
-      <Heading size="lg" mb="1">
-        Pipeline
-      </Heading>
+    <Box as="section" mt="12">
+      <Heading size="lg">Pipeline</Heading>
       <Text color="fg.muted" textStyle="sm" mb="4">
         Resolved workflow per repo: kernel invariants, host ceilings, repo choices. Metrics cover the last {data.windowDays} days.
       </Text>
@@ -84,7 +82,14 @@ export function Pipeline({ data }: { data: WorkflowsState }) {
                 </Card.Root>
               ))}
             </SimpleGrid>
-            {r.draft && r.fileSha256 ? <WorkflowEditor repo={r.repo} initial={r.draft} baseFileSha256={r.fileSha256} /> : null}
+            {r.draft && r.fileSha256 ? (
+              <Box as="details" mt="4" borderWidth="1px" rounded="xl" px="4" py="2">
+                <Box as="summary" cursor="pointer" fontWeight="medium" py="1">
+                  Propose a workflow change
+                </Box>
+                <WorkflowEditor repo={r.repo} initial={r.draft} baseFileSha256={r.fileSha256} />
+              </Box>
+            ) : null}
           </Box>
         ))}
       </Stack>
