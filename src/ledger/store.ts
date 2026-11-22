@@ -1496,9 +1496,18 @@ export class Ledger {
   }
 
   /** Cached `EffectiveWorkflow` JSON per repo, as written by each Reconciler tick (`workflow:<repo>`). */
+  /** `workflow` is null when the stored text is not JSON (the caller treats that as unreadable, never as a crash). */
   listCachedWorkflows(): Array<{ repo: string; workflow: unknown }> {
     const rows = this.db.prepare(`SELECT key, value FROM system_state WHERE key LIKE 'workflow:%'`).all() as Array<{ key: string; value: string }>;
-    return rows.map((r) => ({ repo: r.key.slice("workflow:".length), workflow: JSON.parse(r.value) as unknown }));
+    return rows.map((r) => {
+      let workflow: unknown = null;
+      try {
+        workflow = JSON.parse(r.value);
+      } catch {
+        // corrupt cache row: reported as unreadable by the dashboard
+      }
+      return { repo: r.key.slice("workflow:".length), workflow };
+    });
   }
 
   /** Stage-by-stage figures for the Pipeline view: SQL over existing tables, windowed on Thread creation / event time. */
@@ -1506,7 +1515,13 @@ export class Ledger {
     const LANDED = ["merged", "owner_merged", "reverted"];
     const threads = this.listThreads(undefined, repo).filter((t) => t.createdAt >= sinceMs);
     const landed = (t: ThreadRecord) => t.phase.kind === "done" && LANDED.includes(t.phase.outcome);
-    const reverted = (t: ThreadRecord) => t.phase.kind === "done" && t.phase.outcome === "reverted";
+    // A revert is a red main-watch on one of the Thread's merges (nothing ever sets the `reverted` outcome), as computeOutcomeMetrics counts it.
+    const redIssues = new Set(
+      (this.db.prepare(`SELECT issue_number FROM merges WHERE repo = ? AND json_extract(main_watch_json, '$.kind') = 'red'`).all(repo) as Array<{ issue_number: number }>).map(
+        (r) => r.issue_number,
+      ),
+    );
+    const reverted = (t: ThreadRecord) => (t.phase.kind === "done" && t.phase.outcome === "reverted") || redIssues.has(t.issueNumber);
     const count = (sql: string, ...params: unknown[]) => (this.db.prepare(sql).get(...params) as { n: number }).n;
     const auditCount = (topic: string, actor?: string) =>
       count(
@@ -1585,9 +1600,10 @@ export class Ledger {
       else b.veto += r.n;
     }
 
-    const merges = (
-      this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND shadow_only = 0 AND created_at >= ?`).all(repo, sinceMs) as Record<string, unknown>[]
+    const allMerges = (
+      this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND created_at >= ?`).all(repo, sinceMs) as Record<string, unknown>[]
     ).map(mapMerge);
+    const merges = allMerges.filter((m) => !m.shadowOnly);
 
     const byWorkflowSha: StageMetrics["byWorkflowSha"] = {};
     for (const t of threads) {
@@ -1617,7 +1633,8 @@ export class Ledger {
         autoMerged: merges.length,
         ownerMerged: threads.filter((t) => t.phase.kind === "done" && t.phase.outcome === "owner_merged").length,
         reverts: merges.filter((m) => m.mainWatch.kind === "red").length,
-        disagreements: merges.filter((m) => m.disagreed).length,
+        // Shadow Mode verdicts are shadow_only rows; the owner's disagreements land on those, so count every merge row in the window.
+        disagreements: allMerges.filter((m) => m.disagreed).length,
         autonomyCapHits: auditCount("autonomy/cap_reached"),
       },
       needsYou: { byDecisionClass },

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
+import { GatePolicySchema } from "../src/config.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -36,7 +37,23 @@ function createFixtureRemote(): { root: string; remoteBare: string; baseSha: str
   return { root, remoteBare, baseSha };
 }
 
+const BOUNDS = GatePolicySchema.parse({});
+
 describe("GitBroker (ADR-0004 B2 isolation)", () => {
+  it("holds no host-side Gate defaults: the policy is a required argument", async () => {
+    const { root } = createFixtureRemote();
+    try {
+      const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+      for (const field of ["maxNonTestLines", "maxTotalLines", "maxFiles", "extraProtectedPaths", "testFileGlobs", "testDataGlobs"]) {
+        expect(field in broker, field).toBe(false);
+      }
+      // @ts-expect-error bounds is required: omitting it must not compile (and so cannot silently mean "no protected paths").
+      void (() => broker.fetchAndValidateFromClone("/x", 1, "sha"));
+    } finally {
+      cleanupDir(root);
+    }
+  });
+
   it("isolates throwaway clones, ignores planted hooks, validates paths, and pushes factory/<n>", async () => {
     const { root, remoteBare, baseSha } = createFixtureRemote();
     try {
@@ -59,7 +76,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       git(cloneDir, ["add", "-A"]);
       git(cloneDir, ["commit", "-m", "fix Val"]);
 
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 7, baseSha);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 7, baseSha, BOUNDS);
       expect(val.protectedViolations).toEqual([]);
       expect(val.changedFiles).toEqual(["app.go"]);
       expect(val.nonTestLines).toBe(2);
@@ -102,7 +119,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       git(cloneDir, ["add", "-A"]);
       git(cloneDir, ["commit", "-m", "edit gate"]);
 
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 9, baseSha);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 9, baseSha, BOUNDS);
       expect(val.protectedViolations.some((v) => v.includes("protected path modified"))).toBe(true);
     } finally {
       cleanupDir(root);
@@ -134,7 +151,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       await broker.syncFromRemote(remoteBare);
       const newMainSha = git(remoteBare, ["rev-parse", "refs/heads/main"]);
 
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 4, newMainSha);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 4, newMainSha, BOUNDS);
       expect(val.protectedViolations).toEqual([]);
       expect(val.changedFiles).toEqual(["app.go"]);
 
@@ -171,7 +188,6 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       const broker = new GitBroker({
         bareRepoPath: path.join(root, "broker.git"),
         clonesDir: path.join(root, "clones"),
-        extraProtectedPaths: ["migrations/**"],
       });
       await broker.ensureBareRepo(remoteBare);
 
@@ -186,7 +202,7 @@ describe("GitBroker (ADR-0004 B2 isolation)", () => {
       fs.rmSync(path.join(cloneDir, ".setup-ran"));
       git(cloneDir, ["add", "-A"]);
       git(cloneDir, ["commit", "-m", "touch migration"]);
-      const val = await broker.fetchAndValidateFromClone(cloneDir, 12, mainSha);
+      const val = await broker.fetchAndValidateFromClone(cloneDir, 12, mainSha, { ...BOUNDS, extraProtectedPaths: ["migrations/**"] });
       expect(val.protectedViolations.some((v) => v.includes("migrations/001.sql"))).toBe(true);
     } finally {
       cleanupDir(root);

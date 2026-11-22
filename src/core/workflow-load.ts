@@ -1,5 +1,6 @@
 import { REPO_POLICY_PATH, type ArchangelConfig } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
+import { resolveSkills } from "./skills.js";
 import { resolveWorkflow, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 
 export interface WorkflowFileReader {
@@ -34,17 +35,29 @@ export async function loadWorkflow(
       if (body !== null) scoutPrompts[name] = body.trim();
     }
   }
-  return resolveWorkflow(
+  const resolved = resolveWorkflow(
     {
       shadowMode: cfg.shadowMode,
       maxAutoMergesPerDay: cfg.maxAutoMergesPerDay,
       maxAutoPromotionsPerDay: cfg.scouts.maxAutoPromotionsPerDay,
       scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
+      scoutsEnabled: cfg.scouts.enabled,
       maxConcurrentThreads: cfg.maxConcurrentThreads,
       isRevoked: (name, hash) => ledger.isScoutAutoPromoteRevoked(name, hash),
     },
     { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, mainSha, fileRaw, scoutPrompts },
   );
+  if (resolved.status !== "ok") return resolved;
+  // Skills live in Archangel's own `skills/` directory, so only this layer can check them. A typo must halt the repo here,
+  // not later inside the Scout runner where it would break every Scout.
+  for (const s of resolved.scouts) {
+    try {
+      resolveSkills(s.skills);
+    } catch (err) {
+      return { repo: resolved.repo, mainSha, status: "invalid", fileSha256: resolved.fileSha256, error: `scout '${s.name}': ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  return resolved;
 }
 
 export function workflowError(wf: EffectiveWorkflow): string | null {

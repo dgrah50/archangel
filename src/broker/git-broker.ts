@@ -50,18 +50,10 @@ export interface GitBrokerOptions {
   bareRepoPath: string;
   clonesDir: string;
   defaultBranch?: string;
-  maxNonTestLines?: number;
-  maxTotalLines?: number;
-  maxFiles?: number;
-  extraProtectedPaths?: string[];
-  testFileGlobs?: string[];
-  testDataGlobs?: string[];
   enableLocalGate?: boolean;
   localGateSkipTests?: boolean;
   localGateTimeoutMs?: number;
 }
-
-export type ValidationBounds = Partial<GatePolicy>;
 
 /**
  * Hardened Git Broker (ADR-0004 B2):
@@ -75,12 +67,6 @@ export class GitBroker {
   readonly bareRepoPath: string;
   readonly clonesDir: string;
   readonly defaultBranch: string;
-  readonly maxNonTestLines: number;
-  readonly maxTotalLines: number;
-  readonly maxFiles: number;
-  readonly extraProtectedPaths: string[];
-  readonly testFileGlobs: string[];
-  readonly testDataGlobs: string[];
   readonly enableLocalGate: boolean;
   readonly localGateSkipTests: boolean;
   readonly localGateTimeoutMs: number;
@@ -89,12 +75,6 @@ export class GitBroker {
     this.bareRepoPath = path.resolve(opts.bareRepoPath);
     this.clonesDir = path.resolve(opts.clonesDir);
     this.defaultBranch = opts.defaultBranch ?? "main";
-    this.maxNonTestLines = opts.maxNonTestLines ?? 150;
-    this.maxTotalLines = opts.maxTotalLines ?? 300;
-    this.maxFiles = opts.maxFiles ?? 5;
-    this.extraProtectedPaths = opts.extraProtectedPaths ?? [];
-    this.testFileGlobs = opts.testFileGlobs ?? [];
-    this.testDataGlobs = opts.testDataGlobs ?? [];
     this.enableLocalGate = opts.enableLocalGate ?? false;
     this.localGateSkipTests = opts.localGateSkipTests ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
@@ -304,15 +284,11 @@ export class GitBroker {
     cloneDir: string,
     issueNumber: number,
     baseSha: string,
-    bounds?: ValidationBounds,
+    /** The repo's resolved Gate policy. Required: there is no host-side default, so no caller can validate against an empty policy. */
+    bounds: GatePolicy,
     workClass?: WorkClass,
   ): Promise<BrokerFetchValidation> {
-    const maxNonTestLines = bounds?.maxNonTestLines ?? this.maxNonTestLines;
-    const maxTotalLines = bounds?.maxTotalLines ?? this.maxTotalLines;
-    const maxFiles = bounds?.maxFiles ?? this.maxFiles;
-    const extraProtectedPaths = bounds?.extraProtectedPaths ?? this.extraProtectedPaths;
-    const testFileGlobs = bounds?.testFileGlobs ?? this.testFileGlobs;
-    const testDataGlobs = bounds?.testDataGlobs ?? this.testDataGlobs;
+    const { maxNonTestLines, maxTotalLines, maxFiles, extraProtectedPaths, testFileGlobs, testDataGlobs } = bounds;
 
     // If a sandboxed agent (e.g. `codex --sandbox workspace-write` where `.git` is read-only)
     // left clean working-tree edits uncommitted, stage and commit them safely with hooks disabled.

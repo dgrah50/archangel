@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
+import { resolveDataDir } from "./data-dir.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
@@ -76,19 +77,6 @@ function pickProjectConfig(configs: ArchangelConfig[], repoFlag?: string): Archa
     );
   }
   return configs[0]!;
-}
-
-function resolveDataDirFromOpts(opts: { config?: string; dataDir?: string }): string {
-  if (opts.dataDir) return opts.dataDir;
-  if (opts.config || fs.existsSync("archangel.yaml")) {
-    try {
-      const cfgs = loadProjectConfigs({ configPath: opts.config });
-      if (cfgs[0]) return cfgs[0].dataDir;
-    } catch {
-      // Fallback to default dataDir when reading status/events without full secrets
-    }
-  }
-  return process.env.ARCHANGEL_DATA_DIR ?? ".archangel";
 }
 
 program
@@ -390,7 +378,7 @@ program
   .option("--data-dir <dir>", "Archangel data directory")
   .option("--port <n>", "Loopback port", "4111")
   .action(async (opts: { config?: string; dataDir?: string; port: string }) => {
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     const code = await launchStudio({
       mastraDbPath: paths.mastraDbPath,
@@ -408,7 +396,7 @@ program
   .option("--repo <owner/name>", "Filter by repository")
   .option("--json", "Output JSON")
   .action((opts: { config?: string; dataDir?: string; repo?: string; json?: boolean }) => {
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     if (!fs.existsSync(paths.ledgerDbPath)) {
       const empty = { message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
@@ -482,7 +470,7 @@ program
   .option("--days <n>", "Lookback window in days (default: all time)")
   .option("--json", "Output JSON")
   .action((opts: { config?: string; dataDir?: string; repo?: string; days?: string; json?: boolean }) => {
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     if (!fs.existsSync(paths.ledgerDbPath)) {
       const empty = { message: `No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.` };
@@ -617,6 +605,7 @@ workflowCmd
         maxAutoMergesPerDay: cfg.maxAutoMergesPerDay,
         maxAutoPromotionsPerDay: cfg.scouts.maxAutoPromotionsPerDay,
         scoutRunsPerDay: cfg.scouts.maxRunsPerDay,
+        scoutsEnabled: cfg.scouts.enabled,
         maxConcurrentThreads: cfg.maxConcurrentThreads,
         isRevoked: () => false,
       },
@@ -641,7 +630,7 @@ program
   .option("--allow-remote", "Allow binding a non-loopback host (the page has no authentication)")
   .action(async (opts: { config?: string; dataDir?: string; port: string; host: string; allowRemote?: boolean }) => {
     assertBindable(opts.host, Boolean(opts.allowRemote));
-    const paths = resolvePaths({ dataDir: resolveDataDirFromOpts(opts) });
+    const paths = resolvePaths({ dataDir: resolveDataDir(opts) });
     if (!fs.existsSync(paths.ledgerDbPath)) {
       console.log(`No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.`);
       return;
@@ -661,7 +650,7 @@ program
   .option("--issue <number>", "Filter by issue number")
   .option("--limit <n>", "Max entries", "40")
   .action((opts: { config?: string; dataDir?: string; repo?: string; topic?: string; issue?: string; limit: string }) => {
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     if (!fs.existsSync(paths.ledgerDbPath)) {
       console.log(`No Ledger found yet at ${paths.ledgerDbPath}.`);
@@ -887,7 +876,7 @@ program
         const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }));
         return `${cfg.githubOwner}/${cfg.githubRepo}`;
       })();
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const paths = resolvePaths({ dataDir });
     const ledger = new Ledger(paths.ledgerDbPath, { repo });
     try {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ARCHANGEL_ROOT, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } from "./onboard.js";
+import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } from "./onboard.js";
 import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
@@ -127,7 +127,7 @@ export async function gateBump(
       continue;
     }
     const baseSha = (await runner.run("gh", ["api", `repos/${repo}/git/ref/heads/${branch}`, "--jq", ".object.sha"])).trim();
-    await runner.run("gh", ["api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/heads/${BUMP_BRANCH}`, "-f", `sha=${baseSha}`]);
+    await createOrResetBranch(runner, repo, BUMP_BRANCH, baseSha);
     await runner.run("gh", [
       "api", "-X", "PUT", `repos/${repo}/contents/${GATE_WORKFLOW_PATH}`,
       "-f", `message=chore: pin Archangel Gate to ${head.slice(0, 10)}`,

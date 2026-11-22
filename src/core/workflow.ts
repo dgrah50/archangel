@@ -155,6 +155,8 @@ export interface HostWorkflowInput {
   maxAutoMergesPerDay: number;
   maxAutoPromotionsPerDay: number;
   scoutRunsPerDay: number;
+  /** `scouts.enabled` on the host: when false no Scout runs, whatever the repo declares. */
+  scoutsEnabled: boolean;
   maxConcurrentThreads: number;
   /** True when auto-promotion of this exact Scout version was revoked (disagreed, reverted, or red main). */
   isRevoked: (scoutName: string, trustHash: string) => boolean;
@@ -188,7 +190,7 @@ export type EffectiveWorkflow =
       rubric?: string;
       landingBugfix: Effective<"owner" | "autonomous">;
       scouts: EffectiveScout[];
-      caps: { autoMergesPerDay: number; autoPromotionsPerDay: number; scoutRunsPerDay: number; concurrent: number };
+      caps: { autoMergesPerDay: number; autoPromotionsPerDay: number; scoutRunsPerDay: number; scoutsEnabled: boolean; concurrent: number };
     };
 
 /**
@@ -271,6 +273,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
       autoMergesPerDay: host.maxAutoMergesPerDay,
       autoPromotionsPerDay: host.maxAutoPromotionsPerDay,
       scoutRunsPerDay: host.scoutRunsPerDay,
+      scoutsEnabled: host.scoutsEnabled,
       concurrent: host.maxConcurrentThreads,
     },
   };

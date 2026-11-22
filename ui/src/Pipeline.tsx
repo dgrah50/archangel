@@ -21,7 +21,9 @@ function Halted({ r }: { r: PipelineRepo }) {
       ? "Workflow file missing: this repo is halted (no intake, Scouts or autonomous landing) until .agents/archangel.json is on main."
       : r.status === "invalid"
         ? "Workflow file invalid: this repo is halted until it is fixed. Nothing falls back to another policy."
-        : "Not resolved yet: the daemon has not read this repo's workflow.";
+        : r.status === "unreadable"
+          ? "The cached workflow is unreadable; the daemon will rewrite it on its next tick."
+          : "Not resolved yet: the daemon has not read this repo's workflow.";
   return (
     <Box borderWidth="1px" borderColor="red.solid" rounded="md" p="3" mb="3" role="alert">
       <Badge colorPalette="red" mr="2">

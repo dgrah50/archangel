@@ -103,8 +103,9 @@ export class ProposeRefusal extends Error {
 /** Reads the cached workflow for `repo`; the UI cannot propose for a repo the daemon has no valid workflow for. */
 function cachedOk(ledger: Ledger, repo: string): OkWorkflow {
   const hit = ledger.listCachedWorkflows().find((c) => c.repo === repo);
-  const wf = hit?.workflow as EffectiveWorkflow | undefined;
-  if (!wf) throw new ProposeRefusal(404, `Unknown repo ${repo}`);
+  if (!hit) throw new ProposeRefusal(404, `Unknown repo ${repo}`);
+  const wf = hit.workflow as EffectiveWorkflow | null;
+  if (!wf || typeof wf !== "object") throw new ProposeRefusal(409, `The cached workflow for ${repo} is unreadable; wait for the daemon's next tick`);
   if (wf.status !== "ok") throw new ProposeRefusal(409, `${repo} has no valid workflow (${wf.status}); fix the file by hand first`);
   return wf;
 }
