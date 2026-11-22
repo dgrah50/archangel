@@ -79,17 +79,20 @@ function guessTestGlobs(paths: string[]): string[] {
   return [...exts].sort();
 }
 
-function bugHuntScout(stack: Stack | null): string {
-  const skills = ["general/bug-hunt", "general/input-validation", ...(stack === "go" ? ["go/*"] : stack === "node" ? ["typescript/*"] : [])];
-  return `---
-name: bug-hunt
-schedule: daily
-maxProposals: 2
-skills: [${skills.join(", ")}]
----
-Audit the repository's non-test production source for concrete, reproducible bugs.
+function bugHuntSkills(stack: Stack | null): string[] {
+  return ["general/bug-hunt", "general/input-validation", ...(stack === "go" ? ["go/*"] : stack === "node" ? ["typescript/*"] : [])];
+}
+
+/** The Scout prompt body: plain Markdown, no frontmatter. The Scout's settings live in the workflow file. */
+const BUG_HUNT_PROMPT = `Audit the repository's non-test production source for concrete, reproducible bugs.
 Only propose an issue if you can name the exact file and symbol, the failing behaviour, the expected behaviour, and a new test that fails today.
 `;
+
+/** Adds the bug-hunt Scout entry to a workflow starter, keeping the starter's own key order. */
+function withBugHuntScout(workflowJson: string, stack: Stack | null): string {
+  const wf = JSON.parse(workflowJson) as Record<string, unknown>;
+  wf.scouts = [{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: bugHuntSkills(stack) }];
+  return JSON.stringify(wf, null, 2) + "\n";
 }
 
 /**
@@ -139,7 +142,7 @@ export async function buildPlan(
 
   consider(POLICY_PATH, () => {
     if (stack === "go") {
-      return fs.readFileSync(path.join(root, "templates/go/.agents/archangel.json"), "utf8");
+      return withBugHuntScout(fs.readFileSync(path.join(root, "templates/go/.agents/archangel.json"), "utf8"), stack);
     }
     if (stack === "node") {
       return null; // filled below, needs package.json
@@ -159,28 +162,23 @@ export async function buildPlan(
       const protectedPaths = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
       files.push({
         path: POLICY_PATH,
-        content:
-          JSON.stringify(
-            {
-              maxNonTestLines: 150,
-              maxTotalLines: 300,
-              maxFiles: 5,
-              testFileGlobs: globs,
-              testDataGlobs: [],
-              testCmd: "npm test",
-              baseTestRuns: 1,
-              headTestRuns: 1,
-              extraProtectedPaths: protectedPaths,
-              requiredChecks: ["Gate", "Test"],
-            },
-            null,
-            2,
-          ) + "\n",
+        content: withBugHuntScout(
+          JSON.stringify({
+            version: 1,
+            gate: { testFileGlobs: globs, testCmd: "npm test", protectedPaths },
+            requiredChecks: ["Test"],
+          }),
+          stack,
+        ),
       });
     }
   }
 
-  consider(SCOUT_PATH, () => bugHuntScout(stack));
+  // The Scout prompt only works together with its entry in the workflow file, so it is planned with a new one.
+  if (files.some((f) => f.path === POLICY_PATH)) consider(SCOUT_PATH, () => BUG_HUNT_PROMPT);
+  else if (have.has(POLICY_PATH)) {
+    notes.push(`${POLICY_PATH} exists: add a Scout entry and ${SCOUT_PATH} by hand if you want the bug-hunt Scout.`);
+  }
 
   return { repo, defaultBranch, stack, labelsToCreate, files, skipped, notes };
 }

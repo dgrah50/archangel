@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
-import { REPO_POLICY_PATH, mergeRepoPolicy, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
+import { GatePolicySchema, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
   buildImplementPrompt,
@@ -19,7 +19,9 @@ import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
-import { loadScoutsFromMain, runScoutsForProject, scoutContentHash } from "./scout.js";
+import { runScoutsForProject, scoutContentHash } from "./scout.js";
+import { ownerMergesOnly, type OkWorkflow } from "./workflow.js";
+import { loadWorkflow, workflowError } from "./workflow-load.js";
 import {
   classifyGate,
   deriveControl,
@@ -82,8 +84,10 @@ export class Reconciler {
   private policyErrorNotifiedSha: string | null = null;
   private readonly runningTasks = new Map<number, RunningTask>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
-  private effectiveGate: GatePolicy;
-  private effectiveRequiredChecks: string[];
+  /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
+  private workflow: OkWorkflow | null = null;
+  private effectiveGate: GatePolicy = GatePolicySchema.parse({});
+  private effectiveRequiredChecks: string[] = ["Gate"];
   private effectiveReviewRubric: string | undefined;
 
   constructor(deps: ReconcilerDeps) {
@@ -96,9 +100,6 @@ export class Reconciler {
     this.notifier = deps.notifier;
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.workerId = deps.workerId ?? `archangel-${process.pid}`;
-    this.effectiveGate = deps.config.gate;
-    this.effectiveRequiredChecks = deps.config.requiredChecks;
-    this.effectiveReviewRubric = deps.config.reviewRubric;
   }
 
   activeTaskCount(): number {
@@ -151,25 +152,16 @@ export class Reconciler {
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
 
-    // Load the required repo policy strictly from `main` tip. Missing or invalid policy halts new work
-    // for this repo (fail closed); owner commands and post-merge main monitoring still run.
-    let policyError: string | null = null;
-    try {
-      const repoPolicyRaw = await this.broker.readFileAtRef(mainSha, REPO_POLICY_PATH);
-      if (!repoPolicyRaw || !repoPolicyRaw.trim()) {
-        throw new Error(`${REPO_POLICY_PATH} is missing on ${this.cfg.defaultBranch}`);
-      }
-      const merged = mergeRepoPolicy(
-        this.cfg.gate,
-        this.cfg.requiredChecks,
-        this.cfg.reviewRubric,
-        repoPolicyRaw,
-      );
-      this.effectiveGate = merged.gate;
-      this.effectiveRequiredChecks = merged.requiredChecks;
-      this.effectiveReviewRubric = merged.reviewRubric;
-    } catch (err) {
-      policyError = err instanceof Error ? err.message : String(err);
+    // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
+    // Missing or invalid halts new work for this repo (fail closed); owner commands and post-merge main
+    // monitoring still run.
+    const resolved = await loadWorkflow(this.broker, this.cfg, this.ledger, mainSha);
+    const policyError = workflowError(resolved);
+    if (resolved.status === "ok") {
+      this.workflow = resolved;
+      this.effectiveGate = resolved.gate;
+      this.effectiveRequiredChecks = resolved.requiredChecks;
+      this.effectiveReviewRubric = resolved.rubric;
     }
 
     if (policyError) {
@@ -236,6 +228,7 @@ export class Reconciler {
           ledger: this.ledger,
           github: this.github,
           broker: this.broker,
+          workflow: this.workflow!,
           mainSha,
           onlyScheduled: true,
           logger: this.logger,
@@ -352,25 +345,16 @@ export class Reconciler {
   }
 
   /**
-   * A bot-applied `ready-for-agent` counts only for a proposal recorded as auto-promoted whose
-   * Scout file at `mainSha` still says `autoPromote: true`, is byte-identical to the file that
-   * filed it, and has not had its trust revoked. Anything else needs the owner's label.
+   * A bot-applied `ready-for-agent` counts only for a proposal recorded as auto-promoted whose Scout, at
+   * the current `main`, still resolves to effective `auto` promotion with the same `trustHash` that filed
+   * it. A changed entry or prompt, a revocation, or a zero host cap all fall back to the owner's label.
    */
-  private async isValidAutoPromotion(issueNumber: number, mainSha: string): Promise<boolean> {
+  private isValidAutoPromotion(issueNumber: number): boolean {
     const proposal = this.ledger.getScoutProposal(issueNumber);
     if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
-    let workflows: Awaited<ReturnType<typeof loadScoutsFromMain>>;
-    try {
-      workflows = await loadScoutsFromMain(this.broker, mainSha);
-    } catch {
-      return false;
-    }
-    const wf = workflows.find((w) => w.name === proposal.scoutName);
+    const scout = this.workflow?.scouts.find((s) => s.name === proposal.scoutName);
     return Boolean(
-      wf &&
-        wf.autoPromote &&
-        wf.fileSha256 === proposal.fileSha256 &&
-        !this.ledger.isScoutAutoPromoteRevoked(wf.name, wf.fileSha256),
+      scout && scout.promotionEffective.value === "auto" && scout.trustHash === proposal.fileSha256 && !scout.revoked,
     );
   }
 
@@ -446,7 +430,7 @@ export class Reconciler {
       this.cfg.ownerUserId,
     );
     const autoPromoted =
-      !ownerLabeled && isVerifiedBotProposal && (await this.isValidAutoPromotion(issue.number, mainSha));
+      !ownerLabeled && isVerifiedBotProposal && this.isValidAutoPromotion(issue.number);
     if (!ownerLabeled && !autoPromoted) {
       this.rejectedIssueCache.set(issue.number, issue.updatedAt);
       this.ledger.appendAudit(
@@ -478,6 +462,7 @@ export class Reconciler {
       bodySha256: sha256(issue.body),
       phase: { kind: "queued" },
       mode: "autonomous",
+      workflowSha256: this.workflow?.fileSha256 ?? null,
       now,
     });
   }
@@ -1573,7 +1558,7 @@ export class Reconciler {
 
     // Feature Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
     const isFeature = workClassOfBranch(thread.branchName) === "feature";
-    const ownerMergesOnly = this.cfg.shadowMode || isFeature;
+    const ownerMergesOnlyNow = ownerMergesOnly(this.workflow!, workClassOfBranch(thread.branchName));
     const blockers = computeBlockers({
       prOpen: pr.state === "open",
       prDraft: pr.draft,
@@ -1594,14 +1579,14 @@ export class Reconciler {
       mergeTreeClean,
       autoMergesToday: this.ledger.getAutoMergeCountToday(now),
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
-      shadowMode: ownerMergesOnly,
+      shadowMode: ownerMergesOnlyNow,
       featureThread: isFeature,
     });
 
     // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
     // record the shadow verdict with a note so owner can inspect/merge directly (Opus review).
     const shadowReadyWithBehind =
-      ownerMergesOnly &&
+      ownerMergesOnlyNow &&
       blockers.every((b) => b.code === "shadow_mode_active" || b.code === "branch_behind_main") &&
       blockers.some((b) => b.code === "shadow_mode_active");
 

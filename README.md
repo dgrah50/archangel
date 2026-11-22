@@ -20,7 +20,7 @@ npm run build
 2. Copy `.env.example` to `.env` (auto-loaded by the CLI, `chmod 600`) and configure your dedicated least-privilege GitHub App (`contents: write`, `pull_requests: write`, `issues: write`, `checks: read` — **no** `workflows`, **no** `administration`, **no** `checks: write`).
 3. On each target repository's default branch (via a human-merged PR):
    - Copy `workflows/archangel-gate.yml` to `.github/workflows/archangel-gate.yml` and pin `ARCHANGEL_GATE_SHA` to an immutable 40-char commit SHA of this repo.
-   - Add `.pre-commit-config.yaml` and `.agents/archangel.json` (plus optional `.agents/setup` for dependency install).
+   - Add `.pre-commit-config.yaml` and `.agents/archangel.json` (the version 1 workflow file; plus optional `.agents/setup` for dependency install).
    - Create factory labels (`ready-for-agent`, `factory:paused`, `factory:stop`, `needs-you`, `factory:disagree`) and an active branch protection ruleset requiring `Gate` + CI tests with squash-only merges and zero bypass actors.
 4. Run preflight checks:
    ```bash
@@ -49,27 +49,31 @@ npm run build
 - `archangel handoff <issue#>` / `resume <issue#>` — pause factory autonomy for Paseo takeover and resume advisory tracking
 - `archangel retry <issue#>` / `abandon <issue#>` / `disagree <issue#>` / `reset-breaker` — operator controls
 
-## Scouts and bundled skills
+## The workflow file
 
-A repo opts into read-only Scouts by committing `.agents/scouts/<name>.md` to its default branch. A Scout can be just a list of bundled skills (`archangel scout skills` lists them), a prompt body, or both:
+Each repo's `.agents/archangel.json` (`"version": 1`, strict) is its whole workflow: Gate bounds and test commands, required checks, the review rubric, whether bugfixes may land on their own, and its Scouts. Values beyond the kernel's bounds (diff size, test-run counts) make the file invalid, and an invalid or missing file halts that repo (one Needs You) instead of falling back to anything. See `templates/go/.agents/archangel.json` or this repo's own file.
 
-```markdown
----
-name: bug-hunt
-schedule: daily        # or manual
-maxProposals: 2
-skills: [general/bug-hunt, general/error-handling, go/*]
----
-Optional repo-specific focus, e.g. "pay attention to the history store".
+```json
+{
+  "version": 1,
+  "gate": { "testFileGlobs": ["**/*_test.go"], "testCmd": "go test ./...", "protectedPaths": ["go.mod"] },
+  "requiredChecks": ["Test"],
+  "landing": { "bugfix": "owner" },
+  "scouts": [{ "name": "bug-hunt", "schedule": "daily", "skills": ["general/bug-hunt", "go/*"], "promotion": "owner" }]
+}
 ```
 
-Skills live in this repo under `skills/<folder>/<name>.md` (`general/`, `go/`, `typescript/`) and are protected paths. Unknown skills fail the Scout instead of running a weaker one.
+The host (`archangel.yaml`) owns resources only: identity, subscriptions, spend and rate limits, and `shadowMode` (true forces owner merges whatever the repo says).
 
-### Closing the loop: `autoPromote`
+## Scouts and bundled skills
 
-By default every Scout proposal waits for the owner to add `ready-for-agent`. An owner can opt a single Scout into promoting its own proposals by adding `autoPromote: true` to that Scout's frontmatter (an owner-merged change, since `.agents/` is protected). Limits:
+A Scout is an entry in the workflow file's `scouts` list plus a plain-Markdown prompt at `.agents/scouts/<name>.md` (body only, no frontmatter). Skills (`archangel scout skills` lists them) live in this repo under `skills/<folder>/<name>.md` (`general/`, `go/`, `typescript/`) and are protected paths. Unknown skills fail the Scout instead of running a weaker one.
+
+### Closing the loop: `promotion: "auto"`
+
+By default every Scout proposal waits for the owner to add `ready-for-agent`. An owner can opt a single Scout into promoting its own proposals with `"promotion": "auto"` in its entry (an owner-merged change, since `.agents/` is protected). Limits:
 
 - at most `scouts.maxAutoPromotionsPerDay` per repo (host config, default 1);
 - the fix still has to pass the mechanical Gate (a new test failing on `main`), protected-path rules and two-vendor review;
-- intake re-checks that the Scout file on `main` is byte-identical to the one that filed the proposal and still says `autoPromote: true`;
-- if any auto-promoted fix from that Scout file is disagreed with (`archangel disagree`), reverted, or turns main red, auto-promotion stops for that file version. Editing the Scout file (owner-merged) starts it again.
+- intake re-checks that the Scout's entry plus prompt on `main` hash to the same `trustHash` as when it filed the proposal and still say `auto`;
+- if any auto-promoted fix from that Scout is disagreed with (`archangel disagree`), reverted, or turns main red, auto-promotion stops for that version. Editing that Scout's own entry or prompt (owner-merged) starts it again; edits to other parts of the file do not.

@@ -5,13 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
-import {
-  GatePolicySchema,
-  REPO_POLICY_PATH,
-  RepoPolicySchema,
-  mergeRepoPolicy,
-  type GatePolicy,
-} from "../config.js";
+import { GatePolicySchema, REPO_POLICY_PATH, type GatePolicy } from "../config.js";
+import { UNIVERSAL_PROTECTED_EXACT, UNIVERSAL_PROTECTED_PREFIXES, WorkflowV2 } from "../core/workflow.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,21 +22,6 @@ const HARDENED_GIT_FLAGS = [
   "-c",
   "protocol.file.allow=always",
 ];
-
-/**
- * Universal, language-agnostic protected paths.
- * Language/repo-specific paths (e.g. go.mod, package-lock.json, Makefile) belong in
- * `.agents/archangel.json` (`extraProtectedPaths`) or `archangel.yaml`.
- */
-const UNIVERSAL_PROTECTED_PREFIXES = [".github/", ".agents/"];
-const UNIVERSAL_PROTECTED_EXACT = new Set([
-  ".pre-commit-config.yaml",
-  ".pre-commit-config.yml",
-  ".gitattributes",
-  ".gitmodules",
-  "claude.md",
-  "agents.md",
-]);
 
 const SUPPORTED_LOCAL_HOOK_KEYS = new Set([
   "id",
@@ -570,18 +550,37 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         report.violations.push("missing .agents/archangel.json on base commit (failing closed)");
         return report;
       }
-      // Strict schema validation: typos like "testCommand" fail immediately instead of silently disabling tests.
-      RepoPolicySchema.parse(JSON.parse(repoPolicyRaw));
-      policy = mergeRepoPolicy(policy, [], undefined, repoPolicyRaw).gate;
-      if (policy.testFileGlobs.length === 0) {
-        report.violations.push(".agents/archangel.json on base must declare non-empty testFileGlobs");
-      }
-      if (!opts.skipTests && !policy.testCmd) {
-        report.violations.push(".agents/archangel.json on base must declare non-empty testCmd");
-      }
-      if (report.violations.length > 0) {
+      // Strict schema: a missing, unknown or out-of-kernel-bounds value fails closed; there is no other format.
+      let json: unknown;
+      try {
+        json = JSON.parse(repoPolicyRaw);
+      } catch (err) {
+        report.violations.push(`.agents/archangel.json on base is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
         return report;
       }
+      const parsed = WorkflowV2.safeParse(json);
+      if (!parsed.success) {
+        report.violations.push(
+          `.agents/archangel.json on base is not a valid workflow: ${parsed.error.issues
+            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+            .join("; ")}`,
+        );
+        return report;
+      }
+      const g = parsed.data.gate;
+      policy = GatePolicySchema.parse({
+        maxNonTestLines: g.maxNonTestLines,
+        maxTotalLines: g.maxTotalLines,
+        maxFiles: g.maxFiles,
+        extraProtectedPaths: g.protectedPaths,
+        testFileGlobs: g.testFileGlobs,
+        testDataGlobs: g.testDataGlobs,
+        testBuildCmd: g.testBuildCmd,
+        baseTestCmd: g.baseTestCmd,
+        testCmd: g.testCmd,
+        baseTestRuns: g.baseTestRuns,
+        headTestRuns: g.headTestRuns,
+      });
     }
 
     const baseRuns = opts.baseRunsOverride ?? policy.baseTestRuns;

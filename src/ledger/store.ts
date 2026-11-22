@@ -83,6 +83,9 @@ export class Ledger {
       if (!cols.some((c) => c.name === "owner_reply")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
       }
+      if (!cols.some((c) => c.name === "workflow_sha256")) {
+        this.db.exec("ALTER TABLE threads ADD COLUMN workflow_sha256 TEXT");
+      }
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
       }
@@ -193,6 +196,7 @@ export class Ledger {
     branchName?: string;
     phase?: Phase;
     mode?: Mode;
+    workflowSha256?: string | null;
     now?: number;
   }): ThreadRecord {
     const repo = input.repo ?? this.repo;
@@ -212,8 +216,8 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO threads (
-          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+          repo, issue_number, title, theme_label, body_sha256, phase_json, version, mode, branch_name, workflow_sha256, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -224,6 +228,7 @@ export class Ledger {
         JSON.stringify(phase),
         input.mode ?? "autonomous",
         branchName,
+        input.workflowSha256 ?? null,
         now,
         now,
       );
@@ -1571,6 +1576,7 @@ function mapThread(r: Record<string, unknown>): ThreadRecord {
       : [],
     ownerReply: r.owner_reply === null || r.owner_reply === undefined ? null : String(r.owner_reply),
     retryGrants: Number(r.retry_grants ?? 0),
+    workflowSha256: r.workflow_sha256 === null || r.workflow_sha256 === undefined ? null : String(r.workflow_sha256),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };

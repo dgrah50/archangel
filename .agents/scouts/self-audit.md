@@ -1,13 +1,6 @@
----
-name: self-audit
-schedule: daily
-maxProposals: 2
-includeMetrics: true
-skills: [general/factory-signals, general/bug-hunt, general/error-handling, typescript/async-and-promises, typescript/type-holes]
----
 Audit ONLY Archangel's non-kernel leaf modules (`src/core/doctor.ts`, `src/core/recap.ts`, `src/core/notifier.ts`, `src/core/logger.ts`, `src/core/studio.ts`, `src/handoff/paseo.ts`) for concrete, reproducible reliability or edge-case bugs.
 
-IMPORTANT: Never propose changes to protected Trust Kernel paths (`src/config.ts`, `src/env.ts`, `src/gate/**`, `src/broker/**`, `src/agents/**`, `src/github/**`, `src/ledger/**`, `src/cli/**`, `src/core/blockers.ts`, `src/core/thread-machine.ts`, `src/core/reconciler.ts`, `src/core/scout.ts`, `src/core/work-class.ts`, `src/core/onboard.ts`, `src/core/owner-reply.ts`, `src/core/metrics-block.ts`, `src/core/skills.ts`, `src/core/ui-server.ts`, `ui/**`, `skills/**`, `templates/**`, `workflows/**`, `bin/**`).
+IMPORTANT: Never propose changes to protected Trust Kernel paths (`src/config.ts`, `src/env.ts`, `src/gate/**`, `src/broker/**`, `src/agents/**`, `src/github/**`, `src/ledger/**`, `src/cli/**`, `src/core/blockers.ts`, `src/core/thread-machine.ts`, `src/core/reconciler.ts`, `src/core/scout.ts`, `src/core/work-class.ts`, `src/core/workflow.ts`, `src/core/workflow-load.ts`, `src/core/onboard.ts`, `src/core/owner-reply.ts`, `src/core/metrics-block.ts`, `src/core/skills.ts`, `src/core/ui-server.ts`, `ui/**`, `skills/**`, `templates/**`, `workflows/**`, `bin/**`).
 
 Only propose an issue if you can provide:
 1. **File & Symbol:** exact leaf file path and function/method name

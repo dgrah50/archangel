@@ -41,6 +41,8 @@ export interface ThreadRecord {
   ownerReply: string | null;
   /** Owner retries so far; each grants one more implement and one more revision Attempt. */
   retryGrants: number;
+  /** sha256 of the workflow file (`.agents/archangel.json`) in force when the Thread was created. */
+  workflowSha256: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -151,6 +153,7 @@ CREATE TABLE IF NOT EXISTS threads (
   implementer_vendors_json TEXT NOT NULL DEFAULT '[]',
   owner_reply TEXT,
   retry_grants INTEGER NOT NULL DEFAULT 0,
+  workflow_sha256 TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)

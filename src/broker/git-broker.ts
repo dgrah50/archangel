@@ -56,8 +56,6 @@ export interface GitBrokerOptions {
   extraProtectedPaths?: string[];
   testFileGlobs?: string[];
   testDataGlobs?: string[];
-  testBuildCmd?: string;
-  testCmd?: string;
   enableLocalGate?: boolean;
   localGateSkipTests?: boolean;
   localGateTimeoutMs?: number;
@@ -83,8 +81,6 @@ export class GitBroker {
   readonly extraProtectedPaths: string[];
   readonly testFileGlobs: string[];
   readonly testDataGlobs: string[];
-  readonly testBuildCmd?: string;
-  readonly testCmd?: string;
   readonly enableLocalGate: boolean;
   readonly localGateSkipTests: boolean;
   readonly localGateTimeoutMs: number;
@@ -99,8 +95,6 @@ export class GitBroker {
     this.extraProtectedPaths = opts.extraProtectedPaths ?? [];
     this.testFileGlobs = opts.testFileGlobs ?? [];
     this.testDataGlobs = opts.testDataGlobs ?? [];
-    this.testBuildCmd = opts.testBuildCmd;
-    this.testCmd = opts.testCmd;
     this.enableLocalGate = opts.enableLocalGate ?? false;
     this.localGateSkipTests = opts.localGateSkipTests ?? false;
     this.localGateTimeoutMs = opts.localGateTimeoutMs ?? 180_000;
@@ -260,7 +254,6 @@ export class GitBroker {
   async runLocalGate(
     baseSha: string,
     headSha: string,
-    bounds?: ValidationBounds,
     workClass?: WorkClass,
   ): Promise<LocalGateReport> {
     return runGate({
@@ -268,16 +261,6 @@ export class GitBroker {
       repoDir: this.bareRepoPath,
       baseRef: baseSha,
       headRef: headSha,
-      policy: {
-        maxNonTestLines: bounds?.maxNonTestLines ?? this.maxNonTestLines,
-        maxTotalLines: bounds?.maxTotalLines ?? this.maxTotalLines,
-        maxFiles: bounds?.maxFiles ?? this.maxFiles,
-        extraProtectedPaths: bounds?.extraProtectedPaths ?? this.extraProtectedPaths,
-        testFileGlobs: bounds?.testFileGlobs ?? this.testFileGlobs,
-        testDataGlobs: bounds?.testDataGlobs ?? this.testDataGlobs,
-        testBuildCmd: bounds?.testBuildCmd ?? this.testBuildCmd,
-        testCmd: bounds?.testCmd ?? this.testCmd,
-      },
       policyFromBase: true,
       skipTests: this.localGateSkipTests,
       baseRunsOverride: 1,
@@ -392,7 +375,7 @@ export class GitBroker {
 
     let gateReport: LocalGateReport | undefined;
     if (this.enableLocalGate && protectedViolations.length === 0) {
-      gateReport = await this.runLocalGate(effectiveBase, headSha, bounds, workClass);
+      gateReport = await this.runLocalGate(effectiveBase, headSha, workClass);
     }
 
     return {

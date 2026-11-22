@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import type { GitBroker } from "../broker/git-broker.js";
 import type { ArchangelConfig, ProviderEntry } from "../config.js";
@@ -11,29 +10,19 @@ import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import type { Logger } from "./logger.js";
 import { METRICS_WINDOW_DAYS, buildMetricsBlock } from "./metrics-block.js";
-import { SKILL_REF_RE, resolveSkills, type Skill } from "./skills.js";
+import { resolveSkills, type Skill } from "./skills.js";
+import type { EffectiveScout, OkWorkflow } from "./workflow.js";
 
-export const ScoutFrontmatterSchema = z
-  .object({
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,48}$/, "name must be a lowercase slug"),
-    schedule: z.enum(["daily", "manual"]).default("manual"),
-    maxProposals: z.number().int().min(1).max(3).default(2),
-    autoPromote: z.boolean().default(false),
-    /** Opt-in: the prompt gets sanitized factory aggregates (numbers and fixed enums) for this repo. */
-    includeMetrics: z.boolean().default(false),
-    skills: z.array(z.string().regex(SKILL_REF_RE, "skill must be '<folder>/<name>' or '<folder>/*'")).max(12).default([]),
-  })
-  .strict();
-
+/** A Scout as the runner needs it: the workflow file's spec resolved with its prompt body and skills. */
 export interface ScoutWorkflow {
   name: string;
-  filePath: string;
   schedule: "daily" | "manual";
   maxProposals: number;
-  /** Owner opt-in (repo file under protected `.agents/`): proposals may skip the owner's label. */
+  /** Effective promotion: the repo asked for `auto` and neither the host cap nor a revocation overrode it. */
   autoPromote: boolean;
   includeMetrics: boolean;
-  fileSha256: string;
+  /** `trustHash` of this Scout's own entry plus prompt; recorded on each proposal and keyed by revocation. */
+  trustHash: string;
   skills: Skill[];
   prompt: string;
 }
@@ -78,30 +67,16 @@ export function normalizeTitleFp(title: string): string {
   return crypto.createHash("sha256").update(norm, "utf8").digest("hex").slice(0, 12);
 }
 
-/**
- * Parses `.agents/scouts/*.md` YAML frontmatter + Markdown prompt body strictly.
- */
-export function parseScoutMarkdown(raw: string, filePath: string): ScoutWorkflow {
-  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
-  if (!match) {
-    throw new Error(`Scout file '${filePath}' missing YAML frontmatter delimited by ---`);
-  }
-  const fm = ScoutFrontmatterSchema.parse(parseYaml(match[1]!));
-  const prompt = match[2]!.trim();
-  const skills = resolveSkills(fm.skills);
-  if (!prompt && skills.length === 0) {
-    throw new Error(`Scout file '${filePath}' needs a prompt body or at least one skill`);
-  }
+export function toScoutWorkflow(scout: EffectiveScout): ScoutWorkflow {
   return {
-    name: fm.name,
-    filePath,
-    schedule: fm.schedule,
-    maxProposals: fm.maxProposals,
-    autoPromote: fm.autoPromote,
-    includeMetrics: fm.includeMetrics,
-    fileSha256: crypto.createHash("sha256").update(raw).digest("hex"),
-    skills,
-    prompt,
+    name: scout.name,
+    schedule: scout.schedule,
+    maxProposals: scout.maxProposals,
+    autoPromote: scout.promotionEffective.value === "auto",
+    includeMetrics: scout.includeMetrics,
+    trustHash: scout.trustHash,
+    skills: resolveSkills(scout.skills),
+    prompt: scout.prompt,
   };
 }
 
@@ -331,19 +306,6 @@ export function buildScoutPrompt(workflow: ScoutWorkflow, metricsBlock?: string)
   ].join("\n");
 }
 
-export async function loadScoutsFromMain(broker: GitBroker, mainSha: string): Promise<ScoutWorkflow[]> {
-  const files = (await broker.listFilesAtRef(mainSha, ".agents/scouts")).filter((f) =>
-    f.endsWith(".md"),
-  );
-  const workflows: ScoutWorkflow[] = [];
-  for (const file of files.sort()) {
-    const raw = await broker.readFileAtRef(mainSha, file);
-    if (!raw) continue;
-    workflows.push(parseScoutMarkdown(raw, file));
-  }
-  return workflows;
-}
-
 export interface ScoutRunSummary {
   scoutName: string;
   status: "dry_run" | "skipped_cap" | "skipped_open_limit" | "ran";
@@ -357,6 +319,7 @@ export async function runScoutsForProject(opts: {
   ledger: Ledger;
   github: GitHubClient;
   broker: GitBroker;
+  workflow: OkWorkflow;
   mainSha: string;
   onlyScheduled?: boolean;
   filterName?: string;
@@ -366,7 +329,7 @@ export async function runScoutsForProject(opts: {
   now?: number;
 }): Promise<ScoutRunSummary[]> {
   const now = opts.now ?? Date.now();
-  const workflows = await loadScoutsFromMain(opts.broker, opts.mainSha);
+  const workflows = opts.workflow.scouts.map(toScoutWorkflow);
   const selected = workflows.filter((w) => {
     if (opts.filterName && w.name !== opts.filterName) return false;
     if (opts.onlyScheduled && w.schedule !== "daily") return false;
@@ -495,20 +458,19 @@ export async function runScoutsForProject(opts: {
         });
         const autoPromote =
           wf.autoPromote &&
-          !opts.ledger.isScoutAutoPromoteRevoked(wf.name, wf.fileSha256) &&
           opts.ledger.countRecentAutoPromotions(now) < opts.config.scouts.maxAutoPromotionsPerDay;
         opts.ledger.recordScoutProposal({
           issueNumber: created.number,
           scoutName: wf.name,
           contentSha256: scoutContentHash(created.title, created.body),
           titleFp,
-          fileSha256: wf.fileSha256,
+          fileSha256: wf.trustHash,
           autoPromoted: autoPromote,
           now,
         });
         if (autoPromote) {
           await opts.github.addLabels(created.number, [opts.config.labels.readyForAgent]);
-          opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { fileSha256: wf.fileSha256.slice(0, 12) }, now);
+          opts.ledger.appendAudit("scout/auto_promoted", created.number, wf.name, { trustHash: wf.trustHash.slice(0, 12) }, now);
         }
         filedIssues.push(created.number);
         openTrackedCount++;
