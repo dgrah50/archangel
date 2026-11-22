@@ -35,7 +35,7 @@ describe("app shell", () => {
   const state: Feed<ReturnType<typeof buildUiState>> = { data: buildUiState(l, NOW), at: NOW, error: null };
   const wfs = { data: null, at: null, error: null };
   const none = { data: null, at: null, error: null };
-  const view = (route: Parameters<typeof parseRoute>[0]) => html(createElement(AppView, { route: parseRoute(route), state, workflows: wfs, settings: none, host: none, thread: none, logs: none, now: NOW, onRetry: () => {} }));
+  const view = (route: Parameters<typeof parseRoute>[0]) => html(createElement(AppView, { route: parseRoute(route), state, workflows: wfs, evals: none, settings: none, host: none, thread: none, logs: none, now: NOW, onRetry: () => {} }));
 
   it("renders nav, daemon chip and the active page marker", () => {
     const out = view("#/");
