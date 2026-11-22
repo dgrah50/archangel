@@ -190,6 +190,27 @@ describe("promoting slices one at a time", () => {
   });
 });
 
+describe("partial promotion with a failing chain", () => {
+  it("records the created slices even when chaining them also fails", async () => {
+    const { ledger, calls, base } = setup();
+    let creates = 0;
+    const runner: OnboardRunner = {
+      async run(_cmd, args) {
+        calls.push(args);
+        if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ title: PITCH.title, body: BODY, state: "OPEN", labels: [{ name: "agent-pitch" }] });
+        if (args[0] === "issue" && args[1] === "create") {
+          if (++creates === 2) throw new Error("gh: network down");
+          return "https://github.com/acme/app/issues/100\n";
+        }
+        if (args[0] === "issue" && args[1] === "edit") throw new Error("gh: edit failed");
+        return "";
+      },
+    };
+    await expect(promotePitch(runner, ledger, { ...base, yes: true, chain: true, confirm: async () => true })).rejects.toThrow(/edit failed/);
+    expect(ledger.getPitch(40)!.state).toEqual({ kind: "partially_promoted", promotedSlices: [0], totalSlices: 2 });
+  });
+});
+
 describe("chained slices", () => {
   it("--chain records slice N waiting on slice N-1 and applies ready-for-agent only after the order is recorded", async () => {
     const { ledger, runner, calls, base } = setup();
