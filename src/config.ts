@@ -201,6 +201,11 @@ export function providerToVendor(provider: CliProvider): ReviewerVendor {
   return "anthropic";
 }
 
+/** The id Paseo knows a CLI provider by. */
+export function providerToPaseo(provider: CliProvider): string {
+  return provider === "agy" ? "antigravity" : provider;
+}
+
 /** `owner/name` as GitHub allows it. No spaces or URL metacharacters (slugs are interpolated into REST paths), and the name is never `.` or `..`. */
 export const REPO_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
 

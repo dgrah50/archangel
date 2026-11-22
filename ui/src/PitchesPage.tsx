@@ -1,5 +1,7 @@
 import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
 import { useEffect, useState } from "react";
+import { isMeasured } from "../../src/core/pitch.js";
+import { diagramRows } from "../../src/core/pitch-diagram.js";
 import type { PitchAttachment, PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
 import { CopyCommand, LinkButton, Page, PageHeadline, Ref, Section } from "./page";
@@ -134,6 +136,8 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
         {p.title}
       </Text>
       {row.attachments.length > 0 ? <Pictures items={row.attachments} /> : null}
+      {row.pitch.changeDiagram ? <ChangeDiagramBlock diagram={row.pitch.changeDiagram} /> : null}
+      {row.pitch.estimates.length > 0 ? <Estimates items={row.pitch.estimates} /> : null}
       <TryIt row={row} d={d} />
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
         <Flex direction="column" gap="4" flex="1" minW="0">
@@ -206,6 +210,48 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
           </Text>
         </Flex>
       </Flex>
+    </Section>
+  );
+}
+
+const CHANGE_WORD = { add: "added", remove: "removed", modify: "changed", same: "unchanged" } as const;
+const CHANGE_COLOR = { add: "green.fg", remove: "red.fg", modify: "fg", same: "fg.subtle" } as const;
+
+/** The model's nodes and edges, drawn here as an indented tree of React text. Nothing from the pitch is ever markup. */
+function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"]["changeDiagram"]> }) {
+  return (
+    <Section gap="2">
+      <Text textStyle="body13" color="fg.subtle">What changes</Text>
+      <Box borderLeftWidth="1px" borderLeftColor="border" pl="3">
+        {diagramRows(diagram).map((r, i) => (
+          <Flex key={i} gap="3" align="baseline">
+            <Text textStyle="meta" color={CHANGE_COLOR[r.change]} w="76px" flexShrink={0}>{CHANGE_WORD[r.change]}</Text>
+            <Text textStyle="body13" color={r.change === "same" ? "fg.muted" : "fg"} pl={`${r.depth * 20}px`}>
+              {r.label}
+              {r.repeat ? <Text as="span" color="fg.subtle"> (shown above)</Text> : null}
+            </Text>
+          </Flex>
+        ))}
+      </Box>
+    </Section>
+  );
+}
+
+/** Numbers the pitch claims. Each says "Estimate, not measured" unless it is a measured number that cites a repo file. */
+function Estimates({ items }: { items: PitchRow["pitch"]["estimates"] }) {
+  return (
+    <Section gap="2">
+      <Text textStyle="body13" color="fg.subtle">Numbers it claims</Text>
+      {items.map((e, i) => (
+        <Box key={i}>
+          <Flex gap="3" align="baseline" wrap="wrap">
+            <Text textStyle="body13" color="fg" fontWeight="medium">{e.metric}</Text>
+            <Text textStyle="body13" color="fg">{e.before === null ? "" : `${e.before} -> `}{e.after} {e.unit}</Text>
+            <Text textStyle="meta" color={isMeasured(e) ? "fg.muted" : "fg.subtle"}>{isMeasured(e) ? "Measured" : "Estimate, not measured"}</Text>
+          </Flex>
+          <Text textStyle="meta" color="fg.muted">Method: {e.method}{isMeasured(e) ? <> Evidence: <Text as="span" textStyle="ref">{e.source}</Text></> : null}</Text>
+        </Box>
+      ))}
     </Section>
   );
 }

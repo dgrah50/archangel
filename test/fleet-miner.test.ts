@@ -6,7 +6,8 @@ import { describe, expect, it } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { buildFleetMinerBlock, readSeeds, shortSha } from "../src/core/fleet-miner.js";
-import { runScoutsForProject, scanForSecrets } from "../src/core/scout.js";
+import { scanForSecrets } from "../src/core/secrets.js";
+import { runScoutsForProject } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
 import { okWorkflow } from "./helpers/workflow.js";
@@ -78,7 +79,7 @@ describe("fleet PR-Miner", () => {
       type: "feature", title: "Skill: reuse the dead-code check", problem: "Recurring cleanup commits.",
       evidence: [ev(note), { ...ev("util.ts repeats it"), file: "util.ts" }], proposal: "Add a Skill.", smallestVersion: "One Skill file.",
       optionsConsidered: ["Do nothing: cheap", "Add the Skill"], slices: [{ title: "Add Skill", acceptance: "It exists." }],
-      measurement: "", figures: [], recommendation: "do", size: "S",
+      measurement: "", figures: [], changeDiagram: null, estimates: [], recommendation: "do", size: "S",
     });
     const run = (answer: unknown, now: number) =>
       runScoutsForProject({

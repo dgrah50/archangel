@@ -1,5 +1,6 @@
 import { execInGroup, LocalProvider } from "../compute/local.js";
 import type { ComputeProvider, ExecResult, ExecSpec } from "../compute/provider.js";
+import { scanForSecrets } from "./secrets.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { tryParseJson } from "./json.js";
@@ -110,26 +111,6 @@ export function toScoutWorkflow(scout: EffectiveScout): ScoutWorkflow {
     skills: resolveSkills(scout.skills),
     prompt: scout.prompt,
   };
-}
-
-const SECRET_PATTERNS: Array<{ name: string; re: RegExp }> = [
-  { name: "private_key_header", re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
-  { name: "github_token", re: /\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },
-  { name: "openai_anthropic_key", re: /\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b/ },
-  { name: "slack_token", re: /\bxox[bp]-[A-Za-z0-9-]{16,}\b/ },
-  { name: "aws_access_key", re: /\bAKIA[0-9A-Z]{16}\b/ },
-  { name: "bearer_secret", re: /\bAuthorization:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._+/=-]{20,}/i },
-];
-
-/**
- * Opus H1 exfiltration defense: refuses to publish any Scout proposal containing
- * private keys, API tokens, or high-entropy credential material.
- */
-export function scanForSecrets(text: string): string | null {
-  for (const p of SECRET_PATTERNS) {
-    if (p.re.test(text)) return p.name;
-  }
-  return null;
 }
 
 /**

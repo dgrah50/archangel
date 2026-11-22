@@ -24,6 +24,7 @@
       "src/core/thread-machine.ts",
       "src/core/reconciler.ts",
       "src/core/scout.ts",
+      "src/core/secrets.ts",
       "src/core/spawn-group.ts",
       "src/compute/**",
       "templates/**",
@@ -88,7 +89,8 @@
       "src/core/signal-kinds.ts",
       "src/core/signal-rules.ts",
       "src/core/poc-machine.ts",
-      "src/core/pitch-poc.ts"
+      "src/core/pitch-poc.ts",
+      "src/core/pitch-diagram.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
