@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { awakeTimeout } from "../core/spawn-group.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import type { WriterRole } from "../config.js";
@@ -105,9 +106,9 @@ export class ClaudeSdkImplementer implements Implementer {
       ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
     };
 
-    const timer = setTimeout(() => {
+    const cancelTimeout = awakeTimeout(input.timeoutMs, () => {
       input.abortController.abort(new Error(`Implement attempt timed out after ${input.timeoutMs}ms`));
-    }, input.timeoutMs);
+    });
 
     const logStream = fs.createWriteStream(transcriptPath, { flags: "a" });
     let summary = "";
@@ -172,7 +173,7 @@ export class ClaudeSdkImplementer implements Implementer {
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      cancelTimeout();
       logStream.end();
       fs.rmSync(attemptTempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
