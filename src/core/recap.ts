@@ -76,6 +76,16 @@ export function renderRecapComment(input: {
     "**On head (expected to pass):**",
     ...fencedOutput(input.gateProof?.head_output),
   );
+  const junit = input.gateProof?.junit;
+  if (junit) {
+    lines.push(
+      "",
+      "**Test cases matched in the JUnit report** (from the new test files):",
+      ...(junit.base_failed.length > 0 ? ["Failed on base:", ...fencedOutput(junit.base_failed.join("\n"))] : []),
+      "Passed on head:",
+      ...fencedOutput(junit.head_passed.join("\n")),
+    );
+  }
 
   if (reviews.length > 0) {
     lines.push("", "#### Independent Reviews");

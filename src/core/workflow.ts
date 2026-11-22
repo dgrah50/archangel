@@ -44,6 +44,11 @@ export const KERNEL = {
 } as const;
 
 const Glob = z.string().min(1).max(200);
+/** A repo-relative glob for the JUnit report: no absolute paths, no `..`, no backslashes, only path-ish characters. */
+const SafeRelativeGlob = Glob.refine(
+  (g) => /^[\w@+./*?-]+$/.test(g) && !g.startsWith("/") && !g.split("/").includes(".."),
+  "junitReport must be a relative path glob inside the repo (no '..', no absolute path)",
+);
 const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,48}$/);
 
 export const ScoutSpec = z
@@ -75,6 +80,7 @@ export const Workflow = z
         testCmd: z.string().min(1),
         baseTestCmd: z.string().min(1).optional(),
         testBuildCmd: z.string().min(1).optional(),
+        junitReport: SafeRelativeGlob.optional(),
         protectedPaths: z.array(Glob).default([]),
       })
       .strict(),
@@ -191,6 +197,24 @@ export type EffectiveWorkflow =
  */
 export type OkWorkflow = Extract<EffectiveWorkflow, { status: "ok" }>;
 
+/** The one mapping from the workflow file's `gate` block to the policy the Broker and the CI Gate both enforce. */
+export function toGatePolicy(g: Workflow["gate"]): GatePolicy {
+  return {
+    maxNonTestLines: g.maxNonTestLines,
+    maxTotalLines: g.maxTotalLines,
+    maxFiles: g.maxFiles,
+    extraProtectedPaths: g.protectedPaths,
+    testFileGlobs: g.testFileGlobs,
+    testDataGlobs: g.testDataGlobs,
+    testBuildCmd: g.testBuildCmd,
+    baseTestCmd: g.baseTestCmd,
+    testCmd: g.testCmd,
+    junitReport: g.junitReport,
+    baseTestRuns: g.baseTestRuns,
+    headTestRuns: g.headTestRuns,
+  };
+}
+
 export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInput): EffectiveWorkflow {
   const base = { repo: repoIn.repo, mainSha: repoIn.mainSha };
   if (repoIn.fileRaw === null || !repoIn.fileRaw.trim()) {
@@ -213,19 +237,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     return { ...base, status: "invalid", error: `scout '${missingPrompt.name}' has no .agents/scouts/${missingPrompt.name}.md`, fileSha256 };
   }
 
-  const gate: GatePolicy = {
-    maxNonTestLines: wf.gate.maxNonTestLines,
-    maxTotalLines: wf.gate.maxTotalLines,
-    maxFiles: wf.gate.maxFiles,
-    extraProtectedPaths: wf.gate.protectedPaths,
-    testFileGlobs: wf.gate.testFileGlobs,
-    testDataGlobs: wf.gate.testDataGlobs,
-    testBuildCmd: wf.gate.testBuildCmd,
-    baseTestCmd: wf.gate.baseTestCmd,
-    testCmd: wf.gate.testCmd,
-    baseTestRuns: wf.gate.baseTestRuns,
-    headTestRuns: wf.gate.headTestRuns,
-  };
+  const gate = toGatePolicy(wf.gate);
 
   const declaredLanding = wf.landing.bugfix;
   const landingBugfix: Effective<"owner" | "autonomous"> =
@@ -294,6 +306,10 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   }
   for (const k of ["testFileGlobs", "testDataGlobs", "testCmd", "baseTestCmd", "testBuildCmd"] as const) {
     if (!eq(prev.gate[k], next.gate[k])) add(`gate.${k}`, "changed");
+  }
+  // Setting a report path adds a stricter red-on-base proof; removing it falls back to exit codes only.
+  if (prev.gate.junitReport !== next.gate.junitReport) {
+    add("gate.junitReport", !prev.gate.junitReport ? "tighten" : !next.gate.junitReport ? "loosen" : "changed");
   }
   setChange("gate.protectedPaths", prev.gate.protectedPaths, next.gate.protectedPaths, add);
   setChange("requiredChecks", prev.requiredChecks, next.requiredChecks, add);
