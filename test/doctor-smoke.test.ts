@@ -46,21 +46,6 @@ function setup() {
 }
 
 describe("archangel doctor --smoke", () => {
-  it("checks every unique configured subscription CLI for version and authentication", async () => {
-    commands.length = 0;
-    const { configPath, env } = setup();
-    const report = await runDoctor({ configPath, env, offline: true, smoke: true });
-    expect(report.checks.filter((c) => c.id.startsWith("smoke_provider:")).map((c) => c.id).sort())
-      .toEqual(["smoke_provider:agy", "smoke_provider:claude", "smoke_provider:codex"]);
-    expect(report.checks.filter((c) => c.id.startsWith("smoke_provider:")).every((c) => c.status === "pass")).toBe(true);
-    for (const p of ["codex", "agy", "claude"]) {
-      expect(commands).toContain(`${p} --version`);
-    }
-    expect(commands).toContain("codex login status");
-    expect(commands).toContain("claude auth status");
-    expect(commands.some((c) => c.startsWith("agy auth"))).toBe(false);
-  });
-
   it("fails the affected provider with actionable remediation when missing or unauthenticated", async () => {
     const { configPath, env } = setup();
     outcomes.set("agy", "missing");

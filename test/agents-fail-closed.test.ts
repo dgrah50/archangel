@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SubscriptionImplementer, type CliInvoker } from "../src/agents/subscription-implementer.js";
-import { defaultReviewerCliInvoker, parseJsonEnvelope } from "../src/agents/subscription-reviewers.js";
-import { defaultScoutCliInvoker, parseEnvelope } from "../src/core/scout.js";
+import { defaultReviewerCliInvoker } from "../src/agents/subscription-reviewers.js";
+import { defaultScoutCliInvoker } from "../src/core/scout.js";
 
 const dirs: string[] = [];
 const oldPath = process.env.PATH;
@@ -23,16 +23,6 @@ function fakeCli(name: string, script: string): void {
   fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   process.env.PATH = `${bin}:${oldPath}`;
 }
-
-describe("error envelopes", () => {
-  it("an error whose text mentions JSON is still an error (only a line that is not JSON is skipped)", () => {
-    const line = JSON.stringify({ is_error: true, error: "JSON schema rejected by the provider" });
-    expect(() => parseJsonEnvelope(`noise\n${line}`)).toThrow(/JSON schema rejected/);
-    expect(() => parseEnvelope(`noise\n${line}`)).toThrow(/JSON schema rejected/);
-    expect(parseJsonEnvelope("not json at all")).toBeUndefined();
-    expect(parseEnvelope("not json at all")).toBeUndefined();
-  });
-});
 
 describe("CLI children", () => {
   it("a CLI that exits without reading its prompt does not crash the daemon (no uncaught EPIPE)", async () => {

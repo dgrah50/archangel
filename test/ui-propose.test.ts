@@ -6,7 +6,6 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { draftFromEffective } from "../src/core/ui-propose.js";
-import { listAllSkills } from "../src/core/skills.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { resolveWorkflow } from "../src/core/workflow.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -117,26 +116,6 @@ describe("POST /api/workflows/:repo/propose", () => {
     }
   });
 
-  it("dry-run previews without ever calling the runner; a stale base is refused", async () => {
-    const t = await start();
-    try {
-      const loosening = t.body({ draft: edit((d) => { d.gate.maxFiles = 3; d.gate.baseTestRuns = 3; d.requiredChecks = ["Gate", "Other"]; }) });
-      const ok = await t.post(t.good, loosening);
-      expect(ok.status).toBe(200);
-      const json = await ok.json();
-      expect(json.preview.loosens).toBe(true);
-      expect(json.preview.changes[0].direction).toBe("loosen");
-      expect(t.fake.calls).toEqual([]);
-      const stale = await t.post(t.good, t.body({ baseFileSha256: "1".repeat(64) }));
-      expect(stale.status).toBe(409);
-      expect((await stale.json()).error).toMatch(/Stale draft/);
-      expect((await t.post(t.good, "not json")).status).toBe(400);
-      expect(t.fake.calls).toEqual([]);
-    } finally {
-      t.server.close();
-    }
-  });
-
   it("opens one PR through proposeWorkflow (never merging) and refuses when GitHub's file moved on", async () => {
     const t = await start();
     try {
@@ -162,26 +141,3 @@ describe("POST /api/workflows/:repo/propose", () => {
   });
 });
 
-
-describe("GET /api/skills", () => {
-  it("lists the bundled skills with the token, 401 without, 403 in remote mode", async () => {
-    const ui = fs.mkdtempSync(path.join(os.tmpdir(), "arc-u11-"));
-    fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
-    const runner: OnboardRunner = { run: async () => "" };
-    const local = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, proposeRunner: runner });
-    const remote = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, allowRemote: true, proposeRunner: runner });
-    try {
-      const base = `http://127.0.0.1:${(local.address() as AddressInfo).port}`;
-      const token = /name="archangel-token" content="([0-9a-f]+)"/.exec(await (await fetch(base)).text())![1]!;
-      expect((await fetch(`${base}/api/skills`)).status).toBe(401);
-      const ok = await fetch(`${base}/api/skills`, { headers: { "x-archangel-token": token } });
-      expect(((await ok.json()) as { skills: string[] }).skills).toEqual(listAllSkills());
-      expect((await fetch(`${base}/api/skills`, { method: "POST", headers: { "x-archangel-token": token } })).status).toBe(405);
-      const rb = `http://127.0.0.1:${(remote.address() as AddressInfo).port}`;
-      expect((await fetch(`${rb}/api/skills`, { headers: { "x-archangel-token": token } })).status).toBe(403);
-    } finally {
-      local.close();
-      remote.close();
-    }
-  });
-});

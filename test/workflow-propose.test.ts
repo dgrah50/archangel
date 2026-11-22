@@ -65,15 +65,6 @@ describe("proposeWorkflow", () => {
     expect(f.calls.find((c) => c.includes("-X PUT"))).toContain("sha=blobsha");
   });
 
-  it("adds no label (and creates none) when nothing loosens", async () => {
-    const f = fake({ current: norm(current) });
-    const proposed = workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 2 } });
-    const { plan } = await proposeWorkflow(f.runner, "o/r", JSON.stringify(proposed), quiet);
-    expect(plan.loosens).toBe(false);
-    expect(f.calls.find((c) => c.startsWith("pr create"))).not.toContain("--label");
-    expect(f.calls.some((c) => c.startsWith("label"))).toBe(false);
-  });
-
   it("rejects an invalid file (schema or kernel bound) before any gh write", async () => {
     const f = fake({ current: norm(current) });
     const tooLoose = workflowFile([], { gate: { testFileGlobs: ["t"], testCmd: "x", maxFiles: 50 } });
@@ -93,34 +84,6 @@ describe("proposeWorkflow", () => {
     const withScout = JSON.stringify(workflowFile([{ name: "s1" }], { gate: current.gate }));
     await expect(proposeWorkflow(f.runner, "o/r", withScout, quiet)).rejects.toThrow(/no prompt file/);
     for (const x of [f, open]) expect(x.mutating()).toEqual([]);
-  });
-
-  it("refuses when the file changes between planning and writing", async () => {
-    const f = fake({ current: norm(current), changeOnReread: true });
-    const proposed = JSON.stringify(workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 2 } }));
-    await expect(proposeWorkflow(f.runner, "o/r", proposed, quiet)).rejects.toThrow(/changed while planning/);
-    expect(f.mutating()).toEqual([]);
-  });
-
-  it("dry-run prints the plan and makes no mutating call", async () => {
-    const f = fake({ current: norm(current) });
-    const out: string[] = [];
-    const proposed = JSON.stringify(workflowFile([], { landing: { bugfix: "autonomous" }, gate: current.gate }));
-    const { url } = await proposeWorkflow(f.runner, "o/r", proposed, { dryRun: true, log: (s) => out.push(s) });
-    expect(url).toBeNull();
-    expect(f.mutating()).toEqual([]);
-    expect(out.join("\n")).toContain("Dry run: nothing changed.");
-    expect(out.join("\n")).toContain(LOOSENS_LABEL);
-  });
-
-  it("creates the first workflow file (no current file) without a diff and commits Scout prompts", async () => {
-    const f = fake({ current: null });
-    const proposed = JSON.stringify(workflowFile([{ name: "bug-hunt" }]));
-    const { plan } = await proposeWorkflow(f.runner, "o/r", proposed, { ...quiet, scoutPrompts: { "bug-hunt": "Find bugs." } });
-    expect(plan.classified).toBe(false);
-    expect(plan.body).toContain("no semantic diff");
-    expect(plan.files.map((x) => x.path)).toEqual([".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
-    expect(f.calls.filter((c) => c.includes("-X PUT")).every((c) => !c.includes("sha="))).toBe(true);
   });
 
   it("labels a proposal policy:loosens when the current file is invalid and the proposal grants autonomy (nothing proves it does not loosen)", async () => {

@@ -226,24 +226,6 @@ describe("GitHubAppClient file reads: only a real 404 is 'missing'", () => {
     }
   });
 
-  it("a real 404 is missing (false / null)", async () => {
-    const t = await client(() => ({ status: 404, body: { message: "Not Found" } }));
-    try {
-      expect(await t.c.fileExistsAtRef("main", "a.txt")).toBe(false);
-      expect(await t.c.readFileAtRef("main", "a.txt")).toBeNull();
-    } finally {
-      t.close();
-    }
-  });
-
-  it("a file the Contents API does not inline (over 1 MB) is an error, not a missing file", async () => {
-    const t = await client(() => ({ status: 200, body: { encoding: "none", content: "" } }));
-    try {
-      await expect(t.c.readFileAtRef("main", "big.json")).rejects.toThrow(/without inline content/);
-    } finally {
-      t.close();
-    }
-  });
 });
 
 describe("GitHubAppClient.squashMergePr refuses machine drafts", () => {

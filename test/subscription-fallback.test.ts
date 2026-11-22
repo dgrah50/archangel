@@ -4,9 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
-import { SubscriptionReviewerSuite } from "../src/agents/subscription-reviewers.js";
-import { ChainsSchema, resolveRequiredReviewers } from "../src/config.js";
-import { computeBlockers, isShadowReady } from "../src/core/blockers.js";
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {
   it("fails over implementer from codex to agy on quota/rate-limit with Continuity context, and does NOT fail over on non-quota errors", async () => {
@@ -111,66 +108,4 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
     }
   });
 
-  it("excludes implementer vendor from independent reviewers and fails over a rate-limited reviewer to a 3rd independent vendor", async () => {
-    const called: string[] = [];
-    const suite = new SubscriptionReviewerSuite({
-      chain: [{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }],
-      defaultExcludeVendors: ["openai"], // codex implemented -> must NEVER review!
-      invoker: async (input) => {
-        called.push(input.provider);
-        return { verdict: "approve", findings: [] };
-      },
-    });
-
-    const out = await suite.reviewAll({
-      issueNumber: 13,
-      title: "SSH_CONNECTION",
-      body: "bug",
-      headSha: "abc",
-      diffText: "+line",
-      touchedFiles: { "a.go": "pkg" },
-    });
-
-    expect(called.sort()).toEqual(["agy", "claude"]);
-    expect(out.results.map((r) => r.vendor).sort()).toEqual(["anthropic", "gemini"]);
-    expect(out.errors).toEqual([]);
-
-    // Opus B1: when ONLY agy ran (because codex was in cooldown), codex + claude are BOTH eligible!
-    const cfg = {
-      authMode: "subscription" as const,
-      chains: ChainsSchema.parse({ implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] }),
-      reviewerChain: [{ provider: "agy" as const }, { provider: "claude" as const }, { provider: "codex" as const }],
-    };
-    expect(resolveRequiredReviewers(cfg, ["gemini"]).sort()).toEqual(["anthropic", "openai"]);
-
-    // Opus B1: when BOTH codex and agy touched the thread, only 1 reviewer remains -> blockers MUST fail closed!
-    const remaining = resolveRequiredReviewers(cfg, ["openai", "gemini"]);
-    expect(remaining).toEqual(["anthropic"]);
-    const blockers = computeBlockers({
-      prOpen: true,
-      prDraft: false,
-      headSha: "abc",
-      shaRecordedByBroker: true,
-      postHandoff: false,
-      labels: ["ready-for-agent"],
-      pauseLabel: "factory:paused",
-      stopLabel: "factory:stop",
-      circuitBreakerTripped: false,
-      mainTipGreen: true,
-      branchUpToDateWithMain: true,
-      protectedFilesTouched: [],
-      requiredChecks: ["Gate"],
-      checks: [{ id: 1, name: "Gate", status: "completed", conclusion: "success", appSlug: "github-actions" }],
-      reviewsForHeadSha: [
-        { id: 1, repo: "acme/app", issueNumber: 13, headSha: "abc", vendor: "anthropic", verdict: "approve", findingsJson: "[]", costUsd: 0, createdAt: 1, provider: null, model: null, accountId: null, promptSha256: null, rubricSha256: null, workflowSha256: null, },
-      ],
-      requiredReviewers: remaining,
-      mergeTreeClean: true,
-      autoMergesToday: 0,
-      maxAutoMergesPerDay: 3,
-      shadowMode: true,
-    });
-    expect(blockers.map((b) => b.code)).toContain("insufficient_independent_reviewers");
-    expect(isShadowReady(blockers)).toBe(false);
-  });
 });

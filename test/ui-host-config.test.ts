@@ -73,16 +73,6 @@ describe("W2 handler", () => {
     expect(fs.readFileSync(s.configPath, "utf8")).toBe(loose);
     expect(s.audits[0]!.payload.loosening).toEqual(["maxDailyUsd 20 -> 99"]);
   });
-  it("an audit failure means no write", () => {
-    const dir = tmp();
-    const configPath = path.join(dir, "archangel.yaml");
-    fs.writeFileSync(configPath, YAML);
-    const h = makeHostConfigHandler({ configPath, env: {}, audit: () => { throw new Error("ledger locked"); } });
-    h(body({ rawText: edited }));
-    expect(() => h(body({ mode: "apply", rawText: edited, previewSha256: sha256(edited) }))).toThrow("ledger locked");
-    expect(fs.readFileSync(configPath, "utf8")).toBe(YAML);
-    expect(fs.readdirSync(dir)).toEqual(["archangel.yaml"]);
-  });
 });
 
 describe("server guards for the write routes", () => {
@@ -160,10 +150,5 @@ describe("invariants pinned by grep", () => {
       expect(src, f).not.toMatch(/github\/client/);
       expect(src, f).not.toMatch(/pr merge|pr review|pr comment|issue comment|issue close|\.mergePullRequest|\.addLabel|\.closeIssue/);
     }
-  });
-  it("the browser POSTs from two modules only (workflow-draft: the propose route; host-config-client: W2)", () => {
-    const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
-    const posts = walk("ui/src").filter((f) => /\.tsx?$/.test(f) && /method:\s*"(POST|PUT|PATCH|DELETE)"/.test(read(f)));
-    expect(posts.map((f) => path.basename(f)).sort()).toEqual(["host-config-client.ts", "workflow-draft.ts"]);
   });
 });

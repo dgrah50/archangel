@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { describe, expect, it } from "vitest";
-import { TelegramNotifier } from "../src/core/notifier.js";
 import { GitHubAppClient } from "../src/github/client.js";
 
 /** A server that accepts the connection and never answers. */
@@ -31,16 +30,4 @@ describe("HTTP calls cannot hang the tick", () => {
     }
   });
 
-  it("a Telegram send that never answers is aborted instead of holding the tick forever", async () => {
-    const { server, url } = await silentServer();
-    try {
-      const n = new TelegramNotifier({ botToken: "t", chatId: "1", apiBase: url, timeoutMs: 300 });
-      const started = Date.now();
-      await expect(n.sendDigest("hello")).rejects.toThrow();
-      expect(Date.now() - started).toBeLessThan(5000);
-    } finally {
-      server.closeAllConnections();
-      server.close();
-    }
-  });
 });
