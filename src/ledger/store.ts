@@ -725,6 +725,11 @@ export class Ledger {
     return row ? mapAttempt(row) : null;
   }
 
+  /** Every Attempt for one Thread, oldest first (the dashboard's Thread timeline). */
+  listAttemptsFor(issueNumber: number, repo = this.repo): AttemptRecord[] {
+    return (this.db.prepare(`SELECT * FROM attempts WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapAttempt);
+  }
+
   // --- Recorded Pushed SHAs (INSERT OR IGNORE preserves broker provenance — Opus R14) ---
 
   recordPushedSha(
@@ -834,6 +839,14 @@ export class Ledger {
       )
       .all(repo, issueNumber, headSha) as Record<string, unknown>[];
     return rows.map(mapReview);
+  }
+
+  listReviewsFor(issueNumber: number, repo = this.repo): ReviewRecord[] {
+    return (this.db.prepare(`SELECT * FROM reviews WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapReview);
+  }
+
+  listMergesFor(issueNumber: number, repo = this.repo): MergeRecord[] {
+    return (this.db.prepare(`SELECT * FROM merges WHERE repo = ? AND issue_number = ? ORDER BY id ASC`).all(repo, issueNumber) as Record<string, unknown>[]).map(mapMerge);
   }
 
   // --- Merges & Shadow Mode ---
