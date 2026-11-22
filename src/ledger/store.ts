@@ -515,6 +515,7 @@ export class Ledger {
       /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
+      auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
       now?: number;
       repo?: string;
@@ -566,7 +567,7 @@ export class Ledger {
       }
 
       if (opts.auditTopic) {
-        this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
       }
       // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
       if (validated.kind === "needs_you") {

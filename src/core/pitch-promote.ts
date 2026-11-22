@@ -35,13 +35,22 @@ export function sliceIssueBody(pitchIssue: number, pitch: PitchItem, sliceIndex:
   };
 }
 
+/** `--slice 1,3` to zero-based indexes in ascending order; every entry must be an integer in range, with no repeats. */
+function parseSlices(arg: string, total: number): number[] {
+  const nums = arg.split(",").map((part) => (/^\s*\d+\s*$/.test(part) ? Number(part) : NaN));
+  if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > total)) throw new Error(`--slice must be one or more whole numbers between 1 and ${total}, comma-separated (got '${arg}')`);
+  if (new Set(nums).size !== nums.length) throw new Error(`--slice lists a slice more than once (got '${arg}')`);
+  return nums.map((n) => n - 1).sort((a, b) => a - b);
+}
+
 export async function promotePitch(
   runner: OnboardRunner,
   ledger: Ledger,
   input: {
     repo: string;
     issue: number;
-    slice?: number; // 1-based
+    /** 1-based slice numbers as typed: one (`2`) or a comma list (`1,3`). Default: every slice not yet promoted. */
+    slice?: string;
     /** Make the slices created by this call linear: each waits (queued) for the one before it to merge. */
     chain?: boolean;
     yes: boolean;
@@ -73,8 +82,7 @@ export async function promotePitch(
 
   const pitch = PitchOutputSchema.shape.pitches.element.parse(JSON.parse(row.pitchJson));
   const remaining = pitch.slices.map((_, i) => i).filter((i) => !promotedSoFar.includes(i));
-  const indexes = input.slice === undefined ? remaining : [input.slice - 1];
-  if (indexes.some((i) => i < 0 || i >= pitch.slices.length)) throw new Error(`--slice must be between 1 and ${pitch.slices.length}`);
+  const indexes = input.slice === undefined ? remaining : parseSlices(input.slice, pitch.slices.length);
   const again = indexes.filter((i) => promotedSoFar.includes(i));
   if (again.length > 0) throw new Error(`Slice ${again.map((i) => i + 1).join(", ")} of pitch #${input.issue} is already promoted`);
   if (indexes.length === 0) throw new Error(`Every slice of pitch #${input.issue} is already promoted`);
