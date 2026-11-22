@@ -12,6 +12,7 @@ import type { Ledger } from "../ledger/store.js";
 import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
 import type { Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
+import { buildClusterBlockFrom } from "./failure-clusters.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
   PITCH_DECLINE_WINDOW_DAYS,
@@ -445,15 +446,16 @@ export async function runScoutsForProject(opts: {
         prompt: buildScoutPrompt(
           wf,
           wf.includeMetrics
-            ? buildMetricsBlockFrom(() =>
-                opts.ledger.computeMetrics({
-                  repo: opts.ledger.repo,
-                  sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,
-                  now,
-                  // Loop guard: never let a metrics-fed Scout see Threads born from metrics-fed Scouts.
-                  excludeScouts: workflows.filter((w) => w.includeMetrics).map((w) => w.name),
-                }),
-              )
+            ? (() => {
+                // Loop guard: never let a metrics-fed Scout see Threads born from metrics-fed Scouts.
+                const excludeScouts = workflows.filter((w) => w.includeMetrics).map((w) => w.name);
+                return [
+                  buildMetricsBlockFrom(() =>
+                    opts.ledger.computeMetrics({ repo: opts.ledger.repo, sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000, now, excludeScouts }),
+                  ),
+                  buildClusterBlockFrom(opts.ledger, { repo: opts.ledger.repo, now, excludeScouts }),
+                ].join("\n\n");
+              })()
             : undefined,
         ),
         maxProposals: remainingSlots,
