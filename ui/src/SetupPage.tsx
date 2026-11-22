@@ -13,7 +13,7 @@ import { FaultsSection, LadderList, ReadError, SmokeChecks, tokenOf, useLadder }
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
-import { CopyCommand, Dot, Owed, Page, PageHeadline, Section } from "./page";
+import { CopyCommand, Dot, Page, PageHeadline, Section } from "./page";
 import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNotProtected, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
 interface GhRepo {
@@ -330,10 +330,8 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
   return (
     <Page>
       <Flex align="flex-end" justify="space-between" gap="6" wrap="wrap">
-        <PageHeadline sub={first ? "Work down the steps. Each one is read from this machine and GitHub, so it picks up wherever you left off." : "Every step is read from the machine, so it picks up wherever you left off."}>
-          {first ? "Archangel is not set up yet." : todo === 0 ? "Set up and running." : <>Set up and running. <Owed>{todo === 1 ? "1 thing" : `${todo} things`}</Owed> to look at.</>}
-        </PageHeadline>
-        <Flex align="center" gap="3" pb="6">
+        <PageHeadline title="Setup and health">{first ? "not set up yet; work down the steps" : todo === 0 ? "set up and running" : `${todo} to look at`}</PageHeadline>
+        <Flex align="center" gap="3" pb="3.5">
           {checkedAt !== null ? <Text textStyle="meta" color="fg.muted">Checked {checkedAt < 90_000 ? `${Math.round(checkedAt / 1000)} s` : age(checkedAt)} ago</Text> : null}
           <Button {...outline} onClick={checkAgain}>Check again</Button>
           <Button size="sm" borderRadius="12px" onClick={() => setView(3)}>Add a repo</Button>
@@ -363,7 +361,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
         </Flex>
         <Section flex="1" minW="0" gap="4" aria-label={group.title}>
           <Flex direction="column" gap="1">
-            <Text as="h2" textStyle="bigNumber" color="fg">{group.title}</Text>
+            <Text as="h2" textStyle="title" color="fg">{group.title}</Text>
             <Text textStyle="body13" color="fg.muted">{group.sentence}</Text>
           </Flex>
 
