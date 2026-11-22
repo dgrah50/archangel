@@ -9,7 +9,7 @@ import type { ArchangelConfig, ProviderEntry } from "../config.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
 import type { Logger } from "./logger.js";
-import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlock } from "./metrics-block.js";
+import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
   PITCH_DECLINE_WINDOW_DAYS,
   PITCH_MAX_OPEN,
@@ -438,7 +438,7 @@ export async function runScoutsForProject(opts: {
         prompt: buildScoutPrompt(
           wf,
           wf.includeMetrics
-            ? buildMetricsBlock(
+            ? buildMetricsBlockFrom(() =>
                 opts.ledger.computeMetrics({
                   repo: opts.ledger.repo,
                   sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,
@@ -570,7 +570,7 @@ async function runPitchScout(opts: {
         prompt: wf.prompt,
         declinedTitles: recent.map((r) => r.title),
         metricsBlock: wf.includeMetrics
-          ? buildMetricsBlock(
+          ? buildMetricsBlockFrom(() =>
               ledger.computeMetrics({
                 repo: ledger.repo,
                 sinceMs: now - METRICS_WINDOW_DAYS * 86_400_000,

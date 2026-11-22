@@ -58,6 +58,9 @@ export function renderRecapComment(input: {
   const summaryText = input.summary ?? thread.lastSummary;
   if (summaryText) {
     lines.push("", "#### Latest Summary", summaryText);
+    const assumptions = extractAssumptions(summaryText);
+    lines.push("", "#### Implementer Assumptions", "_Decisions made without asking, quoted from the implementer's summary as plain text._", "");
+    lines.push(...(assumptions === null ? ["_none stated_"] : fencedText(assumptions)));
   }
 
   lines.push(
@@ -98,6 +101,28 @@ export function renderRecapComment(input: {
   }
 
   return lines.join("\n");
+}
+
+/** The lines under an `Assumptions:` heading in the implementer summary, or null when there are none to show. */
+export function extractAssumptions(summary: string): string | null {
+  const lines = summary.split("\n");
+  const start = lines.findIndex((l) => /^\s*(?:[#*_\s]*)assumptions\s*:?\s*(?:[*_]*)\s*:?\s*(.*)$/i.test(l));
+  if (start === -1) return null;
+  const inline = /^\s*(?:[#*_\s]*)assumptions\s*:?\s*(?:[*_]*)\s*:?\s*(.*)$/i.exec(lines[start]!)![1]!.trim();
+  const body: string[] = inline ? [inline] : [];
+  for (const l of lines.slice(start + 1)) {
+    if (!l.trim() && body.length > 0) break;
+    if (/^\s*#{1,6}\s/.test(l)) break;
+    if (l.trim()) body.push(l.trimEnd());
+  }
+  const text = body.join("\n").slice(0, 1_500).trim();
+  return !text || /^none\.?$/i.test(text) ? null : text;
+}
+
+function fencedText(text: string): string[] {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((m) => m.length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [fence + "text", text, fence];
 }
 
 function fencedOutput(output: string | undefined): string[] {

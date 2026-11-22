@@ -1324,37 +1324,54 @@ export class Ledger {
    */
   collectDigestInput(now: number): DigestInput {
     const yKey = formatDayKey(now - 86_400_000, this.timeZone);
-    const needsYou = this.listAllThreads(["needs_you"]).flatMap((t) =>
-      t.phase.kind === "needs_you"
-        ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
-        : [],
+    // Each figure is computed on its own: a failed query makes that figure null ("unavailable"), never a zero or an empty list.
+    const attempt = <T>(f: () => T): T | null => {
+      try {
+        return f();
+      } catch {
+        return null;
+      }
+    };
+    const needsYou = attempt(() =>
+      this.listAllThreads(["needs_you"]).flatMap((t) =>
+        t.phase.kind === "needs_you"
+          ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
+          : [],
+      ),
     );
-    const merges = (
-      this.db.prepare(`SELECT * FROM merges WHERE day_key = ? AND shadow_only = 0`).all(yKey) as Record<string, unknown>[]
-    ).map(mapMerge);
-    const ownerMerges = (
-      this.db
-        .prepare(`SELECT ts FROM audit_log WHERE topic = 'thread/owner_merged' AND ts >= ?`)
-        .all(now - 3 * 86_400_000) as Array<{ ts: number }>
-    ).filter((r) => formatDayKey(r.ts, this.timeZone) === yKey).length;
-    const spend = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`).get(yKey) as { usd: number } | undefined;
-    const proposals = (
-      this.db
-        .prepare(
-          `SELECT p.repo, p.issue_number, p.scout_name FROM scout_proposals p
-           LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
-           WHERE t.issue_number IS NULL ORDER BY p.created_at ASC`,
-        )
-        .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
-    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name }));
+    const merges = attempt(() =>
+      (this.db.prepare(`SELECT * FROM merges WHERE day_key = ? AND shadow_only = 0`).all(yKey) as Record<string, unknown>[]).map(mapMerge),
+    );
+    const ownerMerges = attempt(
+      () =>
+        (
+          this.db
+            .prepare(`SELECT ts FROM audit_log WHERE topic = 'thread/owner_merged' AND ts >= ?`)
+            .all(now - 3 * 86_400_000) as Array<{ ts: number }>
+        ).filter((r) => formatDayKey(r.ts, this.timeZone) === yKey).length,
+    );
+    const spendUsd = attempt(
+      () => ((this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`).get(yKey) as { usd: number } | undefined)?.usd ?? 0),
+    );
+    const proposals = attempt(() =>
+      (
+        this.db
+          .prepare(
+            `SELECT p.repo, p.issue_number, p.scout_name FROM scout_proposals p
+             LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+             WHERE t.issue_number IS NULL ORDER BY p.created_at ASC`,
+          )
+          .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
+      ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name })),
+    );
     return {
       now,
       needsYou,
       yesterday: {
-        autonomousMerges: merges.length,
+        autonomousMerges: merges === null ? null : merges.length,
         ownerMerges,
-        reverts: merges.filter((x) => x.mainWatch.kind === "red").length,
-        spendUsd: spend?.usd ?? 0,
+        reverts: merges === null ? null : merges.filter((x) => x.mainWatch.kind === "red").length,
+        spendUsd,
       },
       proposals,
     };
