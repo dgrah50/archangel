@@ -1,5 +1,6 @@
 import { Box, Button, Flex, Text, chakra } from "@chakra-ui/react";
 import { useState } from "react";
+import { CAPTION_LABEL } from "../../src/core/recap-chapters.js";
 import type { ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
 import { Notice, type Feed } from "./AppView";
 import { age } from "./common";
@@ -177,6 +178,58 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
           <Text textStyle="body13" color="fg.muted">
             {d.threadRecommendation.reason}
           </Text>
+        </Box>
+      ) : null}
+      {d.chapters && d.chapters.length > 0 ? (
+        <Box>
+          <Flex gap="2" align="baseline" pb="2">
+            <Text textStyle="label" fontSize="15px" color="fg">
+              Chapters
+            </Text>
+            <Text textStyle="meta" color="fg.muted">
+              the diff grouped by area, read-only
+            </Text>
+          </Flex>
+          <Box borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+            {d.chapters.map((c) => (
+              <Box key={`${c.kind}-${c.area}`} py="3">
+                <Flex gap="3" align="baseline" wrap="wrap">
+                  <Text textStyle="rowTitle" color="fg">
+                    {c.area === "(root)" ? "Repo root" : `${c.area}/`}
+                  </Text>
+                  <Text textStyle="meta" color={c.kind === "protected" ? "owner" : "fg.muted"}>
+                    {c.kind}
+                  </Text>
+                  <Text textStyle="meta" color="fg.muted">
+                    {c.files.length} file{c.files.length === 1 ? "" : "s"}, +{c.added} -{c.deleted}
+                  </Text>
+                </Flex>
+                <Text textStyle="body13" color="fg.muted">
+                  {c.purpose}
+                </Text>
+                {c.caption ? (
+                  <Box mt="1">
+                    <Text textStyle="meta" color="fg.subtle">
+                      {CAPTION_LABEL}
+                    </Text>
+                    <Text textStyle="body13" color="fg">
+                      {c.caption}
+                    </Text>
+                  </Box>
+                ) : null}
+                <Details mt="1">
+                  <Text as="summary" textStyle="meta" color="fg.muted" cursor="pointer">
+                    Files
+                  </Text>
+                  {c.files.map((f) => (
+                    <Text key={f.path} textStyle="meta" fontFamily="mono" color="fg" wordBreak="break-all">
+                      {f.path} +{f.added} -{f.deleted}
+                    </Text>
+                  ))}
+                </Details>
+              </Box>
+            ))}
+          </Box>
         </Box>
       ) : null}
       <Flex direction={{ base: "column", xl: "row" }} gap="8" align="flex-start">
