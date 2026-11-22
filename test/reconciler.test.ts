@@ -563,3 +563,135 @@ describe("Work classes (owner-labelled features)", () => {
     }
   });
 });
+
+describe("Owner comment commands", () => {
+  const OWNER = 999;
+  function harness() {
+    const { root, remoteBare } = setupRepo();
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const github = new FakeGitHub(remoteBare);
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+    const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
+    const prompts: string[] = [];
+    const implementer: Implementer = {
+      async run(input) {
+        prompts.push(input.prompt);
+        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 5 }\n");
+        git(input.cloneDir, ["add", "-A"]);
+        git(input.cloneDir, ["commit", "-m", "fix"]);
+        return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
+      },
+    };
+    const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
+    const make = () =>
+      new Reconciler({ config: makeTestConfig(), ledger, github, broker, implementer, reviewers, notifier });
+    const t0 = Date.now() - 60_000;
+    github.issues.set(7, {
+      number: 7, title: "Bug", body: "b", state: "open", authorId: OWNER, authorLogin: "o",
+      authorAssociation: "OWNER", labels: ["needs-you"], updatedAt: new Date().toISOString(),
+    });
+    ledger.upsertThread({
+      issueNumber: 7, title: "Bug", bodySha256: "x", now: t0,
+      phase: { kind: "needs_you", code: "gate_failed", reason: "r", resumeTo: { kind: "queued" }, prNumber: 100, headSha: null },
+    });
+    github.prs.set(100, {
+      number: 100, title: "pr", state: "open", merged: false, mergeCommitSha: null, draft: false,
+      headRef: "main", headSha: "x", baseRef: "main", baseSha: "x", labels: [], changedFiles: [],
+    });
+    const later = () => t0 + 10_000;
+    const tick = (r: Reconciler) => r.tick(Date.now(), { waitForAttempts: true });
+    const cleanup = () => {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    };
+    const helpReplies = () => [...(github.comments.get(7) ?? []), ...(github.comments.get(100) ?? [])].filter((b) => !b.includes("archangel:recap"));
+    const audits = (prefix: string) => ledger.listAudit({ topicPrefix: prefix, limit: 50 });
+    return { github, ledger, make, tick, prompts, later, cleanup, helpReplies, audits };
+  }
+
+  it("/archangel retry resumes the Thread and only the text after line 1 reaches the next prompt", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(100, OWNER, "/archangel retry\nUse the cached parser.", h.later());
+      await h.tick(h.make());
+      expect(h.ledger.getThread(7)?.retryGrants).toBe(1);
+      expect(h.prompts).toHaveLength(1);
+      expect(h.prompts[0]).toContain("Use the cached parser.");
+      expect(h.prompts[0]).not.toContain("/archangel retry");
+      expect(h.audits("owner_command/retry")).toHaveLength(1);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("/archangel close abandons the Thread, closes the PR and keeps the issue open", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel close", h.later());
+      await h.tick(h.make());
+      expect(h.ledger.getThread(7)?.phase).toMatchObject({ kind: "done", outcome: "abandoned" });
+      expect(h.github.closedPrs).toEqual([100]);
+      expect(h.github.issues.get(7)?.state).toBe("open");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("/archangel handoff is recorded and answered once with the CLI command; the Thread stays in needs_you", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel handoff", h.later());
+      const r = h.make();
+      await h.tick(r);
+      await h.tick(r);
+      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
+      expect(h.audits("owner_command/handoff_requested")).toHaveLength(1);
+      const replies = h.helpReplies();
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain("archangel handoff 7");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("ignores non-owner and bot commands with an audit row, and never acts on them", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, 555, "/archangel close", h.later());
+      h.github.addComment(100, 41898282, "/archangel retry", h.later() + 1, true);
+      await h.tick(h.make());
+      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
+      expect(h.github.closedPrs).toEqual([]);
+      expect(h.audits("owner_command/ignored")).toHaveLength(2);
+      expect(h.helpReplies()).toHaveLength(0);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("an owner comment from before the escalation is not a command", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel close", h.later() - 20_000);
+      await h.tick(h.make());
+      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("an unknown command gets exactly one help reply across ticks and a restart", async () => {
+    const h = harness();
+    try {
+      h.github.addComment(7, OWNER, "/archangel frobnicate", h.later());
+      await h.tick(h.make());
+      await h.tick(h.make()); // a brand-new Reconciler on the same Ledger = a daemon restart
+      const replies = h.helpReplies();
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain("/archangel retry");
+      expect(h.ledger.getThread(7)?.phase.kind).toBe("needs_you");
+    } finally {
+      h.cleanup();
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import type { Ledger } from "../ledger/store.js";
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import type { ThreadRecord } from "../ledger/schema.js";
 import type { Phase } from "./thread-machine.js";
 
 export const STAGES = [
@@ -75,9 +76,11 @@ function prOf(phase: Phase): number | null {
   return "prNumber" in phase && typeof phase.prNumber === "number" ? phase.prNumber : null;
 }
 
-/** Pure read of the Ledger into the dashboard's data. Never writes; makes no network calls. */
-export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
-  const threads = ledger.listAllThreads();
+/** Groups Threads by stage (and lists Needs You items with their class and recommendation). Shared by the dashboard and `archangel status`. */
+export function groupThreads(
+  threads: ThreadRecord[],
+  now: number,
+): { stages: Record<Stage, UiItem[]>; needsYou: UiState["needsYou"] } {
   const stages = Object.fromEntries(STAGES.map((s) => [s, [] as UiItem[]])) as Record<Stage, UiItem[]>;
   const needsYou: UiState["needsYou"] = [];
   for (const t of threads) {
@@ -98,6 +101,20 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
   }
   for (const list of Object.values(stages)) list.sort((a, b) => b.since - a.since);
   needsYou.sort((a, b) => a.since - b.since);
+  return { stages, needsYou };
+}
+
+export function formatAge(ms: number): string {
+  const min = Math.max(0, Math.floor(ms / 60_000));
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/** Pure read of the Ledger into the dashboard's data. Never writes; makes no network calls. */
+export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
+  const threads = ledger.listAllThreads();
+  const { stages, needsYou } = groupThreads(threads, now);
   const repos = [...new Set(threads.map((t) => t.repo))];
   const known = new Set(threads.map((t) => `${t.repo}#${t.issueNumber}`));
   return {

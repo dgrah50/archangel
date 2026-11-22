@@ -17,7 +17,9 @@ import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
+import { renderStages } from "../core/status-text.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
+import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
 import { launchStudio } from "../core/studio.js";
@@ -381,6 +383,8 @@ program
       const autoMergesToday = ledger.getAutoMergeCountToday(Date.now(), opts.repo ?? null);
       const repos = [...new Set(threads.map((t) => t.repo))];
       const breakers = Object.fromEntries(repos.map((r) => [r, ledger.getCircuitBreaker(r)]));
+      const now = Date.now();
+      const grouped = groupThreads(threads, now);
 
       const payload = {
         spendTodayUsd: Number(spend.spentUsd.toFixed(4)),
@@ -394,6 +398,7 @@ program
             : [],
         ),
         threads,
+        stages: grouped.stages,
       };
 
       if (opts.json) {
@@ -422,12 +427,7 @@ program
         console.log("No threads recorded in Ledger yet.");
         return;
       }
-      for (const t of threads) {
-        const pr = extractPrFromPhase(t.phase);
-        const prStr = pr ? `PR #${pr.prNumber}` : "no PR";
-        const note = t.phase.kind === "needs_you" ? ` — [${t.phase.code}] ${t.phase.reason}` : "";
-        console.log(`${t.repo}#${t.issueNumber}  [${t.phase.kind}/${t.mode}]  ${prStr}  ${t.title}${note}`);
-      }
+      for (const line of renderStages(grouped.stages, now)) console.log(line);
     } finally {
       ledger.close();
     }

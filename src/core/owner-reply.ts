@@ -1,3 +1,5 @@
+export const COMMAND_LINE_RE = /^\s*\/archangel(\s|$)/i;
+
 /**
  * Collects the owner's reply to a Needs You escalation: owner-authored comments on the
  * issue and its PR posted after the escalation, plus an optional `archangel retry --message`.
@@ -14,10 +16,14 @@ export async function collectOwnerReply(input: {
   sinceMs: number;
   message?: string | null;
 }): Promise<string | null> {
-  const parts = await input.github.listOwnerCommentsSince(input.issueNumber, input.ownerUserId, input.sinceMs);
+  const raw = await input.github.listOwnerCommentsSince(input.issueNumber, input.ownerUserId, input.sinceMs);
   if (input.prNumber && input.prNumber !== input.issueNumber) {
-    parts.push(...(await input.github.listOwnerCommentsSince(input.prNumber, input.ownerUserId, input.sinceMs)));
+    raw.push(...(await input.github.listOwnerCommentsSince(input.prNumber, input.ownerUserId, input.sinceMs)));
   }
+  // A `/archangel <command>` first line is a command, not guidance for the next Attempt.
+  const parts = raw
+    .map((body) => (COMMAND_LINE_RE.test(body.split("\n")[0]!) ? body.split("\n").slice(1).join("\n").trim() : body))
+    .filter(Boolean);
   if (input.prNumber) {
     const review = await input.github.listOwnerReviewFeedbackSince(input.prNumber, input.ownerUserId, input.sinceMs);
     if (review.length > 0) {
