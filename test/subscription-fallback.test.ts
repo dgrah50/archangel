@@ -5,7 +5,32 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { AttemptError } from "../src/ledger/schema.js";
-import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
+import { pruneTranscripts, SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
+
+describe("pruneTranscripts", () => {
+  it("removes only old transcript files directly in the dir", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-prune-test-"));
+    try {
+      const old = new Date(Date.now() - 40 * 86_400_000);
+      const write = (rel: string, aged: boolean) => {
+        const f = path.join(dir, rel);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, "x");
+        if (aged) fs.utimesSync(f, old, old);
+      };
+      for (const n of ["issue-1-1.jsonl", "issue-1-1.0-codex.stdout", "issue-1-1.0-codex.stderr"]) write(n, true);
+      write("issue-2-2.jsonl", false);
+      write("notes.txt", true);
+      write("sub/issue-3-3.jsonl", true);
+      expect(pruneTranscripts(dir, Date.now() - 30 * 86_400_000)).toBe(3);
+      expect(fs.readdirSync(dir).sort()).toEqual(["issue-2-2.jsonl", "notes.txt", "sub"]);
+      expect(fs.existsSync(path.join(dir, "sub/issue-3-3.jsonl"))).toBe(true);
+      expect(pruneTranscripts(path.join(dir, "missing"), Date.now())).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {
   it("fails over implementer from codex to agy on quota/rate-limit with Continuity context, and does NOT fail over on non-quota errors", async () => {

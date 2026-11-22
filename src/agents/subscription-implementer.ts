@@ -559,3 +559,27 @@ export class SubscriptionImplementer implements Implementer {
     }
   }
 }
+
+/** Attempt transcripts and provider logs are kept this long; the Ledger keeps the paths, readers only print them. */
+export const TRANSCRIPT_RETENTION_MS = 30 * 86_400_000;
+const TRANSCRIPT_FILE_RE = /^issue-.+\.(jsonl|stdout|stderr)$/;
+
+/** Delete old transcript files directly inside `dir` (no recursion, no symlinks, nothing else). Returns the count removed. */
+export function pruneTranscripts(dir: string, beforeMs: number): number {
+  let removed = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  for (const e of entries) {
+    if (!e.isFile() || !TRANSCRIPT_FILE_RE.test(e.name)) continue;
+    const file = path.join(dir, e.name);
+    if (fs.lstatSync(file).mtimeMs >= beforeMs) continue;
+    fs.rmSync(file);
+    removed++;
+  }
+  return removed;
+}
