@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { z } from "zod";
-import { scanForSecrets } from "./scout.js";
+import { scanForSecrets } from "./secrets.js";
 
 /** PROVISIONAL: the roadmap gates plan approval on evidence (3 feature Threads ending badly); until it exists these bounds are guesses to tune from the audit rows. */
 export const PLAN_MAX_CHARS = 6_000;
