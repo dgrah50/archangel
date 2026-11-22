@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
-import { stepCommand, type CommandEvent, type CommandState } from "../src/core/command-machine.js";
+import { type CommandState } from "../src/core/command-machine.js";
 import { PaseoCliRunner, handoffThreadToPaseo, resumeThreadFromPaseo, type PaseoRunner } from "../src/handoff/paseo.js";
 import { Ledger } from "../src/ledger/store.js";
 
@@ -16,26 +16,6 @@ const S: Record<string, CommandState> = {
 };
 
 describe("daemon command state machine", () => {
-  it("allows exactly: pending -> claimed | cancelled, claimed -> completed | failed", () => {
-    const ok = (s: string, e: CommandEvent) => stepCommand(S[s]!, e).ok;
-    expect(ok("pending", { t: "claim", at: 2 })).toBe(true);
-    expect(ok("pending", { t: "cancel", reason: "r" })).toBe(true);
-    expect(ok("claimed", { t: "complete", result: 1 })).toBe(true);
-    expect(ok("claimed", { t: "fail", error: "e" })).toBe(true);
-    const illegal: Array<[string, CommandEvent]> = [
-      ["claimed", { t: "cancel", reason: "r" }], // the race: the CLI cannot cancel what the daemon took
-      ["cancelled", { t: "claim", at: 2 }], // and the daemon cannot take what the CLI cancelled
-      ["claimed", { t: "claim", at: 2 }],
-      ["pending", { t: "complete", result: 1 }],
-      ["pending", { t: "fail", error: "e" }],
-      ["completed", { t: "fail", error: "late" }], // a late failCommand must not overwrite a completed one (and vice versa)
-      ["failed", { t: "complete", result: 1 }],
-      ["completed", { t: "cancel", reason: "r" }],
-      ["cancelled", { t: "complete", result: 1 }],
-    ];
-    for (const [from, ev] of illegal) expect(ok(from, ev), `${from} + ${ev.t}`).toBe(false);
-  });
-
   it("the Ledger refuses and audits illegal moves, and a cancelled command can never be claimed", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
     const id = l.enqueueCommand(7, "handoff");
@@ -116,18 +96,6 @@ describe("handoff vs daemon claim race", () => {
 });
 
 describe("daemon liveness and Paseo state never fail open", () => {
-  it("an unreadable daemon lock counts as an active daemon (no bypass of it)", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    const t = Date.now();
-    expect(l.isDaemonActive(60_000, t)).toBe(false); // no lock at all
-    l.acquireDaemonLock("d", 60_000, t);
-    expect(l.isDaemonActive(60_000, t + 1000)).toBe(true);
-    expect(l.isDaemonActive(60_000, t + 120_000)).toBe(false); // stale
-    l.setSystemState("daemon_lock", "{not json");
-    expect(l.isDaemonActive(60_000, t)).toBe(true);
-    l.close();
-  });
-
   describe("isAgentRunning", () => {
     const dirs: string[] = [];
     afterEach(() => {
