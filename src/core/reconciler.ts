@@ -79,6 +79,7 @@ export class Reconciler {
   readonly workerId: string;
 
   private isTicking = false;
+  private policyErrorNotifiedSha: string | null = null;
   private readonly runningTasks = new Map<number, RunningTask>();
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   private effectiveGate: GatePolicy;
@@ -150,9 +151,14 @@ export class Reconciler {
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
 
-    // Load optional `.agents/archangel.json` strictly from `main` tip — isolated in try/catch so bad JSON never freezes kill-switches (Opus S13).
+    // Load the required repo policy strictly from `main` tip. Missing or invalid policy halts new work
+    // for this repo (fail closed); owner commands and post-merge main monitoring still run.
+    let policyError: string | null = null;
     try {
       const repoPolicyRaw = await this.broker.readFileAtRef(mainSha, REPO_POLICY_PATH);
+      if (!repoPolicyRaw || !repoPolicyRaw.trim()) {
+        throw new Error(`${REPO_POLICY_PATH} is missing on ${this.cfg.defaultBranch}`);
+      }
       const merged = mergeRepoPolicy(
         this.cfg.gate,
         this.cfg.requiredChecks,
@@ -163,14 +169,30 @@ export class Reconciler {
       this.effectiveRequiredChecks = merged.requiredChecks;
       this.effectiveReviewRubric = merged.reviewRubric;
     } catch (err) {
-      this.effectiveGate = this.cfg.gate;
-      this.effectiveRequiredChecks = this.cfg.requiredChecks;
-      this.effectiveReviewRubric = this.cfg.reviewRubric;
-      this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", {
-        mainSha,
-        error: err instanceof Error ? err.message : String(err),
-      }, now);
+      policyError = err instanceof Error ? err.message : String(err);
     }
+
+    if (policyError) {
+      if (this.policyErrorNotifiedSha !== mainSha) {
+        this.policyErrorNotifiedSha = mainSha;
+        this.ledger.appendAudit("config/repo_policy_invalid", null, "archangel", { mainSha, error: policyError }, now);
+        this.logger.warn("config/repo_policy_invalid", `Halting new work: ${policyError}`, { repo: this.ledger.repo });
+        const policy = MAIN_ESCALATION_POLICY.repo_policy_invalid;
+        await this.notifier
+          .notifyNeedsYou({
+            issueNumber: null,
+            title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: repo policy unusable at ${mainSha.slice(0, 8)}`,
+            reason: policyError.slice(0, 500),
+            decisionClass: formatDecisionClass(policy.decisionClass),
+            recommendation: policy.recommendation,
+          })
+          .catch(() => undefined);
+      }
+      await this.processPendingCommands(mainSha, now);
+      await this.reconcilePostMergeMain(mainSha, now);
+      return;
+    }
+    this.policyErrorNotifiedSha = null;
 
     // 1. Process pending CLI -> Daemon handoff commands (Opus Step 6 / R5).
     await this.processPendingCommands(mainSha, now);
