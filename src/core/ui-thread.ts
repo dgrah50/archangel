@@ -30,6 +30,8 @@ export interface ThreadDetail {
   blockers: Array<{ title: string; detail: string; owner: boolean }>;
   /** Time in each phase, derived from the phase kind on the transition audit rows (older Threads: only the current phase, from its last transition). `limitMs` is the real deadline (attempt or Gate timeout) where one exists. */
   phaseDurations: Array<{ kind: string; ms: number; running: boolean; limitMs: number | null }>;
+  /** The factory's model-written recommendation for this Thread's current needs_you entry (machine advice, untrusted text), or null. */
+  threadRecommendation: { headline: string; reason: string } | null;
   /** The audit log was cut at AUDIT_LIMIT rows (newest kept). */
   auditTruncated: boolean;
 }
@@ -165,6 +167,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     gate,
     diff,
     phaseDurations,
+    threadRecommendation: view.threadRecommendationFor(thread)?.text ?? null,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
 }

@@ -1490,6 +1490,30 @@ export class Ledger {
     };
   }
 
+  /**
+   * One per-Thread recommendation attempt for a needs_you entry (`factory/recommendation` audit row). `headline`/`reason` are null when the
+   * run produced nothing usable: the row still stands, so the same entry is never asked twice. Text is model-written and vetted by the caller.
+   */
+  recordThreadRecommendation(issueNumber: number, p: { code: string; headSha: string | null; vendor: string; headline: string | null; reason: string | null }, now = Date.now()): void {
+    this.appendAudit("factory/recommendation", issueNumber, "factory", p, now);
+  }
+
+  /** The latest attempt row for this Thread when it is for the Thread's current needs_you entry (same code and head), else null. `text` is null when the attempt produced nothing. */
+  threadRecommendationFor(thread: ThreadRecord): { text: { headline: string; reason: string } | null } | null {
+    if (thread.phase.kind !== "needs_you") return null;
+    const row = this.listAudit({ repo: thread.repo, topicPrefix: "factory/recommendation", issueNumber: thread.issueNumber, limit: 1 })[0];
+    if (!row) return null;
+    const p = JSON.parse(row.payloadJson) as { code?: unknown; headSha?: unknown; headline?: unknown; reason?: unknown };
+    if (p.code !== thread.phase.code || (p.headSha ?? null) !== (thread.phase.headSha ?? null)) return null;
+    return { text: typeof p.headline === "string" && typeof p.reason === "string" ? { headline: p.headline, reason: p.reason } : null };
+  }
+
+  recommendationsInLast24h(now = Date.now(), repo = this.repo): number {
+    return (
+      this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/recommendation' AND ts > ?").get(repo, now - 86_400_000) as { n: number }
+    ).n;
+  }
+
   /** Rows of one audit topic across every repo since `sinceMs` (for limits that are global rather than per repo). */
   countAuditAllRepos(topic: string, sinceMs: number): number {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE topic = ? AND ts >= ?").get(topic, sinceMs) as { n: number }).n;

@@ -1,7 +1,7 @@
 import { Box, Flex, Text } from "@chakra-ui/react";
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
-import { age } from "./common";
+import { age, recommendationShort } from "./common";
 import { CopyCommand, LinkButton, Metric, Meter, Owed, Page, PageHeadline, Ref, Row, RowList, Section, Sparkline } from "./page";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
@@ -48,7 +48,7 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
                   title={i.title}
                   meta={
                     <>
-                      {i.decisionClass.charAt(0).toUpperCase() + i.decisionClass.slice(1)} · <Ref repo={i.repo} num={i.issueNumber} /> · {i.recommendationShort}
+                      {i.decisionClass.charAt(0).toUpperCase() + i.decisionClass.slice(1)} · <Ref repo={i.repo} num={i.issueNumber} /> · {recommendationShort(i)}
                     </>
                   }
                   action={

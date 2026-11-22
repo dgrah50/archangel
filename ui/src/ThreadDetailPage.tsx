@@ -166,6 +166,19 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
         </Notice>
       ) : null}
       <PhaseRail phase={d.phase} durations={d.phaseDurations} />
+      {d.threadRecommendation ? (
+        <Box bg="bg.muted" rounded="14px" px="4" py="3">
+          <Text textStyle="meta" color="fg.muted">
+            The factory recommends, for this Thread
+          </Text>
+          <Text textStyle="rowTitle" color="fg">
+            {d.threadRecommendation.headline}
+          </Text>
+          <Text textStyle="body13" color="fg.muted">
+            {d.threadRecommendation.reason}
+          </Text>
+        </Box>
+      ) : null}
       <Flex direction={{ base: "column", xl: "row" }} gap="8" align="flex-start">
         <Box flex="1" minW="0" w="full">
           <Flex gap="2" align="baseline" pb="2">
