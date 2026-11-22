@@ -1,5 +1,6 @@
 import type { WorkClass } from "../core/work-class.js";
 import { execFile } from "node:child_process";
+import { execFileGroup } from "../core/spawn-group.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -289,7 +290,7 @@ export class GitBroker {
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_TERMINAL_PROMPT: "0",
       };
-      const { stdout } = await execFileAsync("/bin/sh", ["-eu", "-c", script], {
+      const { stdout } = await execFileGroup("/bin/sh", ["-eu", "-c", script], {
         cwd: cloneDir,
         env: cleanEnv,
         timeout: timeoutMs,

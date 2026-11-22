@@ -5,7 +5,7 @@ import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, exitedOne, pin
 import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
-export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/work-class.ts", "src/core/skills.ts", "src/core/fleet-scouts.ts", "src/config.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
+export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/work-class.ts", "src/core/skills.ts", "src/core/spawn-group.ts", "src/core/fleet-scouts.ts", "src/config.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
 export const BUMP_BRANCH = "chore/archangel-gate-bump";
 
 const PIN_LINE = /^(\s*ARCHANGEL_GATE_SHA:)[ \t]*(\S*)[ \t]*$/m;

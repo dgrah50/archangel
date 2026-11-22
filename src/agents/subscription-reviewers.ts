@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killGroup } from "../core/spawn-group.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -185,17 +186,13 @@ export function defaultReviewerCliInvoker(input: {
       cwd: tmpDir,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
 
-    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      // A CLI that ignores SIGTERM would hold the tick forever: escalate unless it has actually exited.
-      killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, KILL_GRACE_MS);
+      killGroup(child, KILL_GRACE_MS);
     }, input.timeoutMs);
 
     child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
@@ -203,14 +200,12 @@ export function defaultReviewerCliInvoker(input: {
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       reject(err);
     });
 
     child.on("close", (code) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       try {
         if (code !== 0) {
           reject(new Error(`${input.provider} exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
