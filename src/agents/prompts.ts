@@ -24,6 +24,14 @@ function formatGateRules(gate?: Partial<GatePolicy>, workClass: "bugfix" | "feat
   ];
 }
 
+/** Owner code-quality rules shared by implement and revision prompts. */
+const CODE_QUALITY_RULES: string[] = [
+  "CODE QUALITY RULES:",
+  "- No fallbacks, compatibility shims, dual old/new code paths, or swallow-and-substitute error handling. Change every call site and delete the code you replace in the same diff.",
+  "- Make the smallest diff that fixes the issue. Do not add an abstraction, option, or file that has a single caller.",
+  "- When a fix touches multi-flag or nullable state, make the state explicit (one closed union or one transition function) instead of adding another boolean.",
+];
+
 export function buildImplementPrompt(input: {
   issueNumber: number;
   title: string;
@@ -46,6 +54,8 @@ export function buildImplementPrompt(input: {
     "MANDATORY MECHANICAL GATE RULES (violations fail CI automatically):",
     ...formatGateRules(input.gate, input.workClass),
     `6. Leave your verified changes cleanly in the working tree (or committed on \`factory/${input.issueNumber}\` if \`.git\` is writable). Do NOT attempt to push.`,
+    "",
+    ...CODE_QUALITY_RULES,
     "",
     ...(feature
       ? [
@@ -101,6 +111,9 @@ export function buildRevisionPrompt(input: {
   parts.push(
     "Address every item above while preserving all Mechanical Gate rules:",
     ...formatGateRules(input.gate, input.workClass),
+    "",
+    ...CODE_QUALITY_RULES,
+    "",
     "Commit your revision to the current branch. Do NOT attempt to push.",
   );
 
@@ -165,6 +178,8 @@ export function buildOpenAiReviewerPrompt(input: {
     "1. Does the new reproduction test actually assert the exact input -> expected output contract described in the issue?",
     "2. Does the fix genuinely solve the root cause without hacks, regressions, or edge-case breakage?",
     "3. Are any tests weakened, skipped, mocked out, or misleading?",
+    "Veto for: an added fallback, compatibility shim, or dual old/new code path; an abstraction, option, or file with a single caller; a new boolean or nullable that allows an impossible flag combination.",
+    "Readability, naming, and duplication problems are minor findings: do not veto solely for them.",
     ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='approve' ONLY if you are confident the fix is correct and minimal; otherwise return verdict='veto' with concrete structured findings.",
   ].join("\n");
@@ -203,6 +218,8 @@ export function buildGeminiAdversarialPrompt(input: {
     "Try to break the fix:",
     "- Look for panics, slice out-of-bounds, encoding/UTF-8 bugs, nil/null dereferences, concurrency races, or inputs where the bug still manifests.",
     "- Verify the test isn't bending correct behavior, skipping assertions, or exiting early.",
+    "Veto for: an added fallback, compatibility shim, or dual old/new code path; an abstraction, option, or file with a single caller; a new boolean or nullable that allows an impossible flag combination.",
+    "Readability, naming, and duplication problems are minor findings: do not veto solely for them.",
     ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='veto' with exact file/line findings if you find ANY real defect or risk; otherwise return verdict='approve'.",
   ].join("\n");
