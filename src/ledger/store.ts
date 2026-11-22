@@ -1845,6 +1845,17 @@ export class Ledger {
     return split;
   }
 
+  getBenchResult(cacheKey: string, caseId: string): unknown | null {
+    const row = this.db.prepare("SELECT result_json FROM bench_results WHERE cache_key = ? AND case_id = ?").get(cacheKey, caseId) as { result_json: string } | undefined;
+    return row ? JSON.parse(row.result_json) : null;
+  }
+
+  putBenchResult(cacheKey: string, caseId: string, result: unknown, now = Date.now()): void {
+    this.db
+      .prepare("INSERT INTO bench_results (cache_key, case_id, result_json, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(cache_key, case_id) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at")
+      .run(cacheKey, caseId, JSON.stringify(result), now);
+  }
+
   getEvalResult(promptHash: string, caseId: string): { verdict: "approve" | "veto"; vendors: string } | null {
     return (this.db.prepare(`SELECT verdict, vendors FROM eval_results WHERE prompt_hash = ? AND case_id = ?`).get(promptHash, caseId) as { verdict: "approve" | "veto"; vendors: string } | undefined) ?? null;
   }
