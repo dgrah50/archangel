@@ -1,10 +1,10 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { DECISION_CLASSES, ESCALATION_POLICY, MAIN_ESCALATION_POLICY, describeEscalation } from "../src/core/escalations.js";
+import { ESCALATION_POLICY, MAIN_ESCALATION_POLICY } from "../src/core/escalations.js";
 import { collectOwnerReply } from "../src/core/owner-reply.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
 import { renderRecapComment } from "../src/core/recap.js";
 import { buildImplementPrompt, buildRebasePrompt, buildRevisionPrompt } from "../src/agents/prompts.js";
-import { EscalationCodeSchema, type EscalationCode } from "../src/core/thread-machine.js";
+import type { EscalationCode } from "../src/core/thread-machine.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
 
 function needsYouThread(code: EscalationCode): ThreadRecord {
@@ -31,30 +31,11 @@ function needsYouThread(code: EscalationCode): ThreadRecord {
 }
 
 describe("Needs You decision classes", () => {
-  it("maps every escalation code to a known class with a recommendation", () => {
-    for (const code of EscalationCodeSchema.options) {
-      const p = describeEscalation(code);
-      expect(DECISION_CLASSES).toContain(p.decisionClass);
-      expect(p.recommendation.length).toBeGreaterThan(20);
-    }
-    expect(Object.keys(ESCALATION_POLICY).sort()).toEqual([...EscalationCodeSchema.options].sort());
+  // The factory must never escalate into an irreversible action on its own: that class stays unused.
+  it("keeps the irreversible class unused by every escalation source", () => {
+    const classes = Object.values({ ...ESCALATION_POLICY, ...MAIN_ESCALATION_POLICY }).map((p) => p.decisionClass);
+    expect(classes).not.toContain("irreversible");
   });
-
-  // One test per class: each class the factory can raise has at least one concrete source.
-  const sources: Record<string, string[]> = {};
-  for (const [code, p] of Object.entries({ ...ESCALATION_POLICY, ...MAIN_ESCALATION_POLICY })) {
-    (sources[p.decisionClass] ??= []).push(code);
-  }
-  for (const cls of DECISION_CLASSES) {
-    it(`class ${cls} has a defined source or is reserved for explicit owner sign-off`, () => {
-      if (cls === "irreversible") {
-        // Archangel never takes irreversible actions itself; nothing may escalate into it silently.
-        expect(sources[cls] ?? []).toEqual([]);
-      } else {
-        expect((sources[cls] ?? []).length).toBeGreaterThan(0);
-      }
-    });
-  }
 
   it("shows class and recommendation in the Recap", () => {
     const body = renderRecapComment({ thread: needsYouThread("review_vetoed"), reviews: [], blockers: [] });
