@@ -22,6 +22,9 @@ export function providerToVendor(provider: CliProvider): ReviewerVendor {
   return "anthropic";
 }
 
+/** `owner/name` as GitHub allows it. No spaces or URL metacharacters (slugs are interpolated into REST paths), and the name is never `.` or `..`. */
+export const REPO_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+
 export const GatePolicySchema = z.object({
   maxNonTestLines: z.number().int().min(1).default(150),
   maxTotalLines: z.number().int().min(1).default(300),
@@ -179,7 +182,7 @@ const ProjectAttemptOverrides = {
 };
 
 const HostProjectYamlSchema = z.object({
-  repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must be 'owner/name'"),
+  repo: z.string().regex(REPO_SLUG_RE, "repo must be 'owner/name' (letters, digits, '-', '_', '.')"),
   defaultBranch: z.string().min(1).default("main"),
   workspace: z.enum(["local-clone"]).default("local-clone"),
   githubInstallationId: z.number().int().positive().optional(),
@@ -220,7 +223,15 @@ export const HostYamlSchema = z.object({
   paseoHost: z.string().optional(),
   paseoHome: z.string().optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
-}).strict();
+}).strict().superRefine((host, ctx) => {
+  // Two entries for one repo would run two Reconcilers over one Broker clone, clones dir and Ledger view.
+  const seen = new Set<string>();
+  host.projects.forEach((p, i) => {
+    const key = p.repo.toLowerCase();
+    if (seen.has(key)) ctx.addIssue({ code: "custom", path: ["projects", i, "repo"], message: `duplicate project '${p.repo}' (repo names are case-insensitive)` });
+    seen.add(key);
+  });
+});
 
 /**
  * Resolves the 2 independent reviewer vendors required for a project (ADR-0003: implementer != reviewer).

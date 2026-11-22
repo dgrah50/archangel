@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { GatePolicy } from "../config.js";
+import { REPO_SLUG_RE, type GatePolicy } from "../config.js";
 import {
   getDiffStats,
   isProtectedPath,
@@ -130,7 +130,7 @@ export class GitBroker {
    * null when the commit is not in the bare repo (nothing to pin).
    */
   async pinEvalRef(repo: string, issueNumber: number, sha: string): Promise<string | null> {
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`pinEvalRef: bad repo or sha (${repo}, ${sha})`);
+    if (!REPO_SLUG_RE.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`pinEvalRef: bad repo or sha (${repo}, ${sha})`);
     const has = await this.runGit(this.bareRepoPath, ["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
     if (!has) return null;
     const prefix = `refs/archangel/eval/${repo}/${issueNumber}/`;

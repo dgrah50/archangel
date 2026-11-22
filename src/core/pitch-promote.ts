@@ -1,4 +1,4 @@
-import type { LabelsSchema } from "../config.js";
+import { REPO_SLUG_RE, type LabelsSchema } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
 import type { OnboardRunner } from "./onboard.js";
 import { PitchOutputSchema, type PitchItem } from "./pitch.js";
@@ -48,7 +48,7 @@ export async function promotePitch(
     now?: number;
   },
 ): Promise<number[]> {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(input.repo)) throw new Error(`Expected owner/name, got '${input.repo}'`);
+  if (!REPO_SLUG_RE.test(input.repo)) throw new Error(`Expected owner/name, got '${input.repo}'`);
   const row = ledger.getPitch(input.issue);
   if (!row) throw new Error(`#${input.issue} is not a pitch recorded by this Ledger`);
   if (row.status !== "open") throw new Error(`Pitch #${input.issue} is already ${row.status}`);

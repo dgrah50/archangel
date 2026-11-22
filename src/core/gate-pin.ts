@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { REPO_SLUG_RE } from "../config.js";
 import path from "node:path";
 import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, pinnedSha, type OnboardRunner } from "./onboard.js";
 import { readRepoFile } from "./workflow-propose.js";
@@ -92,7 +93,7 @@ export async function gateBump(
 ): Promise<Record<string, "bumped" | "would-bump" | "current" | "no-workflow" | "pr-open">> {
   const log = opts.log ?? console.log;
   const root = opts.root ?? ARCHANGEL_ROOT;
-  for (const r of repos) if (!/^[\w.-]+\/[\w.-]+$/.test(r)) throw new Error(`Expected owner/name, got '${r}'`);
+  for (const r of repos) if (!REPO_SLUG_RE.test(r)) throw new Error(`Expected owner/name, got '${r}'`);
   const head = await pinnedSha(runner, root, "bump the Gate pin");
   const latest = await latestGateCommit(runner, root);
   const template = withPin(canonicalTemplate(root), head);
