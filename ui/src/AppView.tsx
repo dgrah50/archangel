@@ -1,7 +1,9 @@
-import { Box, Button, Text } from "@chakra-ui/react";
+import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 import { Dashboard } from "./Dashboard";
 import { Pipeline } from "./Pipeline";
+import type { Route } from "./route";
+import { Shell } from "./Shell";
 
 /** One polled feed: the last good data, when it arrived (client clock), and the last failure if the latest poll failed. */
 export interface Feed<T> {
@@ -41,7 +43,46 @@ export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "re
   return out;
 }
 
-export function AppView({ state, workflows, now, onRetry }: { state: Feed<UiState>; workflows: Feed<WorkflowsState>; now: number; onRetry: () => void }) {
+function PipelinePage({ workflows, onRetry }: { workflows: Feed<WorkflowsState>; onRetry: () => void }) {
+  return (
+    <Box maxW="64rem" mx="auto" p="6">
+      {workflows.data ? (
+        <>
+          {workflows.error ? (
+            <Notice tone="red">
+              <Text textStyle="sm">Pipeline refresh failed ({workflows.error}); showing the last loaded copy.</Text>
+            </Notice>
+          ) : null}
+          <Pipeline data={workflows.data} />
+        </>
+      ) : workflows.error ? (
+        <Notice tone="red">
+          <Text fontWeight="medium">Pipeline unavailable.</Text>
+          <Text textStyle="sm">{workflows.error}</Text>
+          <Button size="sm" mt="2" onClick={onRetry}>
+            Retry
+          </Button>
+        </Notice>
+      ) : (
+        <Text color="fg.muted">Loading pipeline...</Text>
+      )}
+    </Box>
+  );
+}
+
+export function AppView({
+  route,
+  state,
+  workflows,
+  now,
+  onRetry,
+}: {
+  route: Route;
+  state: Feed<UiState>;
+  workflows: Feed<WorkflowsState>;
+  now: number;
+  onRetry: () => void;
+}) {
   if (state.data === null) {
     if (state.error === null) return <Text p="6" color="fg.muted">Loading...</Text>;
     return (
@@ -57,7 +98,7 @@ export function AppView({ state, workflows, now, onRetry }: { state: Feed<UiStat
     );
   }
   return (
-    <>
+    <Shell route={route} state={state.data}>
       <Box pt="4" px="6">
         {bannersFor(state, now).map((b) => (
           <Notice key={b.text} tone={b.tone}>
@@ -65,29 +106,14 @@ export function AppView({ state, workflows, now, onRetry }: { state: Feed<UiStat
           </Notice>
         ))}
       </Box>
-      <Dashboard state={state.data} />
-      <Box maxW="64rem" mx="auto" px="6" pb="6">
-        {workflows.data ? (
-          <>
-            {workflows.error ? (
-              <Notice tone="red">
-                <Text textStyle="sm">Pipeline refresh failed ({workflows.error}); showing the last loaded copy.</Text>
-              </Notice>
-            ) : null}
-            <Pipeline data={workflows.data} />
-          </>
-        ) : workflows.error ? (
-          <Notice tone="red">
-            <Text fontWeight="medium">Pipeline unavailable.</Text>
-            <Text textStyle="sm">{workflows.error}</Text>
-            <Button size="sm" mt="2" onClick={onRetry}>
-              Retry
-            </Button>
-          </Notice>
-        ) : (
-          <Text color="fg.muted">Loading pipeline...</Text>
-        )}
-      </Box>
-    </>
+      {route.page === "overview" ? <Dashboard state={state.data} /> : null}
+      {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
+      {route.page === "not-found" ? (
+        <Box maxW="40rem" mx="auto" p="6">
+          <Text fontWeight="medium">No such page.</Text>
+          <Link href="#/">Back to Overview</Link>
+        </Box>
+      ) : null}
+    </Shell>
   );
 }
