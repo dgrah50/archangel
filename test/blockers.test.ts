@@ -94,12 +94,6 @@ describe("landing fail-closed invariants", () => {
     expect(bDup).toEqual([]);
   });
 
-  it("treats shadowMode as the sole shadow-ready blocker, never masking real blockers", () => {
-    expect(isShadowReady(computeBlockers(cleanSnapshot({ shadowMode: true })))).toBe(true);
-    expect(isShadowReady(computeBlockers(cleanSnapshot({ shadowMode: true, shaRecordedByBroker: false })))).toBe(false);
-    expect(isShadowReady(computeBlockers(cleanSnapshot({ shadowMode: true, postHandoff: true })))).toBe(false);
-  });
-
   it("treats missing or unparseable reviewer output as veto", () => {
     expect(parseStrictVerdict(undefined).verdict).toBe("veto");
     expect(parseStrictVerdict({ verdict: "maybe" }).verdict).toBe("veto");

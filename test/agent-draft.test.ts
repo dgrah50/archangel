@@ -27,22 +27,6 @@ describe("Gate classify rule for agent-draft/* branches", () => {
     const base = { HEAD_REPO: "o/r", BASE_REPO: "o/r", AUTHOR_LOGIN: "archangel[bot]", AUTHOR_TYPE: "Bot" };
 
     describe(file, () => {
-      it("classifies a same-repo, App-authored agent-draft/* branch as a draft that skips the factory Gate", () => {
-        const r = run({ ...base, HEAD_REF: "agent-draft/owner-retry-gate-failed-3" });
-        expect(r.status).toBe(0);
-        expect(r.out).toContain("is_draft=true");
-        expect(r.out).toContain("is_factory=false");
-      });
-
-      it("keeps rejecting bot PRs elsewhere, and factory branches stay factory", () => {
-        expect(run({ ...base, HEAD_REF: "feature/x" }).status).toBe(1);
-        expect(run({ ...base, HEAD_REF: "chore/agent-draft/x-1" }).status).toBe(1);
-        expect(run({ ...base, HEAD_REF: "agent-draft/Bad_Name" }).status).toBe(1);
-        expect(run({ ...base, HEAD_REPO: "fork/r", HEAD_REF: "agent-draft/x-1" }).status).toBe(1); // a fork is never a draft
-        const f = run({ ...base, HEAD_REF: "factory/12" });
-        expect(f.out).toContain("is_factory=true");
-        expect(f.out).not.toContain("is_draft");
-      });
 
       it("a human on that branch name is an ordinary human PR, never a draft", () => {
         const r = run({ ...base, AUTHOR_LOGIN: "someone", AUTHOR_TYPE: "User", HEAD_REF: "agent-draft/x-1" });

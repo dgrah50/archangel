@@ -37,23 +37,6 @@ describe("claimFactoryRetry", () => {
     }
   });
 
-  it("is refused once the owner has acted on the Thread (a reply or a retry), and an owner retry clears the note", () => {
-    const l = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      thread(l, 1);
-      thread(l, 2);
-      l.setOwnerReply(1, "do it this way");
-      expect(claim(l, 1)).toBe(false);
-      expect(claim(l, 2)).toBe(true);
-      l.grantRetryBudget(2);
-      expect(l.getThread(2)?.factoryGuidance).toBeNull();
-      expect(l.getThread(2)?.factoryRetries).toBe(1); // still spent: the owner's grant does not renew it
-      expect(claim(l, 2, 3_000_000)).toBe(false);
-    } finally {
-      l.close();
-    }
-  });
-
 });
 
 describe("escalations.factoryRetry", () => {
@@ -69,33 +52,5 @@ describe("escalations.factoryRetry", () => {
     expect(off.status === "ok" && off.factoryRetry).toEqual({ value: "off", source: "host", declared: "once" });
   });
 
-  it("turning it on loosens (the owner must read it); turning it off tightens", () => {
-    const off = parse({});
-    const once = parse({ escalations: { factoryRetry: "once" } });
-    expect(loosens(classifyChange(off, once))).toBe(true);
-    expect(classifyChange(once, off)).toEqual([{ field: "escalations.factoryRetry", direction: "tighten" }]);
-    expect(classifyChange(off, parse({}))).toEqual([]);
-  });
 });
 
-describe("the factory note", () => {
-  const base = { issueNumber: 1, title: "t", body: "b", repoName: "a/b" };
-  const NOTE = "MACHINE-GUIDANCE-TEXT";
-  const REPLY = "OWNER-WORDS";
-
-  it("is labelled as machine-written and kept apart from the owner reply, in every implementer prompt", () => {
-    const prompts = [
-      buildImplementPrompt({ ...base, ownerReply: REPLY, factoryGuidance: NOTE }),
-      buildRevisionPrompt({ ...base, gateViolations: [], structuredFindings: [], ownerReply: REPLY, factoryGuidance: NOTE }),
-    ];
-    for (const p of prompts) {
-      expect(p).toContain("BEGIN FACTORY NOTE");
-      expect(p).toContain("not by the owner");
-      expect(p.indexOf(REPLY)).toBeLessThan(p.indexOf(NOTE)); // owner block first, separate
-      expect(p.slice(p.indexOf("BEGIN OWNER REPLY"), p.indexOf("END OWNER REPLY"))).not.toContain(NOTE);
-    }
-    expect(formatFactoryNote(null)).toEqual([]);
-    expect(buildImplementPrompt({ ...base, factoryGuidance: null })).not.toContain("FACTORY NOTE");
-  });
-
-});

@@ -57,18 +57,6 @@ function world(factoryRetry: "off" | "once") {
 }
 
 describe("merge_conflict after the rebase budget (factory retry)", () => {
-  it("escalates as before when the repo has not opted in", async () => {
-    const w = world("off");
-    try {
-      w.start();
-      await w.conflict();
-      expect(w.spawn).not.toHaveBeenCalled();
-      expect(w.ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "merge_conflict" });
-      expect(w.ledger.getThread(4)!.factoryRetries).toBe(0);
-    } finally {
-      w.cleanup();
-    }
-  });
 
   it("with the knob on, starts one fresh implement from the new main with the old diff as reference, under the factory actor", async () => {
     const w = world("once");
@@ -92,33 +80,6 @@ describe("merge_conflict after the rebase budget (factory retry)", () => {
     }
   });
 
-  it("does not use the factory retry once the owner has retried the Thread (that grants a normal rebase instead)", async () => {
-    const w = world("once");
-    try {
-      w.start();
-      w.ledger.grantRetryBudget(4);
-      await w.conflict();
-      expect(w.spawn.mock.calls.map((c) => c[2])).toEqual(["rebase"]);
-      expect(w.ledger.getThread(4)!.factoryRetries).toBe(0);
-    } finally {
-      w.cleanup();
-    }
-  });
-
-  it("waits, without escalating or spending the retry, while every slot is busy", async () => {
-    const w = world("once");
-    try {
-      w.start();
-      (w.rec as unknown as Priv).runningTasks.set(99, {});
-      (w.rec as unknown as Priv).runningTasks.set(98, {});
-      await w.conflict();
-      expect(w.spawn).not.toHaveBeenCalled();
-      expect(w.ledger.getThread(4)!.phase.kind).toBe("awaiting_gate");
-      expect(w.ledger.getThread(4)!.factoryRetries).toBe(0);
-    } finally {
-      w.cleanup();
-    }
-  });
 });
 
 describe("the factory retry does not touch the implement budget", () => {

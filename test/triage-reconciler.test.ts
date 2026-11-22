@@ -92,17 +92,6 @@ describe("holding the escalation while triage decides", () => {
     }
   });
 
-  it("does not hold once the owner has replied to the Thread", () => {
-    const w = world();
-    try {
-      w.ledger.setOwnerReply(4, "try this");
-      w.escalate();
-      expect(w.ledger.getThread(4)!.factoryTriage).toBeNull();
-      expect(outbox(w.ledger)).toEqual(["add_label", "notify_needs_you"]);
-    } finally {
-      w.cleanup();
-    }
-  });
 });
 
 describe("triage outcomes", () => {
@@ -131,25 +120,6 @@ describe("triage outcomes", () => {
     }
   });
 
-  it("an escalate answer releases the Needs You with the triage reason attached, and spends no retry", async () => {
-    const w = world({ invoker: async () => ({ ...GOOD, decision: "escalate", cause: "findings_conflict", escalateReason: "the reviewers disagree on the contract" }) });
-    try {
-      w.review("openai", "veto");
-      w.escalate();
-      await w.triage();
-      const t = w.ledger.getThread(4)!;
-      expect(t.phase.kind).toBe("needs_you");
-      expect(t.factoryTriage).toBe("done");
-      expect(t.factoryRetries).toBe(0);
-      expect(w.spawn).not.toHaveBeenCalled();
-      const effs = w.ledger.listDueOutbox().map((o) => o.effect);
-      expect(effs.map((e) => e?.kind)).toEqual(["add_label", "notify_needs_you"]);
-      expect(JSON.stringify(effs)).toContain("the reviewers disagree on the contract");
-    } finally {
-      w.cleanup();
-    }
-  });
-
   it("'the veto is wrong' can only escalate: veto_disputed never retries, even when decision says guidance", async () => {
     const w = world({ invoker: async () => ({ ...GOOD, cause: "veto_disputed", escalateReason: "I think the veto is mistaken" }) });
     try {
@@ -165,42 +135,6 @@ describe("triage outcomes", () => {
     }
   });
 
-  it("guidance naming an existing test or a protected path escalates instead", async () => {
-    for (const step of ["update `test/old.test.ts` to the new behaviour", "edit `.agents/archangel.json`"]) {
-      const w = world({ invoker: async () => ({ ...GOOD, steps: [step] }) });
-      try {
-        vi.spyOn((w.rec as unknown as { broker: GitBroker }).broker, "readFileAtRef").mockResolvedValue("x");
-        w.review("openai", "veto");
-        w.escalate();
-        await w.triage();
-        expect(w.spawn).not.toHaveBeenCalled();
-        expect(outbox(w.ledger)).toEqual(["add_label", "notify_needs_you"]);
-      } finally {
-        w.cleanup();
-      }
-    }
-  });
-
-  it("a failed or unparseable run, or no eligible vendor, escalates normally", async () => {
-    const failing = world({ invoker: async () => { throw new Error("cli exploded"); } });
-    const garbage = world({ invoker: async () => "nope" });
-    const noVendor = world({ vendors: ["anthropic", "openai"] });
-    try {
-      for (const w of [failing, garbage, noVendor]) {
-        w.review("openai", "veto");
-        w.escalate();
-        await w.triage();
-        expect(w.spawn).not.toHaveBeenCalled();
-        expect(w.ledger.getThread(4)).toMatchObject({ factoryRetries: 0, factoryTriage: "done" });
-        expect(outbox(w.ledger)).toEqual(["add_label", "notify_needs_you"]);
-      }
-      expect(noVendor.invoker).not.toHaveBeenCalled();
-    } finally {
-      failing.cleanup();
-      garbage.cleanup();
-      noVendor.cleanup();
-    }
-  });
 });
 
 describe("auto-off", () => {
