@@ -48,6 +48,18 @@ export class FakeGitHub implements GitHubClient {
     const pr = this.prs.get(prNumber);
     if (pr) pr.state = "closed";
   }
+  mergedPrs: Array<{ number: number; mergedAt: number }> = [];
+  releases: Array<{ tag: string; publishedAt: number }> = [];
+  alerts: Array<{ number: number; createdAt: number; severity: string; ghsaId: string }> = [];
+  async listMergedPrsSince(sinceMs: number) {
+    return this.mergedPrs.filter((p) => p.mergedAt > sinceMs);
+  }
+  async listReleasesSince(sinceMs: number) {
+    return this.releases.filter((r) => r.publishedAt > sinceMs);
+  }
+  async listDependabotAlertsSince(sinceMs: number) {
+    return this.alerts.filter((a) => a.createdAt > sinceMs);
+  }
   async getInstallationToken(): Promise<string> {
     return "fake-install-token";
   }
