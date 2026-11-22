@@ -18,7 +18,7 @@ describe("ClaudeSdkImplementer", () => {
     try {
       const impl = new ClaudeSdkImplementer({ apiKey: "k", model: "m", transcriptsDir: dir });
       const res = await impl.run({
-        issueNumber: 1, cloneDir: dir, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 5000, maxBudgetUsd: 1,
+        issueNumber: 1, cloneDir: dir, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 5000, maxBudgetUsd: 1, role: "implement",
       });
       expect(res.failure).toBe("error_max_turns");
       expect(res.costUsd).toBeCloseTo(0.5);

@@ -41,6 +41,10 @@ export const KERNEL = {
   gateCheck: "Gate",
   reviewQuorum: 2,
   maxScouts: 5,
+  /** One factory retry per Thread, for life: not configurable upward, never renewed except by an owner retry (which ends factory involvement). */
+  factoryRetriesPerThread: 1,
+  /** Factory retries per repo in any rolling 24 hours. */
+  factoryRetriesPerRepoPerDay: 3,
 } as const;
 
 const NonBlank = z.string().refine((s) => s.trim().length > 0, "must not be blank");
@@ -96,6 +100,8 @@ export const Workflow = z
     requiredChecks: z.array(NonBlank),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
     landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
+    /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
+    escalations: z.object({ factoryRetry: z.enum(["off", "once"]).default("off") }).strict().default({ factoryRetry: "off" }),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
   })
   .strict()
@@ -166,6 +172,8 @@ export interface HostWorkflowInput {
   /** `scouts.enabled` on the host: when false no Scout runs, whatever the repo declares. */
   scoutsEnabled: boolean;
   maxConcurrentThreads: number;
+  /** Host kill switch (`factoryRetry` in archangel.yaml): false turns factory retries off for every repo. */
+  factoryRetry: boolean;
   /** True when auto-promotion of this exact Scout version was revoked (disagreed, reverted, or red main). */
   isRevoked: (scoutName: string, trustHash: string) => boolean;
 }
@@ -197,6 +205,7 @@ export type EffectiveWorkflow =
       requiredChecks: string[];
       rubric?: string;
       landingBugfix: Effective<"owner" | "autonomous">;
+      factoryRetry: Effective<"off" | "once">;
       scouts: EffectiveScout[];
       caps: { autoMergesPerDay: number; autoPromotionsPerDay: number; scoutRunsPerDay: number; scoutsEnabled: boolean; concurrent: number };
     };
@@ -261,6 +270,12 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
       ? { value: "owner", source: "host", declared: declaredLanding }
       : { value: declaredLanding, source: "repo" };
 
+  const declaredRetry = wf.escalations.factoryRetry;
+  const factoryRetry: Effective<"off" | "once"> =
+    !host.factoryRetry && declaredRetry === "once"
+      ? { value: "off", source: "host", declared: declaredRetry }
+      : { value: declaredRetry, source: "repo" };
+
   const scouts: EffectiveScout[] = wf.scouts.map((spec) => {
     const prompt = repoIn.scoutPrompts[spec.name]!.trim();
     const hash = trustHash(spec, prompt);
@@ -282,6 +297,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     requiredChecks: [...new Set(wf.requiredChecks)],
     rubric: wf.review.rubric,
     landingBugfix,
+    factoryRetry,
     scouts,
     caps: {
       autoMergesPerDay: host.maxAutoMergesPerDay,
@@ -337,6 +353,10 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   if (!eq(prev.review.rubric, next.review.rubric)) add("review.rubric", "changed");
   if (prev.landing.bugfix !== next.landing.bugfix) {
     add("landing.bugfix", next.landing.bugfix === "autonomous" ? "loosen" : "tighten");
+  }
+
+  if (prev.escalations.factoryRetry !== next.escalations.factoryRetry) {
+    add("escalations.factoryRetry", next.escalations.factoryRetry === "once" ? "loosen" : "tighten");
   }
 
   const before = new Map(prev.scouts.map((s) => [s.name, s]));

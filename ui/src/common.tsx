@@ -1,5 +1,6 @@
 import { Badge, Link, Table } from "@chakra-ui/react";
 import type { UiItem } from "../../src/core/ui-state.js";
+import { threadHash } from "./route";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
@@ -42,7 +43,7 @@ export function ThreadTable({ items, now }: { items: UiItem[]; now: number }) {
         {items.map((i) => (
           <Table.Row key={`${i.repo}#${i.issueNumber}`}>
             <Table.Cell whiteSpace="nowrap">
-              <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink>
+              {/^[\w.-]+\/[\w.-]+$/.test(i.repo) ? <Link href={threadHash({ repo: i.repo, issue: i.issueNumber })}>{`${i.repo}#${i.issueNumber}`}</Link> : `${i.repo}#${i.issueNumber}`}
               {i.prNumber ? (
                 <>
                   {" "}
