@@ -15,6 +15,7 @@ import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { TelegramNotifier } from "../core/notifier.js";
+import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
 import { launchStudio } from "../core/studio.js";
@@ -518,6 +519,26 @@ program
     } finally {
       ledger.close();
     }
+  });
+
+program
+  .command("ui")
+  .description("Serve a read-only local dashboard (one page + /api/state) from the Ledger")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--port <n>", "Port", "4477")
+  .option("--host <host>", "Host to bind", "127.0.0.1")
+  .option("--allow-remote", "Allow binding a non-loopback host (the page has no authentication)")
+  .action(async (opts: { config?: string; dataDir?: string; port: string; host: string; allowRemote?: boolean }) => {
+    assertBindable(opts.host, Boolean(opts.allowRemote));
+    const paths = resolvePaths({ dataDir: resolveDataDirFromOpts(opts) });
+    if (!fs.existsSync(paths.ledgerDbPath)) {
+      console.log(`No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.`);
+      return;
+    }
+    const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote });
+    console.log(`Archangel UI (read-only): http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
 program
