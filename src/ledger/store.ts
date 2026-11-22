@@ -609,11 +609,13 @@ export class Ledger {
     now = Date.now(),
   ): AttemptRecord {
     const cost = Math.max(0, result.costUsd ?? 0);
-    this.db
+    // An Attempt is finished once. A second finish (a late error handler after the first outcome was recorded) must not
+    // rewrite the outcome or settle the budget twice.
+    const done = this.db
       .prepare(
         `UPDATE attempts
          SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, finished_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'running'`,
       )
       .run(
         result.status,
@@ -624,6 +626,7 @@ export class Ledger {
         now,
         attemptId,
       );
+    if (done.changes === 0) return this.getAttempt(attemptId)!;
     if (result.reservedUsd !== undefined) {
       this.settleBudget(result.reservedUsd, cost, now);
     } else if (cost > 0) {
