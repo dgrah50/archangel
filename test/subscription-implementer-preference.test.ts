@@ -11,7 +11,7 @@ describe("subscription implementer vendor preference", () => {
     const calls: string[] = [];
     const cooling = new Set<string>();
     const impl = new SubscriptionImplementer({
-      chain: [{ provider: "codex" }, { provider: "agy" }],
+      chains: { implement: [{ provider: "codex" }, { provider: "agy" }], revise: [{ provider: "codex" }, { provider: "agy" }], rebase: [{ provider: "codex" }, { provider: "agy" }] },
       transcriptsDir: path.join(tmp, "transcripts"),
       cooldowns: {
         isCoolingDown: (provider) => cooling.has(provider),
@@ -29,7 +29,7 @@ describe("subscription implementer vendor preference", () => {
       abortController: new AbortController(),
       maxTurns: 1,
       timeoutMs: 1000,
-      maxBudgetUsd: 1,
+      maxBudgetUsd: 1, role: "implement" as const,
       // Keep the test compilable against the pre-fix ImplementInput API to reproduce its ignored hint.
       preferVendors: ["gemini"],
     } as ImplementInput;
