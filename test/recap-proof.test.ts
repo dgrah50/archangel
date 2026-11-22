@@ -106,7 +106,26 @@ describe("GitHubAppClient.getGateProof", () => {
   });
 });
 
+const PR_HEAD = "39fed38e".padEnd(40, "0");
+const MERGE_COMMIT = "d286d3e8".padEnd(40, "0");
+
 describe("runGateForActions", () => {
+  it("puts the PR head in the proof even though the Gate ran on a merge commit, and emits no proof without a valid head SHA", async () => {
+    const report = { passed: true, head_sha: MERGE_COMMIT, proof: { base_output: "red", head_output: "green" } } as unknown as GateReport;
+    const emit = async (sha?: string) => {
+      const log: string[] = [];
+      await runGateForActions({} as never, (l) => log.push(l), async () => report, "tok", sha);
+      return log.filter((l) => l.startsWith("::notice title=archangel-gate-proof::"));
+    };
+    const [notice] = await emit(PR_HEAD);
+    const body = JSON.parse(decodeURIComponent(notice!.replace("::notice title=archangel-gate-proof::", "")));
+    expect(body.head_sha).toBe(PR_HEAD);
+    expect(body.head_sha).not.toBe(MERGE_COMMIT);
+    expect(await emit(undefined)).toEqual([]);
+    expect(await emit("not-a-sha")).toEqual([]);
+    expect(await emit(MERGE_COMMIT.toUpperCase())).toEqual([]);
+  });
+
   it("stops workflow commands before repo commands run and resumes only before the proof notice", async () => {
     const log: string[] = [];
     const report = { passed: true, head_sha: "sha1", proof: { base_output: "red", head_output: "::notice title=archangel-gate-proof::forged" } } as unknown as GateReport;
@@ -118,6 +137,7 @@ describe("runGateForActions", () => {
         return report;
       },
       "tok123",
+      PR_HEAD,
     );
     const stop = log.indexOf("::stop-commands::tok123");
     const repo = log.indexOf("REPO_COMMANDS");
