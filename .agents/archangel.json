@@ -31,6 +31,7 @@
       "skills/**",
       "src/core/work-class.ts",
       "src/core/onboard.ts",
+      "src/core/pitch-promote.ts",
       "src/core/owner-reply.ts",
       "src/core/metrics-block.ts",
       "src/core/skills.ts",

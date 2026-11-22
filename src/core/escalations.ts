@@ -98,6 +98,11 @@ export function formatDecisionClass(c: DecisionClass): string {
 
 /** Escalations raised by project-level monitors (autonomy cap, post-merge main) rather than by a Thread. */
 export const MAIN_ESCALATION_POLICY = {
+  pitch_scout_paused: {
+    decisionClass: "owner_signoff",
+    recommendation:
+      "Four pitches in a row were not promoted. Edit the Scout entry or its prompt in .agents/archangel.json (an owner-merged change) to resume it, or remove the Scout.",
+  },
   autonomy_cap: {
     decisionClass: "spending",
     recommendation: "Reply on any Thread or run `archangel retry` to continue.",

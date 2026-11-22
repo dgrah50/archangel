@@ -5,17 +5,22 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { GitBroker } from "../broker/git-broker.js";
-import type { ArchangelConfig, ProviderEntry } from "../config.js";
+import type { ReviewerSuite } from "../agents/reviewers.js";
+import { providerToVendor, resolveRequiredReviewers, type ArchangelConfig, type ProviderEntry } from "../config.js";
 import type { GitHubClient } from "../github/client.js";
 import type { Ledger } from "../ledger/store.js";
+import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
 import type { Logger } from "./logger.js";
+import type { Notifier } from "./notifier.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
   PITCH_DECLINE_WINDOW_DAYS,
   PITCH_MAX_OPEN,
   PITCH_PAUSE_AFTER_UNPROMOTED,
   PITCH_TIMEOUT_MS,
+  PITCH_CRITIC_RUBRIC,
   PitchOutputSchema,
+  type PitchItem,
   buildPitchPrompt,
   checkPitch,
   pitchJsonSchema,
@@ -336,6 +341,8 @@ export async function runScoutsForProject(opts: {
   github: GitHubClient;
   broker: GitBroker;
   workflow: OkWorkflow;
+  reviewers: ReviewerSuite;
+  notifier: Notifier;
   mainSha: string;
   onlyScheduled?: boolean;
   filterName?: string;
@@ -539,16 +546,36 @@ async function runPitchScout(opts: {
   providerChoice: { provider: ScoutCliProvider; model?: string };
   invoker: ScoutCliInvoker;
   includeMetricsFrom: ScoutWorkflow[];
+  reviewers: ReviewerSuite;
+  notifier: Notifier;
 }): Promise<ScoutRunSummary> {
   const { wf, ledger, now } = opts;
   const summary: ScoutRunSummary = { scoutName: wf.name, status: "ran", filedIssues: [], blockedSecrets: 0, skippedDuplicates: 0 };
 
   // Caps: decided pitches free their slot; at most PITCH_MAX_OPEN stay open per repo.
   const openIssues = await opts.github.listOpenIssuesByLabel(opts.config.labels.agentPitch);
-  ledger.syncPitchStatuses(openIssues.map((i) => i.number), now);
+  // A pitch whose issue was closed is declined; the owner's own comments on it (their reason) feed the next prompt.
+  for (const d of ledger.syncPitchStatuses(openIssues.map((i) => i.number), now)) {
+    try {
+      const reason = (await opts.github.listOwnerCommentsSince(d.issueNumber, opts.config.ownerUserId, d.filedAt)).join("\n---\n").slice(0, PITCH_DECLINE_REASON_MAX);
+      if (reason) ledger.setPitchDeclineReason(d.issueNumber, reason);
+    } catch {
+      // The reason is a hint for the prompt; the pitch is already declined without it.
+    }
+  }
   if (ledger.isPitchScoutPaused(wf.name, wf.trustHash, PITCH_PAUSE_AFTER_UNPROMOTED)) {
-    if (!ledger.listAudit({ topicPrefix: "pitch/paused", limit: 200 }).some((a) => a.actor === wf.name && a.payloadJson.includes(wf.trustHash.slice(0, 12)))) {
-      ledger.appendAudit("pitch/paused", null, wf.name, { trustHash: wf.trustHash.slice(0, 12), after: PITCH_PAUSE_AFTER_UNPROMOTED }, now);
+    const marker = wf.trustHash.slice(0, 12);
+    if (!ledger.listAudit({ topicPrefix: "pitch/paused", limit: 200 }).some((a) => a.actor === wf.name && a.payloadJson.includes(marker))) {
+      // Notify first: if it fails the audit row is not written and the next run tries again (exactly one notification lands).
+      const policy = MAIN_ESCALATION_POLICY.pitch_scout_paused;
+      await opts.notifier.notifyNeedsYou({
+        issueNumber: null,
+        title: `Pitch Scout '${wf.name}' paused on ${ledger.repo}`,
+        reason: `${PITCH_PAUSE_AFTER_UNPROMOTED} consecutive pitches were not promoted.`,
+        decisionClass: formatDecisionClass(policy.decisionClass),
+        recommendation: policy.recommendation,
+      });
+      ledger.appendAudit("pitch/paused", null, wf.name, { trustHash: marker, after: PITCH_PAUSE_AFTER_UNPROMOTED }, now);
     }
     return { ...summary, status: "paused" };
   }
@@ -568,7 +595,7 @@ async function runPitchScout(opts: {
         name: wf.name,
         skills: wf.skills,
         prompt: wf.prompt,
-        declinedTitles: recent.map((r) => r.title),
+        declined: recent.map((r) => ({ title: r.title, reason: r.declineReason })),
         metricsBlock: wf.includeMetrics
           ? buildMetricsBlockFrom(() =>
               ledger.computeMetrics({
@@ -604,6 +631,11 @@ async function runPitchScout(opts: {
         continue;
       }
       const body = renderPitchBody(pitch);
+      const veto = await pitchVeto(pitch, body, opts);
+      if (veto) {
+        ledger.appendAudit("pitch/vetoed", null, wf.name, { reason: veto.slice(0, 300), title: pitch.title.slice(0, 60) }, now);
+        continue;
+      }
       const created = await opts.github.createIssue!({ title: pitch.title, body, labels: [opts.config.labels.agentPitch] });
       ledger.recordPitch({
         issueNumber: created.number,
@@ -612,6 +644,7 @@ async function runPitchScout(opts: {
         title: pitch.title,
         titleFp: normalizeTitleFp(pitch.title),
         contentSha256: scoutContentHash(created.title, created.body),
+        pitchJson: JSON.stringify(pitch),
         now,
       });
       summary.filedIssues.push(created.number);
@@ -620,4 +653,54 @@ async function runPitchScout(opts: {
     opts.broker.removeClone(cloneDir);
   }
   return summary;
+}
+
+const PITCH_DECLINE_REASON_MAX = 600;
+const CRITIC_FILE_MAX_CHARS = 8_000;
+
+/**
+ * Cross-vendor veto: one reviewer from a vendor other than the pitch author's reads the pitch and the files it cites,
+ * and can only veto. No independent reviewer, an outage, or an unparseable answer all mean "not filed" (retried next week).
+ */
+async function pitchVeto(
+  pitch: PitchItem,
+  body: string,
+  opts: {
+    config: ArchangelConfig;
+    broker: GitBroker;
+    mainSha: string;
+    providerChoice: { provider: ScoutCliProvider };
+    reviewers: ReviewerSuite;
+  },
+): Promise<string | null> {
+  const author = providerToVendor(opts.providerChoice.provider);
+  const vendors = resolveRequiredReviewers(opts.config, [author]);
+  if (vendors.length === 0) return "no reviewer from another vendor is available to critique it";
+  const touchedFiles: Record<string, string> = {};
+  for (const e of pitch.evidence) {
+    if (e.file === null || touchedFiles[e.file] !== undefined) continue;
+    const content = await opts.broker.readFileAtRef(opts.mainSha, e.file);
+    if (content !== null) touchedFiles[e.file] = content.slice(0, CRITIC_FILE_MAX_CHARS);
+  }
+  let batch;
+  try {
+    batch = await opts.reviewers.reviewAll({
+      issueNumber: 0,
+      title: pitch.title,
+      body: pitch.problem,
+      headSha: "pitch",
+      diffText: body,
+      touchedFiles,
+      reviewRubric: PITCH_CRITIC_RUBRIC,
+      excludeVendors: [author],
+      skipVendors: vendors.slice(1),
+    });
+  } catch (err) {
+    return `critic unavailable: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (batch.errors.length > 0 || batch.results.length === 0) {
+    return `critic unavailable: ${batch.errors.map((e) => `${e.vendor}: ${e.error}`).join("; ") || "no verdict"}`;
+  }
+  const vetoing = batch.results.find((r) => r.verdict !== "approve");
+  return vetoing ? `vetoed by ${vetoing.vendor}: ${vetoing.findings.map((f) => f.summary).join("; ").slice(0, 200)}` : null;
 }
