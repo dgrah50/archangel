@@ -669,7 +669,8 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       await extractCommitTree(opts.repoDir, baseSha, baseDir, env);
 
       // 4a. Pristine base must be green first — ties the subsequent failure directly to the new test overlay.
-      const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, env);
+      const pristineEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: "" };
+      const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, pristineEnv);
       if (!pristineRes.ok) {
         report.violations.push(
           `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
@@ -688,8 +689,9 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         fs.writeFileSync(dest, bytes);
       }
 
+      const testEnv: NodeJS.ProcessEnv = { ...env, ARCHANGEL_NEW_TEST_FILES: newTestFiles.join(" ") };
       if (policy.testBuildCmd) {
-        const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, env);
+        const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, testEnv);
         if (!buildRes.ok) {
           report.violations.push(
             `base build failed (new test must compile against base APIs): ${buildRes.output
@@ -702,7 +704,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
       }
 
       for (let i = 1; i <= baseRuns; i++) {
-        const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, env);
+        const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
         if (baseTestRes.ok) {
           report.already_fixed = true;
           report.violations.push(
@@ -714,7 +716,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
 
       // 4c. Green-on-HEAD (fresh tree verified unmodified by hooks).
       for (let i = 1; i <= headRuns; i++) {
-        const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, env);
+        const headTestRes = await runShellCmd(headDir, policy.testCmd, timeoutMs, testEnv);
         if (!headTestRes.ok) {
           report.violations.push(
             `head testCmd failed (run ${i}/${headRuns}): ${headTestRes.output

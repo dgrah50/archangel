@@ -101,8 +101,9 @@ function defaultCliInvoker(input: {
     bin = "agy";
     args = [
       "--mode",
-      "accept-edits",
+      "auto",
       "--sandbox",
+      "--dangerously-skip-permissions",
       "--disable-slash-commands",
       "--output-format",
       "json",
