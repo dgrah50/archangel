@@ -32,7 +32,8 @@
     "templates/**",
     "workflows/**",
     "bin/**",
-    "skills/**"
+    "skills/**",
+    "src/core/workflow.ts"
   ],
   "requiredChecks": [
     "Gate",

@@ -33,8 +33,8 @@ const HARDENED_GIT_FLAGS = [
  * Language/repo-specific paths (e.g. go.mod, package-lock.json, Makefile) belong in
  * `.agents/archangel.json` (`extraProtectedPaths`) or `archangel.yaml`.
  */
-const UNIVERSAL_PROTECTED_PREFIXES = [".github/", ".agents/"];
-const UNIVERSAL_PROTECTED_EXACT = new Set([
+export const UNIVERSAL_PROTECTED_PREFIXES = [".github/", ".agents/"];
+export const UNIVERSAL_PROTECTED_EXACT = new Set([
   ".pre-commit-config.yaml",
   ".pre-commit-config.yml",
   ".gitattributes",
