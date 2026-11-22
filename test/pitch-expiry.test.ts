@@ -162,7 +162,7 @@ describe("pitch metrics", () => {
 });
 
 describe("digest", () => {
-  const base = { now: NOW, needsYou: [], proposals: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } };
+  const base = { now: NOW, needsYou: [], proposals: [], faults: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 } };
   it("lists open pitches awaiting the owner, and an open pitch keeps an otherwise quiet digest alive", () => {
     expect(buildDigest({ ...base, pitches: [] })).toBeNull();
     const text = buildDigest({ ...base, pitches: [{ repo: "a/b", issueNumber: 7, scoutName: "pitch", since: NOW - 3 * DAY }] })!;
