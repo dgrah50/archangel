@@ -39,6 +39,8 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
+  /** Set by the UI server before the daemon has ever created the Ledger; everything below is then an empty stand-in. */
+  ledgerMissing?: boolean;
   needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string; threadRecommendation: { headline: string; reason: string } | null }>;
   /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;

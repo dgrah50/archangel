@@ -14,7 +14,7 @@ import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
 import { CopyCommand, Dot, Page, PageHeadline, Section } from "./page";
-import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNotProtected, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
+import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNoOnboardingPr, isNotProtected, protectionCommand, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
 interface GhRepo {
   nameWithOwner: string;
@@ -100,6 +100,13 @@ function GhError({ error, what, onRetry }: { error: HostError; what: string; onR
 
 function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onRetry: () => void }) {
   if (gh.state === "idle" || gh.state === "loading") return <Line>Looking for the onboarding PR...</Line>;
+  if (gh.state === "error" && isNoOnboardingPr(gh.error.message)) {
+    return (
+      <Problem title="Not onboarded yet" tag="Next step">
+        <Prose>{repo} has no onboarding PR. Use Plan onboarding above to open one with the Gate workflow and repo policy, then merge it.</Prose>
+      </Problem>
+    );
+  }
   if (gh.state === "error") return <GhError error={gh.error} what={`read the onboarding PR (${ONBOARD_BRANCH}) in ${repo}`} onRetry={onRetry} />;
   const pr = gh.value;
   const rows = pr.statusCheckRollup.map((c) => ({
@@ -326,6 +333,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
   const unprotected = projects.filter((p) => gated(protections[p.repo]) === "no");
   const checkedAt = repoLadder.state === "done" ? Math.max(0, state.generatedAt - repoLadder.payload.generatedAt) : null;
   const wf = repo ? workflows.data?.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase()) : undefined;
+  const requiredChecksOf = (r: string) => workflows.data?.repos.find((w) => w.repo.toLowerCase() === r.toLowerCase())?.draft?.requiredChecks;
   const feedErrors = [["Settings", settings], ["Pipeline", workflows]] as const;
 
   return (
@@ -402,8 +410,12 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
                 <Problem key={p.repo} title={`${short(p.repo)} does not require the Gate before merging`} tag="Works, but not protected">
                   <Prose>Branch protection on <Code>{p.defaultBranch}</Code> is not set, or does not list the Gate as a required check. The factory still waits for the Gate, but nothing stops a merge without it. Archangel does not change branch protection for you. See what it is now:</Prose>
                   <CopyCommand command={`gh api repos/${p.repo}/branches/${p.defaultBranch}/protection`} />
-                  <Prose>Require the Gate, plus your CI job in contexts, before merges. Run this once:</Prose>
-                  <CopyCommand command={`gh api -X PUT repos/${p.repo}/branches/${p.defaultBranch}/protection -F required_status_checks[strict]=true -f 'required_status_checks[contexts][]=Gate' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null`} />
+                  {requiredChecksOf(p.repo) ? (
+                    <>
+                      <Prose>Require every check in the repo's policy ({requiredChecksOf(p.repo)!.join(", ")}) before merges. Run this once:</Prose>
+                      <CopyCommand command={protectionCommand(p.repo, p.defaultBranch, requiredChecksOf(p.repo)!)} />
+                    </>
+                  ) : <Prose>Archangel has not read this repo's policy yet (the daemon reads it after the onboarding PR is merged), so it cannot list the required checks. Come back here once it has.</Prose>}
                 </Problem>
               ))}
               {projects.filter((p) => !p.defaultBranch).map((p) => <Problem key={p.repo} title={`${short(p.repo)}: branch protection was not read`} tag="Needs you"><Prose>The default branch is unknown.</Prose></Problem>)}
@@ -429,8 +441,8 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
           {open === 5 ? (
             <Flex direction="column" gap="3">
               {settings.data?.status.restartPending ? <Problem title="A saved change is waiting for a restart" tag="Needs you"><Prose>The daemon has not loaded the file on disk. Archangel never restarts the daemon for you; run this in a terminal:</Prose><CopyCommand command="archangel daemon restart" /></Problem> : null}
-              {settings.data && !settings.data.status.reported ? <Problem title="No daemon has reported its loaded config yet" tag="Needs you"><Prose>Start or restart the daemon.</Prose></Problem> : null}
-              {state.daemonHeartbeatAt === null ? <Problem title="Daemon offline" tag="Needs you"><Prose>No daemon lock is held. Start it:</Prose><CopyCommand command="archangel start" /></Problem> : null}
+              {settings.data && !settings.data.status.reported && !state.ledgerMissing ? <Problem title="No daemon has reported its loaded config yet" tag="Needs you"><Prose>Start or restart the daemon.</Prose></Problem> : null}
+              {state.ledgerMissing ? <Problem title="The daemon hasn't run yet" tag="Next step"><Prose>There is no Ledger yet: the dashboard never creates it, the daemon does on its first start. Once the GitHub App and archangel.yaml are in place, run:</Prose><CopyCommand command="archangel start" /></Problem> : state.daemonHeartbeatAt === null ? <Problem title="Daemon offline" tag="Needs you"><Prose>No daemon lock is held. Start it:</Prose><CopyCommand command="archangel start" /></Problem> : null}
               {repo ? (
                 wf === undefined ? <Line>The daemon has no cached workflow for <Code>{repo}</Code> yet.</Line>
                   : wf.status === "ok" ? <Line>The workflow for <Code>{repo}</Code> is ok (<Link href="#/pipeline">open the Pipeline</Link>).</Line>

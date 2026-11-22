@@ -899,12 +899,26 @@ program
   .action(async (opts: { config?: string; dataDir?: string; port: string; host: string; allowRemote?: boolean }) => {
     assertBindable(opts.host, Boolean(opts.allowRemote));
     const paths = resolvePaths({ dataDir: resolveDataDir(opts) });
-    if (!fs.existsSync(paths.ledgerDbPath)) {
-      console.log(`No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.`);
-      return;
-    }
-    const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    // The Ledger belongs to the daemon: the UI never creates or writes it. Before the first `archangel start` it serves an
+    // empty in-memory stand-in, and switches to the real file (read-only) as soon as the daemon has created it.
+    let real: Ledger | null = null;
+    let standIn: Ledger | null = null;
+    const ledger = (): Ledger => {
+      if (real) return real;
+      if (fs.existsSync(paths.ledgerDbPath)) {
+        real = new Ledger(paths.ledgerDbPath, { readonly: true });
+        standIn?.close();
+        return real;
+      }
+      return (standIn ??= new Ledger(":memory:"));
+    };
+    const appender = (source: string) => (topic: string, payload: Record<string, unknown>, now: number) => {
+      // Audit-before-write: with no Ledger there is nowhere to record it, and the UI must not create one, so refuse.
+      if (!fs.existsSync(paths.ledgerDbPath)) throw new Error("The daemon has not run yet, so there is no Ledger to record this in. Run `archangel start` once, then retry.");
+      const w = new Ledger(paths.ledgerDbPath);
+      try { w.appendAudit(topic, null, source, payload, now, null); } finally { w.close(); }
+    };
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: appender("host_config") }, onboardAudit: appender("ui_onboard"), ledgerMissing: () => real === null, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 
