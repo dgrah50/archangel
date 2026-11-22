@@ -22,6 +22,7 @@ import {
   type ReviewRecord,
   type ReviewerVendor,
   type ReviewVerdict,
+  type ScoutProposalRecord,
   type ThreadRecord,
 } from "./schema.js";
 
@@ -944,6 +945,114 @@ export class Ledger {
     } catch {
       return [];
     }
+  }
+
+  // ---- Scout Proposals & Atomic Daily Run Caps (V2.0 / Opus H2, M3, M5) ----
+
+  recordScoutProposal(input: {
+    issueNumber: number;
+    scoutName: string;
+    contentSha256: string;
+    titleFp: string;
+    now?: number;
+    repo?: string;
+  }): void {
+    const repo = input.repo ?? this.repo;
+    const now = input.now ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO scout_proposals (repo, issue_number, scout_name, content_sha256, title_fp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(repo, input.issueNumber, input.scoutName, input.contentSha256, input.titleFp, now);
+    this.appendAudit(
+      "scout/proposal_filed",
+      input.issueNumber,
+      input.scoutName,
+      { titleFp: input.titleFp, contentSha256: input.contentSha256.slice(0, 12) },
+      now,
+      repo,
+    );
+  }
+
+  getScoutProposal(issueNumber: number, repo = this.repo): ScoutProposalRecord | null {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, created_at
+           FROM scout_proposals WHERE repo = ? AND issue_number = ?`,
+        )
+        .get(repo, issueNumber) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        repo: String(row.repo),
+        issueNumber: Number(row.issue_number),
+        scoutName: String(row.scout_name),
+        contentSha256: String(row.content_sha256),
+        titleFp: String(row.title_fp),
+        createdAt: Number(row.created_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  hasScoutTitleFingerprint(titleFp: string, repo = this.repo): boolean {
+    try {
+      const row = this.db
+        .prepare(`SELECT 1 FROM scout_proposals WHERE repo = ? AND title_fp = ? LIMIT 1`)
+        .get(repo, titleFp);
+      return Boolean(row);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Atomically checks daily cap (and once-per-day dedupe for scheduled runs) and reserves
+   * a `scout/run` audit slot in a single SQLite transaction (Opus M5).
+   */
+  tryReserveScoutRun(
+    scoutName: string,
+    maxRunsPerDay: number,
+    oncePerDayForScout: boolean,
+    now = Date.now(),
+    repo = this.repo,
+  ): boolean {
+    const dayKey = formatDayKey(now, this.timeZone);
+    const tx = this.db.transaction(() => {
+      const rows = this.db
+        .prepare(
+          `SELECT actor, payload_json FROM audit_log
+           WHERE repo = ? AND topic = 'scout/run' AND ts >= ?`,
+        )
+        .all(repo, now - 36 * 3600_000) as Array<{ actor: string; payload_json: string }>;
+
+      let todayCount = 0;
+      let ranThisScoutToday = false;
+      for (const r of rows) {
+        try {
+          const p = JSON.parse(r.payload_json) as { dayKey?: string };
+          if (p.dayKey === dayKey) {
+            todayCount++;
+            if (r.actor === scoutName) ranThisScoutToday = true;
+          }
+        } catch {
+          // ignore malformed payload
+        }
+      }
+      if (todayCount >= maxRunsPerDay) return false;
+      if (oncePerDayForScout && ranThisScoutToday) return false;
+
+      this.db
+        .prepare(
+          `INSERT INTO audit_log (ts, repo, topic, issue_number, actor, payload_json)
+           VALUES (?, ?, 'scout/run', NULL, ?, ?)`,
+        )
+        .run(now, repo, scoutName, JSON.stringify({ dayKey, scheduled: oncePerDayForScout }));
+      return true;
+    });
+    return tx();
   }
 
   // ---- Operational Metrics & Self-Improvement Telemetry ----

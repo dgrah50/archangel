@@ -102,6 +102,15 @@ export interface DaemonCommandRecord {
   updatedAt: number;
 }
 
+export interface ScoutProposalRecord {
+  repo: string;
+  issueNumber: number;
+  scoutName: string;
+  contentSha256: string;
+  titleFp: string;
+  createdAt: number;
+}
+
 export interface AuditLogEntry {
   id: number;
   ts: number;
@@ -249,4 +258,16 @@ CREATE TABLE IF NOT EXISTS provider_cooldowns (
   reason TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scout_proposals (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  scout_name TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  title_fp TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scout_proposals_fp ON scout_proposals(repo, title_fp);
 `;

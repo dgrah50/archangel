@@ -15,6 +15,7 @@ import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
+import { runScoutsForProject, scoutContentHash } from "./scout.js";
 import {
   classifyGate,
   deriveControl,
@@ -201,6 +202,30 @@ export class Reconciler {
       await this.reconcileThread(thread, issue, mainSha, now);
     }
 
+    // 5. Run scheduled daily Scout workflows when repo queue is idle (V2.0).
+    if (this.cfg.scouts.enabled && this.runningTasks.size === 0 && queued.length === 0) {
+      try {
+        await runScoutsForProject({
+          config: this.cfg,
+          ledger: this.ledger,
+          github: this.github,
+          broker: this.broker,
+          mainSha,
+          onlyScheduled: true,
+          logger: this.logger,
+          now,
+        });
+      } catch (err) {
+        this.ledger.appendAudit(
+          "scout/error",
+          null,
+          "archangel",
+          { error: err instanceof Error ? err.message : String(err) },
+          now,
+        );
+      }
+    }
+
     // Flush any newly enqueued outbox effects immediately.
     await this.flushOutbox();
   }
@@ -295,8 +320,49 @@ export class Reconciler {
   }
 
   private async reconcileIntakeIssue(issue: GitHubIssue, now: number): Promise<void> {
-    // ADR-0004 / B11: owner-authored issues ONLY (numeric user ID + OWNER association).
-    if (issue.authorId !== this.cfg.ownerUserId || issue.authorAssociation !== "OWNER") {
+    const isOwnerAuthored =
+      issue.authorId === this.cfg.ownerUserId && issue.authorAssociation === "OWNER";
+
+    // Explicit separate path for owner-promoted Scout proposals (Opus H2, H3, M1, M2):
+    // NEVER weakens the owner check above; requires configured bot ID (>0), local scout_proposals
+    // record, exact content hash match (blocks post-filing edits), AND owner label actor below.
+    let isVerifiedBotProposal = false;
+    if (!isOwnerAuthored) {
+      const botId = this.cfg.githubAppBotUserId;
+      if (botId !== undefined && botId > 0 && issue.authorId === botId) {
+        const proposal = this.ledger.getScoutProposal(issue.number);
+        if (!proposal) {
+          if (this.rejectedIssueCache.get(issue.number) !== issue.updatedAt) {
+            this.rejectedIssueCache.set(issue.number, issue.updatedAt);
+            this.ledger.appendAudit(
+              "intake/rejected_unknown_bot_issue",
+              issue.number,
+              issue.authorLogin,
+              { authorId: issue.authorId },
+              now,
+            );
+          }
+          return;
+        }
+        const actualHash = scoutContentHash(issue.title, issue.body);
+        if (actualHash !== proposal.contentSha256) {
+          if (this.rejectedIssueCache.get(issue.number) !== issue.updatedAt) {
+            this.rejectedIssueCache.set(issue.number, issue.updatedAt);
+            this.ledger.appendAudit(
+              "intake/rejected_edited_proposal",
+              issue.number,
+              issue.authorLogin,
+              { expected: proposal.contentSha256.slice(0, 12), actual: actualHash.slice(0, 12) },
+              now,
+            );
+          }
+          return;
+        }
+        isVerifiedBotProposal = true;
+      }
+    }
+
+    if (!isOwnerAuthored && !isVerifiedBotProposal) {
       if (this.rejectedIssueCache.get(issue.number) !== issue.updatedAt) {
         this.rejectedIssueCache.set(issue.number, issue.updatedAt);
         this.ledger.appendAudit(

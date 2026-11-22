@@ -49,6 +49,7 @@ export interface GitHubClient {
   listRepoLabels?(): Promise<string[]>;
   findPrByHeadBranch(branch: string): Promise<GitHubPr | null>;
   createPr(input: { title: string; body: string; head: string; base: string }): Promise<GitHubPr>;
+  createIssue?(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue>;
   getPrLive(prNumber: number): Promise<GitHubPr>;
   getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>>;
   rerunCheckRun(checkRunId: number): Promise<void>;
@@ -346,6 +347,19 @@ export class GitHubAppClient implements GitHubClient {
       { body: input },
     );
     return this.getPrLive(Number(created.number));
+  }
+
+  async createIssue(input: {
+    title: string;
+    body: string;
+    labels: string[];
+  }): Promise<GitHubIssue> {
+    const created = await this.request<Record<string, unknown>>(
+      "POST",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/issues`,
+      { body: input },
+    );
+    return mapIssue(created);
   }
 
   async getPrLive(prNumber: number): Promise<GitHubPr> {

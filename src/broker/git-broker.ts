@@ -193,6 +193,28 @@ export class GitBroker {
   }
 
   /**
+   * Lists tracked file paths under `dirPath` directly from the broker's bare repo at `ref`.
+   */
+  async listFilesAtRef(ref: string, dirPath: string): Promise<string[]> {
+    try {
+      const out = await this.runGit(this.bareRepoPath, [
+        "ls-tree",
+        "-r",
+        "--name-only",
+        ref,
+        "--",
+        dirPath,
+      ]);
+      return out
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Runs the repository's `.agents/setup` script inside a fresh throwaway clone,
    * reading the script bytes strictly from `mainSha` (never from a PR branch)
    * under a throwaway HOME and scrubbed environment with no credentials.
