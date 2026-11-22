@@ -1140,6 +1140,20 @@ export class Ledger {
     return row.n;
   }
 
+  /**
+   * Has this repo's audit log a row matching all of these? The "notify once" markers use it: it is always scoped to this repo (one repo's
+   * marker must never silence another's) and unlimited (an old marker must not age out of a LIMIT and let the alert fire again).
+   */
+  hasAudit(q: { topic: string; actor?: string; issueNumber?: number; sinceMs?: number; payload?: { key: "category" | "trustHash"; value: string } }, repo = this.repo): boolean {
+    const where = [`repo = ?`, `topic = ?`];
+    const params: unknown[] = [repo, q.topic];
+    if (q.actor !== undefined) { where.push(`actor = ?`); params.push(q.actor); }
+    if (q.issueNumber !== undefined) { where.push(`issue_number = ?`); params.push(q.issueNumber); }
+    if (q.sinceMs !== undefined) { where.push(`ts >= ?`); params.push(q.sinceMs); }
+    if (q.payload) { where.push(`json_extract(payload_json, '$.${q.payload.key}') = ?`); params.push(q.payload.value); }
+    return Boolean(this.db.prepare(`SELECT 1 FROM audit_log WHERE ${where.join(" AND ")} LIMIT 1`).get(...params));
+  }
+
   listAudit(
     opts: { repo?: string; topicPrefix?: string; issueNumber?: number; limit?: number } = {},
   ): AuditLogEntry[] {

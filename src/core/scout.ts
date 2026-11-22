@@ -561,7 +561,7 @@ async function runPitchScout(opts: {
   await syncPitchDecisions(ledger, opts.github, opts.config, now);
   if (ledger.isPitchScoutPaused(wf.name, wf.trustHash, PITCH_PAUSE_AFTER_UNPROMOTED)) {
     const marker = wf.trustHash.slice(0, 12);
-    if (!ledger.listAudit({ topicPrefix: "pitch/paused", limit: 200 }).some((a) => a.actor === wf.name && a.payloadJson.includes(marker))) {
+    if (!ledger.hasAudit({ topic: "pitch/paused", actor: wf.name, payload: { key: "trustHash", value: marker } })) {
       // Notify first: if it fails the audit row is not written and the next run tries again (exactly one notification lands).
       const policy = MAIN_ESCALATION_POLICY.pitch_scout_paused;
       await opts.notifier.notifyNeedsYou({
