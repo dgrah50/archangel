@@ -1181,6 +1181,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               gate: this.effectiveGate,
               ownerReply: workingThread.ownerReply,
+              factoryGuidance: workingThread.factoryGuidance,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1192,6 +1193,7 @@ export class Reconciler {
                 structuredFindings,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                factoryGuidance: workingThread.factoryGuidance,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
