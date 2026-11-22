@@ -13,7 +13,7 @@ import { listReports } from "./eval-reports.js";
 import { buildAccountsState } from "./ui-accounts.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildPitchesState } from "./ui-pitches.js";
-import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
+import { buildThreadDetail } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
 import { listAllSkills } from "./skills.js";
@@ -84,7 +84,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -216,18 +216,13 @@ export async function startUiServer(
         return sendJson(res, 200, readHostConfig(opts.hostConfig!.configPath));
       }
       if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
-      const url = new URL(req.url ?? "/", "http://localhost");
       const thread = /^\/api\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(pathname);
-      if (thread || pathname === "/api/logs") {
-        const repo = thread ? thread[1]! : (url.searchParams.get("repo") ?? "");
-        const issue = Number(thread ? thread[2] : url.searchParams.get("issue"));
+      if (thread) {
+        const repo = thread[1]!;
+        const issue = Number(thread[2]);
         if (!REPO_SLUG_RE.test(repo) || !Number.isSafeInteger(issue) || issue < 1) return sendJson(res, 400, { error: "repo must be owner/name and issue a positive integer" });
-        if (thread) {
-          const detail = buildThreadDetail(ledger, repo, issue);
-          return detail ? sendJson(res, 200, detail) : sendJson(res, 404, { error: `no Thread ${repo}#${issue}` });
-        }
-        const limit = Number(url.searchParams.get("limit") ?? 100);
-        return sendJson(res, 200, readLogs(opts.logFile ?? null, repo, issue, Number.isFinite(limit) ? Math.min(limit, LOG_MAX) : 100));
+        const detail = buildThreadDetail(ledger, repo, issue);
+        return detail ? sendJson(res, 200, detail) : sendJson(res, 404, { error: `no Thread ${repo}#${issue}` });
       }
       const file = path.resolve(uiDir, "." + (pathname === "/" ? "/index.html" : pathname));
       if (!file.startsWith(uiDir + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {

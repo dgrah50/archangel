@@ -122,11 +122,12 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     }
     const neededAccounts = [...rolesByAccount.values()];
     const missingBins: string[] = [];
+    const baseEnv = opts.env ?? process.env;
     const verified: string[] = [];
     for (const { account } of neededAccounts) {
       const p = account.provider;
       const label = account.id === p ? p : `${account.id} [${p}]`;
-      const env = { ...process.env, ...accountEnv(account) };
+      const env = { ...baseEnv, ...accountEnv(account) };
       try {
         if (p === "codex") {
           const { stdout, stderr } = await execFileAsync("codex", ["login", "status"], { env });
@@ -172,7 +173,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     }
     if (opts.smoke) {
       for (const { account, roles } of neededAccounts) {
-        checks.push(await smokeAccount(account, roles));
+        checks.push(await smokeAccount(account, roles, baseEnv));
       }
     }
   } else {
@@ -476,12 +477,12 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
 // Version + login-status commands only; none of these spend model quota.
 // agy has no login-status command, so for it only installation is verified.
-async function smokeAccount(account: Account, roles: string[]): Promise<DoctorCheck> {
+async function smokeAccount(account: Account, roles: string[], baseEnv: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck> {
   const provider = account.provider;
   const id = `smoke_provider:${account.id}`;
   const label = account.id === provider ? provider : `${account.id} [${provider}]`;
   const name = `Smoke Check (${label}${roles.length > 0 ? `, used by: ${roles.join(", ")}` : ""})`;
-  const env = { ...process.env, ...accountEnv(account) };
+  const env = { ...baseEnv, ...accountEnv(account) };
   const login = provider === "codex" ? `${provider} login` : `${provider} auth login`;
   const homeHint = account.home ? ` with ${provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"}=${account.home}` : "";
   try {

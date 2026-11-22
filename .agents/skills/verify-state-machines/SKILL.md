@@ -9,7 +9,7 @@ Run exhaustive BFS model checks over Archangel's Thread, Handoff/Lock, and Pitch
 
 ## Coverage record
 
-Last confirmed sync commit: `c7976cd`
+Last confirmed sync commit: `b5d2e6f`
 
 Covered production files and functions:
 - `src/core/thread-machine.ts`: `stepPhase` (executed directly by the checker)
@@ -19,12 +19,13 @@ Covered production files and functions:
 - `src/core/reconciler.ts`: `applyMachineEvent`, `ownerRetry`, `executeAttemptTask`, `reconcileThread` `needs_you` label check (modeled actions)
 - `src/handoff/paseo.ts`: `handoffThreadToPaseo`, `resumeThreadFromPaseo` (modeled actions)
 
-Before finishing a change to any file above, check `git log c7976cd..HEAD -- src/core/thread-machine.ts src/core/command-machine.ts src/core/pitch-machine.ts src/ledger/store.ts src/core/reconciler.ts src/handoff/paseo.ts`. If any modeled step changed, update `formal/check.ts` so every modeled step matches one indivisible step in production code, rerun the check, and advance the sync commit above.
+Before finishing a change to any file above, check `git log b5d2e6f..HEAD -- src/core/thread-machine.ts src/core/command-machine.ts src/core/pitch-machine.ts src/ledger/store.ts src/core/reconciler.ts src/handoff/paseo.ts`. If any modeled step changed, update `formal/check.ts` so every modeled step matches one indivisible step in production code, rerun the check, and advance the sync commit above.
 
 ## Properties and harms
 
 - **AdvisoryNeverWorks.** A Thread in `advisory` mode never enters `working`. A break lets the factory force-push over owner commits during or after Paseo handoff.
 - **TerminalMonotonic.** A Thread in `done` never leaves `done` or changes `outcome`. A break resurrects merged or closed PRs.
+- **OwnerExitAlwaysAvailable.** Every reachable non-`done` phase exits cleanly to `done` on `owner_abandon` and `pr_observed(merged)`. A break traps a Thread where the owner cannot close or merge it.
 - **NoPhantomOwnerRetry.** `retryGrants` equals committed `owner_retry` CAS transitions, and `owner_retry` never fires while `add_label` is still queued in the outbox or when a non-owner removed `needs-you`. A break leaks retry budget or lets strangers resume paused Threads.
 - **ControlAbortBudgetNeutral.** A `control` abort never increases net `attemptCount`. A break lets pause/halt labels exhaust a Thread's attempt budget.
 - **AttemptSettlesOnce.** Budget settlement count never exceeds finished attempts. A break double-charges spend or rewrites a pushed Attempt when a Recap post fails.

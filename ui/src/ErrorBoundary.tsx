@@ -10,7 +10,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <Box role="alert" maxW="40rem" mx="auto" mt="10" p="5" borderWidth="1px" borderColor="red.solid" rounded="xl">
+      <Box role="alert" maxW="40rem" mx="auto" mt="10" p="5" borderTopWidth="1px" borderTopColor="owner">
         <Text fontWeight="medium">The dashboard hit an unexpected error and cannot be shown.</Text>
         <Text color="fg.muted" textStyle="sm" mt="1">
           {this.state.error.message}

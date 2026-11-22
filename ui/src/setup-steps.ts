@@ -15,7 +15,7 @@ export interface OnboardingPr {
 }
 
 /** Everything the wizard looks at. A `null` is "not read yet or the read failed": that step is never reported done. */
-export interface SetupFacts {
+interface SetupFacts {
   machine: DoctorPayload | null;
   settings: SettingsState | null;
   repo: string | null;
@@ -80,7 +80,7 @@ export function smokeIssueUrl(repo: string): string {
 /** `/api/gh/protection` answers 502 with gh's 404 message for an unprotected branch: that is a state, not a failure. */
 export const isNotProtected = (message: string): boolean => /404|not protected/i.test(message);
 
-export interface StepGroup {
+interface StepGroup {
   n: number;
   title: string;
   /** Wizard step numbers (1-8) shown under this group. */
