@@ -52,7 +52,6 @@ export async function promotePitch(
   const row = ledger.getPitch(input.issue);
   if (!row) throw new Error(`#${input.issue} is not a pitch recorded by this Ledger`);
   if (row.status !== "open") throw new Error(`Pitch #${input.issue} is already ${row.status}`);
-  if (!row.pitchJson) throw new Error(`Pitch #${input.issue} has no stored pitch text (filed by an older build); open the issues by hand`);
 
   // The pitch the owner reads on GitHub must be exactly what was filed: re-check the pinned content hash first.
   const live = JSON.parse(await runner.run("gh", ["issue", "view", String(input.issue), "--repo", input.repo, "--json", "title,body,state,labels"])) as {
