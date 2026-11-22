@@ -10,6 +10,7 @@ import { startUiServer } from "../src/core/ui-server.js";
 import { buildUiState, buildWorkflowsState, type UiState, type WorkflowsState } from "../src/core/ui-state.js";
 import { Ledger } from "../src/ledger/store.js";
 import { AppView, DAEMON_OFFLINE_MS, STALE_MS, bannersFor, type Feed } from "../ui/src/AppView.js";
+import type { Route } from "../ui/src/route.js";
 import { ErrorBoundary } from "../ui/src/ErrorBoundary.js";
 import { fetchFeed, isUiState, isWorkflowsState } from "../ui/src/payload.js";
 
@@ -27,8 +28,9 @@ const wfs: WorkflowsState = { generatedAt: NOW, windowDays: 14, repos: [] };
 const feed = <T = never,>(data: T | null, at: number | null, error: string | null = null): Feed<T> => ({ data, at, error });
 const noState = (error: string | null = null) => feed<UiState>(null, null, error);
 const noWfs = (error: string | null = null) => feed<WorkflowsState>(null, null, error);
-const view = (state: Feed<UiState>, workflows: Feed<WorkflowsState>, now = NOW) =>
-  html(createElement(AppView, { state, workflows, now, onRetry: () => {} }));
+const view = (state: Feed<UiState>, workflows: Feed<WorkflowsState>, now = NOW, route: Route = { page: "overview" }) =>
+  html(createElement(AppView, { route, state, workflows, now, onRetry: () => {} }));
+const pipelineView = (state: Feed<UiState>, workflows: Feed<WorkflowsState>) => view(state, workflows, NOW, { page: "pipeline" });
 
 describe("dashboard states are distinct", () => {
   it("loading", () => {
@@ -73,17 +75,17 @@ describe("dashboard states are distinct", () => {
     expect(view(feed(liveState(NOW - 10_000), NOW), feed(wfs, NOW))).not.toContain("Daemon offline");
   });
 
-  it("a failed /api/workflows does not hide Needs You: the dashboard renders and only the Pipeline shows an error with Retry", () => {
-    const out = view(feed(liveState(), NOW), noWfs("/api/workflows: boom"));
-    expect(out).toContain("needs help");
+  it("a failed /api/workflows does not hide the shell: the header still shows Needs You and only the Pipeline page shows an error with Retry", () => {
+    const out = pipelineView(feed(liveState(), NOW), noWfs("/api/workflows: boom"));
+    expect(out).toContain("1 need you");
     expect(out).toContain("Pipeline unavailable.");
     expect(out).toContain("/api/workflows: boom");
     expect(out).toContain("Retry");
-    expect(view(feed(liveState(), NOW), noWfs())).toContain("Loading pipeline...");
+    expect(pipelineView(feed(liveState(), NOW), noWfs())).toContain("Loading pipeline...");
   });
 
   it("a workflows refresh that failed after a good load keeps the last copy with a notice", () => {
-    const out = view(feed(liveState(), NOW), feed(wfs, NOW, "/api/workflows: HTTP 500"));
+    const out = pipelineView(feed(liveState(), NOW), feed(wfs, NOW, "/api/workflows: HTTP 500"));
     expect(out).toContain("Pipeline refresh failed (/api/workflows: HTTP 500); showing the last loaded copy.");
   });
 });

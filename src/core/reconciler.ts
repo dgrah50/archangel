@@ -317,14 +317,8 @@ export class Reconciler {
   private async raiseCorrectionSignals(now: number): Promise<void> {
     const windowStart = now - CORRECTION_WINDOW_DAYS * 86_400_000;
     const counts = this.ledger.computeCorrections({ repo: this.ledger.repo, sinceMs: windowStart, now });
-    const already = new Set(
-      this.ledger
-        .listAudit({ topicPrefix: "corrections/needs_you", limit: 500 })
-        .filter((a) => a.ts >= windowStart)
-        .map((a) => (JSON.parse(a.payloadJson) as { category?: string }).category),
-    );
     for (const { category, count } of repeatedCategories(counts)) {
-      if (already.has(category)) continue;
+      if (this.ledger.hasAudit({ topic: "corrections/needs_you", sinceMs: windowStart, payload: { key: "category", value: category } })) continue;
       const policy = MAIN_ESCALATION_POLICY.correction_repeated;
       try {
         await this.notifier.notifyNeedsYou({
@@ -406,26 +400,39 @@ export class Reconciler {
   }
 
   private async flushOutbox(): Promise<void> {
-    const items = this.ledger.listOutbox();
+    const items = this.ledger.listDueOutbox();
     for (const item of items) {
+      const eff = item.effect;
+      if (eff === null) {
+        this.ledger.deadLetterOutbox(item.id, "outbox effect does not match any known effect kind");
+        continue;
+      }
       try {
-        const eff = item.effect;
-        if (eff.kind === "add_label") {
-          await this.github.addLabels(eff.issueNumber, [eff.label]);
-        } else if (eff.kind === "remove_label") {
-          await this.github.removeLabel(eff.issueNumber, eff.label);
-        } else if (eff.kind === "notify_needs_you") {
-          const policy = describeEscalation(
-            eff.code,
-            workClassOfBranch((eff.issueNumber === null ? null : this.ledger.getThread(eff.issueNumber))?.branchName ?? ""),
-          );
-          await this.notifier.notifyNeedsYou({
-            issueNumber: eff.issueNumber,
-            title: eff.title,
-            reason: eff.reason,
-            decisionClass: formatDecisionClass(policy.decisionClass),
-            recommendation: policy.recommendation,
-          });
+        switch (eff.kind) {
+          case "add_label":
+            await this.github.addLabels(eff.issueNumber, [eff.label]);
+            break;
+          case "remove_label":
+            await this.github.removeLabel(eff.issueNumber, eff.label);
+            break;
+          case "notify_needs_you": {
+            const policy = describeEscalation(
+              eff.code,
+              workClassOfBranch((eff.issueNumber === null ? null : this.ledger.getThread(eff.issueNumber))?.branchName ?? ""),
+            );
+            await this.notifier.notifyNeedsYou({
+              issueNumber: eff.issueNumber,
+              title: eff.title,
+              reason: eff.reason,
+              decisionClass: formatDecisionClass(policy.decisionClass),
+              recommendation: policy.recommendation,
+            });
+            break;
+          }
+          default: {
+            const unreachable: never = eff;
+            throw new Error(`unhandled outbox effect ${JSON.stringify(unreachable)}`);
+          }
         }
         this.ledger.completeOutbox(item.id);
       } catch (err) {
@@ -828,7 +835,7 @@ export class Reconciler {
             disagreed ||= await this.github.verifyLabelActor(where, this.cfg.labels.disagree, actor);
           }
         }
-        if (!disagreed && this.ledger.listAudit({ topicPrefix: "shadow/disagree_ignored", issueNumber: thread.issueNumber, limit: 1 }).length === 0) {
+        if (!disagreed && !this.ledger.hasAudit({ topic: "shadow/disagree_ignored", issueNumber: thread.issueNumber })) {
           this.ledger.appendAudit("shadow/disagree_ignored", thread.issueNumber, "archangel", { label: this.cfg.labels.disagree, reason: "not applied by the owner" }, now);
         }
       }

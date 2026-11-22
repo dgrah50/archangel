@@ -141,10 +141,26 @@ export const MainWatchSchema = z.discriminatedUnion("kind", [
 ]);
 export type MainWatch = z.infer<typeof MainWatchSchema>;
 
-export type OutboxEffect =
-  | { kind: "add_label"; issueNumber: number; label: string }
-  | { kind: "remove_label"; issueNumber: number; label: string }
-  | { kind: "notify_needs_you"; issueNumber: number | null; title: string; reason: string; code: EscalationCode };
+/** Side effects the Reconciler delivers from the outbox. Validated when read back: a row that does not parse is dead-lettered, never delivered or dropped. */
+export const OutboxEffectSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("add_label"), issueNumber: z.number().int(), label: z.string().min(1) }),
+  z.object({ kind: z.literal("remove_label"), issueNumber: z.number().int(), label: z.string().min(1) }),
+  z.object({
+    kind: z.literal("notify_needs_you"),
+    issueNumber: z.number().int().nullable(),
+    title: z.string(),
+    reason: z.string(),
+    code: EscalationCodeSchema,
+  }),
+]);
+export type OutboxEffect = z.infer<typeof OutboxEffectSchema>;
+
+/** `pending` (never tried) -> `retrying` (failed, waits for `next_attempt_at`) -> `dead_letter` (gave up; kept for the owner to see). Delivery deletes the row. */
+export const OUTBOX_STATES = ["pending", "retrying", "dead_letter"] as const;
+export type OutboxState = (typeof OUTBOX_STATES)[number];
+export const OUTBOX_MAX_ATTEMPTS = 10;
+export const OUTBOX_BACKOFF_BASE_MS = 30_000;
+export const OUTBOX_BACKOFF_MAX_MS = 3_600_000;
 
 export type MachineEvent =
   | { t: "start_working"; attemptId: number; attempt: AttemptKind; fromSha: string; prNumber?: number | null }
