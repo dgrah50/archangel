@@ -162,6 +162,13 @@ export const ConfigSchema = z.object({
   telegramBotToken: z.string().optional(),
   telegramChatId: z.string().optional(),
 }).superRefine((cfg, ctx) => {
+  if (Boolean(cfg.telegramBotToken) !== Boolean(cfg.telegramChatId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [cfg.telegramBotToken ? "telegramChatId" : "telegramBotToken"],
+      message: "Telegram needs both ARCHANGEL_TELEGRAM_BOT_TOKEN and ARCHANGEL_TELEGRAM_CHAT_ID (or neither): with one, every alert is silently dropped",
+    });
+  }
   if (cfg.scouts.enabled && (!cfg.githubAppBotUserId || cfg.githubAppBotUserId <= 0)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

@@ -18,10 +18,18 @@ export interface Notifier {
 export class TelegramNotifier implements Notifier {
   private readonly botToken?: string;
   private readonly chatId?: string;
+  private readonly apiBase: string;
+  private readonly timeoutMs: number;
 
-  constructor(opts: { botToken?: string; chatId?: string }) {
+  /** Both settings or neither: with neither this is the explicit "no Telegram" notifier; with only one, alerts would silently vanish. */
+  constructor(opts: { botToken?: string; chatId?: string; apiBase?: string; timeoutMs?: number }) {
+    if (Boolean(opts.botToken) !== Boolean(opts.chatId)) {
+      throw new Error("Telegram needs both a bot token and a chat id (or neither)");
+    }
     this.botToken = opts.botToken;
     this.chatId = opts.chatId;
+    this.apiBase = opts.apiBase ?? "https://api.telegram.org";
+    this.timeoutMs = opts.timeoutMs ?? 30_000;
   }
 
   async notifyNeedsYou(input: {
@@ -57,7 +65,8 @@ export class TelegramNotifier implements Notifier {
       return;
     }
 
-    const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+    const res = await fetch(`${this.apiBase}/bot${this.botToken}/sendMessage`, {
+      signal: AbortSignal.timeout(this.timeoutMs),
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
