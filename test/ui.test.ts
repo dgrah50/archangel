@@ -88,4 +88,19 @@ describe("ui server", () => {
       server.close();
     }
   });
+
+  it("answers 500 and keeps serving when building a response throws", async () => {
+    const ledger = fixture();
+    const server = await startUiServer(ledger, { host: "127.0.0.1", port: 0, uiDir: bundle() });
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      // Simulate a Ledger whose schema is behind (e.g. opened read-only before a migration ran).
+      (ledger as unknown as { db: { exec(sql: string): void } }).db.exec("DROP TABLE threads");
+      expect((await fetch(`${base}/api/state`)).status).toBe(500);
+      expect((await fetch(`${base}/api/workflows`)).status).toBe(500);
+      expect((await fetch(base)).status).toBe(200); // the server is still alive
+    } finally {
+      server.close();
+    }
+  });
 });
