@@ -36,14 +36,14 @@
 **Requirements**
 
 - Node.js 22+, `git >= 2.38`, and GitHub CLI (`gh`)
-- A least-privilege GitHub App created with `npx tsx scripts/create-github-app.ts`
+- A least-privilege GitHub App created with `bun scripts/create-github-app.ts`
 - Two or more logged-in AI CLIs (`codex`, `claude`, `agy`) for cross-vendor review
 
 Install from source, onboard a repository, and open the local dashboard.
 
 ```bash
 git clone https://github.com/dgrah50/archangel.git && cd archangel
-npm install && npm run build && npm link
+bun install && bun run build && bun link
 archangel onboard owner/my-repo
 archangel doctor --smoke && archangel ui
 ```
@@ -180,8 +180,8 @@ Start `archangel ui` (loopback `127.0.0.1:4477` by default) to monitor and confi
 
 Archangel enforces its own reliability rules in CI so critical state transitions and error boundaries do not drift silently.
 
-- **Exhaustive formal model checker (`npm run verify:formal`).** Explores reachable states of the Thread, Command, Pitch, and Daemon Lock state machines via BFS to verify safety invariants and liveness bounds.
-- **Structural AST lint (`npm run lint`).** Blocks silent catch handlers and recurring failure modes across the TypeScript source tree.
+- **Exhaustive formal model checker (`bun run verify:formal`).** Explores reachable states of the Thread, Command, Pitch, and Daemon Lock state machines via BFS to verify safety invariants and liveness bounds.
+- **Structural AST lint (`bun run lint`).** Blocks silent catch handlers and recurring failure modes across the TypeScript source tree.
 
 ## Configuration examples
 

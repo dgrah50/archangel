@@ -15,23 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.5"
-      - run: npm ci --no-audit
-      - run: npm run lint
-      - run: npm run verify:formal
-      - run: npm run test:all
-      - run: npm run build
-      # `npm run build` regenerates the Gate bundle that target repos run from a pinned SHA. If it differs from the committed file,
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run verify:formal
+      - run: bun run test:all
+      - run: bun run build
+      # `bun run build` regenerates the Gate bundle that target repos run from a pinned SHA. If it differs from the committed file,
       # the Gate sources changed without a rebuild or the bundle was edited by hand: either way the pin would not match the source.
       - name: Committed Gate bundle matches a fresh build
         run: |
           if ! git diff --exit-code -- bin/archangel-gate.mjs; then
-            echo "::error file=bin/archangel-gate.mjs::bin/archangel-gate.mjs is stale or hand-edited. Run 'npm run build' and commit the result." >&2
+            echo "::error file=bin/archangel-gate.mjs::bin/archangel-gate.mjs is stale or hand-edited. Run 'bun run build' and commit the result." >&2
             exit 1
           fi
