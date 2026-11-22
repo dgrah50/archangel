@@ -48,3 +48,19 @@ npm run build
 - `archangel studio [--port 4111]` — start read-only loopback (`127.0.0.1`) Mastra Studio against `mastra.db`
 - `archangel handoff <issue#>` / `resume <issue#>` — pause factory autonomy for Paseo takeover and resume advisory tracking
 - `archangel retry <issue#>` / `abandon <issue#>` / `disagree <issue#>` / `reset-breaker` — operator controls
+
+## Scouts and bundled skills
+
+A repo opts into read-only Scouts by committing `.agents/scouts/<name>.md` to its default branch. A Scout can be just a list of bundled skills (`archangel scout skills` lists them), a prompt body, or both:
+
+```markdown
+---
+name: bug-hunt
+schedule: daily        # or manual
+maxProposals: 2
+skills: [general/bug-hunt, general/error-handling, go/*]
+---
+Optional repo-specific focus, e.g. "pay attention to the history store".
+```
+
+Skills live in this repo under `skills/<folder>/<name>.md` (`general/`, `go/`, `typescript/`) and are protected paths. Unknown skills fail the Scout instead of running a weaker one.

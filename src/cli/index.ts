@@ -20,6 +20,7 @@ import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
 import { collectOwnerReply } from "../core/owner-reply.js";
+import { listAllSkills } from "../core/skills.js";
 import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
@@ -875,6 +876,13 @@ daemonCmd
 const scoutCmd = program
   .command("scout")
   .description("Discover and run repo-owned read-only Scout workflows (.agents/scouts/*.md)");
+
+scoutCmd
+  .command("skills")
+  .description("List bundled Scout skills (reference them from a repo's .agents/scouts/*.md `skills:` list)")
+  .action(() => {
+    for (const ref of listAllSkills()) console.log(ref);
+  });
 
 scoutCmd
   .command("run [name]")
