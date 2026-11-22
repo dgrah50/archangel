@@ -20,6 +20,8 @@ export interface ThreadDetail {
   phase: string;
   prNumber: number | null;
   events: TimelineEvent[];
+  /** Latest Gate result recorded in the Ledger audit (`gate/*` rows): one passed check, or one failed check per violation. Empty when none. */
+  gate: Array<{ label: string; passed: boolean }>;
   /** From the Ledger only (live check state lives on GitHub): what the latest Recap would say about the head. */
   recap: { headSha: string | null; themeLabel: string | null; implementers: string[]; attempts: string; reviews: Array<{ vendor: string; verdict: string }> };
   /** What holds this Thread, from the Ledger: an owner decision, or a review veto on the head. Empty when nothing is recorded. */
@@ -50,8 +52,21 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
   const thread = view.getThread(issueNumber);
   if (!thread) return null;
   const events: TimelineEvent[] = [];
+  let gate: ThreadDetail["gate"] = [];
 
   const audit = view.listAudit({ repo, issueNumber, limit: AUDIT_LIMIT });
+  const lastGate = audit.find((a) => a.topic === "gate/passed" || a.topic === "gate/local_failed_revising");
+  if (lastGate?.topic === "gate/passed") gate = [{ label: "Gate passed", passed: true }];
+  else if (lastGate) {
+    let violations: unknown[] = [];
+    try {
+      const v = (JSON.parse(lastGate.payloadJson) as { violations?: unknown }).violations;
+      if (Array.isArray(v)) violations = v;
+    } catch {
+      // unreadable payload: reported below as a bare failure
+    }
+    gate = violations.length > 0 ? violations.slice(0, 10).map((v) => ({ label: clip(String(v), 200), passed: false })) : [{ label: "Gate failed", passed: false }];
+  }
   for (const a of [...audit].reverse()) {
     events.push({ ts: a.ts, kind: "audit", title: a.topic, tone: /fail|reject|error|veto/i.test(a.topic) ? "failed" : "info", details: [{ label: "actor", value: a.actor }, { label: "payload", value: clip(a.payloadJson) }] });
   }
@@ -114,6 +129,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     },
     blockers,
     events,
+    gate,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
 }

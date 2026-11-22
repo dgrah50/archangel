@@ -1,5 +1,5 @@
 import type { HostStatus } from "../../src/core/host-facts.js";
-import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { EvalsState } from "../../src/core/eval-reports.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { PitchesState } from "../../src/core/ui-pitches.js";
@@ -54,10 +54,6 @@ export function isSettingsState(v: unknown): v is SettingsState {
 
 export function isEvalsState(v: unknown): v is EvalsState {
   return obj(v) && typeof v.generatedAt === "number" && Array.isArray(v.runs) && v.runs.every((r) => obj(r) && typeof r.file === "string" && typeof r.savedAt === "number" && typeof r.unreadable === "boolean");
-}
-
-export function isLogs(v: unknown): v is LogsPayload {
-  return obj(v) && typeof v.missing === "boolean" && Array.isArray(v.entries);
 }
 
 export const SCHEMA_BEHIND = "ledger_schema_behind";

@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { AppView } from "./AppView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useFeed, useHash } from "./feeds";
-import { isEvalsState, isHostStatus, isSettingsState, isLogs, isPitchesState, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
+import { isEvalsState, isHostStatus, isPitchesState, isSettingsState, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
 import { Provider } from "./provider";
 import { parseRoute } from "./route";
 
@@ -22,7 +22,6 @@ function App() {
   const t = route.page === "thread" ? route.item : route.page === "needs-you" ? (route.item ?? (first ? { repo: first.repo, issue: first.issueNumber } : null)) : null;
   const key = t ? `${encodeURI(t.repo)}/${t.issue}` : "";
   const [thread, loadThread] = useFeed(`/api/threads/${key}`, isThreadDetail, t !== null);
-  const [logs, loadLogs] = useFeed(t ? `/api/logs?repo=${encodeURIComponent(t.repo)}&issue=${t.issue}&limit=100` : "/api/logs", isLogs, route.page === "thread");
   const [pitches, loadPitches] = useFeed("/api/pitches", isPitchesState, route.page === "pitches");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -36,12 +35,9 @@ function App() {
     if ((route.page === "settings" && route.scope !== "repo") || route.page === "setup") loadSettings();
     if (route.page === "evals") loadEvals();
     if (route.page === "pitches") loadPitches();
-    if (t) {
-      loadThread();
-      loadLogs();
-    }
+    if (t) loadThread();
   };
-  return <AppView route={route} state={state} workflows={workflows} evals={evals} settings={settings} host={host} thread={thread} logs={logs} pitches={pitches} now={now} onRetry={retry} />;
+  return <AppView route={route} state={state} workflows={workflows} evals={evals} settings={settings} host={host} thread={thread} pitches={pitches} now={now} onRetry={retry} />;
 }
 
 createRoot(document.getElementById("root")!).render(

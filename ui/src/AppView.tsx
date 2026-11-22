@@ -1,7 +1,7 @@
 import { Box, Button, Link, Text } from "@chakra-ui/react";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 import type { HostStatus } from "../../src/core/host-facts.js";
-import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
 import { EvalsPage } from "./EvalsPage";
@@ -10,7 +10,6 @@ import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
 import { HealthPage } from "./HealthPage";
-import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
 import { Page, PageHeadline } from "./page";
@@ -96,7 +95,6 @@ export function AppView({
   settings,
   host,
   thread,
-  logs,
   pitches,
   now,
   onRetry,
@@ -108,7 +106,6 @@ export function AppView({
   settings: Feed<SettingsState>;
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
-  logs: Feed<LogsPayload>;
   pitches: Feed<PitchesState>;
   now: number;
   onRetry: () => void;
@@ -140,8 +137,7 @@ export function AppView({
       ) : null}
       {route.page === "overview" ? <Dashboard state={state.data} host={host.data} /> : null}
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} thread={thread} onRetry={onRetry} /> : null}
-      {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
-      {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
+      {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
       {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
       {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
