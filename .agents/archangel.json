@@ -52,6 +52,7 @@
       "src/core/escalations.ts",
       "src/core/pitch-expiry.ts",
       "src/core/corrections.ts",
+      "src/core/pitch-machine.ts",
       "src/core/eval.ts",
       "src/core/eval-candidate.ts"
     ],
