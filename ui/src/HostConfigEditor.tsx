@@ -1,8 +1,8 @@
-import { Badge, Box, Button, Checkbox, Code, Flex, Heading, Input, NativeSelect, Stack, Text, Textarea } from "@chakra-ui/react";
-import { useCallback, useEffect, useState } from "react";
+import { Box, Button, Checkbox, Code, Flex, Text, Textarea } from "@chakra-ui/react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { ApplyResult, HostConfigRead, PreviewResult } from "../../src/core/ui-host-config.js";
 import { applyHostConfig, loadHostConfig, previewHostConfig, type HostError } from "./host-config-client";
-import { PROVIDERS, WRITER_CHAINS, addChainEntry, checkIndependence, editField, moveChainEntry, readForm, removeChainEntry, setChainEntry, type ChainEntry, type Provider } from "./host-edit";
+import { checkIndependence, hostChanges, readForm, type HostChange } from "./host-edit";
 
 const STARTER = "ownerUserId: 1\nprojects:\n  - repo: owner/name\n";
 
@@ -17,141 +17,64 @@ const TITLE: Record<HostError["kind"], string> = {
   error: "The request failed.",
 };
 
-/** Every failure kind of the host-config client has its own visible state. */
-export function HostErrorNotice({ error, onReload }: { error: HostError; onReload: () => void }) {
+/** A problem: a hairline rule and plain text, no box. Used for every failure state on the Settings page. */
+export function Problem({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
-    <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" p="3" mt="4">
-      <Text fontWeight="medium">{TITLE[error.kind]}</Text>
-      <Text textStyle="sm">{error.message}</Text>
-      {error.kind === "conflict" ? (
-        <Button size="xs" mt="2" onClick={onReload}>Reload the file and reapply my edits</Button>
-      ) : null}
+    <Box role="alert" borderTopWidth="1px" borderTopColor="red.solid" pt="2" mt="4">
+      <Text textStyle="label" color="red.fg">{title}</Text>
+      {children}
     </Box>
   );
 }
 
-export function IndependenceNotice({ problems }: { problems: string[] }) {
-  if (problems.length === 0) return <Text textStyle="sm" color="fg.muted" mt="2">Independence check: reviewers differ from the writers.</Text>;
+/** Every failure kind of the host-config client has its own visible state. */
+export function HostErrorNotice({ error, onReload }: { error: HostError; onReload: () => void }) {
   return (
-    <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" px="3" py="2" mt="2" textStyle="sm">
-      <Text fontWeight="medium">Reviewers are not independent of the writers.</Text>
-      {problems.map((p) => <Text key={p}>{p}</Text>)}
-    </Box>
+    <Problem title={TITLE[error.kind]}>
+      <Text textStyle="meta" color="fg.muted">{error.message}</Text>
+      {error.kind === "conflict" ? <Button size="xs" variant="outline" borderRadius="10px" mt="2" onClick={onReload}>Reload the file and reapply my edits</Button> : null}
+    </Problem>
   );
 }
 
 export function PreviewPanel({ preview, confirm, onConfirm, onApply, busy, blocked }: { preview: PreviewResult; confirm: boolean; onConfirm: (v: boolean) => void; onApply: () => void; busy: boolean; blocked: string | null }) {
   const loosens = preview.loosening.length > 0;
   return (
-    <Box mt="4" borderWidth="1px" rounded="md" p="3">
-      <Heading size="sm">Preview</Heading>
+    <Flex direction="column" gap="2" borderTopWidth="1px" borderTopColor="border" pt="3" mt="3">
+      <Text textStyle="label">The file change</Text>
       {!preview.valid ? (
-        <Box role="alert" mt="2" textStyle="sm" color="red.fg">
-          <Text fontWeight="medium">archangel.yaml would be invalid:</Text>
+        <Box role="alert" textStyle="meta" color="red.fg">
+          <Text textStyle="label">archangel.yaml would be invalid:</Text>
           {preview.errors.map((e) => <Text key={e}>{e}</Text>)}
         </Box>
       ) : null}
-      {preview.warnings.map((w) => <Text key={w} textStyle="sm" color="orange.fg" mt="2">Warning: {w}</Text>)}
-      <Code as="pre" display="block" whiteSpace="pre-wrap" mt="2" p="2" maxH="20rem" overflow="auto">{preview.diff || "(no changes)"}</Code>
+      {preview.warnings.map((w) => <Text key={w} textStyle="meta" color="fg.muted">Warning: {w}</Text>)}
+      <Code as="pre" display="block" whiteSpace="pre-wrap" textStyle="command" p="2" maxH="20rem" overflow="auto" bg="bg.subtle" rounded="10px">{preview.diff || "(no changes)"}</Code>
       {preview.valid ? (
-        <Stack mt="3" gap="2">
+        <>
           {loosens ? (
-            <Box borderWidth="1px" borderColor="orange.solid" rounded="md" p="2" textStyle="sm">
-              <Text fontWeight="medium">This loosens limits:</Text>
-              {preview.loosening.map((l) => <Text key={l}>{l}</Text>)}
-              <Checkbox.Root mt="2" checked={confirm} onCheckedChange={(e) => onConfirm(e.checked === true)}>
+            <Flex direction="column" gap="1" textStyle="meta">
+              <Text textStyle="label" color="owner">This gives the factory more room:</Text>
+              {preview.loosening.map((l) => <Text key={l} color="owner">{l}</Text>)}
+              <Checkbox.Root mt="1" checked={confirm} onCheckedChange={(e) => onConfirm(e.checked === true)}>
                 <Checkbox.HiddenInput />
                 <Checkbox.Control />
-                <Checkbox.Label>I understand and want to loosen these</Checkbox.Label>
+                <Checkbox.Label textStyle="body13">I understand and want to loosen these</Checkbox.Label>
               </Checkbox.Root>
-            </Box>
+            </Flex>
           ) : null}
-          {blocked ? <Text textStyle="sm" color="red.fg">{blocked}</Text> : null}
-          <Flex><Button size="sm" colorPalette="blue" onClick={onApply} disabled={busy || blocked !== null || (loosens && !confirm)}>Apply</Button></Flex>
-        </Stack>
+          {blocked ? <Text textStyle="meta" color="red.fg">{blocked}</Text> : null}
+          <Flex><Button size="sm" borderRadius="12px" onClick={onApply} disabled={busy || blocked !== null || (loosens && !confirm)}>Save to file</Button></Flex>
+        </>
       ) : null}
-    </Box>
+    </Flex>
   );
 }
 
 type Op = (text: string) => string;
 
-function NumberField({ label, value, onCommit, min }: { label: string; value: number | null; onCommit: (n: number) => void; min?: number }) {
-  return (
-    <Box>
-      <Text textStyle="sm" color="fg.muted">{label}</Text>
-      <Input key={String(value)} type="number" size="sm" min={min} defaultValue={value ?? ""} aria-label={label} onBlur={(e) => { const n = Number(e.target.value); if (e.target.value !== "" && Number.isFinite(n) && n !== value) onCommit(n); }} />
-    </Box>
-  );
-}
-
-function ChainEditor({ label, chain, onOp, path }: { label: string; chain: ChainEntry[]; onOp: (op: Op) => void; path: string[] }) {
-  return (
-    <Box mt="3">
-      <Text fontWeight="medium" textStyle="sm">{label}</Text>
-      {chain.map((e, i) => (
-        <Flex key={`${i}-${e.provider}-${e.model ?? ""}`} gap="2" mt="1" align="center">
-          <NativeSelect.Root size="sm" w="8rem">
-            <NativeSelect.Field aria-label={`${label} entry ${i + 1} provider`} value={e.provider} onChange={(ev) => onOp((t) => setChainEntry(t, path, i, { ...e, provider: ev.target.value as Provider }))}>
-              {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
-            </NativeSelect.Field>
-            <NativeSelect.Indicator />
-          </NativeSelect.Root>
-          <Input size="sm" w="14rem" placeholder="model (optional)" aria-label={`${label} entry ${i + 1} model`} defaultValue={e.model ?? ""} onBlur={(ev) => { if (ev.target.value !== (e.model ?? "")) onOp((t) => setChainEntry(t, path, i, { provider: e.provider, ...(ev.target.value ? { model: ev.target.value } : {}) })); }} />
-          <Button size="2xs" variant="outline" aria-label="Move up" disabled={i === 0} onClick={() => onOp((t) => moveChainEntry(t, path, i, -1))}>Up</Button>
-          <Button size="2xs" variant="outline" aria-label="Move down" disabled={i === chain.length - 1} onClick={() => onOp((t) => moveChainEntry(t, path, i, 1))}>Down</Button>
-          <Button size="2xs" variant="outline" aria-label="Remove" disabled={chain.length <= 1} onClick={() => onOp((t) => removeChainEntry(t, path, i))}>Remove</Button>
-        </Flex>
-      ))}
-      <Button size="2xs" variant="outline" mt="1" onClick={() => onOp((t) => addChainEntry(t, path, "claude"))}>Add entry</Button>
-    </Box>
-  );
-}
-
-function FormFields({ text, onOp }: { text: string; onOp: (op: Op) => void }) {
-  const f = readForm(text);
-  if (!f) return <Text mt="4" color="red.fg" role="alert">The text on the Raw tab does not parse as YAML, so the form cannot show it. Fix it there first.</Text>;
-  const set = (key: string) => (n: number) => onOp((t) => editField(t, [key], n));
-  const ind = checkIndependence(f);
-  return (
-    <Box mt="4">
-      <Flex gap="4" wrap="wrap">
-        <NumberField label="Owner user id" value={f.ownerUserId} min={1} onCommit={set("ownerUserId")} />
-        <NumberField label="Digest hour (0-23)" value={f.digestHour} min={0} onCommit={set("digestHour")} />
-        <NumberField label="Max daily spend (USD)" value={f.maxDailyUsd} min={1} onCommit={set("maxDailyUsd")} />
-        <Box>
-          <Text textStyle="sm" color="fg.muted">Timezone</Text>
-          <Input key={f.dailyTimezone} size="sm" aria-label="Timezone" defaultValue={f.dailyTimezone} onBlur={(e) => { if (e.target.value && e.target.value !== f.dailyTimezone) onOp((t) => editField(t, ["dailyTimezone"], e.target.value)); }} />
-        </Box>
-        <Box>
-          <Text textStyle="sm" color="fg.muted">Auth mode</Text>
-          <NativeSelect.Root size="sm">
-            <NativeSelect.Field aria-label="Auth mode" value={f.authMode} onChange={(e) => onOp((t) => editField(t, ["authMode"], e.target.value))}>
-              <option value="subscription">subscription</option>
-              <option value="api">api</option>
-            </NativeSelect.Field>
-            <NativeSelect.Indicator />
-          </NativeSelect.Root>
-        </Box>
-      </Flex>
-      <Heading size="sm" mt="6">Limits</Heading>
-      <Flex gap="4" wrap="wrap" mt="2">
-        <NumberField label="Autonomous steps without owner" value={f.maxAutonomousStepsWithoutOwner} min={1} onCommit={set("maxAutonomousStepsWithoutOwner")} />
-        <NumberField label="Implement attempts per Thread" value={f.maxImplementAttemptsPerThread} min={1} onCommit={set("maxImplementAttemptsPerThread")} />
-        <NumberField label="Revisions per Thread" value={f.maxRevisionsPerThread} min={0} onCommit={set("maxRevisionsPerThread")} />
-        <NumberField label="Rebases per Thread" value={f.maxRebasesPerThread} min={0} onCommit={set("maxRebasesPerThread")} />
-      </Flex>
-      <Heading size="sm" mt="6">Chains</Heading>
-      {WRITER_CHAINS.map((r) => <ChainEditor key={r} label={`${r[0]!.toUpperCase()}${r.slice(1)} chain (writer)`} chain={f.chains[r]} path={["chains", r]} onOp={onOp} />)}
-      <ChainEditor label="Reviewer chain" chain={f.reviewerChain} path={["reviewerChain"]} onOp={onOp} />
-      <IndependenceNotice problems={ind.problems} />
-      {ind.problems.length === 0 ? <Text textStyle="xs" color="fg.muted">Writers: {ind.writers.join(", ")}. Reviewers: {ind.reviewers.join(", ")}.</Text> : null}
-    </Box>
-  );
-}
-
-/** Settings form and Raw tab on W2. The text is the single draft; the form edits it through YAML Document operations that are replayed if the file changes under us. */
-export function HostConfigEditor({ view, onSaved }: { view: "form" | "raw"; onSaved: () => void }) {
+/** The text is the single draft; the form edits it through YAML Document operations that are replayed if the file changes under us. */
+export function useHostDraft(onSaved: () => void) {
   const [read, setRead] = useState<HostConfigRead | null>(null);
   const [loadError, setLoadError] = useState<HostError | null>(null);
   const [ops, setOps] = useState<Op[]>([]);
@@ -176,8 +99,11 @@ export function HostConfigEditor({ view, onSaved }: { view: "form" | "raw"; onSa
   }, []);
   useEffect(() => { void reload(false); }, [reload]);
 
-  const change = (op: Op) => { setOps((o) => [...o, op]); setPreview(null); setConfirm(false); setDone(null); };
-  const blocked = (() => { const f = readForm(text); return f && checkIndependence(f).problems.length > 0 ? "Fix the reviewer independence problem before applying." : null; })();
+  const edited = () => { setPreview(null); setConfirm(false); setDone(null); };
+  const change = (op: Op) => { setOps((o) => [...o, op]); edited(); };
+  const setRaw = (v: string) => { setOps([() => v]); edited(); };
+  const discard = () => { setOps([]); setPreview(null); setConfirm(false); setError(null); };
+  const blocked = (() => { const f = readForm(text); return f && checkIndependence(f).problems.length > 0 ? "Fix the reviewer independence problem before saving." : null; })();
 
   const runPreview = async () => {
     if (!read) return;
@@ -198,38 +124,75 @@ export function HostConfigEditor({ view, onSaved }: { view: "form" | "raw"; onSa
     setDone(r.value);
     setOps([]);
     setPreview(null);
+    setConfirm(false);
     await reload(false);
     onSaved();
   };
 
-  if (loadError) return (
-    <>
-      <HostErrorNotice error={loadError} onReload={() => void reload(true)} />
-      <Button size="sm" mt="2" onClick={() => void reload(false)}>Retry</Button>
-    </>
-  );
-  if (!read) return <Text color="fg.muted" mt="6">Loading archangel.yaml...</Text>;
+  return { read, base, text, dirty, loadError, error, preview, confirm, setConfirm, busy, done, blocked, change, setRaw, discard, reload, runPreview, runApply };
+}
+export type HostDraft = ReturnType<typeof useHostDraft>;
+
+const direction = (c: HostChange) => (c.direction === "looser" ? "Looser" : c.direction === "stricter" ? "Stricter" : null);
+
+/** The unsaved host-file change: what differs, the guarded preview, and the save (a second confirmation when it loosens). */
+export function HostDraftBlock({ draft: d }: { draft: HostDraft }) {
+  const changes = hostChanges(d.base ?? "", d.text);
+  const n = changes.length;
   return (
-    <Box mt="4">
-      <Flex gap="2" align="center" wrap="wrap">
-        <Badge colorPalette="orange">Applies after the daemon restarts</Badge>
-        {read.state === "missing" ? <Text textStyle="sm">No archangel.yaml yet: this creates it.</Text> : <Text textStyle="sm" color="fg.muted">Comments and layout outside your edits are kept.</Text>}
-      </Flex>
-      {done ? (
-        <Box role="status" borderWidth="1px" borderColor="green.solid" rounded="md" p="3" mt="4" textStyle="sm">
-          Written to <Code>{done.path}</Code>{done.backup ? <>, previous version saved as <Code>{done.backup}</Code></> : null}. Restart the daemon to apply.
-        </Box>
+    <Flex direction="column" gap="2.5" borderTopWidth="1px" borderTopColor="fg" pt="3">
+      <Text textStyle="figure" fontSize="20px" lineHeight="26px" color="fg">
+        {d.dirty ? (n === 0 ? "Raw edits, not saved yet" : `${n} change${n === 1 ? "" : "s"}, not saved yet`) : "Nothing unsaved"}
+      </Text>
+      <Text textStyle="body13" color="fg.muted">
+        {d.dirty ? "Saving writes the file. The daemon keeps its old settings until it restarts." : "Edits you make here wait for you to preview and save them."}
+      </Text>
+      {d.error ? <HostErrorNotice error={d.error} onReload={() => void d.reload(true)} /> : null}
+      {d.error?.kind === "conflict" ? <Text textStyle="meta" color="fg.muted">Form edits are replayed onto the new file. Raw edits replace the whole file: check the diff before saving.</Text> : null}
+      {changes.map((c) => (
+        <Flex key={c.key} direction="column" gap="1" borderTopWidth="1px" borderTopColor="border" pt="2.5">
+          <Flex justify="space-between" gap="3">
+            <Text textStyle="label" fontSize="14px">{c.label} {c.from} to {c.to}</Text>
+            {direction(c) ? <Text textStyle="body13" color={c.direction === "looser" ? "owner" : "fg.muted"} flexShrink={0}>{direction(c)}</Text> : null}
+          </Flex>
+          {c.direction === "looser" ? <Text textStyle="body13" color="owner">This gives the factory more room, so saving asks you to confirm a second time.</Text> : null}
+        </Flex>
+      ))}
+      {d.dirty ? (
+        <>
+          <Flex gap="2" borderTopWidth="1px" borderTopColor="border" pt="3">
+            <Button flex="1" h="40px" borderRadius="12px" onClick={() => void d.runPreview()} disabled={d.busy}>Preview the file change</Button>
+            <Button variant="outline" h="40px" borderRadius="12px" onClick={d.discard}>Discard</Button>
+          </Flex>
+          <Text textStyle="meta" color="fg.subtle">A backup of the old file is kept. Saving here never counts as the factory hearing from you, so it cannot reset the step count.</Text>
+        </>
       ) : null}
-      {error ? <HostErrorNotice error={error} onReload={() => void reload(true)} /> : null}
-      {error?.kind === "conflict" ? <Text textStyle="sm" color="fg.muted" mt="1">Form edits are replayed onto the new file. Raw edits replace the whole file: check the diff before applying.</Text> : null}
-      {view === "form" ? <FormFields text={text} onOp={change} /> : (
-        <Textarea mt="4" fontFamily="mono" rows={28} spellCheck={false} aria-label="archangel.yaml" value={text} onChange={(e) => { const v = e.target.value; setOps([() => v]); setPreview(null); setConfirm(false); setDone(null); }} />
-      )}
-      <Flex gap="2" mt="4">
-        <Button size="sm" onClick={() => void runPreview()} disabled={busy || !dirty}>Preview changes</Button>
-        {dirty ? <Button size="sm" variant="outline" onClick={() => { setOps([]); setPreview(null); setError(null); }}>Discard edits</Button> : null}
+      {d.preview ? <PreviewPanel preview={d.preview} confirm={d.confirm} onConfirm={d.setConfirm} onApply={() => void d.runApply()} busy={d.busy} blocked={d.blocked} /> : null}
+    </Flex>
+  );
+}
+
+/** Changes that are already in the file and wait for a restart. The dashboard never restarts the daemon: it shows the command. */
+export function SavedBlock({ done, children }: { done: ApplyResult | null; children: ReactNode }) {
+  return (
+    <Flex direction="column" gap="2" role={done ? "status" : undefined}>
+      <Text textStyle="label" fontSize="14px">Already saved, waiting for a restart</Text>
+      {done ? <Text textStyle="body13" color="fg.muted">Written to <Code>{done.path}</Code>{done.backup ? <>, previous version saved as <Code>{done.backup}</Code></> : null}.</Text> : null}
+      {children}
+    </Flex>
+  );
+}
+
+/** The Raw tab: the same draft as the form, edited as text. Raw edits replace the whole file. */
+export function RawFile({ draft: d }: { draft: HostDraft }) {
+  return (
+    <Flex direction="column" gap="2" borderTopWidth="1px" borderTopColor="fg" pt="3" flex="1" minW="0">
+      <Flex gap="2" align="center" wrap="wrap">
+        <Text textStyle="body13" color="fg.muted">Applies after the daemon restarts.</Text>
+        {d.read?.state === "missing" ? <Text textStyle="body13">No archangel.yaml yet: saving creates it.</Text> : <Text textStyle="body13" color="fg.muted">Comments and layout outside your edits are kept.</Text>}
       </Flex>
-      {preview ? <PreviewPanel preview={preview} confirm={confirm} onConfirm={setConfirm} onApply={() => void runApply()} busy={busy} blocked={blocked} /> : null}
-    </Box>
+      {!readForm(d.text) ? <Text role="alert" textStyle="body13" color="red.fg">The text does not parse as YAML. Fix it here before previewing.</Text> : null}
+      <Textarea textStyle="command" rows={28} spellCheck={false} aria-label="archangel.yaml" value={d.text} borderColor={d.dirty ? "unsent" : undefined} onChange={(e) => d.setRaw(e.target.value)} />
+    </Flex>
   );
 }

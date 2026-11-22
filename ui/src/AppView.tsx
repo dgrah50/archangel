@@ -142,7 +142,7 @@ export function AppView({
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} thread={thread} onRetry={onRetry} /> : null}
       {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
-        <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
+        <SettingsPage scope={route.scope} settings={settings} workflows={workflows} onRetry={onRetry}>
           <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} />
         </SettingsPage>
       ) : null}
