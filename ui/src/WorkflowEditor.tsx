@@ -180,7 +180,7 @@ export function useDraft(repo: string, initial: Workflow, baseFileSha256: string
   return { repo, pinned, form, base, set, dirty, live, preview, message, url, busy, confirming, setConfirming, skills, stale, enabled, reload, run, discard: () => reset(base) };
 }
 
-const inputProps = (dirty: boolean) => ({ size: "sm" as const, h: "44px", borderRadius: "12px", textStyle: "body13", ...(dirty ? { borderColor: "unsent", borderWidth: "1.5px" } : {}) });
+const inputProps = (dirty: boolean) => ({ size: "sm" as const, h: "36px", borderRadius: "10px", textStyle: "body13", ...(dirty ? { borderColor: "unsent", borderWidth: "1.5px" } : {}) });
 
 function Field({ label, dirty, was, children, w }: { label: string; dirty?: boolean; was?: ReactNode; children: ReactNode; w?: string }) {
   return (
@@ -212,7 +212,7 @@ const lineList = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolea
 
 function Chip({ children, tone }: { children: ReactNode; tone: "builtin" | "own" | "unsent" }) {
   return (
-    <Flex align="center" gap="2" h="36px" px="14px" rounded="10px" textStyle="command" color="fg" {...(tone === "builtin" ? { bg: "bg.muted" } : { borderWidth: "1px", borderColor: tone === "unsent" ? "unsent" : "border.emphasized" })}>
+    <Flex align="center" gap="2" h="28px" px="10px" rounded="8px" textStyle="command" color="fg" {...(tone === "builtin" ? { bg: "bg.muted" } : { borderWidth: "1px", borderColor: tone === "unsent" ? "unsent" : "border.emphasized" })}>
       {children}
     </Flex>
   );
@@ -246,7 +246,7 @@ function ProtectedPaths({ d, builtIn }: { d: Draft; builtIn: string[] }) {
             </Button>
           </Chip>
         ))}
-        <Input {...inputProps(false)} w="170px" h="36px" fontFamily="mono" placeholder="+ add a path" value={adding} onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => (e.key === "Enter" ? add() : undefined)} onBlur={add} />
+        <Input {...inputProps(false)} w="170px" h="28px" borderRadius="8px" fontFamily="mono" placeholder="+ add a path" value={adding} onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => (e.key === "Enter" ? add() : undefined)} onBlur={add} />
       </Flex>
       {was.some((p) => !paths.includes(p)) ? (
         <Text textStyle="meta" color="fg.subtle" mt="2" textDecoration="line-through">
@@ -376,7 +376,7 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
   return (
     <Flex direction="column" gap="3.5" borderTopWidth="1px" borderTopColor="fg" pt="3" aria-label="draft changes">
       <Box>
-        <Text textStyle="bigNumber" fontSize="24px" lineHeight="28px">
+        <Text textStyle="figure" fontSize="20px" lineHeight="26px">
           {heading}
         </Text>
         <Text textStyle="body13" color="fg.muted" mt="1">
@@ -421,14 +421,16 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
           })}
         </Flex>
       ) : null}
-      <Flex gap="3">
-        <Button flex="1" h="44px" borderRadius="12px" disabled={!d.enabled || d.busy || !d.dirty} onClick={() => void d.run(true)}>
-          Preview the PR
-        </Button>
-        <Button variant="outline" h="44px" borderRadius="12px" disabled={!d.dirty} onClick={d.discard}>
-          Discard
-        </Button>
-      </Flex>
+      {d.dirty ? (
+        <Flex gap="3">
+          <Button flex="1" size="sm" borderRadius="12px" disabled={!d.enabled || d.busy} onClick={() => void d.run(true)}>
+            Preview the PR
+          </Button>
+          <Button variant="outline" size="sm" borderRadius="12px" onClick={d.discard}>
+            Discard
+          </Button>
+        </Flex>
+      ) : null}
       {d.message ? (
         <Text role="alert" color="owner" textStyle="body13">
           {d.message}
@@ -445,11 +447,11 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
                 </Text>
               ) : null}
               <Flex gap="3">
-                <Button h="44px" borderRadius="12px" disabled={!d.enabled || d.busy} onClick={open}>
+                <Button size="sm" borderRadius="12px" disabled={!d.enabled || d.busy} onClick={open}>
                   {d.confirming ? "Yes, open the PR that loosens" : "Open the PR"}
                 </Button>
                 {d.confirming ? (
-                  <Button variant="outline" h="44px" borderRadius="12px" onClick={() => d.setConfirming(false)}>
+                  <Button variant="outline" size="sm" borderRadius="12px" onClick={() => d.setConfirming(false)}>
                     Cancel
                   </Button>
                 ) : null}

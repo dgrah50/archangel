@@ -113,8 +113,9 @@ export function SmokeChecks() {
 /** Errors the daemon recorded in the last 24h, per repo and class. The error text is untrusted: rendered as text only. */
 export function FaultsSection({ faults, now }: { faults: UiState["faults"] | null; now: number }) {
   return (
-    <Section title="Recorded by the daemon in the last 24 hours, per repo and error class." aria-label="Faults">
+    <Section aria-label="Faults" gap="2">
       <Text textStyle="rowTitle" color="fg">Faults</Text>
+      <Text textStyle="meta" color="fg.muted">Recorded by the daemon in the last 24 hours, per repo and error class.</Text>
       {faults === null ? (
         <ReadError title="Faults are unavailable.">
           <Text textStyle="meta" color="fg.muted">The Ledger schema is older than this dashboard. Restart the daemon so it can migrate.</Text>
