@@ -16,7 +16,7 @@ function App() {
   // Each page polls only its own feeds.
   const [workflows, loadWorkflows] = useFeed("/api/workflows", isWorkflowsState, route.page === "pipeline" || route.page === "setup" || (route.page === "settings" && route.scope === "repo"));
   const [evals, loadEvals] = useFeed("/api/evals", isEvalsState, route.page === "evals");
-  const [settings, loadSettings] = useFeed("/api/settings", isSettingsState, (route.page === "settings" && route.scope !== "repo") || route.page === "setup");
+  const [settings, loadSettings] = useFeed("/api/settings", isSettingsState, (route.page === "settings" && route.scope !== "repo") || route.page === "setup" || route.page === "pipeline");
   const [host, loadHost] = useFeed("/api/host", isHostStatus);
   const t = route.page === "thread" ? route.item : null;
   const key = t ? `${encodeURI(t.repo)}/${t.issue}` : "";
@@ -31,7 +31,7 @@ function App() {
     loadState();
     loadHost();
     if (route.page === "pipeline" || route.page === "setup" || (route.page === "settings" && route.scope === "repo")) loadWorkflows();
-    if ((route.page === "settings" && route.scope !== "repo") || route.page === "setup") loadSettings();
+    if ((route.page === "settings" && route.scope !== "repo") || route.page === "setup" || route.page === "pipeline") loadSettings();
     if (route.page === "evals") loadEvals();
     if (t) {
       loadThread();

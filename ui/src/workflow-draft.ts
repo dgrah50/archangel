@@ -117,18 +117,45 @@ export async function propose(repo: string, draft: Workflow, baseFileSha256: str
   return { error: "unexpected response" };
 }
 
-/** How many fields differ between the draft the editor started from and the form now (the sticky footer's "N changes"). */
-export function countEdits(base: DraftForm, now: DraftForm): number {
-  const flat = (f: DraftForm): Record<string, string> => {
-    const { scouts, ...rest } = f;
-    return {
-      ...Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, JSON.stringify(v)])),
-      ...Object.fromEntries(scouts.flatMap((s) => Object.entries(s).map(([k, v]) => [`${s.name}.${k}`, JSON.stringify(v)]))),
-    };
+const STAGE_OF: Record<string, string> = { gate: "Gate", requiredChecks: "Gate", review: "Review", landing: "Landing", escalations: "Gate", scouts: "Scouts" };
+const GATE_LABEL: Record<string, string> = {
+  maxNonTestLines: "Largest change (lines)",
+  maxTotalLines: "Most lines in total",
+  maxFiles: "Most files",
+  baseTestRuns: "Proof runs on main",
+  headTestRuns: "Proof runs on the branch",
+  testCmd: "Test command",
+};
+const names = (xs: readonly string[]) => xs.join(", ");
+
+/** One plain line per classified change, plus the stage it belongs to. `base` and `next` are the drafts the change was classified between. */
+export function describeChange(c: FieldChange, base: Workflow, next: Workflow): { title: string; stage: string } {
+  const [head] = c.field.split(".");
+  const stage = STAGE_OF[head!] ?? "Gate";
+  const g = /^gate\.(\w+)$/.exec(c.field)?.[1];
+  if (g && g in GATE_LABEL) {
+    const k = g as keyof Workflow["gate"];
+    return { stage, title: g === "testCmd" ? "Test command changed" : `${GATE_LABEL[g]} ${String(base.gate[k])} to ${String(next.gate[k])}` };
+  }
+  const sets = (a: readonly string[], b: readonly string[], add: string, drop: string) => {
+    const added = b.filter((x) => !a.includes(x));
+    const removed = a.filter((x) => !b.includes(x));
+    return [added.length ? `${add} ${names(added)}` : "", removed.length ? `${drop} ${names(removed)}` : ""].filter(Boolean).join("; ");
   };
-  const a = flat(base);
-  const b = flat(now);
-  return Object.keys(b).filter((k) => a[k] !== b[k]).length;
+  if (c.field === "gate.protectedPaths") return { stage, title: sets(base.gate.protectedPaths, next.gate.protectedPaths, "Protect", "Stop protecting") };
+  if (c.field === "requiredChecks") return { stage, title: sets(base.requiredChecks, next.requiredChecks, "Require", "Stop requiring") };
+  if (c.field === "review.rubric") return { stage, title: "Review rubric changed" };
+  if (c.field === "landing.bugfix") return { stage, title: next.landing.bugfix === "autonomous" ? "Bug fixes merge on their own" : "Bug fixes wait for you" };
+  const sc = /^scouts\.(.+?)(?:\.(kind|schedule|maxProposals|skills|promotion|includeMetrics))?$/.exec(c.field);
+  if (sc) {
+    const [, name, key] = sc;
+    const was = base.scouts.find((s) => s.name === name);
+    const now = next.scouts.find((s) => s.name === name);
+    if (!key) return { stage, title: now ? `Scout ${name} added` : `Scout ${name} removed` };
+    const v = (s: typeof was) => (s ? String(Array.isArray(s[key as "skills"]) ? names(s[key as "skills"]) || "none" : s[key as "kind"]) : "none");
+    return { stage, title: `${name} ${key} ${v(was)} to ${v(now)}` };
+  }
+  return { stage, title: `${c.field} changed` };
 }
 
 /** Skill refs a Scout names that the host's bundled list cannot resolve (`folder/*` needs at least one skill in the folder). */
