@@ -78,6 +78,7 @@ describe("SettingsPage", () => {
     const out = page("machine", feed(ok));
     for (const t of ["General", "Models and accounts", "Limits", "Projects", "Environment"]) expect(out).toContain(t);
     expect(out).toContain(APPLY.restart);
+    for (const role of ["Implement", "Revise", "Rebase", "Scout", "Triage"]) expect(out).toContain(`${role} chain`);
     expect(out).toContain("unknown");
     expect(out).toContain("a/b");
     expect(out).not.toContain("<input");

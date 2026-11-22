@@ -57,7 +57,7 @@ function Machine({ s }: { s: SettingsState }) {
         <Rows rows={[["Timezone", c.dailyTimezone], ["Digest hour", String(c.digestHour)], ["Poll interval", `${c.pollIntervalMs} ms`], ["Data directory", c.dataDir], ["Owner user id", String(c.ownerUserId)]]} />
       </Section>
       <Section title="Models and accounts" apply={APPLY.restart}>
-        <Rows rows={[["Auth mode", c.authMode], ["Implementer chain", chain(c.implementerChain)], ["Reviewer chain", chain(c.reviewerChain)], ["Claude model", c.claudeModel], ["OpenAI reviewer model", c.openaiReviewerModel], ["Gemini reviewer model", c.geminiReviewerModel]]} />
+        <Rows rows={[["Auth mode", c.authMode], ...(Object.entries(c.chains) as Array<[string, Array<{ provider: string; model?: string }>]>).map(([role, ch]): [string, React.ReactNode] => [`${role[0]!.toUpperCase()}${role.slice(1)} chain`, chain(ch)]), ["Reviewer chain", chain(c.reviewerChain)], ["Claude model", c.claudeModel], ["OpenAI reviewer model", c.openaiReviewerModel], ["Gemini reviewer model", c.geminiReviewerModel]]} />
       </Section>
       <Section title="Limits" apply={APPLY.restart}>
         <Rows rows={[["Max daily spend", `$${c.maxDailyUsd}`], ["Autonomous steps without owner", String(c.maxAutonomousStepsWithoutOwner)], ["Implement attempts per Thread", String(c.maxImplementAttemptsPerThread)], ["Revisions per Thread", String(c.maxRevisionsPerThread)], ["Rebases per Thread", String(c.maxRebasesPerThread)], ["Implement timeout", `${c.implementTimeoutMs} ms`], ["Gate timeout", `${c.gateTimeoutMs} ms`]]} />
