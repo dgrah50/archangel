@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, repeatedCategories } from "./corrections.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
+import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../agents/prompts.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
-import type { GateProof } from "../gate/gate.js";
+import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
@@ -1396,13 +1396,23 @@ export class Reconciler {
         });
         const latest = this.ledger.getThread(workingThread.issueNumber);
         if (latest && latest.version === workingThread.version) {
+          // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
+          // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
+          const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
+          const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
           this.applyMachineEvent(
             latest,
-            {
-              t: "attempt_failed",
-              code: "review_vetoed",
-              reason: "Revision attempt produced no new changes (identical SHA) — needs owner review",
-            },
+            conflict
+              ? {
+                  t: "attempt_failed",
+                  code: "existing_test_conflict",
+                  reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.`,
+                }
+              : {
+                  t: "attempt_failed",
+                  code: "revision_no_change",
+                  reason: "Revision attempt produced no new changes (identical SHA).",
+                },
             { auditTopic: "thread/needs_you" },
           );
         }
@@ -2054,6 +2064,15 @@ export class Reconciler {
       decisionClass: formatDecisionClass(policy.decisionClass),
       recommendation: policy.recommendation,
     });
+  }
+
+  /** The first test file named in `texts` that is a test file by this repo's globs and exists on `baseSha`, or null. */
+  private async findExistingTestConflict(texts: readonly string[], baseSha: string): Promise<string | null> {
+    for (const path of testFilesMentioned(texts)) {
+      if (!isTestFile(path, this.effectiveGate)) continue;
+      if ((await this.broker.readFileAtRef(baseSha, path)) !== null) return path;
+    }
+    return null;
   }
 
   private async reconcilePostMergeMain(mainSha: string, now: number): Promise<void> {
