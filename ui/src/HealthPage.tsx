@@ -110,7 +110,7 @@ export function HealthPage() {
     <Box maxW="64rem" mx="auto" p="6">
       <Heading size="xl">Health</Heading>
       <Text color="fg.muted" textStyle="sm">
-        Read-only checks of this machine and its GitHub wiring. Nothing here changes anything; fix issues with the commands shown.
+        Read-only checks of this machine and its GitHub wiring. Nothing here changes anything; fix issues with the commands shown. These checks run in the dashboard process, so environment-variable checks reflect this shell, not the daemon: what the daemon actually has comes from the facts it records at start (Settings, Environment).
       </Text>
       <LadderView title="This machine" hint="Git, configuration, App key, CLIs, SQLite, Paseo, gh login. No network." ladder={machine} onRun={runMachine} runLabel="Recheck" />
       <LadderView title="Subscription CLIs (smoke)" hint="Runs each CLI's version and login-status command. Never calls a model." ladder={smoke} onRun={runSmoke} runLabel="Run smoke checks" disabledReason={noToken} />
