@@ -19,6 +19,12 @@ export const STAGES = [
 ] as const;
 export type Stage = (typeof STAGES)[number];
 
+/** The Threads page groups by what each Thread needs from the owner, most urgent first. */
+export const NEED_GROUPS = ["Needs you", "Ready for owner", "Stuck", "In review", "Waiting on CI", "Working", "Queued", "Done in last 7 days"] as const;
+export type NeedGroup = (typeof NEED_GROUPS)[number];
+/** No phase change for this long, outside `queued`, means a Thread is stuck rather than working. */
+export const STUCK_MS = 6 * 3_600_000;
+
 export interface UiItem {
   repo: string;
   issueNumber: number;
@@ -30,7 +36,9 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
-  needsYou: Array<UiItem & { decisionClass: string; recommendation: string }>;
+  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; code: string; reason: string }>;
+  /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
+  groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
   outcomes: ReturnType<Ledger["computeMetrics"]>["outcomes"];
   /** Owner corrections over the last 30 days, all repos (closed categories only). */
@@ -84,6 +92,30 @@ function prOf(phase: Phase): number | null {
   return "prNumber" in phase && typeof phase.prNumber === "number" ? phase.prNumber : null;
 }
 
+function needGroupOf(phase: Phase, updatedAt: number, now: number): NeedGroup | null {
+  const stage = stageOf(phase, updatedAt, now);
+  if (stage === null) return null;
+  const active = phase.kind === "working" || phase.kind === "awaiting_gate" || phase.kind === "reviewing" || phase.kind === "landing";
+  if (active && now - updatedAt > STUCK_MS) return "Stuck";
+  switch (stage) {
+    case "Owner driving":
+      return null; // the owner is already on it
+    default:
+      return stage;
+  }
+}
+
+/** Pure: Threads grouped by what they need, each group newest first (Needs you oldest first, as in the queue). */
+export function groupByNeed(threads: ThreadRecord[], now: number): Record<NeedGroup, UiItem[]> {
+  const groups = Object.fromEntries(NEED_GROUPS.map((g) => [g, [] as UiItem[]])) as Record<NeedGroup, UiItem[]>;
+  for (const t of threads) {
+    const g = needGroupOf(t.phase, t.updatedAt, now);
+    if (g) groups[g].push({ repo: t.repo, issueNumber: t.issueNumber, prNumber: prOf(t.phase), title: t.title, phase: phaseLabel(t.phase), since: t.updatedAt });
+  }
+  for (const [g, list] of Object.entries(groups)) list.sort((a, b) => (g === "Needs you" ? a.since - b.since : b.since - a.since));
+  return groups;
+}
+
 /** Groups Threads by stage (and lists Needs You items with their class and recommendation). Shared by the dashboard and `archangel status`. */
 export function groupThreads(
   threads: ThreadRecord[],
@@ -104,7 +136,7 @@ export function groupThreads(
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
       const p = describeEscalation(t.phase.code);
-      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation });
+      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, code: t.phase.code, reason: t.phase.reason });
     }
   }
   for (const list of Object.values(stages)) list.sort((a, b) => b.since - a.since);
@@ -128,6 +160,7 @@ export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
   return {
     generatedAt: now,
     needsYou,
+    groups: groupByNeed(threads, now),
     stages,
     outcomes: ledger.computeMetrics({ now }).outcomes,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
