@@ -83,10 +83,11 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  * `application/json`, and it can only open an unmerged PR (or preview one). It never writes archangel.yaml.
  */
 export async function startUiServer(
-  ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void },
+  ledgerOrGetter: Ledger | (() => Ledger),
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void; ledgerMissing?: () => boolean },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
+  const currentLedger = typeof ledgerOrGetter === "function" ? ledgerOrGetter : () => ledgerOrGetter;
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
   if (!fs.existsSync(path.join(uiDir, "index.html"))) {
     throw new Error(`UI bundle not found at ${uiDir}. Run \`bun run build\` (or \`bun run build:ui\`) first.`);
@@ -111,6 +112,7 @@ export async function startUiServer(
     return [...LOOPBACK, opts.host].some((h) => origin === `http://${h.includes(":") && !h.startsWith("[") ? `[${h}]` : h}:${port}`);
   };
   const server = http.createServer(async (req, res) => {
+    const ledger = currentLedger();
     // Loopback-only mode also checks Host to block DNS-rebinding reads from a web page.
     const hostName = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
     if (!opts.allowRemote && !LOOPBACK.has(hostName)) {
@@ -153,7 +155,7 @@ export async function startUiServer(
     try {
       const pathname = decodeURIComponent((req.url ?? "/").split("?")[0]!);
       if (pathname === "/api/state") {
-        const body = JSON.stringify(buildUiState(ledger, Date.now(), readLimits(opts.configPath)));
+        const body = JSON.stringify({ ...buildUiState(ledger, Date.now(), readLimits(opts.configPath)), ...(opts.ledgerMissing?.() ? { ledgerMissing: true } : {}) });
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;

@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { BUMP_BRANCH, assessPinDrift, gateBump, withPin } from "../src/core/gate-pin.js";
+import { withBranch } from "../src/core/onboard.js";
 import { execRunner, type OnboardRunner } from "../src/core/onboard.js";
 
 const git = (cwd: string, ...a: string[]) =>
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd, encoding: "utf8" }).trim();
 
-const TEMPLATE = "env:\n  ARCHANGEL_GATE_SHA: REPLACE\nsteps: [gate]\n";
+const TEMPLATE = "on:\n  pull_request:\n    branches: [main]\nenv:\n  ARCHANGEL_GATE_SHA: REPLACE\nsteps: [gate]\n";
 
 /** Temp "Archangel" checkout: c1 (gate) -> c2 (docs only) -> c3 (gate). origin/main = HEAD. */
 function checkout() {
@@ -70,6 +71,10 @@ describe("drift detection", () => {
     expect((await a("f".repeat(40))).reasons[0]).toContain("not in the local Archangel checkout");
     // a pin newer than the latest gate commit (e.g. a later docs commit) is fine
     expect((await assessPinDrift(execRunner, wf(c3), c1, { root, template: TEMPLATE })).drifted).toBe(false);
+    // the template's branch is the repo's own: a trunk workflow is current on trunk, and a `main` one is drift there
+    const trunk = { root, template: TEMPLATE, branch: "trunk" };
+    expect((await assessPinDrift(execRunner, withBranch(wf(c3), "trunk"), c3, trunk)).drifted).toBe(false);
+    expect((await assessPinDrift(execRunner, wf(c3), c3, trunk)).drifted).toBe(true);
   });
 
   it("flags a pin on a divergent line that is neither older nor newer than the latest gate commit", async () => {
@@ -98,7 +103,7 @@ describe("gateBump", () => {
     expect(put).toContain("sha=blobsha");
     expect(put).toContain(`branch=${BUMP_BRANCH}`);
     const content = /content=(\S+)/.exec(put)![1]!;
-    expect(Buffer.from(content, "base64").toString()).toBe(withPin(TEMPLATE, c3));
+    expect(Buffer.from(content, "base64").toString()).toBe(withBranch(withPin(TEMPLATE, c3), "main"));
     expect(calls.some((c) => /pr merge/.test(c))).toBe(false);
   });
 

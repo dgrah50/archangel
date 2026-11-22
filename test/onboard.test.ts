@@ -5,7 +5,7 @@ import { buildPlan, onboard, type OnboardRunner } from "../src/core/onboard.js";
 const SHA = "a".repeat(40);
 
 /** Scripted runner: answers by matching the joined command line; records everything it was asked. */
-function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain?: boolean; pkg?: object; openPr?: string }) {
+function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain?: boolean; pkg?: object; openPr?: string; branch?: string; checks?: string[] }) {
   const calls: string[] = [];
   const runner: OnboardRunner = {
     async run(cmd, args) {
@@ -18,7 +18,8 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
         if (opts.onMain === false) throw Object.assign(new Error("not ancestor"), { code: 1 });
         return "";
       }
-      if (line.startsWith("gh repo view")) return "main\n";
+      if (line.startsWith("gh repo view")) return `${opts.branch ?? "main"}\n`;
+      if (line.startsWith("gh pr list") && line.includes("--state merged")) return (opts.checks ?? ["Gate", "Test"]).join("\n");
       if (line.includes("/git/trees/")) return opts.tree.join("\n");
       if (line.startsWith("gh label list")) return (opts.labels ?? []).join("\n");
       if (line.includes("contents/package.json")) return JSON.stringify(opts.pkg ?? {});
@@ -34,14 +35,15 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
 
 describe("buildPlan", () => {
   it("plans all three files for a go repo and pins the workflow to HEAD", async () => {
-    const { runner } = fake({ tree: ["go.mod", "a_test.go"], labels: ["needs-you"] });
+    const { runner } = fake({ tree: ["go.mod", "a_test.go"], labels: ["needs-you"], branch: "trunk", checks: ["lint", "build (ubuntu)", "lint"] });
     const plan = await buildPlan(runner, "o/r");
     expect(plan.stack).toBe("go");
     expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
     expect(plan.files[0]!.content).toContain(`ARCHANGEL_GATE_SHA: ${SHA}`);
+    expect(plan.files[0]!.content).toContain('branches: ["trunk"]');
     expect(plan.files[1]!.content).toContain("go test");
     const wf = JSON.parse(plan.files[1]!.content);
-    expect(wf).toMatchObject({ version: 1, requiredChecks: ["Gate", "Test"] });
+    expect(wf).toMatchObject({ version: 1, requiredChecks: ["Gate", "build (ubuntu)", "lint"] });
     expect(wf.scouts).toEqual([{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: ["general/bug-hunt", "general/input-validation", "go/*"] }]);
     expect(Workflow.safeParse(wf).success).toBe(true);
     expect(plan.files[2]!.content.startsWith("---")).toBe(false); // body-only prompt, no frontmatter
@@ -49,6 +51,17 @@ describe("buildPlan", () => {
     expect(plan.labelsToCreate).toContain("ready-for-agent");
   });
 
+  it("does not guess a test command or checks: no lockfile or no CI means no policy, said plainly", async () => {
+    const pkg = { scripts: { test: "vitest" } };
+    const noLock = await buildPlan(fake({ tree: ["package.json", "a.test.ts"], pkg }).runner, "o/r");
+    expect(noLock.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
+    expect(noLock.notes.join()).toContain("test command are unknown");
+    const noCi = await buildPlan(fake({ tree: ["package.json", "bun.lock", "a.test.ts"], pkg, checks: [] }).runner, "o/r");
+    expect(noCi.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
+    expect(noCi.notes.join()).toContain("required checks are unknown");
+    const bun = await buildPlan(fake({ tree: ["package.json", "bun.lock", "a.test.ts"], pkg }).runner, "o/r");
+    expect(JSON.parse(bun.files[1]!.content).gate.testCmd).toBe("bun run test");
+  });
 });
 
 describe("onboard", () => {

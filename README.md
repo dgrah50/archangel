@@ -36,41 +36,44 @@
 **Requirements**
 
 - Bun 1.4.5+, `git >= 2.38`, and GitHub CLI (`gh`)
-- A least-privilege GitHub App created with `bun scripts/create-github-app.ts`
-- Two or more logged-in AI CLIs (`codex`, `claude`, `agy`) for cross-vendor review
-
-Install from source, onboard a repository, and open the local dashboard.
+- The AI CLIs your `archangel.yaml` chains use, each logged in. The example config uses `codex`, `agy`, and `claude`, and `doctor` fails if any configured one is missing. Trim the chains to the CLIs you have, keeping at least two vendors for cross-vendor review.
 
 ```bash
 git clone https://github.com/dgrah50/archangel.git && cd archangel
-bun install && bun run build && bun link
-archangel onboard owner/my-repo
-archangel doctor --smoke && archangel ui
+bun install
+bun src/cli/index.ts init          # creates archangel.yaml, .env and an empty Ledger; never overwrites
+bun scripts/create-github-app.ts   # creates the App, then writes its ids into .env
+bun src/cli/index.ts onboard owner/my-repo
+bun src/cli/index.ts doctor --smoke && bun src/cli/index.ts ui
 ```
 
-Copy `.env.example` to `.env` and [archangel.example.yaml](./archangel.example.yaml) to `archangel.yaml`, merge the onboarding pull request on GitHub, then start the daemon.
+The App script creates a least-privilege GitHub App, saves its key, and waits for you to install it. It then writes `ARCHANGEL_GITHUB_APP_ID`, `ARCHANGEL_GITHUB_INSTALLATION_ID`, and `ARCHANGEL_GITHUB_BOT_USER_ID` into `.env`. If the App has several installations, it asks which to use. Add your own settings from `.env.example` to the same file.
+
+`.env` and `archangel.yaml` are read from the working directory, so keep both in the checkout root and run `archangel` from there. Merge the onboarding pull request on GitHub, then start the daemon.
 
 ```bash
-archangel start              # run in the foreground
-archangel daemon install     # or install as a macOS launchd background service
-archangel daemon restart     # reload after editing archangel.yaml
+bun src/cli/index.ts start             # run in the foreground
+bun src/cli/index.ts daemon install    # or install as a macOS launchd background service
+bun src/cli/index.ts daemon restart    # reload after editing archangel.yaml
 ```
 
-The **Setup and health** page inside `archangel ui` tracks all 8 setup steps directly from your machine and GitHub, displays onboarding PR check status, and links to a prefilled smoke issue.
+> There is one launchd label (`com.archangel.daemon`) per machine, so `daemon install` from a second checkout replaces the first.
+
+The **Setup and health** page inside `archangel ui` tracks the 6 setup groups directly from your machine and GitHub, displays onboarding PR check status, and links to a prefilled smoke issue.
 
 ## Why Archangel?
 
 - **Runs on subscriptions you already pay for.** Drives native `claude`, `codex`, and `agy` CLIs across multiple logins per provider with automatic failover and `$0` API bills.
-- **Proves every change mechanically.** Bugfixes must add a brand-new test that fails on `main` and passes on the branch. Features need no new test file and must clear your full test suite. Existing tests stay immutable.
+- **Proves every change mechanically.** Bugfixes must add a brand-new test that fails on `main` and passes on the branch. Features (`class:feature`) and chores (`class:chore`) need no new test file and must clear your full test suite. Existing tests stay immutable.
 - **Enforces independent rival review.** If Codex writes the code, Claude and Gemini review it. Models can only approve or veto. No model can waive a failing Gate check.
-- **Finds and pitches its own work.** Read-only Bug Scouts scan `main` on schedule. Weekly Pitch Scouts propose evidence-backed improvements and wait for you to promote individual slices.
+- **Finds and pitches its own work.** Read-only Bug Scouts scan `main` on schedule, and optional fleet Scouts (`anti-slop-bugs`, `anti-slop-cleanup`, `fleet-pr-miner`) run across every configured repository. Weekly Pitch Scouts propose evidence-backed improvements and wait for you to promote individual slices.
 - **Recovers before waking you.** Optional read-only machine triage retries a stuck Thread once (`escalations.factoryRetry: once`), records the triage steps in the PR Recap, and switches itself off per repo if retries stop paying off.
 - **Keeps you in command from GitHub.** Leave normal inline PR review comments or reply `/archangel retry`, `/archangel close`, or `/archangel handoff`. Receive a quiet daily digest on Telegram.
 - **Watches `main` after every merge.** If a landed fix turns CI red, Archangel trips the repo circuit breaker and opens an exact inverse revert PR automatically.
 
 ## How it works
 
-Bugs can land end-to-end autonomously once you disable shadow mode. Features and promoted pitch slices are built, gated, and reviewed by the factory, then wait for your click to merge. Whenever a product call or conflict arises, Archangel parks that Thread in **Needs you** with a clear recommendation while everything else keeps moving.
+Bugs can land end-to-end autonomously once you disable shadow mode. Features, chores, and promoted pitch slices are built, gated, and reviewed by the factory, then wait for your click to merge. Whenever a product call or conflict arises, Archangel parks that Thread in **Needs you** with a written recommendation while everything else keeps moving.
 
 <p align="center">
   <picture>
@@ -92,13 +95,13 @@ Bugs can land end-to-end autonomously once you disable shadow mode. Features and
 
 ### 1. Live Thread inspection and mechanical Gate proof
 
-Every issue becomes a Thread with a live phase rail, a newest-first Ledger audit timeline, full attempt provenance (provider, model, duration, transcript path), and a mechanical Gate proof checklist.
+Every issue becomes a Thread with a live phase rail showing time spent in each stage, a newest-first Ledger audit timeline, full attempt provenance (provider, model, duration, transcript path), and a mechanical Gate proof checklist.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/threads-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/threads-light.jpg">
-    <img alt="Threads page showing grouped Threads on the left and phase rail, Ledger timeline, and Gate proof on the right" src="assets/readme/threads-light.jpg" width="100%">
+    <img alt="Threads page showing grouped Threads on the left and phase rail with per-phase durations, Ledger timeline, and Gate proof on the right" src="assets/readme/threads-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -108,13 +111,13 @@ Every issue becomes a Thread with a live phase rail, a newest-first Ledger audit
 
 ### 2. Focused Needs You queue and bounded machine triage
 
-When a Thread hits a conflict with an existing test, a reviewer veto, or a product decision, Archangel parks it off the main line so other Threads never stall. Each item arrives with a decision class, a recommendation, the latest Recap, and recorded blockers.
+When a Thread hits a conflict with an existing test, a reviewer veto, or a product decision, Archangel parks it off the main line so other Threads never stall. Each item arrives with a decision class, a per-Thread written recommendation, the latest Recap (including Gate status and diff size against repo bounds), recorded blockers, and an **Answered today** log.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/needs-you-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/needs-you-light.jpg">
-    <img alt="Needs You queue showing oldest-first escalations, factory recommendation, latest Recap, and blockers" src="assets/readme/needs-you-light.jpg" width="100%">
+    <img alt="Needs You queue showing oldest-first escalations, per-Thread recommendation, latest Recap with Gate and Diff rows, blockers, and Answered today" src="assets/readme/needs-you-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -135,7 +138,7 @@ Every repository's rules live in `.agents/archangel.json` on `main`. The **Pipel
   </picture>
 </p>
 
-- Edit Gate bounds, protected paths, review rubrics, landing modes, and Scouts with a bundled skills picker.
+- Edit Gate bounds, protected paths, review rubrics, landing modes, and Scouts (including repo opt-outs for machine-wide fleet Scouts) with a bundled skills picker.
 - Preview exact diffs before opening a PR. Any change that loosens a guardrail is flagged as `Looser` and labelled `policy:loosens`.
 - Protected paths such as `.github/`, `.agents/`, lockfiles, and policy files stay off-limits to coding agents.
 
@@ -153,29 +156,39 @@ Configure separate provider chains for `implement`, `revise`, `rebase`, `scout`,
 
 - **Live vendor independence check.** Verifies as you edit that no reviewer shares a vendor with any writer chain.
 - **Same-vendor-first failover.** Switches to a backup login of the same vendor before falling back across providers, bounded by a 4-switch cap, per-account daily limits, cooldown tracking, and full Ledger provenance.
-- **Safe config writes.** Preview YAML diffs, require explicit confirmation when loosening host limits, write atomically with backups, and reload explicitly via `archangel daemon restart`.
+- **Safe config writes.** Preview YAML diffs, require explicit confirmation when loosening host limits, write atomically with backups, and reload cleanly via `archangel daemon restart`.
 
-### 5. Scouts, Pitches, and offline self-improvement
+### 5. Scouts, Pitches, dependency bumps, and offline self-improvement
 
-Read-only Bug Scouts inspect `main` using bundled or repo-specific skills (`general/`, `go/`, `typescript/`). Weekly Pitch Scouts propose scoped improvements backed by file citations and metrics.
+Read-only Bug Scouts inspect `main` using bundled or repo-specific skills (`general/`, `go/`, `typescript/`). Machine-wide fleet Scouts (`anti-slop-bugs`, `anti-slop-cleanup`, `fleet-pr-miner`) run across every configured repository unless opted out in `.agents/archangel.json`, always with `promotion: owner`. Weekly Pitch Scouts propose scoped improvements backed by file citations and metrics.
 
-- **Slice-level pitch promotion.** Review open pitches in the dashboard's **Pitches** view, tick the slices you want, and run `archangel pitch promote <repo> <issue> --slice 1,2 --chain` to create owner-authored `class:feature` issues.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/pitches-dark.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/readme/pitches-light.jpg">
+    <img alt="Pitches page showing open Scout pitches, evidence, options considered, slice selection, copyable promote command, and next pitch Scout schedule" src="assets/readme/pitches-light.jpg" width="100%">
+  </picture>
+</p>
+
+- **Slice-level pitch promotion.** Review open pitches, recently decided pitches, and the next scheduled pitch Scout run in the **Pitches** view. Tick the slices you want and run `archangel pitch promote <repo> <issue> --slice 1,2 --chain` to create owner-authored `class:feature` issues.
+- **Cross-repo PR-miner (`fleet-pr-miner`).** Mines merged history, Ledger outcomes, Scout yields, and optional local notes (`fleetMinerSeeds`) to pitch new skills, Scouts, or Archangel improvements (marked provisional below 20 merged PRs).
+- **Scrubbed dependency bumps (`archangel bump`).** Owner-run lane that bumps `bun`, `npm`, or `go` dependencies in a throwaway clone with install scripts disabled (`--ignore-scripts`), runs your `testCmd`, and opens an owner-authored unmerged PR. Never run by the daemon.
 - **Correction-loop drafting.** When you repeatedly correct the factory in the same category, Archangel drafts a prompt, skill, or rubric update and scores it offline against your captured `dev` and held-out eval sets before opening a draft PR.
 - **Model-tier benchmarking.** Capture revise and rebase inputs with pinned base heads, then run `archangel eval bench-tiers` to test cheaper or faster model chains against the mechanical Gate before editing `archangel.yaml`.
 
-### 6. Redesigned 7-page local dashboard
+### 6. Local 7-page dashboard
 
 Start `archangel ui` (loopback `127.0.0.1:4477` by default) to monitor and configure the factory across seven focused pages.
 
 | Page | What it shows |
 | --- | --- |
 | **Overview** | Waiting decisions and pitches, autonomy-cap warnings, live station line map, daily spend, cost per merged fix, and owner agreement rate. |
-| **Needs you** | Oldest-first escalation queue with factory recommendation, latest Recap, blockers, and copyable `/archangel retry` commands. |
-| **Threads** | Two-pane Thread browser grouped by urgency with phase rail, Ledger audit timeline, and mechanical Gate proof. |
-| **Pipeline** | Per-repo stage rules (Intake, Build, Gate, Review, Landing, Scouts), skills picker, and PR-only draft panel. |
-| **Pitches** | Read-only Scout pitch viewer with evidence, options considered, slice checkboxes, and copyable promote commands. |
+| **Needs you** | Oldest-first escalation queue with per-Thread recommendation, latest Recap (including Gate and Diff rows), blockers, Answered today log, and copyable `/archangel retry` commands. |
+| **Threads** | Two-pane Thread browser grouped by urgency with per-phase durations on the phase rail, Ledger audit timeline, and mechanical Gate proof. |
+| **Pipeline** | Per-repo stage rules (Intake, Build, Gate, Review, Landing, Scouts), fleet Scout status, skills picker, and PR-only draft panel. |
+| **Pitches** | Read-only Scout pitch viewer with evidence, options considered, slice checkboxes, copyable promote commands, recently decided pitches, and next pitch Scout schedule. |
 | **Settings** | Machine settings (`Models`, `Accounts`, `Limits`, `Repos`, `Alerts`), Per-repo, Built-in kernel invariants, and Raw YAML tabs. |
-| **Setup and health** | 8-step setup wizard with derived progress, onboarding PR checks, 24h daemon faults, and saved eval, replay, and tier-benchmark reports. |
+| **Setup and health** | Setup wizard with 6 groups with derived progress, onboarding PR checks, 24h daemon faults, and saved eval, replay, and tier-benchmark reports. |
 
 ### 7. Mechanically verified codebase invariants
 
@@ -206,6 +219,7 @@ chains:
   scout: [{ provider: claude }, { provider: codex }]
   triage: [{ provider: claude }]
 reviewerChain: [{ provider: agy }, { provider: claude }, { provider: codex }]
+fleetScouts: [anti-slop-bugs, anti-slop-cleanup] # optional: add fleet-pr-miner and fleetMinerSeeds
 projects:
   - repo: owner/my-repo
     defaultBranch: main
@@ -251,9 +265,11 @@ Repo policy (`.agents/archangel.json` on `main`):
 
 | Command | What it does |
 | --- | --- |
+| `archangel init` | Create `archangel.yaml`, `.env` (mode 0600) and an empty Ledger in the current directory. Never overwrites, safe to rerun. |
 | `archangel start [--once] [-c <path>]` | Run the reconciler daemon continuously, or execute one tick and exit. |
-| `archangel daemon <install\|restart\|uninstall\|status>` | Install, restart, uninstall, or inspect the macOS `launchd` background agent. |
+| `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` background agent. |
 | `archangel onboard <repo> [--dry-run]` | Create labels and open one onboarding PR with your `gh` CLI (never auto-merged). |
+| `archangel bump <repo> [pkgs...] [--patch\|--minor] [--yes]` | Bump dependencies in a throwaway clone with install scripts disabled, run `testCmd`, and open an owner-authored PR (never merged or run by the daemon). |
 | `archangel doctor [--offline] [--smoke] [--json]` | Verify host config, GitHub App permissions, repo files, Gate pin drift, and CLI logins. |
 | `archangel ui [--port <n>] [--host <host>] [--allow-remote]` | Serve the local 7-page dashboard (`http://127.0.0.1:4477`). Remote mode disables all write routes. |
 | `archangel status [--repo <owner/name>] [--json]` | Print active Threads, `Needs you` queue, daily spend, merges, and shadow agreement. |
@@ -287,11 +303,11 @@ No. Default `authMode: subscription` drives the native `claude`, `codex`, and `a
 
 ### How does the mechanical Gate differ from AI review?
 
-The Gate is deterministic code running in an ephemeral GitHub Actions job pinned to `ARCHANGEL_GATE_SHA`. It reads `.agents/archangel.json` and `.pre-commit-config.yaml` strictly from `main`, verifies diff line and file caps, blocks edits to protected paths and existing tests, and runs test proofs. Bugfixes must add a new test that fails on `main` and passes on the fix branch. Features require no new test file and must pass your full test suite. Only after the mechanical Gate passes do two rival AIs review the diff, and reviewers can only veto.
+The Gate is deterministic code running in an ephemeral GitHub Actions job pinned to `ARCHANGEL_GATE_SHA`. It reads `.agents/archangel.json` and `.pre-commit-config.yaml` strictly from `main`, verifies diff line and file caps, blocks edits to protected paths and existing tests, and runs test proofs. Bugfixes must add a new test that fails on `main` and passes on the fix branch. Features and chores require no new test file and must pass your full test suite. Only after the mechanical Gate passes do two rival AIs review the diff, and reviewers can only veto.
 
 ### Will Archangel merge features or edit its own rules?
 
-No. Features and promoted pitches always wait for your merge on GitHub. Policy files, CI workflows, and lockfiles are universally or explicitly protected, so agents cannot edit them. Even edits made in the local dashboard's Pipeline editor only open an unmerged pull request using your `gh` CLI.
+No. Features, chores, dependency bumps, and promoted pitches always wait for your merge on GitHub. Policy files, CI workflows, and lockfiles are universally or explicitly protected, so agents cannot edit them. Even edits made in the local dashboard's Pipeline editor only open an unmerged pull request using your `gh` CLI.
 
 ### What happens when a repository starts in shadow mode?
 
