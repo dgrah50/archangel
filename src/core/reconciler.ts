@@ -2142,15 +2142,24 @@ export class Reconciler {
         issue: thread.issueNumber,
       });
     }
-    await this.github.upsertRecapComment(
-      pr.number,
-      renderRecapComment({
-        thread,
-        reviews,
-        blockers,
-        wouldMerge: opts.wouldMerge,
-        gateProof,
-      }),
-    );
+    try {
+      await this.github.upsertRecapComment(
+        pr.number,
+        renderRecapComment({
+          thread,
+          reviews,
+          blockers,
+          wouldMerge: opts.wouldMerge,
+          gateProof,
+        }),
+      );
+    } catch (err) {
+      // The Recap is a report of a decision that is already recorded; failing to post it must not undo or re-run that decision.
+      // A later transition posts the Recap again.
+      this.logger.warn("recap/post_failed", err instanceof Error ? err.message : String(err), {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+    }
   }
 }
