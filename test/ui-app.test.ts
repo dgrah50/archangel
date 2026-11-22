@@ -33,4 +33,24 @@ describe("Dashboard", () => {
     expect(html).toContain(`<span>${state.daily[0]!.day.slice(5)}</span>`);
     expect(html).toContain(`<span>${state.daily[13]!.day.slice(5)}</span>`);
   });
+
+  it("shows stat tiles, hides empty stage groups, and collapses Done behind its count", () => {
+    const l = new Ledger(":memory:", { repo: "a/b" });
+    const mk = (n: number, title: string, phase: Parameters<Ledger["transition"]>[2] | null) => {
+      const t = l.upsertThread({ issueNumber: n, title, bodySha256: `s${n}`, now: NOW - 3_600_000 });
+      if (phase) l.transition(n, t.version, phase, { now: NOW - 3_600_000 });
+    };
+    mk(1, "queued one", null);
+    mk(2, "shipped", { kind: "done", outcome: "merged" });
+    mk(3, "closed", { kind: "done", outcome: "pr_closed" });
+    const html = renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: createElement(Dashboard, { state: buildUiState(l, NOW) }) }));
+    for (const label of ["Repos", "Merged today", "Needs You"]) expect(html).toContain(label);
+    expect(html).toContain("Nothing needs you.");
+    expect(html).toContain("Queued");
+    expect(html).not.toContain("Waiting on CI");
+    expect(html).not.toContain("In review");
+    expect(html).toMatch(/<details[^>]*>.*Done in last 7 days.*>2</);
+    expect(html).toContain("PR closed");
+    expect(html).not.toContain("<button");
+  });
 });

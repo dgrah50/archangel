@@ -51,7 +51,7 @@ function seed(l: Ledger) {
   }
   l.recordReview({ issueNumber: 1, headSha: "h", vendor: "openai", verdict: "approve", findings: [], costUsd: 0, now: NOW - DAY });
   l.recordReview({ issueNumber: 1, headSha: "h", vendor: "gemini", verdict: "veto", findings: [], costUsd: 0, now: NOW - DAY });
-  l.recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h", squashSha: "s", shadowOnly: false, now: NOW - DAY });
+  l.recordMerge({ issueNumber: 1, prNumber: 1, headSha: "h", squashSha: "s", shadowOnly: false, mainRequired: ["Test"], now: NOW - DAY });
   l.recordScoutProposal({ issueNumber: 1, scoutName: "bug-hunt", contentSha256: "c", titleFp: "f", autoPromoted: true, now: NOW - 3_600_000 });
   l.recordScoutProposal({ issueNumber: 99, scoutName: "bug-hunt", contentSha256: "c2", titleFp: "f2", now: NOW - DAY });
   l.appendAudit("scout/run", null, "bug-hunt", { dayKey: "d" }, NOW - DAY);

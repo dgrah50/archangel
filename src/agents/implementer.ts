@@ -22,6 +22,8 @@ export interface ImplementResult {
   transcriptPath: string | null;
   aborted: boolean;
   providersUsed?: ReviewerVendor[];
+  /** The provider and model that produced this result (replay provenance); absent when none finished. */
+  runBy?: { provider: string; model: string | null };
 }
 
 export interface Implementer {
@@ -145,6 +147,7 @@ export class ClaudeSdkImplementer implements Implementer {
         costUsd,
         transcriptPath,
         aborted: input.abortController.signal.aborted,
+        runBy: { provider: "claude", model: this.opts.model },
       };
     } catch (err) {
       if (input.abortController.signal.aborted) {

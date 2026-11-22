@@ -7,6 +7,8 @@ import {
   buildImplementPrompt,
   buildRebasePrompt,
   buildRevisionPrompt,
+  promptTemplateSha,
+  rubricSha,
 } from "../agents/prompts.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
@@ -158,6 +160,15 @@ export class Reconciler {
     const remoteUrl = await this.github.getRemoteUrlWithToken();
     await this.broker.ensureBareRepo(remoteUrl);
     const mainSha = await this.github.getBranchTipSha(this.cfg.defaultBranch);
+    if (!(await this.broker.hasCommit(mainSha))) {
+      // A commit landed between our fetch and the tip lookup. Fetch again; if it is still absent, skip this tick
+      // rather than reading the workflow from a commit we do not have (that would look like a missing file).
+      await this.broker.syncFromRemote(remoteUrl);
+      if (!(await this.broker.hasCommit(mainSha))) {
+        throw new Error(`main tip ${mainSha.slice(0, 10)} is not in the broker repo after a re-fetch; retrying next tick`);
+      }
+    }
+    await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
     // Missing or invalid halts new work for this repo (fail closed); owner commands and post-merge main
@@ -171,6 +182,8 @@ export class Reconciler {
       this.effectiveRequiredChecks = resolved.requiredChecks;
       this.effectiveReviewRubric = resolved.rubric;
     }
+
+    if (resolved.status === "ok") await this.notifyWastedScouts(resolved, now);
 
     if (policyError) {
       if (this.policyErrorNotifiedSha !== mainSha) {
@@ -259,6 +272,25 @@ export class Reconciler {
     await this.flushOutbox();
   }
 
+  /** One Needs You (project-level, no issue) when an auto-promoting Scout version is revoked for waste. */
+  private async notifyWastedScouts(wf: OkWorkflow, now: number): Promise<void> {
+    for (const scout of wf.scouts) {
+      if (scout.promotion !== "auto" || !this.ledger.isScoutAutoPromoteWasted(scout.name, scout.trustHash)) continue;
+      if (this.ledger.scoutWasteNoticeSent(scout.name, scout.trustHash)) continue;
+      this.ledger.markScoutWasteNoticeSent(scout.name, scout.trustHash, now);
+      const policy = MAIN_ESCALATION_POLICY.scout_auto_promote_revoked;
+      await this.notifier
+        .notifyNeedsYou({
+          issueNumber: null,
+          title: `${this.cfg.githubOwner}/${this.cfg.githubRepo}: Scout '${scout.name}' lost auto-promotion (3 unmerged in a row)`,
+          reason: `The last 3 auto-promoted Threads from Scout '${scout.name}' ended without a merge.`,
+          decisionClass: formatDecisionClass(policy.decisionClass),
+          recommendation: policy.recommendation,
+        })
+        .catch(() => undefined);
+    }
+  }
+
   private async resolveIssueForThread(
     thread: ThreadRecord,
     issueMap: Map<number, GitHubIssue>,
@@ -272,6 +304,26 @@ export class Reconciler {
     } catch {
       return undefined;
     }
+  }
+
+  /** Best-effort: pinning is bookkeeping for replay and must never block or fail a tick. */
+  private async pinEval(issueNumber: number, ...shas: Array<string | null | undefined>): Promise<void> {
+    for (const sha of new Set(shas)) {
+      if (!sha) continue;
+      try {
+        await this.broker.pinEvalRef(this.ledger.repo, issueNumber, sha);
+      } catch (err) {
+        this.logger.warn("eval/pin_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
+    }
+  }
+
+  /** One-shot per repo: pin every reviewed, Attempt and merged head still fetchable, so history from before capture is kept. */
+  private async backfillEvalRefs(): Promise<void> {
+    const key = `eval_refs_backfilled:${this.ledger.repo}`;
+    if (this.ledger.getSystemState(key)) return;
+    for (const { issueNumber, sha } of this.ledger.listEvalShas()) await this.pinEval(issueNumber, sha);
+    this.ledger.setSystemState(key, "1");
   }
 
   private async flushOutbox(): Promise<void> {
@@ -363,8 +415,13 @@ export class Reconciler {
     const proposal = this.ledger.getScoutProposal(issueNumber);
     if (!proposal?.autoPromoted || !proposal.fileSha256) return false;
     const scout = this.workflow?.scouts.find((s) => s.name === proposal.scoutName);
+    // Revocation is re-read live: it can land (red main, `archangel disagree`) after this tick's snapshot was resolved.
     return Boolean(
-      scout && scout.promotionEffective.value === "auto" && scout.trustHash === proposal.fileSha256 && !scout.revoked,
+      scout &&
+        scout.promotionEffective.value === "auto" &&
+        scout.trustHash === proposal.fileSha256 &&
+        !scout.revoked &&
+        !this.ledger.isScoutAutoPromoteRevoked(scout.name, scout.trustHash),
     );
   }
 
@@ -889,6 +946,11 @@ export class Reconciler {
     const fromSha =
       explicitStartSha ??
       (kind === "implement" ? mainSha : (extractPrFromPhase(thread.phase)?.headSha ?? mainSha));
+    this.ledger.recordAttemptProvenance(attempt.id, {
+      promptSha256: promptTemplateSha(kind === "revise" ? "revise" : kind === "rebase" ? "rebase" : "implement", workClassOfBranch(thread.branchName)),
+      workflowSha256: this.workflow?.fileSha256 ?? null,
+    });
+    if (kind === "implement") await this.pinEval(thread.issueNumber, fromSha);
 
     const workingThread = this.applyMachineEvent(
       thread,
@@ -1011,6 +1073,7 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
         this.ledger.recordImplementerVendors(workingThread.issueNumber, result.providersUsed);
       }
@@ -1064,6 +1127,8 @@ export class Reconciler {
         this.effectiveGate,
         workClassOfBranch(workingThread.branchName),
       );
+
+      await this.pinEval(workingThread.issueNumber, validation.headSha);
 
       if (validation.protectedViolations.length > 0) {
         this.ledger.finishAttempt(attemptId, {
@@ -1454,9 +1519,15 @@ export class Reconciler {
             verdict: r.verdict,
             findings: r.findings,
             costUsd: 0, // Settled via reserveBudget/settleBudget below to avoid double-counting.
+            provider: r.provider ?? null,
+            model: r.model ?? null,
+            promptSha256: r.promptSha256 ?? null,
+            rubricSha256: rubricSha(this.effectiveReviewRubric),
+            workflowSha256: this.workflow?.fileSha256 ?? null,
             now,
           });
         }
+        await this.pinEval(thread.issueNumber, headSha, pr.baseSha);
         this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
 
         if (batch.errors.length > 0) {
@@ -1706,6 +1777,7 @@ export class Reconciler {
 
     // Shadow Mode: ready except for shadow_mode_active (and optional branch_behind_main with clean merge-tree).
     if (isShadowReady(blockers) || shadowReadyWithBehind) {
+      await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
       const verdict = this.ledger.recordMerge({
         issueNumber: thread.issueNumber,
         prNumber: pr.number,
@@ -1754,6 +1826,7 @@ export class Reconciler {
       squashSha = after.mergeCommitSha;
     }
 
+    await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
     const mergeRow = this.ledger.recordMerge({
       issueNumber: thread.issueNumber,
       prNumber: pr.number,
@@ -1789,7 +1862,12 @@ export class Reconciler {
     // Each merge is watched against the checks recorded when it merged, so an invalid or edited
     // workflow can never leave a red main unwatched.
     for (const m of pending) {
-      if (m.mainRequired.length === 0) continue;
+      if (m.mainRequired.length === 0) {
+        // Only rows from before checks were recorded can get here. Nothing can be verified, so close the row loudly.
+        this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
+        this.ledger.appendAudit("post_merge/missing_required_checks", m.issueNumber, "archangel", { mergeId: m.id }, now);
+        continue;
+      }
       try {
         await this.reconcileOnePostMerge(m, m.mainRequired, mainSha, now);
       } catch (err) {

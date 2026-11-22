@@ -33,6 +33,7 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
         findingsJson: "[]",
         costUsd: 0.02,
         createdAt: 1,
+        provider: null, model: null, promptSha256: null, rubricSha256: null, workflowSha256: null,
       },
       {
         id: 2,
@@ -44,6 +45,7 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
         findingsJson: "[]",
         costUsd: 0.02,
         createdAt: 1,
+        provider: null, model: null, promptSha256: null, rubricSha256: null, workflowSha256: null,
       },
     ],
     requiredReviewers: ["openai", "gemini"],
