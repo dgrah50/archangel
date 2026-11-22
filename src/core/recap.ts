@@ -4,6 +4,7 @@ import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
+import { scanForSecrets } from "./scout.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
@@ -157,7 +158,14 @@ function fencedText(text: string): string[] {
 function fencedOutput(output: string | undefined): string[] {
   if (output === undefined) return ["_not captured_"];
   if (!output.trim()) return ["_test command ran and printed nothing_"];
-  const text = tailOutput(output);
+  // Test output is written by agent-authored tests: strip ANSI and control characters, and never publish a credential-shaped match.
+  const text = tailOutput(
+    output
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""),
+  );
+  if (scanForSecrets(text) !== null) return ["_output withheld: it matched the secret scan_"];
   // Fence longer than any backtick run in the output so it cannot close the block early.
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((m) => m.length));
   const fence = "`".repeat(Math.max(3, longest + 1));
