@@ -197,6 +197,17 @@ Archangel enforces its own reliability rules in CI so critical state transitions
 - **Exhaustive formal model checker (`bun run verify:formal`).** Explores reachable states of the Thread, Command, Pitch, and Daemon Lock state machines via BFS to verify safety invariants and liveness bounds.
 - **Structural AST lint (`bun run lint`).** Blocks silent catch handlers and recurring failure modes across the TypeScript source tree.
 
+## Running providers on Sail
+
+### Verify the codex ChatGPT broker (once, after creating the dedicated account)
+
+`compute.sail.codexBrokerHome` points at a CODEX_HOME holding a dedicated ChatGPT login (never your main account) stored as a file (`cli_auth_credentials_store = "file"`). The daemon's token broker is the only thing that refreshes it: it lets codex do the refresh (`codex app-server`, `account/read` with `refreshToken`), writes only the access token to the Sail secret `ARCHANGEL_CODEX_ACCESS`, and refreshes at about half the token's life. A box holds a placeholder and cannot reach `auth.openai.com`, so it can never refresh. If a refresh fails the broker writes a sentinel into the secret and Attempts refuse to start; a 401 mid-Attempt fails the Attempt and is never retried by copying tokens.
+
+Two things are not proven until you run them on the real account:
+
+1. Start the daemon, then run `archangel doctor`. The `Sail token broker (codex)` check prints the measured access-token lifetime. Refreshes are scheduled from it, so a short lifetime is fine, but note it.
+2. Let one codex Attempt run on a throwaway issue. It must reach `chatgpt.com` and answer; a `401` in its transcript means the placeholder was not swapped on the wire for the login file (not env). Then remove `codexBrokerHome` from the config and use `codexApiKeySecret` instead.
+
 ## Configuration examples
 
 <details>

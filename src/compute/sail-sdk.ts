@@ -3,6 +3,7 @@ import path from "node:path";
 import { App, EgressPolicy, Image, Sailbox, type ImageSpec } from "@sailresearch/sdk";
 import type { GitBroker } from "../broker/git-broker.js";
 import type { CliProvider, ComputeConfig } from "../config.js";
+import { CODEX_BROKER_SECRET, CODEX_PLACEHOLDER_ENV } from "./codex-broker-adapter.js";
 import { SailProvider, SailSpend, type SailBoxInfo, type SailClient } from "./sail.js";
 
 /**
@@ -23,10 +24,12 @@ const GEMINI_KEY = "GEMINI_API_KEY";
  * Only hosts of configured providers are reachable, plus the package registry. GitHub is absent because the repo arrives as a bundle,
  * and so is every OAuth host (auth.openai.com, oauth2.googleapis.com): a box can never refresh a login.
  */
-export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "geminiApiKeySecret">) {
+export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "codexBrokerHome" | "geminiApiKeySecret">) {
   const routes = [
     { secret: cfg.claudeTokenSecret, host: "api.anthropic.com", env: CLAUDE_TOKEN, prefix: "sk-ant-oat01-", header: "authorization" },
     ...(cfg.codexApiKeySecret ? [{ secret: cfg.codexApiKeySecret, host: "api.openai.com", env: OPENAI_KEY, prefix: "sk-", header: "authorization" }] : []),
+    // The broker's access token for a ChatGPT login: only chatgpt.com is reachable, never auth.openai.com, so a box cannot refresh.
+    ...(cfg.codexBrokerHome ? [{ secret: CODEX_BROKER_SECRET, host: "chatgpt.com", env: CODEX_PLACEHOLDER_ENV, prefix: "cgpt-", header: "authorization" }] : []),
     ...(cfg.geminiApiKeySecret ? [{ secret: cfg.geminiApiKeySecret, host: "generativelanguage.googleapis.com", env: GEMINI_KEY, prefix: "AIza", header: "x-goog-api-key" }] : []),
   ];
   return {
@@ -42,7 +45,7 @@ export function remoteProviders(compute: ComputeConfig): ReadonlySet<CliProvider
   const sail = compute.provider === "sail" ? compute.sail : undefined;
   const set = new Set<CliProvider>();
   if (sail?.remoteClaudeAttempts) set.add("claude");
-  if (sail?.codexApiKeySecret) set.add("codex");
+  if (sail?.codexApiKeySecret || sail?.codexBrokerHome) set.add("codex");
   if (sail?.geminiApiKeySecret) set.add("agy");
   return set;
 }

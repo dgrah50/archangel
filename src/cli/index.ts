@@ -10,7 +10,7 @@ import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { INIT_NEXT_STEPS, runInit } from "./init.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, resolveUserPath, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
@@ -40,6 +40,9 @@ import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draf
 import { LocalProvider } from "../compute/local.js";
 import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
 import { createSailProvider, remoteAttemptProvider, remoteProviders } from "../compute/sail-sdk.js";
+import { Secret } from "@sailresearch/sdk";
+import { CODEX_BROKER_ID, codexBrokerAdapter } from "../compute/codex-broker-adapter.js";
+import { TokenBroker, brokerPreflight } from "../compute/token-broker.js";
 import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -188,6 +191,10 @@ program
     const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const sailProviders: SailProvider[] = [];
+    // One broker per dedicated login: it alone refreshes that login and puts only the access token in a Sail secret.
+    const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
+    const brokers = [...brokerHomes].map((home) => new TokenBroker(codexBrokerAdapter(home), sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => console.error(`[archangel] ${m}`)));
+    await Promise.all(brokers.map((b) => b.start()));
     const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
     let lastTranscriptPrune = 0;
     const reconcilers = projects.map((cfg) => {
@@ -221,6 +228,9 @@ program
               chains: cfg.chains,
               accounts: cfg.accounts,
               remoteProviders: remoteProviders(cfg.compute),
+              codexBrokerPreflight: cfg.compute.sail?.codexBrokerHome
+                ? (attemptMs) => ({ accountId: brokerPreflight(sharedPaths.dataDir, CODEX_BROKER_ID, attemptMs).accountId! })
+                : undefined,
               transcriptsDir: paths.transcriptsDir,
               accountState,
               logger,
@@ -363,6 +373,7 @@ program
         if (nextTimer) clearTimeout(nextTimer);
         clearInterval(lockHeartbeat);
         stopAllPreviews();
+        for (const b of brokers) b.stop();
         for (const { rec } of reconcilers) {
           rec.abortAllActive("control");
           await rec.waitForActiveTasks();
