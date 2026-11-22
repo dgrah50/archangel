@@ -10,7 +10,6 @@ import { PitchStateSchema, stepPitch, type PitchEvent, type PitchState, type Pit
 import { CommandStateSchema, stepCommand, type CommandEvent } from "../core/command-machine.js";
 import { describeEscalation } from "../core/escalations.js";
 import { workClassOfBranch } from "../core/work-class.js";
-import { categorizeAttemptError } from "../core/metrics-block.js";
 import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +26,7 @@ import {
 } from "../core/thread-machine.js";
 import {
   LEDGER_SCHEMA_SQL,
+  type AttemptErrorCategory,
   type AttemptRecord,
   type AuditLogEntry,
   type DaemonCommandRecord,
@@ -162,7 +162,7 @@ export class Ledger {
         const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
         for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} TEXT`);
       };
-      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256"]);
+      addCols("attempts", ["provider", "model", "prompt_sha256", "workflow_sha256", "error_category"]);
       addCols("reviews", ["provider", "model", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
       const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
       if (!mergeCols.some((c) => c.name === "main_required_json")) {
@@ -494,7 +494,7 @@ export class Ledger {
         if (t.phase.kind !== "working") continue;
         this.db
           .prepare(
-            `UPDATE attempts SET status = 'failed', error_message = 'stale working run swept on startup', finished_at = ?
+            `UPDATE attempts SET status = 'failed', error_message = 'stale working run swept on startup', error_category = 'other', finished_at = ?
              WHERE repo = ? AND issue_number = ? AND status = 'running'`,
           )
           .run(now, repo, t.issueNumber);
@@ -707,13 +707,15 @@ export class Ledger {
   finishAttempt(
     attemptId: number,
     result: {
-      status: "succeeded" | "failed" | "aborted";
       headSha?: string | null;
       costUsd?: number;
       reservedUsd?: number;
       transcriptPath?: string | null;
-      errorMessage?: string | null;
-    },
+    } & (
+      | { status: "succeeded" }
+      // An unsuccessful Attempt always says why, as a closed category, alongside the human message.
+      | { status: "failed" | "aborted"; errorCategory: AttemptErrorCategory; errorMessage: string }
+    ),
     now = Date.now(),
   ): AttemptRecord {
     const cost = Math.max(0, result.costUsd ?? 0);
@@ -722,7 +724,7 @@ export class Ledger {
     const done = this.db
       .prepare(
         `UPDATE attempts
-         SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, finished_at = ?
+         SET status = ?, head_sha = ?, cost_usd = ?, transcript_path = ?, error_message = ?, error_category = ?, finished_at = ?
          WHERE id = ? AND status = 'running'`,
       )
       .run(
@@ -730,7 +732,8 @@ export class Ledger {
         result.headSha ?? null,
         cost,
         result.transcriptPath ?? null,
-        result.errorMessage ?? null,
+        result.status === "succeeded" ? null : result.errorMessage,
+        result.status === "succeeded" ? null : result.errorCategory,
         now,
         attemptId,
       );
@@ -750,7 +753,8 @@ export class Ledger {
         status: result.status,
         headSha: result.headSha ?? null,
         costUsd: cost,
-        error: result.errorMessage ?? null,
+        error: result.status === "succeeded" ? null : result.errorMessage,
+        errorCategory: result.status === "succeeded" ? null : result.errorCategory,
       },
       now,
       attempt.repo,
@@ -968,7 +972,7 @@ export class Ledger {
     phase: Phase;
     updatedAt: number;
     merges: Array<{ headSha: string; shadowOnly: boolean; disagreed: boolean; mainWatch: string }>;
-    failedAttempts: Array<{ headSha: string; errorMessage: string }>;
+    failedAttempts: Array<{ headSha: string; errorMessage: string; errorCategory: string | null }>;
     title: string;
     /** The issue text kept at intake, or null for Threads from before it was kept. */
     issueBody: string | null;
@@ -983,7 +987,7 @@ export class Ledger {
       .all(repo) as Array<Record<string, unknown>>;
     const failed = this.db
       .prepare(
-        `SELECT issue_number, head_sha, error_message FROM attempts
+        `SELECT issue_number, head_sha, error_message, error_category FROM attempts
          WHERE repo = ? AND status = 'failed' AND head_sha IS NOT NULL AND error_message IS NOT NULL ORDER BY id`,
       )
       .all(repo) as Array<Record<string, unknown>>;
@@ -1009,7 +1013,7 @@ export class Ledger {
           })),
         failedAttempts: failed
           .filter((a) => Number(a.issue_number) === t.issueNumber)
-          .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message) })),
+          .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message), errorCategory: a.error_category === null ? null : String(a.error_category) })),
         lastHead: heads.filter((h) => Number(h.issue_number) === t.issueNumber).map((h) => String(h.head_sha)).at(-1) ?? null,
       }));
   }
@@ -2261,7 +2265,7 @@ export class Ledger {
     escalations: Array<{ ts: number; repo: string; issueNumber: number; code: string | null }>;
     openNeedsYou: Array<{ repo: string; issueNumber: number; code: string; updatedAt: number }>;
     branchByThread: Record<string, string>;
-    attempts: Array<{ ts: number; repo: string; issueNumber: number; status: string; errorMessage: string | null }>;
+    attempts: Array<{ ts: number; repo: string; issueNumber: number; status: string; errorMessage: string | null; errorCategory: string | null }>;
     reviews: Array<{ ts: number; repo: string; issueNumber: number; vendor: string; verdict: string; findingsJson: string }>;
   } {
     const repo = opts.repo ?? null;
@@ -2290,7 +2294,7 @@ export class Ledger {
       branchByThread: Object.fromEntries(threads.map((t) => [`${t.repo}#${t.issueNumber}`, t.branchName])),
       attempts: (
         this.db
-          .prepare(`SELECT started_at, repo, issue_number, status, error_message FROM attempts WHERE started_at >= ?${scope}`)
+          .prepare(`SELECT started_at, repo, issue_number, status, error_message, error_category FROM attempts WHERE started_at >= ?${scope}`)
           .all(...args(opts.sinceMs)) as Array<Record<string, unknown>>
       )
         .filter((r) => keep(Number(r.issue_number)))
@@ -2300,6 +2304,7 @@ export class Ledger {
           issueNumber: Number(r.issue_number),
           status: String(r.status),
           errorMessage: r.error_message === null ? null : String(r.error_message),
+          errorCategory: r.error_category === null ? null : String(r.error_category),
         })),
       reviews: (
         this.db
@@ -2390,7 +2395,7 @@ export class Ledger {
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
-      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
+      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message, error_category FROM attempts ${attWhere}`)
       .all(...attParams) as Array<{
       kind: string;
       cost_usd: number;
@@ -2400,6 +2405,7 @@ export class Ledger {
       started_at: number;
       finished_at: number | null;
       error_message: string | null;
+      error_category: string | null;
     }>;
 
     let succeeded = 0;
@@ -2428,7 +2434,7 @@ export class Ledger {
       if (a.status === "failed" && a.error_message) {
         const key = a.error_message.slice(0, 120);
         errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
-        const cat = categorizeAttemptError(a.error_message);
+        const cat = a.error_category ?? "other"; // rows from before the category was recorded
         errorCategories[cat] = (errorCategories[cat] ?? 0) + 1;
       }
     }
@@ -2619,6 +2625,7 @@ function mapAttempt(r: Record<string, unknown>): AttemptRecord {
     costUsd: Number(r.cost_usd),
     transcriptPath: r.transcript_path === null ? null : String(r.transcript_path),
     errorMessage: r.error_message === null ? null : String(r.error_message),
+    errorCategory: r.error_category === null || r.error_category === undefined ? null : (String(r.error_category) as AttemptErrorCategory),
     startedAt: Number(r.started_at),
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
     provider: r.provider === null || r.provider === undefined ? null : String(r.provider),
