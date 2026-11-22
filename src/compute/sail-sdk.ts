@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { App, EgressPolicy, Image, Sailbox, type ImageSpec } from "@sailresearch/sdk";
 import type { GitBroker } from "../broker/git-broker.js";
-import type { ComputeConfig } from "../config.js";
+import type { CliProvider, ComputeConfig } from "../config.js";
 import { SailProvider, SailSpend, type SailBoxInfo, type SailClient } from "./sail.js";
 
 /**
@@ -11,31 +11,54 @@ import { SailProvider, SailSpend, type SailBoxInfo, type SailClient } from "./sa
  */
 
 type SailConfig = NonNullable<ComputeConfig["sail"]>;
+/** Bump when imageFor changes so a saved policy name changes with it. */
+const IMAGE_REV = 2;
 
-/** Hosts a Scout box may reach: the model API and the package registry. GitHub is absent because the repo arrives as a bundle. */
-export const SAIL_ALLOWLIST = ["api.anthropic.com", "registry.npmjs.org"];
 const CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
+const OPENAI_KEY = "OPENAI_API_KEY";
+const GEMINI_KEY = "GEMINI_API_KEY";
+
+/**
+ * Each provider that runs on Sail has one host, one placeholder env var and one header the egress policy swaps the real secret into.
+ * Only hosts of configured providers are reachable, plus the package registry. GitHub is absent because the repo arrives as a bundle,
+ * and so is every OAuth host (auth.openai.com, oauth2.googleapis.com): a box can never refresh a login.
+ */
+export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "geminiApiKeySecret">) {
+  const routes = [
+    { secret: cfg.claudeTokenSecret, host: "api.anthropic.com", env: CLAUDE_TOKEN, prefix: "sk-ant-oat01-", header: "authorization" },
+    ...(cfg.codexApiKeySecret ? [{ secret: cfg.codexApiKeySecret, host: "api.openai.com", env: OPENAI_KEY, prefix: "sk-", header: "authorization" }] : []),
+    ...(cfg.geminiApiKeySecret ? [{ secret: cfg.geminiApiKeySecret, host: "generativelanguage.googleapis.com", env: GEMINI_KEY, prefix: "AIza", header: "x-goog-api-key" }] : []),
+  ];
+  return {
+    allowlist: [...routes.map((r) => r.host), "registry.npmjs.org"],
+    env: Object.fromEntries(routes.map((r) => [r.env, { secret: r.secret, placeholder_prefix: r.prefix }])),
+    // A rule names the stored secret, not the env var.
+    rules: Object.fromEntries(routes.map((r) => [r.host, [{ request: { replace: { headers: { [r.header]: r.secret } } } }]])),
+  };
+}
+
+/** The providers whose entries run on Sail: claude when asked for, codex and agy when their API key secret is configured. Deterministic per entry, never a failover. */
+export function remoteProviders(compute: ComputeConfig): ReadonlySet<CliProvider> {
+  const sail = compute.provider === "sail" ? compute.sail : undefined;
+  const set = new Set<CliProvider>();
+  if (sail?.remoteClaudeAttempts) set.add("claude");
+  if (sail?.codexApiKeySecret) set.add("codex");
+  if (sail?.geminiApiKeySecret) set.add("agy");
+  return set;
+}
 
 function imageFor(arch: "amd64" | "arm64"): Image {
   return Image.debian(arch)
     .aptInstall("git", "curl", "ca-certificates", "unzip", "gnupg")
     .runCommand("curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs")
     .runCommand("curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash")
-    .runCommand("npm install -g @anthropic-ai/claude-code @openai/codex");
-}
-
-function policyDoc(cfg: SailConfig) {
-  return {
-    allowlist: SAIL_ALLOWLIST,
-    env: { [CLAUDE_TOKEN]: { secret: cfg.claudeTokenSecret, placeholder_prefix: "sk-ant-oat01-" } },
-    // The rule names the stored secret, not the env var.
-    rules: { "api.anthropic.com": [{ request: { replace: { headers: { authorization: cfg.claudeTokenSecret } } } }] },
-  };
+    .runCommand("npm install -g @anthropic-ai/claude-code @openai/codex")
+    .runCommand("curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin");
 }
 
 export function createSailClient(cfg: SailConfig): SailClient {
   // Sail caches an image build and a saved policy by content: the spec hash names the policy, so a changed spec makes a new one.
-  const specHash = createHash("sha256").update(JSON.stringify([cfg.image, SAIL_ALLOWLIST, cfg.claudeTokenSecret])).digest("hex").slice(0, 10);
+  const specHash = createHash("sha256").update(JSON.stringify([cfg.image, sailPolicyDoc(cfg), IMAGE_REV])).digest("hex").slice(0, 10);
   let ready: Promise<{ app: App; image: ImageSpec; policy: EgressPolicy }> | null = null;
   const setup = () =>
     (ready ??= (async () => {
@@ -43,7 +66,7 @@ export function createSailClient(cfg: SailConfig): SailClient {
       const image = await imageFor(cfg.image.arch).build({ timeoutSeconds: 1800 });
       const name = `${cfg.app}-${specHash}`;
       const existing = (await EgressPolicy.list()).find((p) => p.name === name);
-      const policy = existing ? await EgressPolicy.get(existing.id) : await EgressPolicy.create(name, policyDoc(cfg));
+      const policy = existing ? await EgressPolicy.get(existing.id) : await EgressPolicy.create(name, sailPolicyDoc(cfg));
       return { app, image, policy };
     })());
   const info = (b: Sailbox): SailBoxInfo => ({ id: b.sailboxId, name: b.name });
@@ -122,7 +145,7 @@ export function createSailProvider(opts: { sail: SailConfig; broker: GitBroker; 
   });
 }
 
-/** Where claude Attempts (implement, revise, rebase) run remotely: Sail only when asked for with `remoteClaudeAttempts`, and only with the subscription CLI (the API-mode SDK runs on this machine). */
+/** Where remote Attempts (implement, revise, rebase) run: Sail only when some provider has a remote credential configured, and only with the subscription CLIs (the API-mode SDK runs on this machine). */
 export function remoteAttemptProvider<P>(cfg: { authMode: string; compute: ComputeConfig }, sail: P | undefined): P | undefined {
-  return cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.remoteClaudeAttempts ? sail : undefined;
+  return cfg.authMode === "subscription" && remoteProviders(cfg.compute).size > 0 ? sail : undefined;
 }
