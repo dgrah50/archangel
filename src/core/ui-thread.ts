@@ -28,6 +28,8 @@ export interface ThreadDetail {
   recap: { headSha: string | null; themeLabel: string | null; implementers: string[]; attempts: string; reviews: Array<{ vendor: string; verdict: string }> };
   /** What holds this Thread, from the Ledger: an owner decision, or a review veto on the head. Empty when nothing is recorded. */
   blockers: Array<{ title: string; detail: string; owner: boolean }>;
+  /** Time in each phase, derived from the phase kind on the transition audit rows (older Threads: only the current phase, from its last transition). `limitMs` is the real deadline (attempt or Gate timeout) where one exists. */
+  phaseDurations: Array<{ kind: string; ms: number; running: boolean; limitMs: number | null }>;
   /** The audit log was cut at AUDIT_LIMIT rows (newest kept). */
   auditTruncated: boolean;
 }
@@ -53,7 +55,7 @@ function gateLimits(ledger: Ledger, repo: string): NonNullable<ThreadDetail["dif
 }
 
 /** Pure read; null when the Ledger has no such Thread. */
-export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: number, now = Date.now()): ThreadDetail | null {
+export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: number, now = Date.now(), limits: { attemptTimeoutMs: number; gateTimeoutMs: number } | null = null): ThreadDetail | null {
   const view = ledger.forRepo(repo);
   const thread = view.getThread(issueNumber);
   if (!thread) return null;
@@ -83,6 +85,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     }
   }
   for (const a of [...audit].reverse()) {
+    if (a.topic === "thread/phase_entered") continue;
     events.push({ ts: a.ts, kind: "audit", title: a.topic, tone: /fail|reject|error|veto/i.test(a.topic) ? "failed" : "info", details: [{ label: "actor", value: a.actor }, { label: "payload", value: clip(a.payloadJson) }] });
   }
   for (const a of view.listAttemptsFor(issueNumber)) {
@@ -128,6 +131,21 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
   for (const r of atHead.filter((x) => x.verdict === "veto")) {
     blockers.push({ title: `Review veto from ${r.vendor}`, detail: reviewFindings(r.findingsJson)[0] ?? "no findings recorded", owner: false });
   }
+  const entries: Array<{ kind: string; ts: number }> = [];
+  for (const a of [...audit].reverse()) {
+    const p = tryParseJson(a.payloadJson);
+    const kind = p.ok && typeof p.value === "object" && p.value !== null ? (p.value as { phase?: unknown }).phase : undefined;
+    if (typeof kind === "string" && entries[entries.length - 1]?.kind !== kind) entries.push({ kind, ts: a.ts });
+  }
+  if (entries[entries.length - 1]?.kind !== phase.kind) entries.splice(0, entries.length, { kind: phase.kind, ts: thread.updatedAt });
+  const totals = new Map<string, { ms: number; running: boolean }>();
+  entries.forEach((e, i) => {
+    const end = entries[i + 1]?.ts ?? (phase.kind === "done" ? e.ts : now);
+    const t = totals.get(e.kind) ?? { ms: 0, running: false };
+    totals.set(e.kind, { ms: t.ms + Math.max(0, end - e.ts), running: i === entries.length - 1 && phase.kind !== "done" });
+  });
+  const limitFor = (kind: string) => (kind === "working" ? limits?.attemptTimeoutMs : kind === "awaiting_gate" ? limits?.gateTimeoutMs : undefined) ?? null;
+  const phaseDurations = [...totals].map(([kind, t]) => ({ kind, ms: t.ms, running: t.running, limitMs: limitFor(kind) }));
   return {
     generatedAt: now,
     repo,
@@ -146,6 +164,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     events,
     gate,
     diff,
+    phaseDurations,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
 }

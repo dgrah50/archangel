@@ -27,21 +27,41 @@ function Check() {
   );
 }
 
-function PhaseRail({ phase }: { phase: string }) {
+type PhaseDuration = ThreadDetail["phaseDurations"][number];
+
+const mins = (ms: number) => (ms < 60_000 ? "<1 m" : ms < 120 * 60_000 ? `${Math.floor(ms / 60_000)} m` : `${Math.floor(ms / 3_600_000)} h`);
+
+function Duration({ d }: { d: PhaseDuration }) {
+  const over = d.running && d.limitMs !== null && d.ms > d.limitMs;
+  const text = d.running ? (d.limitMs !== null ? `${mins(d.ms)} of ${Math.round(d.limitMs / 60_000)}` : `running ${mins(d.ms)}`) : mins(d.ms);
+  return (
+    <Text textStyle="meta" color={over ? "owner" : "fg.subtle"} whiteSpace="nowrap" px="2.5">
+      {text}
+    </Text>
+  );
+}
+
+function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDuration[] }) {
   const at = RAIL.findIndex((r) => r.kind === phase);
   return (
-    <Flex align="center" gap="3" wrap="wrap" bg="bg.subtle" rounded="14px" px="4" py="2.5" aria-label="Phase">
-      {RAIL.map((r, i) => (
-        <Flex key={r.kind} align="center" gap="3" flex={i < RAIL.length - 1 ? "1" : undefined} minW="0">
-          <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} borderWidth="1px" borderColor={i === at ? "border" : "transparent"} bg={i === at ? "bg" : undefined} rounded="full" px="2.5" py="1" whiteSpace="nowrap">
-            {i < at ? <Check /> : i === at ? <Dot /> : null}
-            {r.label}
+    <Flex align="flex-start" gap="3" wrap="wrap" bg="bg.subtle" rounded="14px" px="4" py="2.5" aria-label="Phase">
+      {RAIL.map((r, i) => {
+        const d = durations.find((x) => x.kind === r.kind);
+        return (
+          <Flex key={r.kind} align="flex-start" gap="3" flex={i < RAIL.length - 1 ? "1" : undefined} minW="0">
+            <Box>
+              <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} borderWidth="1px" borderColor={i === at ? "border" : "transparent"} bg={i === at ? "bg" : undefined} rounded="full" px="2.5" py="1" whiteSpace="nowrap">
+                {i < at ? <Check /> : i === at ? <Dot /> : null}
+                {r.label}
+              </Flex>
+              {d ? <Duration d={d} /> : null}
+            </Box>
+            {i < RAIL.length - 1 ? <Box flex="1" minW="3" mt="14px" borderTopWidth="1px" borderTopStyle={i < at ? "solid" : "dashed"} borderTopColor="border.emphasized" /> : null}
           </Flex>
-          {i < RAIL.length - 1 ? <Box flex="1" minW="3" borderTopWidth="1px" borderTopStyle={i < at ? "solid" : "dashed"} borderTopColor="border.emphasized" /> : null}
-        </Flex>
-      ))}
+        );
+      })}
       {at === -1 ? (
-        <Text textStyle="meta" color="fg.muted">
+        <Text textStyle="meta" color="fg.muted" alignSelf="center">
           Now: {phase.replace(/_/g, " ")}
         </Text>
       ) : null}
@@ -145,7 +165,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
           <Text textStyle="sm">Refresh failed ({thread.error}); showing the last loaded copy.</Text>
         </Notice>
       ) : null}
-      <PhaseRail phase={d.phase} />
+      <PhaseRail phase={d.phase} durations={d.phaseDurations} />
       <Flex direction={{ base: "column", xl: "row" }} gap="8" align="flex-start">
         <Box flex="1" minW="0" w="full">
           <Flex gap="2" align="baseline" pb="2">
