@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { renderPage } from "../src/core/ui-page.js";
 import { assertBindable, startUiServer } from "../src/core/ui-server.js";
 import { buildUiState } from "../src/core/ui-state.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -41,35 +43,43 @@ describe("buildUiState", () => {
   it("handles an empty ledger without dividing by zero", () => {
     const s = buildUiState(new Ledger(":memory:"), NOW);
     expect(s.outcomes.costUsdPerFix).toBeNull();
-    expect(renderPage(s)).toContain("Nothing needs you.");
+    expect(s.needsYou).toEqual([]);
   });
 });
 
-describe("renderPage", () => {
-  it("escapes untrusted titles and links to GitHub", () => {
-    const html = renderPage(buildUiState(fixture(), NOW));
-    expect(html).not.toContain(EVIL);
-    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(html).toContain('href="https://github.com/a/b/issues/1"');
-    expect(html).not.toContain("<form");
-    expect(html).not.toContain("<button");
-  });
-});
+function bundle() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arc-ui-"));
+  fs.mkdirSync(path.join(dir, "assets"));
+  fs.writeFileSync(path.join(dir, "index.html"), "<!doctype html><title>Archangel</title><div id=root></div>");
+  fs.writeFileSync(path.join(dir, "assets", "app.js"), "console.log(1)");
+  return dir;
+}
 
 describe("ui server", () => {
   it("refuses a non-loopback host without --allow-remote", async () => {
     expect(() => assertBindable("0.0.0.0", false)).toThrow(/non-loopback/);
-    await expect(startUiServer(new Ledger(":memory:"), { host: "0.0.0.0", port: 0 })).rejects.toThrow(/allow-remote/);
+    await expect(startUiServer(new Ledger(":memory:"), { host: "0.0.0.0", port: 0, uiDir: bundle() })).rejects.toThrow(/allow-remote/);
     expect(() => assertBindable("0.0.0.0", true)).not.toThrow();
     expect(() => assertBindable("127.0.0.1", false)).not.toThrow();
   });
 
-  it("serves the page and JSON read-only on loopback", async () => {
-    const server = await startUiServer(fixture(), { host: "127.0.0.1", port: 0 });
+  it("fails clearly when the bundle is missing", async () => {
+    await expect(startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: "/nonexistent/arc-ui" })).rejects.toThrow(/UI bundle not found.*npm run build/);
+  });
+
+  it("serves the bundle and JSON read-only on loopback", async () => {
+    const server = await startUiServer(fixture(), { host: "127.0.0.1", port: 0, uiDir: bundle() });
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       expect((await fetch(`${base}/api/state`).then((r) => r.json())).needsYou).toHaveLength(1);
-      expect(await fetch(base).then((r) => r.text())).toContain("<h1>Archangel</h1>");
+      const state = await fetch(`${base}/api/state`).then((r) => r.json());
+      expect(Object.keys(state)).toEqual(expect.arrayContaining(["generatedAt", "needsYou", "stages", "outcomes", "autonomySteps", "scouts"]));
+      expect(state.daily).toHaveLength(14);
+      const index = await fetch(base);
+      expect(index.headers.get("content-type")).toContain("text/html");
+      expect(await index.text()).toContain('<div id=root>');
+      expect(await fetch(`${base}/assets/app.js`).then((r) => r.text())).toBe("console.log(1)");
+      expect((await fetch(`${base}/%2e%2e/%2e%2e/etc/passwd`)).status).toBe(404);
       expect((await fetch(base, { method: "POST" })).status).toBe(405);
       expect((await fetch(`${base}/nope`)).status).toBe(404);
     } finally {

@@ -14,6 +14,7 @@ import type { GateProof } from "../gate/gate.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
+import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
@@ -258,7 +259,10 @@ export class Reconciler {
         } else if (eff.kind === "remove_label") {
           await this.github.removeLabel(eff.issueNumber, eff.label);
         } else if (eff.kind === "notify_needs_you") {
-          const policy = describeEscalation(eff.code);
+          const policy = describeEscalation(
+            eff.code,
+            workClassOfBranch((eff.issueNumber === null ? null : this.ledger.getThread(eff.issueNumber))?.branchName ?? ""),
+          );
           await this.notifier.notifyNeedsYou({
             issueNumber: eff.issueNumber,
             title: eff.title,
@@ -433,8 +437,19 @@ export class Reconciler {
       return;
     }
 
+    // Work class: only an owner-authored issue carrying an owner-applied `class:feature` label is a feature.
+    // Scout proposals (including auto-promoted ones) and unverified labels are always bugfix.
+    const workClass: WorkClass =
+      isOwnerAuthored &&
+      !isVerifiedBotProposal &&
+      issue.labels.includes(this.cfg.labels.feature) &&
+      (await this.github.verifyLabelActor(issue.number, this.cfg.labels.feature, this.cfg.ownerUserId))
+        ? "feature"
+        : "bugfix";
+
     const themeLabel = issue.labels.find((l) => l.startsWith("theme:")) ?? null;
     this.ledger.upsertThread({
+      branchName: branchNameFor(workClass, issue.number),
       issueNumber: issue.number,
       title: issue.title,
       themeLabel,
@@ -837,6 +852,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               gate: this.effectiveGate,
               ownerReply: workingThread.ownerReply,
+              workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
             ? buildRevisionPrompt({
@@ -847,6 +863,7 @@ export class Reconciler {
                 structuredFindings,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
                 issueNumber: issue.number,
@@ -891,6 +908,7 @@ export class Reconciler {
               workingThread.issueNumber,
               mainSha,
               this.effectiveGate,
+              workClassOfBranch(workingThread.branchName),
             );
             if (val.protectedViolations.length === 0) {
               const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
@@ -919,6 +937,7 @@ export class Reconciler {
         workingThread.issueNumber,
         mainSha,
         this.effectiveGate,
+        workClassOfBranch(workingThread.branchName),
       );
 
       if (validation.protectedViolations.length > 0) {
@@ -1425,6 +1444,9 @@ export class Reconciler {
     // Strict branch freshness: PR base SHA MUST match current main tip (Codex #3 — never substitute mergeTreeClean!).
     const branchUpToDateWithMain = pr.baseSha === mainSha;
 
+    // Feature Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
+    const isFeature = workClassOfBranch(thread.branchName) === "feature";
+    const ownerMergesOnly = this.cfg.shadowMode || isFeature;
     const blockers = computeBlockers({
       prOpen: pr.state === "open",
       prDraft: pr.draft,
@@ -1445,13 +1467,14 @@ export class Reconciler {
       mergeTreeClean,
       autoMergesToday: this.ledger.getAutoMergeCountToday(now),
       maxAutoMergesPerDay: this.cfg.maxAutoMergesPerDay,
-      shadowMode: this.cfg.shadowMode,
+      shadowMode: ownerMergesOnly,
+      featureThread: isFeature,
     });
 
     // In Shadow Mode, don't burn a paid LLM rebase just because `main` moved while clean merge-tree holds;
     // record the shadow verdict with a note so owner can inspect/merge directly (Opus review).
     const shadowReadyWithBehind =
-      this.cfg.shadowMode &&
+      ownerMergesOnly &&
       blockers.every((b) => b.code === "shadow_mode_active" || b.code === "branch_behind_main") &&
       blockers.some((b) => b.code === "shadow_mode_active");
 
@@ -1543,6 +1566,9 @@ export class Reconciler {
       return;
     }
 
+    if (isFeature) {
+      return; // Defence in depth: unreachable while ownerMergesOnly forces a shadow_mode_active blocker.
+    }
     if (await this.autonomyCapReached(now)) {
       return;
     }

@@ -1,7 +1,7 @@
 import type { GatePolicy } from "../config.js";
 import type { ReviewFinding } from "../ledger/schema.js";
 
-function formatGateRules(gate?: Partial<GatePolicy>): string[] {
+function formatGateRules(gate?: Partial<GatePolicy>, workClass: "bugfix" | "feature" = "bugfix"): string[] {
   const maxNonTest = gate?.maxNonTestLines ?? 150;
   const maxTotal = gate?.maxTotalLines ?? 300;
   const maxFiles = gate?.maxFiles ?? 5;
@@ -14,7 +14,9 @@ function formatGateRules(gate?: Partial<GatePolicy>): string[] {
     : "the repository's full test suite";
 
   return [
-    `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
+    workClass === "feature"
+      ? `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that covers the new behaviour and passes with your implementation.`
+      : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
     "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
     `3. Keep changes tightly scoped: <= ${maxNonTest} non-test changed lines, <= ${maxTotal} total changed lines, <= ${maxFiles} files, zero binary files.`,
     "4. NEVER touch protected paths (`.github/**`, `.pre-commit-config.yaml`, `.agents/**`, `LICENSE*`, `CLAUDE.md`, `AGENTS.md`, dependency lockfiles, or repo-protected paths in `.agents/archangel.json`).",
@@ -29,9 +31,11 @@ export function buildImplementPrompt(input: {
   repoName: string;
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
+  workClass?: "bugfix" | "feature";
 }): string {
+  const feature = input.workClass === "feature";
   return [
-    `You are an autonomous bug-fix implementer working on ${input.repoName} in an isolated local repository clone.`,
+    `You are an autonomous ${feature ? "feature" : "bug-fix"} implementer working on ${input.repoName} in an isolated local repository clone.`,
     `Resolve GitHub Issue #${input.issueNumber}: ${input.title}`,
     "",
     "--- BEGIN ISSUE SPECIFICATION (DATA) ---",
@@ -40,10 +44,16 @@ export function buildImplementPrompt(input: {
     "",
     ...formatOwnerReply(input.ownerReply),
     "MANDATORY MECHANICAL GATE RULES (violations fail CI automatically):",
-    ...formatGateRules(input.gate),
+    ...formatGateRules(input.gate, input.workClass),
     `6. Leave your verified changes cleanly in the working tree (or committed on \`factory/${input.issueNumber}\` if \`.git\` is writable). Do NOT attempt to push.`,
     "",
-    "Finish with a concise plain-text summary of the root cause, the new reproduction test file/name, and the fix.",
+    ...(feature
+      ? [
+          "THIS IS A FEATURE, NOT A BUG FIX: there is no bug to reproduce. Instead of a reproduction test, add a NEW test file that covers the new behaviour (it need not fail on the old code, but it must pass on yours).",
+          "",
+          "Finish with a concise plain-text summary of the feature, the new test file/name, and the implementation.",
+        ]
+      : ["Finish with a concise plain-text summary of the root cause, the new reproduction test file/name, and the fix."]),
   ].join("\n");
 }
 
@@ -55,6 +65,7 @@ export function buildRevisionPrompt(input: {
   structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>;
   gate?: Partial<GatePolicy>;
   ownerReply?: string | null;
+  workClass?: "bugfix" | "feature";
 }): string {
   const parts: string[] = [
     `Revision Attempt for Issue #${input.issueNumber}: ${input.title}`,
@@ -89,7 +100,7 @@ export function buildRevisionPrompt(input: {
 
   parts.push(
     "Address every item above while preserving all Mechanical Gate rules:",
-    ...formatGateRules(input.gate),
+    ...formatGateRules(input.gate, input.workClass),
     "Commit your revision to the current branch. Do NOT attempt to push.",
   );
 

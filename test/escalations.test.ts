@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { ESCALATION_POLICY, MAIN_ESCALATION_POLICY } from "../src/core/escalations.js";
+import { ESCALATION_POLICY, MAIN_ESCALATION_POLICY, describeEscalation } from "../src/core/escalations.js";
 import { collectOwnerReply } from "../src/core/owner-reply.js";
 import { TelegramNotifier } from "../src/core/notifier.js";
 import { renderRecapComment } from "../src/core/recap.js";
@@ -35,6 +35,15 @@ describe("Needs You decision classes", () => {
   it("keeps the irreversible class unused by every escalation source", () => {
     const classes = Object.values({ ...ESCALATION_POLICY, ...MAIN_ESCALATION_POLICY }).map((p) => p.decisionClass);
     expect(classes).not.toContain("irreversible");
+  });
+
+  it("feature escalations say the owner merges; bugfix text is unchanged", () => {
+    expect(describeEscalation("gate_failed", "feature").recommendation).toMatch(/owner merges it\.$/);
+    expect(describeEscalation("gate_failed").recommendation).toBe(ESCALATION_POLICY.gate_failed.recommendation);
+    const prompt = buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "a/b", workClass: "feature" });
+    expect(prompt).toContain("NOT A BUG FIX");
+    expect(prompt).not.toContain("reproduces the bug");
+    expect(buildImplementPrompt({ issueNumber: 1, title: "t", body: "b", repoName: "a/b" })).toContain("reproduces the bug");
   });
 
   it("shows class and recommendation in the Recap", () => {

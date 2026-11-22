@@ -10,6 +10,7 @@ import { ConfigSchema, type ArchangelConfig } from "../src/config.js";
 import type { CheckStatus } from "../src/core/blockers.js";
 import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
+import { scoutContentHash } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../src/github/client.js";
 import { handoffThreadToPaseo, resumeThreadFromPaseo, type PaseoRunner } from "../src/handoff/paseo.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -457,6 +458,106 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     } finally {
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});
+
+describe("Work classes (owner-labelled features)", () => {
+  function harness(cfgOverrides: Partial<ArchangelConfig> = {}) {
+    const { root, remoteBare } = setupRepo();
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const github = new FakeGitHub(remoteBare);
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+    const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
+    const implementer: Implementer = {
+      async run(input) {
+        fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
+        git(input.cloneDir, ["add", "-A"]);
+        git(input.cloneDir, ["commit", "-m", "feature"]);
+        return { summary: "Done.", costUsd: 0.1, transcriptPath: null, aborted: false };
+      },
+    };
+    const reviewers: ReviewerSuite = {
+      async reviewAll() {
+        return {
+          results: [
+            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0 },
+            { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0 },
+          ],
+          errors: [],
+        };
+      },
+    };
+    const cfg = makeTestConfig(cfgOverrides);
+    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const cleanup = () => {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    };
+    const addIssue = (n: number, labels: string[], over: Partial<GitHubIssue> = {}) =>
+      github.issues.set(n, {
+        number: n, title: `Issue ${n}`, body: "b", state: "open", authorId: 999, authorLogin: "dgrah50",
+        authorAssociation: "OWNER", labels, updatedAt: new Date().toISOString(), ...over,
+      });
+    return { github, ledger, reconciler, cleanup, addIssue };
+  }
+
+  it("an owner-applied class:feature label makes a feature; a non-owner label does not", async () => {
+    const h = harness();
+    try {
+      h.addIssue(1, ["ready-for-agent", "class:feature"]);
+      h.github.labelActors.set("1:ready-for-agent", 999);
+      h.github.labelActors.set("1:class:feature", 999);
+      h.addIssue(2, ["ready-for-agent", "class:feature"]);
+      h.github.labelActors.set("2:ready-for-agent", 999);
+      h.github.labelActors.set("2:class:feature", 555);
+      h.addIssue(3, ["ready-for-agent"]);
+      h.github.labelActors.set("3:ready-for-agent", 999);
+      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(h.ledger.getThread(1)?.branchName).toBe("factory/feature-1");
+      expect(h.ledger.getThread(2)?.branchName).toBe("factory/2");
+      expect(h.ledger.getThread(3)?.branchName).toBe("factory/3");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("Scout proposals (bot-authored, even owner-promoted with an owner class label) are always bugfix", async () => {
+    const h = harness({ githubAppBotUserId: 777 });
+    try {
+      h.addIssue(4, ["ready-for-agent", "class:feature"], { title: "Proposal", body: "Proposal body text", authorId: 777, authorLogin: "app[bot]", authorAssociation: "NONE" });
+      h.ledger.recordScoutProposal({ issueNumber: 4, scoutName: "s", contentSha256: scoutContentHash("Proposal", "Proposal body text"), titleFp: "t" });
+      h.github.labelActors.set("4:ready-for-agent", 999);
+      h.github.labelActors.set("4:class:feature", 999);
+      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(h.ledger.getThread(4)?.branchName).toBe("factory/4");
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it("a feature Thread never auto-merges, even with shadowMode false, and shows the owner-merge line", async () => {
+    const h = harness({ shadowMode: false });
+    try {
+      h.addIssue(5, ["ready-for-agent", "class:feature"]);
+      h.github.labelActors.set("5:ready-for-agent", 999);
+      h.github.labelActors.set("5:class:feature", 999);
+      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      const p = h.ledger.getThread(5)!.phase;
+      expect(p.kind).toBe("awaiting_gate");
+      const headSha = p.kind === "awaiting_gate" ? p.headSha : "";
+      const main = await h.github.getBranchTipSha("main");
+      h.github.checks.set(main, allGreenChecks());
+      h.github.checks.set(headSha, allGreenChecks());
+      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      await h.reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(h.ledger.getThread(5)?.phase.kind).toBe("shadow_ready");
+      expect(h.ledger.getAutoMergeCountToday()).toBe(0);
+      expect(h.github.prs.get(100)?.merged).toBe(false);
+      const recap = (h.github.comments.get(100) ?? []).at(-1) ?? "";
+      expect(recap).toContain("Feature: owner merges");
+    } finally {
+      h.cleanup();
     }
   });
 });
