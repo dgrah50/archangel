@@ -25,7 +25,7 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
     reviewsForHeadSha: [
       {
         id: 1,
-        repo: "dgrah50/gijq",
+        repo: "acme/app",
         issueNumber: 1,
         headSha: "aaaa1111bbbb2222",
         vendor: "openai",
@@ -36,7 +36,7 @@ function cleanSnapshot(overrides: Partial<LandingSnapshot> = {}): LandingSnapsho
       },
       {
         id: 2,
-        repo: "dgrah50/gijq",
+        repo: "acme/app",
         issueNumber: 1,
         headSha: "aaaa1111bbbb2222",
         vendor: "gemini",

@@ -2,9 +2,7 @@
   "maxNonTestLines": 150,
   "maxTotalLines": 300,
   "maxFiles": 5,
-  "testFileGlobs": [
-    "test/**/*.test.ts"
-  ],
+  "testFileGlobs": ["test/**/*.test.ts"],
   "testDataGlobs": [],
   "testBuildCmd": "npm run typecheck",
   "baseTestCmd": "npx vitest run",
@@ -17,17 +15,20 @@
     "tsconfig.json",
     "tsconfig.test.json",
     "vitest.config.ts",
+    "src/config.ts",
+    "src/env.ts",
     "src/gate/**",
     "src/broker/**",
+    "src/agents/**",
+    "src/github/**",
+    "src/ledger/**",
+    "src/cli/**",
     "src/core/blockers.ts",
     "src/core/thread-machine.ts",
+    "src/core/reconciler.ts",
+    "templates/**",
     "workflows/**",
-    "bin/**",
-    "src/config.ts",
-    "templates/**"
+    "bin/**"
   ],
-  "requiredChecks": [
-    "Gate",
-    "Test"
-  ]
+  "requiredChecks": ["Gate", "Test"]
 }

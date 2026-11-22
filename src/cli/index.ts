@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
@@ -460,6 +462,20 @@ program
           console.log(`  - ${c.provider}: ${remMin}m left (${c.reason})`);
         }
       }
+      const signals: string[] = [];
+      for (const e of m.attempts.topErrors) {
+        if (e.count >= 2) signals.push(`repeated attempt error (${e.count}x): ${e.error}`);
+      }
+      if (m.reviews.outageEvents >= 2) {
+        signals.push(`repeated review outages (${m.reviews.outageEvents}x) — check provider CLIs with \`archangel doctor\``);
+      }
+      for (const [code, cnt] of Object.entries(m.threads.escalationsByCode)) {
+        signals.push(`open needs_you escalation (${cnt}x): ${code}`);
+      }
+      if (signals.length > 0) {
+        console.log("Actionable signals:");
+        for (const s of signals) console.log(`  ! ${s}`);
+      }
     } finally {
       ledger.close();
     }
@@ -678,16 +694,155 @@ program
   .description("Reset a repo's red-main landing circuit breaker after main is green")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--data-dir <dir>", "Archangel data directory")
-  .option("--repo <owner/name>", "Target repository", "dgrah50/gijq")
-  .action((opts: { config?: string; dataDir?: string; repo: string }) => {
+  .option("--repo <owner/name>", "Target repository")
+  .action((opts: { config?: string; dataDir?: string; repo?: string }) => {
+    const repo =
+      opts.repo ??
+      (() => {
+        const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }));
+        return `${cfg.githubOwner}/${cfg.githubRepo}`;
+      })();
     const dataDir = resolveDataDirFromOpts(opts);
     const paths = resolvePaths({ dataDir });
-    const ledger = new Ledger(paths.ledgerDbPath, { repo: opts.repo });
+    const ledger = new Ledger(paths.ledgerDbPath, { repo });
     try {
       ledger.setCircuitBreaker(false, "manually reset by owner");
-      console.log(`Circuit breaker reset for ${opts.repo}.`);
+      console.log(`Circuit breaker reset for ${repo}.`);
     } finally {
       ledger.close();
+    }
+  });
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+const LAUNCHD_LABEL = "com.archangel.daemon";
+function launchdPlistPath(): string {
+  return path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+}
+
+const daemonCmd = program
+  .command("daemon")
+  .description("Manage the always-on macOS launchd user agent (fixed checkout, no secrets in plist)");
+
+daemonCmd
+  .command("install")
+  .description("Write and load ~/Library/LaunchAgents/com.archangel.daemon.plist")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action((opts: { config?: string }) => {
+    if (process.platform !== "darwin") {
+      throw new Error("`archangel daemon install` currently supports macOS (launchd) only.");
+    }
+    const workDir = process.cwd();
+    const entryJs = path.resolve(workDir, "dist/cli/index.js");
+    if (!fs.existsSync(entryJs)) {
+      throw new Error(`Built CLI not found at ${entryJs}. Run \`npm run build\` first.`);
+    }
+    const configPath = path.resolve(workDir, opts.config ?? "archangel.yaml");
+    const logDir = path.resolve(workDir, ".archangel");
+    fs.mkdirSync(logDir, { recursive: true });
+    const plistPath = launchdPlistPath();
+    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+
+    // Capture current PATH so launchd can locate node, git, go, codex, claude, and agy.
+    // Never write secrets into the plist; Archangel loads `.env` (chmod 600) at runtime.
+    const capturedPath = process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+    const nodeBin = process.execPath;
+    const args = [nodeBin, entryJs, "start", "--config", configPath];
+
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(workDir)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${escapeXml(capturedPath)}</string>
+    <key>HOME</key>
+    <string>${escapeXml(os.homedir())}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(path.join(logDir, "daemon.log"))}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(path.join(logDir, "daemon.err.log"))}</string>
+</dict>
+</plist>
+`;
+    fs.writeFileSync(plistPath, plist, { encoding: "utf8", mode: 0o600 });
+    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
+    } catch {
+      // Not previously loaded
+    }
+    execFileSync("launchctl", ["bootstrap", `gui/${uid}`, plistPath], { stdio: "inherit" });
+    console.log(`Installed & loaded ${LAUNCHD_LABEL} (${plistPath}).`);
+    console.log(`Logs: ${path.join(logDir, "daemon.log")} and ${path.join(logDir, "daemon.err.log")}`);
+  });
+
+daemonCmd
+  .command("uninstall")
+  .description("Unload and remove ~/Library/LaunchAgents/com.archangel.daemon.plist")
+  .action(() => {
+    if (process.platform !== "darwin") {
+      throw new Error("`archangel daemon uninstall` currently supports macOS (launchd) only.");
+    }
+    const plistPath = launchdPlistPath();
+    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
+    } catch {
+      // Already unloaded
+    }
+    if (fs.existsSync(plistPath)) {
+      fs.rmSync(plistPath);
+      console.log(`Unloaded & removed ${plistPath}.`);
+    } else {
+      console.log(`${plistPath} not present.`);
+    }
+  });
+
+daemonCmd
+  .command("status")
+  .description("Show macOS launchd daemon status")
+  .action(() => {
+    const plistPath = launchdPlistPath();
+    console.log(`Plist: ${plistPath} (${fs.existsSync(plistPath) ? "installed" : "not installed"})`);
+    if (process.platform === "darwin") {
+      const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+      try {
+        const out = execFileSync("launchctl", ["print", `gui/${uid}/${LAUNCHD_LABEL}`], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const stateLine = out.split("\n").find((l) => l.includes("state =") || l.includes("pid ="));
+        console.log(stateLine?.trim() ?? "Loaded");
+      } catch {
+        console.log("Not loaded in launchd.");
+      }
     }
   });
 

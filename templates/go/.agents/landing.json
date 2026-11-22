@@ -23,8 +23,6 @@
   ],
   "requiredChecks": [
     "Gate",
-    "Test (ubuntu-latest)",
-    "Test (macos-latest)"
-  ],
-  "reviewRubric": "Pay close attention to UTF-8/rune vs byte slicing, Bubble Tea v2 model immutability, and cancellation safety in background goroutines."
+    "Test"
+  ]
 }

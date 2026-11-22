@@ -141,11 +141,14 @@ class FakeGitHub implements GitHubClient {
 
 function makeTestConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConfig {
   return ConfigSchema.parse({
+    githubOwner: "acme",
+    githubRepo: "app",
     ownerUserId: 999,
     githubAppId: "12345",
     githubInstallationId: 67890,
     githubPrivateKeyPem: "fake",
     shadowMode: true,
+    requiredChecks: ["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"],
     ...overrides,
   });
 }
@@ -177,7 +180,7 @@ function allGreenChecks(): Array<CheckStatus & { id: number }> {
 describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", () => {
   it("runs Shadow Mode, closes cleanly on owner merge, and enforces advisory-only post-handoff", async () => {
     const { root, remoteBare } = setupRepo();
-    const ledger = new Ledger(":memory:");
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const github = new FakeGitHub(remoteBare);
     const broker = new GitBroker({
       bareRepoPath: path.join(root, "broker.git"),
@@ -314,7 +317,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
 
   it("auto-merges when shadowMode=false, reruns red main once, trips circuit breaker & opens exact revert PR", async () => {
     const { root, remoteBare } = setupRepo();
-    const ledger = new Ledger(":memory:");
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const github = new FakeGitHub(remoteBare);
     const broker = new GitBroker({
       bareRepoPath: path.join(root, "broker.git"),
@@ -401,7 +404,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
 
   it("persists partial Promise.allSettled reviews, handles veto->revision, body TOCTOU->retry, timeout, and hard $20/day cap", async () => {
     const { root, remoteBare } = setupRepo();
-    const ledger = new Ledger(":memory:");
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const github = new FakeGitHub(remoteBare);
     const broker = new GitBroker({
       bareRepoPath: path.join(root, "broker.git"),

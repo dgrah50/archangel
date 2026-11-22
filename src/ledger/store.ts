@@ -51,7 +51,7 @@ export class Ledger {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     }
     this.db = new Database(dbPath, { readonly: opts.readonly ?? false });
-    this.repo = opts.repo ?? "dgrah50/gijq";
+    this.repo = opts.repo ?? "default";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
       this.db.exec(LEDGER_SCHEMA_SQL);

@@ -6,7 +6,7 @@ pollIntervalMs: 30000
 maxDailyUsd: 20
 dailyTimezone: America/New_York
 
-# Native CLI subscriptions with Paseo Continuity-style fallback chains (no API keys required),
+# Native CLI subscriptions with fallback chains (no API keys required),
 # or switch to `authMode: api` for metered API keys in .env.
 authMode: subscription
 implementerChain:
@@ -21,16 +21,15 @@ reviewerChain:
 paseoHost: 127.0.0.1:6767
 
 projects:
-  - repo: dgrah50/gijq
+  - repo: owner/my-repo
     defaultBranch: main
-    workspace: local-clone        # Phase 2: apple-container | docker
+    workspace: local-clone
     shadowMode: true
     maxConcurrentThreads: 2
     maxAutoMergesPerDay: 3
     requiredChecks:
       - Gate
-      - Test (ubuntu-latest)
-      - Test (macos-latest)
+      - Test
     gate:
       maxNonTestLines: 150
       maxTotalLines: 300

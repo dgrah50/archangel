@@ -68,8 +68,8 @@ export const LabelsSchema = z.object({
 
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/landing.json)
-  githubOwner: z.string().min(1).default("dgrah50"),
-  githubRepo: z.string().min(1).default("gijq"),
+  githubOwner: z.string().min(1),
+  githubRepo: z.string().min(1),
   defaultBranch: z.string().min(1).default("main"),
   workspace: z.enum(["local-clone"]).default("local-clone"),
   ownerUserId: z.number().int().positive(),
@@ -116,9 +116,7 @@ export const ConfigSchema = z.object({
     baseTestRuns: 3,
     headTestRuns: 2,
   }),
-  requiredChecks: z
-    .array(z.string().min(1))
-    .default(["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"]),
+  requiredChecks: z.array(z.string().min(1)).default(["Gate"]),
   reviewRubric: z.string().optional(),
 
   labels: LabelsSchema.default({
@@ -162,9 +160,7 @@ const HostProjectYamlSchema = z.object({
   shadowMode: z.boolean().default(true),
   maxConcurrentThreads: z.number().int().min(1).max(3).default(2),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
-  requiredChecks: z
-    .array(z.string().min(1))
-    .default(["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"]),
+  requiredChecks: z.array(z.string().min(1)).default(["Gate"]),
   gate: GatePolicySchema.default({
     maxNonTestLines: 150,
     maxTotalLines: 300,
@@ -397,8 +393,8 @@ export function loadProjectConfigs(opts: {
 
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ArchangelConfig {
   const raw = {
-    githubOwner: env.ARCHANGEL_GITHUB_OWNER ?? "dgrah50",
-    githubRepo: env.ARCHANGEL_GITHUB_REPO ?? "gijq",
+    githubOwner: env.ARCHANGEL_GITHUB_OWNER,
+    githubRepo: env.ARCHANGEL_GITHUB_REPO,
     defaultBranch: env.ARCHANGEL_DEFAULT_BRANCH ?? "main",
     ownerUserId: env.ARCHANGEL_OWNER_USER_ID ? Number(env.ARCHANGEL_OWNER_USER_ID) : undefined,
     githubAppId: env.ARCHANGEL_GITHUB_APP_ID,

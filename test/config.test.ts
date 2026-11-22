@@ -26,7 +26,7 @@ describe("config security invariants", () => {
       const yamlPath = path.join(tmp, "archangel.yaml");
       fs.writeFileSync(
         yamlPath,
-        `ownerUserId: 999\nprojects:\n  - repo: dgrah50/gijq\n`,
+        `ownerUserId: 999\nprojects:\n  - repo: acme/app\n`,
       );
       const cfgs = loadProjectConfigs({
         configPath: yamlPath,
