@@ -9,7 +9,7 @@ describe("Ledger.computeMetrics windows and percentiles", () => {
       ledger.upsertThread({ issueNumber: 2, title: "new", bodySha256: "new", now: 200 });
       ledger.recordMerge({ issueNumber: 1, prNumber: 1, headSha: "old", shadowOnly: true, now: 100 });
       ledger.recordMerge({ issueNumber: 2, prNumber: 2, headSha: "new", shadowOnly: true, now: 200 });
-      ledger.markShadowDisagree(2, true);
+      ledger.markDisagree(2, true);
 
       expect(ledger.computeMetrics({ sinceMs: 150, now: 300 }).shadow).toEqual({
         total: 1,
