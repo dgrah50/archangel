@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { formatRepoInstructions } from "../agents/prompts.js";
 import { METRIC_KEYS } from "./metrics-block.js";
 import { DIAGRAM_CHANGES, renderDiagramTree } from "./pitch-diagram.js";
 import type { IngestedImage } from "./pitch-ingest.js";
@@ -221,6 +222,7 @@ export function buildPitchPrompt(input: {
   skills: Array<{ ref: string; content: string }>;
   prompt: string;
   metricsBlock?: string;
+  repoInstructions?: string | null;
   declined: Array<{ title: string; reason: string | null }>;
 }): string {
   return [
@@ -231,6 +233,7 @@ export function buildPitchPrompt(input: {
     "Every cited file must exist in this repository. figures is almost always an empty list: add a figure (at most 3) only when an existing png, jpg or webp file in the repo (a README screenshot, a docs diagram) directly shows the problem; give its repo-relative path and a plain caption. Cite a metric only if it appears in the FACTORY METRICS block below. optionsConsidered must include 'do nothing'. A performance pitch needs a measurement plan and at least one estimate.",
     "changeDiagram is null unless a performance or refactor (architecture or removal) pitch is clearer with a small diagram of what changes: at most 12 nodes, plain short labels, edges only between listed nodes, change one of add, remove, modify, same. Never put markup, code or Mermaid in a label. estimates is empty unless the pitch claims a number (performance and refactor pitches should): give the metric, before (null if unknown), after, the unit, and a method that says how you got the number. basis is 'measured' ONLY when a repo file you cite in source records that measurement; otherwise 'estimated', and the dashboard will label it 'Estimate, not measured'. Never present a guess as measured.",
     "",
+    ...formatRepoInstructions(input.repoInstructions),
     ...(input.metricsBlock ? [input.metricsBlock, ""] : []),
     ...(input.declined.length > 0
       ? [
