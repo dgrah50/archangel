@@ -50,6 +50,7 @@ function runnerFor(root: string, o: { wf?: string | null; openPr?: string; dirty
         return args.includes("--jq") ? "blobsha\n" : (o.wf ?? "");
       }
       if (line.startsWith("gh pr list")) return o.openPr ?? "";
+      if (/git\/ref\/heads\/chore\//.test(line)) throw new Error("HTTP 404");
       if (line.includes("/git/ref/heads/")) return "basesha\n";
       if (line.startsWith("gh pr create")) return "https://github.com/o/r/pull/9\n";
       return "";

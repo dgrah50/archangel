@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { REPO_POLICY_PATH } from "../config.js";
-import type { OnboardRunner } from "./onboard.js";
+import { createOrResetBranch, isNotFound, type OnboardRunner } from "./onboard.js";
 import {
   Workflow,
   classifyChange,
@@ -9,6 +9,7 @@ import {
   type FieldChange,
   type HostWorkflowInput,
 } from "./workflow.js";
+import { resolveSkills } from "./skills.js";
 
 export const PROPOSE_BRANCH = "chore/archangel-workflow";
 export const LOOSENS_LABEL = "policy:loosens";
@@ -20,15 +21,16 @@ export interface RepoFile {
   blobSha: string;
 }
 
-/** Reads a file at a ref with the owner's `gh`; null when it does not exist. */
+/** Reads a file at a ref with the owner's `gh`. Null only when it does not exist (404); any other failure throws. */
 export async function readRepoFile(runner: OnboardRunner, repo: string, ref: string, filePath: string): Promise<RepoFile | null> {
   const url = `repos/${repo}/contents/${filePath}?ref=${ref}`;
   try {
     const blobSha = (await runner.run("gh", ["api", url, "--jq", ".sha"])).trim();
     const content = await runner.run("gh", ["api", url, "-H", "Accept: application/vnd.github.raw"]);
     return blobSha ? { content, blobSha } : null;
-  } catch {
-    return null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
   }
 }
 
@@ -105,10 +107,17 @@ export async function planWorkflowProposal(
   const prompts = opts.scoutPrompts ?? {};
   for (const s of proposed.scouts) {
     if (prompts[s.name] === undefined) throw new Error(`Scout '${s.name}' has no prompt file (${SCOUT_DIR}/${s.name}.md) in the proposal`);
+    try {
+      resolveSkills(s.skills);
+    } catch (err) {
+      throw new Error(`Scout '${s.name}': ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const defaultBranch = (await runner.run("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])).trim();
-  const current = await readRepoFile(runner, repo, defaultBranch, REPO_POLICY_PATH);
+  // Read everything at one commit so the file, its blob sha and the Scout prompts cannot come from different moments.
+  const tipAtPlan = (await runner.run("gh", ["api", `repos/${repo}/git/ref/heads/${defaultBranch}`, "--jq", ".object.sha"])).trim();
+  const current = await readRepoFile(runner, repo, tipAtPlan, REPO_POLICY_PATH);
   const currentSha = current ? sha256(current.content) : null;
   if (opts.baseFileSha256 !== undefined && opts.baseFileSha256 !== (currentSha ?? "")) {
     throw new Error(
@@ -122,10 +131,12 @@ export async function planWorkflowProposal(
 
   let changes: FieldChange[] = [];
   let classified = false;
+  let prevScouts = new Set<string>();
   if (current) {
     try {
       const prev = Workflow.parse(JSON.parse(current.content));
       changes = classifyChange(prev, proposed);
+      prevScouts = new Set(prev.scouts.map((s) => s.name));
       classified = true;
     } catch {
       // current file is not a valid workflow: nothing to compare against
@@ -138,8 +149,13 @@ export async function planWorkflowProposal(
   for (const s of proposed.scouts) {
     const path = `${SCOUT_DIR}/${s.name}.md`;
     const body = prompts[s.name]!.trim() + "\n";
-    const existing = await readRepoFile(runner, repo, defaultBranch, path);
+    const existing = await readRepoFile(runner, repo, tipAtPlan, path);
     if (existing?.content !== body) files.push({ path, content: body, blobSha: existing?.blobSha ?? null });
+    // A Scout's prompt is part of its trust hash: editing it re-arms a revoked auto-promotion and changes what runs unattended.
+    // The workflow diff alone would hide that, so an edited prompt of an existing Scout is its own change (a loosening when it auto-promotes).
+    if (classified && prevScouts.has(s.name) && existing && existing.content.trim() !== body.trim()) {
+      changes.push({ field: `scouts.${s.name}.prompt`, direction: s.promotion === "auto" ? "loosen" : "changed" });
+    }
   }
   if (files.length === 0) throw new Error("The proposal is identical to the current workflow files; nothing to propose.");
 
@@ -209,7 +225,7 @@ export async function proposeWorkflow(
       await runner.run("gh", ["label", "create", LOOSENS_LABEL, "--repo", repo, "--color", "d93f0b", "--description", "Archangel workflow change that loosens a limit"]);
     }
   }
-  await runner.run("gh", ["api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/heads/${PROPOSE_BRANCH}`, "-f", `sha=${tip}`]);
+  await createOrResetBranch(runner, repo, PROPOSE_BRANCH, tip);
   for (const f of plan.files) {
     await runner.run("gh", [
       "api", "-X", "PUT", `repos/${repo}/contents/${f.path}`,
