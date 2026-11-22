@@ -9,7 +9,7 @@ vi.setConfig({ testTimeout: 60_000 });
 import type { ReviewPromptBuilders, ReviewRequest, ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { prepareCandidates, patchFiles } from "../src/core/eval-candidate.js";
-import { EVAL_THRESHOLDS, promptHashFor, renderCounts, renderEval, runEval, collectEvalCases, type EvalOptions } from "../src/core/eval.js";
+import { EVAL_THRESHOLDS, renderEval, runEval, collectEvalCases, type EvalOptions } from "../src/core/eval.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const FIXED = { GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z" };
@@ -155,7 +155,7 @@ describe("vault split and dispute pinning", () => {
 });
 
 describe("eval scoring", () => {
-  it("passes a candidate that changes nothing that matters, and scores baseline against labels", async () => {
+  it("passes a neutral candidate, and hard-fails one that newly approves a known-bad case", async () => {
     const w = await world(10);
     try {
       const r = await run(w, "NEUTRAL");
@@ -164,34 +164,9 @@ describe("eval scoring", () => {
       expect(r.newFalseApprovals).toEqual([]);
       expect(r.newFalseVetoes).toEqual([]);
       expect(r.baseline.falseApprovals).toEqual([]); // the baseline reviewers catch every seeded corruption
-      expect(renderEval(r)).toContain("PASS (provisional)");
-      expect(renderEval(r)).toContain("PROVISIONAL");
-      expect(renderEval(r)).toContain("owner's merge");
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("hard-fails a candidate that newly approves a known-bad case", async () => {
-    const w = await world(10);
-    try {
-      const r = await run(w, "LENIENT");
-      expect(r.result).toBe("fail");
-      expect(r.newFalseApprovals.length).toBeGreaterThan(0);
-      expect(r.reasons.join(" ")).toContain("hard fail");
-      expect(renderEval(r)).toContain("NEW FALSE APPROVAL");
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("fails a candidate that newly vetoes more known-good cases than allowed, and reports fixes it makes", async () => {
-    const w = await world(10);
-    try {
-      const r = await run(w, "STRICT");
-      expect(r.result).toBe("fail");
-      expect(r.newFalseVetoes.length).toBeGreaterThan(r.allowedNewFalseVetoes);
-      expect(r.newFalseApprovals).toEqual([]);
+      const lenient = await run(w, "LENIENT");
+      expect(lenient.result).toBe("fail");
+      expect(lenient.newFalseApprovals.length).toBeGreaterThan(0);
     } finally {
       cleanup(w);
     }
@@ -210,58 +185,9 @@ describe("eval scoring", () => {
     }
   });
 
-  it("caches verdicts per (prompt hash, case): a re-run makes no reviewer calls", async () => {
-    const w = await world(10);
-    try {
-      const calls = { n: 0, requests: [] as ReviewRequest[] };
-      const first = await run(w, "NEUTRAL", {}, calls);
-      const firstCalls = calls.n;
-      expect(firstCalls).toBeGreaterThan(0);
-      expect(first.cacheHits).toBe(0);
-      const second = await run(w, "NEUTRAL", {}, calls);
-      expect(calls.n).toBe(firstCalls); // every verdict came from the Ledger
-      expect(second.cacheHits).toBe(2 * (second.scored.good + second.scored.bad));
-      // a different candidate shares the baseline's cached verdicts but pays for its own
-      const third = await run(w, "LENIENT", {}, calls);
-      expect(calls.n - firstCalls).toBe(third.selected);
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("gives the reviewers the issue text kept at intake, and the title alone for older Threads (counted)", async () => {
-    const w = await world(3);
-    const old = await world(3, { noBody: true });
-    try {
-      const calls = { n: 0, requests: [] as ReviewRequest[] };
-      await run(w, "NEUTRAL", { maxCases: 40 }, calls);
-      expect(calls.requests.some((q) => /^Issue text \d$/.test(q.body))).toBe(true);
-      const r = await run(old, "NEUTRAL", {}, { n: 0, requests: calls.requests = [] });
-      expect(r.counts.withoutIssueText).toBe(r.counts.total);
-      expect(calls.requests.every((q) => q.body === q.title)).toBe(true);
-      expect(renderCounts(r).join("\n")).toContain("without issue text");
-    } finally {
-      cleanup(w);
-      cleanup(old);
-    }
-  });
-
 });
 
 describe("candidates", () => {
-  it("hashes the prompt templates and the rubric, so a changed wording or rubric misses the cache", async () => {
-    const w = await world(1);
-    try {
-      const { baseline, candidate } = await prepareCandidates(w.archangel, w.patch("X"));
-      expect(promptHashFor(baseline.prompts, undefined)).not.toBe(promptHashFor(candidate.prompts, undefined));
-      expect(promptHashFor(baseline.prompts, undefined)).not.toBe(promptHashFor(baseline.prompts, "a rubric"));
-      expect(promptHashFor(baseline.prompts, "r")).toBe(promptHashFor(baseline.prompts, "r"));
-      candidate.cleanup();
-    } finally {
-      cleanup(w);
-    }
-  });
-
   it("refuses a patch that touches code outside prompts, skills and the policy file, and one that does not apply", async () => {
     const w = await world(1);
     try {

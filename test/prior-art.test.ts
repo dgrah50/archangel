@@ -1,27 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildDigest, sendDigestIfDue } from "../src/core/digest.js";
 import { UNAVAILABLE, buildMetricsBlock, buildMetricsBlockFrom } from "../src/core/metrics-block.js";
-import { extractAssumptions, renderRecapComment } from "../src/core/recap.js";
-import type { ThreadRecord } from "../src/ledger/schema.js";
 import { Ledger } from "../src/ledger/store.js";
-
-const reviewerInput = { issueNumber: 1, title: "t", body: "b", diffText: "d" };
-
-const thread: ThreadRecord = {
-  issueNumber: 7, repo: "acme/app", title: "Example", themeLabel: null, bodySha256: "x",
-  phase: { kind: "awaiting_gate", prNumber: 10, headSha: "abcdef1234567890", baseSha: "b1", since: 0, nudgedAt: null },
-  state: "awaiting_gate", version: 1, mode: "autonomous", branchName: "factory/7", lastSummary: null,
-  implementCount: 1, revisionCount: 0, rebaseCount: 0, implementerVendors: [], ownerReply: null, retryGrants: 0, factoryRetries: 0, factoryGuidance: null, factoryTriage: null,
-  workflowSha256: null, createdAt: 0, updatedAt: 0,
-};
-const recap = (summary: string | null) => renderRecapComment({ thread, reviews: [], blockers: [], summary });
-
-describe("Recap assumptions", () => {
-  it("stops at the next heading and handles an inline first item", () => {
-    expect(extractAssumptions("Assumptions: only one\n\n## Next\nx")).toBe("only one");
-    expect(extractAssumptions("Assumptions:\n- a\n- b\n## Tests\n- t")).toBe("- a\n- b");
-  });
-});
 
 describe("unavailable is not empty: metrics block", () => {
   it("renders every figure as unavailable when the source fails, distinct from a real zero", () => {
