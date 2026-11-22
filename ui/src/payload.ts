@@ -1,5 +1,6 @@
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { EvalsState } from "../../src/core/eval-reports.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
@@ -40,6 +41,10 @@ export function isHostStatus(v: unknown): v is HostStatus {
 
 export function isSettingsState(v: unknown): v is SettingsState {
   return obj(v) && obj(v.host) && typeof v.host.state === "string" && obj(v.status) && Array.isArray(v.env) && obj(v.kernel) && Array.isArray(v.kernel.universalProtected);
+}
+
+export function isEvalsState(v: unknown): v is EvalsState {
+  return obj(v) && typeof v.generatedAt === "number" && Array.isArray(v.runs) && v.runs.every((r) => obj(r) && typeof r.file === "string" && typeof r.savedAt === "number" && typeof r.unreadable === "boolean");
 }
 
 export function isLogs(v: unknown): v is LogsPayload {
