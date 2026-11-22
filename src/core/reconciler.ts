@@ -1123,6 +1123,7 @@ export class Reconciler {
           transcriptPath,
           errorMessage: `Aborted (${cause})`,
         });
+        if (cause === "control") this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
 
         // If handoff aborted us, try to push any valid unpushed factory commits before releasing!
         if (cause === "handoff") {
@@ -1292,6 +1293,7 @@ export class Reconciler {
           transcriptPath,
           errorMessage: "Aborted right before push due to owner stop/pause label",
         });
+        this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
         const latest = this.ledger.getThread(workingThread.issueNumber);
         if (latest && latest.version === workingThread.version) {
           this.applyMachineEvent(latest, { t: "attempt_aborted", cause: "control", now: Date.now() });
@@ -1354,6 +1356,7 @@ export class Reconciler {
           transcriptPath,
           errorMessage: `Aborted (${cause})`,
         });
+        if (cause === "control") this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
         const current = this.ledger.getThread(workingThread.issueNumber);
         if (current && current.version === workingThread.version) {
           this.applyMachineEvent(
