@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, primaryWriterVendors, resolvePaths, type ArchangelConfig } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
@@ -21,6 +21,7 @@ import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
 import { renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
 import { prepareCandidates } from "../core/eval-candidate.js";
+import { BENCH, parseChain, renderBench, runBenchTiers } from "../core/bench-tiers.js";
 import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { saveReport } from "../core/eval-reports.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
@@ -807,6 +808,47 @@ evalCmd
       process.exitCode = report.result === "pass" ? 0 : report.result === "fail" ? 1 : 2;
     } finally {
       candidate.cleanup();
+      ledger.close();
+    }
+  });
+
+evalCmd
+  .command("bench-tiers")
+  .description("Benchmark a candidate provider chain against the current one on captured implementation cases, scored mechanically by the Gate. Makes real subscription CLI calls; never edits archangel.yaml")
+  .requiredOption("--role <role>", "implement | revise | rebase")
+  .requiredOption("--candidate-chain <chain>", "provider[:model],... e.g. codex:gpt-5-mini,agy")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--data-dir <dir>", "Archangel data directory")
+  .option("--repo <owner/name>", "Only this repository")
+  .option("--max-cases <n>", `Cap on cases (default ${BENCH.defaultMaxCases}); each case runs a real implementer on both chains`)
+  .option("--run-tests", "Score with the Gate's tests (red on base, green on head); default is the static Gate")
+  .option("--json", "Output JSON")
+  .action(async (opts: { role: string; candidateChain: string; config?: string; dataDir?: string; repo?: string; maxCases?: string; runTests?: boolean; json?: boolean }) => {
+    if (!(WRITER_ROLES as readonly string[]).includes(opts.role)) throw new Error(`--role must be one of ${WRITER_ROLES.join(", ")}`);
+    const role = opts.role as WriterRole;
+    const host = resolveHostSettings(opts);
+    if (host.authMode !== "subscription") throw new Error("bench-tiers uses the subscription CLIs; set authMode: subscription");
+    const root = resolvePaths({ dataDir: host.dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+    const maxCases = opts.maxCases === undefined ? undefined : Number(opts.maxCases);
+    if (maxCases !== undefined && !(Number.isInteger(maxCases) && maxCases >= 1)) throw new Error("--max-cases must be an integer >= 1");
+    const candidateChain = parseChain(opts.candidateChain);
+    const ledger = new Ledger(root.ledgerDbPath);
+    try {
+      const report = await runBenchTiers({
+        ledger,
+        sources: evalSources(ledger, host.dataDir, opts.repo),
+        role,
+        currentChain: host.chains[role],
+        candidateChain,
+        implementerFor: (chain) => new SubscriptionImplementer({ chains: { implement: chain, revise: chain, rebase: chain }, transcriptsDir: path.join(root.dataDir, "bench-transcripts") }),
+        runTests: opts.runTests,
+        maxCases,
+      });
+      saveReport(host.dataDir, "bench-tiers", report);
+      console.log(opts.json ? JSON.stringify(report, null, 2) : renderBench(report));
+      process.exitCode = report.verdict === "insufficient" ? 2 : report.verdict === "worse" ? 1 : 0;
+    } finally {
       ledger.close();
     }
   });
