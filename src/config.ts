@@ -38,7 +38,10 @@ export const GatePolicySchema = z.object({
 
 export type GatePolicy = z.infer<typeof GatePolicySchema>;
 
-export const LandingJsonSchema = z
+/** Repo-owned Archangel policy file, always read from the default branch / base commit. */
+export const REPO_POLICY_PATH = ".agents/archangel.json";
+
+export const RepoPolicySchema = z
   .object({
     maxNonTestLines: z.number().int().min(1).optional(),
     maxTotalLines: z.number().int().min(1).optional(),
@@ -56,7 +59,7 @@ export const LandingJsonSchema = z
   })
   .strict();
 
-export type LandingJson = z.infer<typeof LandingJsonSchema>;
+export type RepoPolicy = z.infer<typeof RepoPolicySchema>;
 
 export const LabelsSchema = z.object({
   readyForAgent: z.string().default("ready-for-agent"),
@@ -76,7 +79,7 @@ export const ScoutsConfigSchema = z.object({
 export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
 
 export const ConfigSchema = z.object({
-  // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/landing.json)
+  // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
   githubRepo: z.string().min(1),
   defaultBranch: z.string().min(1).default("main"),
@@ -297,20 +300,20 @@ export function resolvePaths(
 }
 
 /**
- * Merges optional repo-side `.agents/landing.json` (read strictly from `main` tip)
+ * Merges optional repo-side `.agents/archangel.json` (read strictly from `main` tip)
  * onto host policy. Repo config can ONLY tighten bounds or add extra checks/protected paths,
  * never loosen host limits (ADR-0004).
  */
-export function mergeLandingJson(
+export function mergeRepoPolicy(
   hostGate: GatePolicy,
   hostRequiredChecks: string[],
   hostRubric: string | undefined,
-  landingJsonRaw: string | null | undefined,
+  repoPolicyRaw: string | null | undefined,
 ): { gate: GatePolicy; requiredChecks: string[]; reviewRubric?: string } {
-  if (!landingJsonRaw || !landingJsonRaw.trim()) {
+  if (!repoPolicyRaw || !repoPolicyRaw.trim()) {
     return { gate: hostGate, requiredChecks: hostRequiredChecks, reviewRubric: hostRubric };
   }
-  const parsed = LandingJsonSchema.parse(JSON.parse(landingJsonRaw));
+  const parsed = RepoPolicySchema.parse(JSON.parse(repoPolicyRaw));
   const gate: GatePolicy = {
     maxNonTestLines:
       parsed.maxNonTestLines !== undefined

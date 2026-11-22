@@ -1,9 +1,9 @@
 # Archangel
 
-Language-agnostic autonomous software factory with **repo-owned verification** (`.pre-commit-config.yaml` + `.agents/landing.json`), **native CLI subscription chains with failover** (or metered API keys), **independent cross-vendor review**, **SQLite level-triggered reconciliation**, and **1-command Paseo Handoff**.
+Language-agnostic autonomous software factory with **repo-owned verification** (`.pre-commit-config.yaml` + `.agents/archangel.json`), **native CLI subscription chains with failover** (or metered API keys), **independent cross-vendor review**, **SQLite level-triggered reconciliation**, and **1-command Paseo Handoff**.
 
 - **Go Verification Template:** [templates/go/](./templates/go/)
-- **Node/TypeScript Verification Example:** this repository's own [.agents/landing.json](./.agents/landing.json) & [.pre-commit-config.yaml](./.pre-commit-config.yaml)
+- **Node/TypeScript Verification Example:** this repository's own [.agents/archangel.json](./.agents/archangel.json) & [.pre-commit-config.yaml](./.pre-commit-config.yaml)
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ npm run build
 2. Copy `.env.example` to `.env` (auto-loaded by the CLI, `chmod 600`) and configure your dedicated least-privilege GitHub App (`contents: write`, `pull_requests: write`, `issues: write`, `checks: read` — **no** `workflows`, **no** `administration`, **no** `checks: write`).
 3. On each target repository's default branch (via a human-merged PR):
    - Copy `workflows/archangel-gate.yml` to `.github/workflows/archangel-gate.yml` and pin `ARCHANGEL_GATE_SHA` to an immutable 40-char commit SHA of this repo.
-   - Add `.pre-commit-config.yaml` and `.agents/landing.json` (plus optional `.agents/setup` for dependency install).
+   - Add `.pre-commit-config.yaml` and `.agents/archangel.json` (plus optional `.agents/setup` for dependency install).
    - Create factory labels (`ready-for-agent`, `factory:paused`, `factory:stop`, `needs-you`, `factory:disagree`) and an active branch protection ruleset requiring `Gate` + CI tests with squash-only merges and zero bypass actors.
 4. Run preflight checks:
    ```bash

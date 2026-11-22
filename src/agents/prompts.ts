@@ -17,7 +17,7 @@ function formatGateRules(gate?: Partial<GatePolicy>): string[] {
     `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
     "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
     `3. Keep changes tightly scoped: <= ${maxNonTest} non-test changed lines, <= ${maxTotal} total changed lines, <= ${maxFiles} files, zero binary files.`,
-    "4. NEVER touch protected paths (`.github/**`, `.pre-commit-config.yaml`, `.agents/**`, `LICENSE*`, `CLAUDE.md`, `AGENTS.md`, dependency lockfiles, or repo-protected paths in `.agents/landing.json`).",
+    "4. NEVER touch protected paths (`.github/**`, `.pre-commit-config.yaml`, `.agents/**`, `LICENSE*`, `CLAUDE.md`, `AGENTS.md`, dependency lockfiles, or repo-protected paths in `.agents/archangel.json`).",
     `5. Satisfy all repo pre-commit hooks in \`.pre-commit-config.yaml\` (if present) and run ${testCmd} until green.`,
   ];
 }

@@ -260,11 +260,11 @@ program
 
 program
   .command("gate")
-  .description("Run the language-agnostic mechanical Gate against a git repository (reads .pre-commit-config.yaml and .agents/landing.json from base)")
+  .description("Run the language-agnostic mechanical Gate against a git repository (reads .pre-commit-config.yaml and .agents/archangel.json from base)")
   .option("--repo <dir>", "Path to git repository (normal or bare)", ".")
   .requiredOption("--base <ref>", "Base commit/branch ref (e.g. main)")
   .option("--head <ref>", "Head commit/branch ref", "HEAD")
-  .option("--policy-from-base", "Read .agents/landing.json strictly from base commit", false)
+  .option("--policy-from-base", "Read .agents/archangel.json strictly from base commit", false)
   .option("--revert-of <sha>", "Verify exact-inverse revert of recorded squash commit SHA")
   .option("--base-runs <n>", "Override red-on-base run count")
   .option("--head-runs <n>", "Override green-on-head run count")

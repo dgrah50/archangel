@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadProjectConfigs, mergeLandingJson } from "../src/config.js";
+import { loadProjectConfigs, mergeRepoPolicy } from "../src/config.js";
 import { loadDotEnv, parseDotEnv } from "../src/env.js";
 
 describe("config security invariants", () => {
@@ -38,8 +38,8 @@ describe("config security invariants", () => {
     }
   });
 
-  it("allows .agents/landing.json to tighten bounds and add protected paths, never loosen them", () => {
-    const merged = mergeLandingJson(
+  it("allows .agents/archangel.json to tighten bounds and add protected paths, never loosen them", () => {
+    const merged = mergeRepoPolicy(
       {
         maxNonTestLines: 150,
         maxTotalLines: 300,
