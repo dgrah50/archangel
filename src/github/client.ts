@@ -86,6 +86,17 @@ export interface GitHubClient {
   ): Promise<{ squashSha: string }>;
 }
 
+/** A non-2xx GitHub answer, with its status, so callers can tell "forbidden" from "GitHub had a bad moment". */
+export class GitHubHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GitHubHttpError";
+  }
+}
+
 export interface GitHubAppConfig {
   owner: string;
   repo: string;
@@ -216,7 +227,7 @@ export class GitHubAppClient implements GitHubClient {
       if (cached) return { data: cached.data as T, nextUrl: cached.nextUrl };
     }
     if (!res.ok) {
-      throw new Error(`GitHub ${method} ${urlOrEndpoint} failed (${res.status}): ${await res.text()}`);
+      throw new GitHubHttpError(res.status, `GitHub ${method} ${urlOrEndpoint} failed (${res.status}): ${await res.text()}`);
     }
     if (res.status === 204) {
       return { data: undefined as T, nextUrl: null };
