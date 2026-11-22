@@ -1167,7 +1167,7 @@ daemonCmd
     const workDir = process.cwd();
     const entryJs = path.resolve(workDir, "dist/cli/index.js");
     if (!fs.existsSync(entryJs)) {
-      throw new Error(`Built CLI not found at ${entryJs}. Run \`npm run build\` first.`);
+      throw new Error(`Built CLI not found at ${entryJs}. Run \`bun run build\` first.`);
     }
     const configPath = path.resolve(workDir, opts.config ?? "archangel.yaml");
     const logDir = path.resolve(workDir, ".archangel");

@@ -4,15 +4,14 @@
     "testFileGlobs": [
       "test/**/*.test.ts"
     ],
-    "testBuildCmd": "npm run typecheck",
-    "baseTestCmd": "npx vitest run",
-    "testCmd": "npm run test:all",
+    "testBuildCmd": "bun run typecheck",
+    "baseTestCmd": "bun test --parallel --timeout=30000",
+    "testCmd": "bun run test:all",
     "protectedPaths": [
       "package.json",
-      "package-lock.json",
+      "bun.lock",
       "tsconfig.json",
       "tsconfig.test.json",
-      "vitest.config.ts",
       "src/config.ts",
       "src/env.ts",
       "src/gate/**",

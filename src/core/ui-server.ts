@@ -22,7 +22,7 @@ import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits } from ".
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
-/** Prebuilt dashboard bundle (`npm run build:ui`). */
+/** Prebuilt dashboard bundle (`bun run build:ui`). */
 export const UI_DIST_DIR = path.join(ARCHANGEL_ROOT, "dist/ui");
 
 const TYPES: Record<string, string> = {
@@ -89,7 +89,7 @@ export async function startUiServer(
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
   if (!fs.existsSync(path.join(uiDir, "index.html"))) {
-    throw new Error(`UI bundle not found at ${uiDir}. Run \`npm run build\` (or \`npm run build:ui\`) first.`);
+    throw new Error(`UI bundle not found at ${uiDir}. Run \`bun run build\` (or \`bun run build:ui\`) first.`);
   }
   const token = crypto.randomBytes(24).toString("hex");
   const proposeEnabled = Boolean(opts.proposeRunner) && !opts.allowRemote;

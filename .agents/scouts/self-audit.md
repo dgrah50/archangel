@@ -6,4 +6,4 @@ Only propose an issue if you can provide:
 1. **File & Symbol:** exact leaf file path and function/method name
 2. **Problem:** concrete bug, crash, or broken edge case (no style nits or speculative refactors)
 3. **Expected Behavior:** exact fix requirement strictly within leaf modules
-4. **Verification:** a concrete new Vitest test under `test/` (do not edit existing tests) that compiles against `main` and fails today
+4. **Verification:** a concrete new bun test test under `test/` (do not edit existing tests) that compiles against `main` and fails today

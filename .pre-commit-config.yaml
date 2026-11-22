@@ -13,7 +13,7 @@ repos:
         entry: node -e 'const fs=require("fs"); for (const f of process.argv.slice(1)) JSON.parse(fs.readFileSync(f,"utf8"));'
         pass_filenames: true
       - id: no-test-only
-        name: Reject .only in Vitest files
+        name: Reject .only in bun test files
         language: system
         files: '^test/.*\.test\.ts$'
         entry: /bin/sh -eu -c 'if grep -nE "\b(it|test|describe)\.only\s*\(" "$@"; then echo "forbidden .only found in test file" >&2; exit 1; fi' --
