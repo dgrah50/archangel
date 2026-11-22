@@ -58,6 +58,8 @@
       "src/core/failure-clusters.ts",
       "src/core/replay.ts",
       "src/core/doctor.ts",
+      "src/core/regression-watch.ts",
+      "src/core/verify-setup.ts",
       "src/handoff/paseo.ts",
       "src/core/notifier.ts",
       "src/core/escalations.ts",

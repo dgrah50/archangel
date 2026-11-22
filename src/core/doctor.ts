@@ -8,6 +8,10 @@ import { Secret } from "@sailresearch/sdk";
 import { CODEX_BROKER_ID, CODEX_BROKER_SECRET } from "../compute/codex-broker-adapter.js";
 import { readBrokerState } from "../compute/token-broker.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
+import { GitBroker } from "../broker/git-broker.js";
+import { LocalProvider } from "../compute/local.js";
+import { SandboxExecProvider } from "../compute/sandbox-exec.js";
+import { verifyRepoSetup } from "./verify-setup.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import type { EffectiveWorkflow } from "./workflow.js";
@@ -41,9 +45,33 @@ export interface DoctorOptions {
   apiBaseUrl?: string;
   /** Per-provider version + login-status checks (never invokes a model). */
   smoke?: boolean;
+  /** Dry-run each project's `.agents/setup` from main in a throwaway clone, sandboxed where the machine can. */
+  verifySetup?: boolean;
 }
 
 export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
+  const report = await runChecks(opts);
+  if (!opts.verifySetup) return report;
+  if (report.checks.some((c) => c.id === "config" && c.status === "fail")) return report;
+  const projects = loadProjectConfigs({ configPath: opts.configPath, env: opts.env ?? process.env });
+  for (const cfg of projects) {
+    const paths = resolvePaths(cfg);
+    const name = `Setup dry-run (${cfg.githubOwner}/${cfg.githubRepo})`;
+    try {
+      if (!fs.existsSync(paths.brokerBareRepoPath)) throw new Error("no broker clone yet; start the daemon once so it fetches the repo");
+      const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
+      const sandbox = process.platform === "darwin" ? new SandboxExecProvider(new LocalProvider(broker)) : null;
+      const v = await verifyRepoSetup({ broker, defaultBranch: cfg.defaultBranch, timeoutMs: cfg.setupTimeoutMs, sandbox });
+      report.checks.push({ id: "verify_setup", name, status: v.ok ? "pass" : "fail", detail: v.detail, scope: "repo" });
+    } catch (err) {
+      report.checks.push({ id: "verify_setup", name, status: "fail", detail: err instanceof Error ? err.message : String(err), scope: "repo" });
+    }
+  }
+  report.ok = report.checks.every((c) => c.status !== "fail");
+  return report;
+}
+
+async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   const env = opts.env ?? process.env;
 

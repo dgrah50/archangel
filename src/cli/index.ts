@@ -572,9 +572,10 @@ program
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--offline", "Skip GitHub API and Paseo daemon network checks")
   .option("--smoke", "Also verify each configured subscription CLI is installed and logged in (no model calls)")
+  .option("--verify-setup", "Also dry-run each repo's .agents/setup from main in a throwaway clone (sandboxed on macOS)")
   .option("--json", "Output JSON")
-  .action(async (opts: { config?: string; offline?: boolean; smoke?: boolean; json?: boolean }) => {
-    const report = await runDoctor({ configPath: opts.config, offline: opts.offline, smoke: opts.smoke });
+  .action(async (opts: { config?: string; offline?: boolean; smoke?: boolean; verifySetup?: boolean; json?: boolean }) => {
+    const report = await runDoctor({ configPath: opts.config, offline: opts.offline, smoke: opts.smoke, verifySetup: opts.verifySetup });
     if (opts.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {

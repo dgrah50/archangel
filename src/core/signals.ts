@@ -4,6 +4,7 @@ import { formatDayKey, type Ledger } from "../ledger/store.js";
 import { SIGNAL_KINDS, type SignalKind } from "./signal-kinds.js";
 import { emit } from "./telemetry.js";
 import { ANOMALY_METRICS, anomalyEventId, detectAnomalies, TELEMETRY_SCOUT_EVERY_MS } from "./telemetry-scout.js";
+import { policyRegressions } from "./regression-watch.js";
 import { REPO_RE } from "./telemetry-events.js";
 import { actionAllowed, ruleKey, type SignalRule, type SignalsConfig } from "./signal-rules.js";
 
@@ -11,6 +12,9 @@ import { actionAllowed, ruleKey, type SignalRule, type SignalsConfig } from "./s
 export const SIGNAL_LOOKBACK_MS = 7 * 86_400_000;
 /** An adapter polls GitHub at most this often. */
 export const SIGNAL_POLL_MS = 10 * 60_000;
+
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const COMMIT_RE = /^[0-9a-f]{7,40}$/;
 
 /** Closed payload shapes: numbers, enums and tightly patterned tokens only. Free text from outside (titles, descriptions) never enters a signal. */
 const PAYLOADS = {
@@ -32,6 +36,20 @@ const PAYLOADS = {
       observed: z.number().finite(),
       ratio: z.number().finite(),
       repo: z.string().regex(REPO_RE),
+    })
+    .strict(),
+  policy_regression: z
+    .object({
+      repo: z.string().regex(REPO_RE),
+      workflowSha: z.string().regex(SHA256_RE),
+      promptSha: z.string().regex(SHA256_RE),
+      threads: z.number().int().nonnegative(),
+      reworkRate: z.number().finite(),
+      prevReworkRate: z.number().finite(),
+      reverts: z.number().int().nonnegative(),
+      /** Commit that introduced the workflow file / prompt template version; null when it could not be found. */
+      workflowCommit: z.string().regex(COMMIT_RE).nullable(),
+      promptCommit: z.string().regex(COMMIT_RE).nullable(),
     })
     .strict(),
 } as const satisfies Record<SignalKind, z.ZodType>;
@@ -69,6 +87,8 @@ export async function ingestSignals(opts: {
   schedules: ReadonlyArray<{ name: string; every: "daily" | "weekly" }>;
   now: number;
   onError: (adapter: string, err: unknown) => void;
+  /** The commit that introduced a workflow file or prompt template version, for a regression's revert hint; null when unknown. */
+  introducedBy: (kind: "workflow" | "prompt", sha: string) => Promise<string | null>;
 }): Promise<void> {
   const { ledger, github, now, wanted } = opts;
 
@@ -104,6 +124,28 @@ export async function ingestSignals(opts: {
     } catch (err) {
       opts.onError("telemetry:anomaly", err);
     }
+  }
+
+  // The regression watch reads only the local Ledger. Each flagged policy version is one signal, ever.
+  const regressionMark = ledger.getSignalWatermark("regression_watch");
+  if (!regressionMark || now - regressionMark.polledAt >= TELEMETRY_SCOUT_EVERY_MS) try {
+    for (const r of policyRegressions(ledger, now)) {
+      const { group: g } = r;
+      recordSignal(ledger, "policy_regression", `${g.workflowSha}:${g.promptSha}`, {
+        repo: ledger.repo,
+        workflowSha: g.workflowSha,
+        promptSha: g.promptSha,
+        threads: g.threads,
+        reworkRate: r.reworkRate,
+        prevReworkRate: r.prevReworkRate,
+        reverts: g.reverts,
+        workflowCommit: await opts.introducedBy("workflow", g.workflowSha),
+        promptCommit: await opts.introducedBy("prompt", g.promptSha),
+      }, now);
+    }
+    ledger.setSignalWatermark("regression_watch", now, now);
+  } catch (err) {
+    opts.onError("regression_watch", err);
   }
 
   await poll("github:pr_merged", "pr_merged", async (since) =>
