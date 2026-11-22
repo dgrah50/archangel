@@ -8,6 +8,7 @@ const STARTER = "ownerUserId: 1\nprojects:\n  - repo: owner/name\n";
 
 const TITLE: Record<HostError["kind"], string> = {
   conflict: "archangel.yaml changed on disk since you loaded it.",
+  stale_plan: "The plan or preview expired or no longer matches. Nothing was changed: plan or preview it again.",
   validation: "The change was rejected.",
   forbidden: "Editing is disabled for this dashboard (remote mode, or not wired). Nothing was changed.",
   unauthorized: "This page has no valid token, so it cannot edit. Reload the page from the local dashboard.",
