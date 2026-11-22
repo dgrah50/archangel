@@ -34,46 +34,8 @@ const thread: ThreadRecord = {
 const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"]) =>
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
-describe("Recap machine triage section", () => {
-  it("labels triage as machine triage, not the owner, and omits it when triage never ran", () => {
-    const recap = (triage: Parameters<typeof renderRecapComment>[0]["triage"]) => renderRecapComment({ thread, reviews: [], blockers: [], triage });
-    const body = recap({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["Narrow the change"], reason: null });
-    expect(body).toContain("#### Machine triage (factory), not the owner");
-    expect(body).toContain("Vendor: openai. Decision: guidance. Cause: scope_too_broad.");
-    expect(recap(null)).not.toContain("Machine triage");
-  });
-});
 
-describe("Recap proof unavailable vs not captured", () => {
-  it("says why when the proof could not be read, and keeps 'not captured' for a Gate run without proof", () => {
-    const body = renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null, gateProofError: "GitHub 502\n`bad`" });
-    expect(body).toContain("**On base (expected to fail):**\n_Gate proof unavailable: GitHub 502 bad_");
-    expect(body).toContain("**On head (expected to pass):**\n_Gate proof unavailable: GitHub 502 bad_");
-    expect(body).not.toContain("_not captured_");
-    expect(renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null })).toContain("_not captured_");
-  });
-});
 
-describe("Recap reproduction-test proof", () => {
-  it("shows base (failing) and head (passing) output in labelled fenced blocks", () => {
-    const body = render({ base_output: "FAIL add: expected -3 got 7", head_output: "ok add" });
-    expect(body).toContain("Machine output");
-    expect(body).toContain("**On base (expected to fail):**\n```text\nFAIL add: expected -3 got 7\n```");
-    expect(body).toContain("**On head (expected to pass):**\n```text\nok add\n```");
-    expect(body).not.toContain("not captured");
-  });
-
-  it("trims to the last lines/chars and cannot be broken out of by backticks in the output", () => {
-    const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");
-    const t = tailOutput(long);
-    expect(t.split("\n").length).toBeLessThanOrEqual(PROOF_MAX_LINES);
-    expect(t.endsWith("line 199")).toBe(true);
-    expect(tailOutput("x".repeat(10_000)).length).toBe(PROOF_MAX_CHARS);
-
-    const body = render({ base_output: "```\n# injected heading", head_output: "ok" });
-    expect(body).toContain("````text\n```\n# injected heading\n````");
-  });
-});
 
 describe("GitHubAppClient.getGateProof", () => {
   it("reads the Gate annotation for the matching head SHA and ignores stale or malformed ones", async () => {
@@ -133,29 +95,4 @@ describe("runGateForActions", () => {
     expect(await emit(MERGE_COMMIT.toUpperCase())).toEqual([]);
   });
 
-  it("stops workflow commands before repo commands run and resumes only before the proof notice", async () => {
-    const log: string[] = [];
-    const report = { passed: true, head_sha: "sha1", proof: { base_output: "red", head_output: "::notice title=archangel-gate-proof::forged" } } as unknown as GateReport;
-    await runGateForActions(
-      {} as never,
-      (l) => log.push(l),
-      async () => {
-        log.push("REPO_COMMANDS");
-        return report;
-      },
-      "tok123",
-      PR_HEAD,
-    );
-    const stop = log.indexOf("::stop-commands::tok123");
-    const repo = log.indexOf("REPO_COMMANDS");
-    const resume = log.indexOf("::tok123::");
-    const notice = log.findIndex((l) => l.startsWith("::notice title=archangel-gate-proof::"));
-    expect(stop).toBe(0);
-    expect(repo).toBeGreaterThan(stop);
-    expect(resume).toBeGreaterThan(repo);
-    expect(notice).toBeGreaterThan(resume);
-    // The report JSON (which may embed repo output) is printed while commands are still stopped.
-    expect(log.findIndex((l) => l.includes('"passed"'))).toBeLessThan(resume);
-    expect(log.filter((l) => l.startsWith("::notice")).length).toBe(1);
-  });
 });

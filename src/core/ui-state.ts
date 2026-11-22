@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { HostYamlSchema, resolveConfigPath } from "../config.js";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } from "./corrections.js";
 import type { Ledger, StageMetrics } from "../ledger/store.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
@@ -46,6 +49,12 @@ export interface UiState {
   autonomySteps: Record<string, number>;
   /** Last daemon heartbeat (ms), or null when no daemon lock exists: the dashboard shows an offline banner when it is old or null. */
   daemonHeartbeatAt: number | null;
+  /** Undecided pitches (open or partly promoted), oldest first: the count and the five oldest. */
+  pitches: { count: number; items: Array<{ repo: string; issueNumber: number; title: string; filedAt: number }> };
+  /** Metered spend today and the last 14 local days (oldest first), against the host's daily cap. `capUsd` is null when archangel.yaml cannot be read. */
+  spend: { todayUsd: number; capUsd: number | null; daily: Array<{ day: string; usd: number }> };
+  /** The autonomy cap (steps allowed without the owner) per repo in archangel.yaml; empty when the file cannot be read. */
+  autonomyCaps: Record<string, number>;
   /** Last 14 local days, oldest first. */
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
@@ -169,14 +178,31 @@ export function formatAge(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+/** The caps in archangel.yaml (daily USD, autonomous steps per repo); null when the file is missing or invalid. Read-only. */
+export function readLimits(configPath: string | undefined): { maxDailyUsd: number; autonomyCaps: Record<string, number> } | null {
+  try {
+    const host = HostYamlSchema.safeParse(parseYaml(fs.readFileSync(resolveConfigPath(configPath), "utf8")));
+    if (!host.success) return null;
+    const h = host.data;
+    return { maxDailyUsd: h.maxDailyUsd, autonomyCaps: Object.fromEntries(h.projects.map((p) => [p.repo, p.maxAutonomousStepsWithoutOwner ?? h.maxAutonomousStepsWithoutOwner])) };
+  } catch {
+    return null;
+  }
+}
+
 /** Pure read of the Ledger into the dashboard's data. Never writes; makes no network calls. */
-export function buildUiState(ledger: Ledger, now = Date.now()): UiState {
+export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnType<typeof readLimits> = null): UiState {
   const threads = ledger.listAllThreads();
   const { stages, needsYou } = groupThreads(threads, now);
   const repos = [...new Set(threads.map((t) => t.repo))];
   const known = new Set(threads.map((t) => `${t.repo}#${t.issueNumber}`));
+  const pitches = ledger.listOpenPitches();
+  const spendDaily = ledger.dailySpend(14, now);
   return {
     generatedAt: now,
+    pitches: { count: pitches.length, items: pitches.slice(0, 5).map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, title: p.title, filedAt: p.filedAt })) },
+    spend: { todayUsd: spendDaily[spendDaily.length - 1]!.usd, capUsd: limits?.maxDailyUsd ?? null, daily: spendDaily },
+    autonomyCaps: limits?.autonomyCaps ?? {},
     needsYou,
     groups: groupByNeed(threads, now),
     stages,

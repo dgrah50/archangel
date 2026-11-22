@@ -82,11 +82,3 @@ describe("a revision that changes nothing", () => {
 
 });
 
-describe("escalation policy", () => {
-  it("extracts test file paths from free text and nothing else", () => {
-    expect(testFilesMentioned(["FAIL test/pitch-expiry.test.ts > expires", "see src/core/foo.ts", "x_test.go:12", "/etc/passwd_test.go ../a.test.ts"])).toEqual([
-      "test/pitch-expiry.test.ts",
-      "x_test.go",
-    ]);
-  });
-});

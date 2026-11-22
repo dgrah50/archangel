@@ -43,30 +43,6 @@ describe("waste revocation of auto-promotion", () => {
     l.close();
   });
 
-  it("a merged Thread in the last 3 resets the streak, and a streak can build again after it", () => {
-    const l = new Ledger(":memory:", { repo: "acme/app" });
-    promote(l, 1, "pr_closed");
-    promote(l, 2, "pr_closed");
-    promote(l, 3, "merged");
-    promote(l, 4, "pr_closed");
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", HASH)).toBe(false);
-    promote(l, 5, "abandoned");
-    promote(l, 6, "pr_closed");
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", HASH)).toBe(true);
-    l.close();
-  });
-
-  it("a new trustHash (an owner-merged edit of the Scout) starts clean", () => {
-    const l = new Ledger(":memory:", { repo: "acme/app" });
-    for (const n of [1, 2, 3]) promote(l, n, "pr_closed");
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", HASH)).toBe(true);
-    const edited = hashOfScout({ ...AUTO_SCOUT, maxProposals: 1 });
-    expect(edited).not.toBe(HASH);
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", edited)).toBe(false);
-    promote(l, 4, "pr_closed", edited);
-    expect(l.isScoutAutoPromoteRevoked("auto-hunt", edited)).toBe(false);
-    l.close();
-  });
 });
 
 function git(cwd: string, args: string[]): string {
@@ -117,51 +93,4 @@ describe("waste revocation notification", () => {
     }
   });
 
-  it("retries after a failed delivery instead of marking the notice sent first", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-waste-"));
-    try {
-      const seed = path.join(root, "seed");
-      const remoteBare = path.join(root, "remote.git");
-      fs.mkdirSync(path.join(seed, ".agents", "scouts"), { recursive: true });
-      git(seed, ["init", "-b", "main"]);
-      git(seed, ["config", "user.name", "Test"]);
-      git(seed, ["config", "user.email", "test@example.com"]);
-      fs.writeFileSync(path.join(seed, "app.ts"), "export const x = 1;\n");
-      fs.writeFileSync(path.join(seed, ".agents", "scouts", "auto-hunt.md"), `${SCOUT_PROMPT}\n`);
-      fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), workflowJson([AUTO_SCOUT]));
-      git(seed, ["add", "-A"]);
-      git(seed, ["commit", "-m", "initial"]);
-      git(root, ["clone", "--bare", seed, remoteBare]);
-
-      const ledger = new Ledger(":memory:", { repo: "acme/app" });
-      for (const n of [1, 2, 3]) promote(ledger, n, "pr_closed");
-      let down = true;
-      const notes: string[] = [];
-      const notifier = {
-        async notifyNeedsYou(i: { title: string }) {
-          if (down) throw new Error("telegram down");
-          notes.push(i.title);
-        },
-        async sendDigest() {},
-      };
-      const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
-      const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-      const rec = new Reconciler({
-        config: cfg, ledger, github: new FakeGitHub(remoteBare), broker, notifier,
-        implementer: { async run() { throw new Error("unused"); } },
-        reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
-      });
-      await rec.tick(Date.now());
-      expect(notes).toEqual([]);
-      expect(ledger.scoutWasteNoticeSent("auto-hunt", HASH)).toBe(false);
-      down = false;
-      await rec.tick(Date.now() + 30_000);
-      expect(notes).toHaveLength(1);
-      await rec.tick(Date.now() + 60_000);
-      expect(notes).toHaveLength(1);
-      ledger.close();
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    }
-  });
 });

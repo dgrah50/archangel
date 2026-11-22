@@ -1266,6 +1266,15 @@ export class Ledger {
     return { spentUsd, reservedUsd, committedUsd: spentUsd + reservedUsd };
   }
 
+  /** Metered USD spent on each of the last `days` local days, oldest first (read-only; days with no row are 0). */
+  dailySpend(days: number, now: number): Array<{ day: string; usd: number }> {
+    const q = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`);
+    return Array.from({ length: days }, (_, i) => {
+      const day = formatDayKey(now - (days - 1 - i) * 86_400_000, this.timeZone);
+      return { day, usd: (q.get(day) as { usd: number } | undefined)?.usd ?? 0 };
+    });
+  }
+
   getSpendToday(now = Date.now()): number {
     return this.getSpendBreakdown(now).spentUsd;
   }
@@ -1897,15 +1906,16 @@ export class Ledger {
   }
 
   /** Undecided pitches across every repo, oldest first, for the daily digest. */
-  listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; filedAt: number }> {
+  listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; title: string; filedAt: number }> {
     return (
-      this.db.prepare(`SELECT repo, issue_number, scout_name, filed_at FROM pitches WHERE state IN ('open', 'partially_promoted') ORDER BY filed_at ASC`).all() as Array<{
+      this.db.prepare(`SELECT repo, issue_number, scout_name, title, filed_at FROM pitches WHERE state IN ('open', 'partially_promoted') ORDER BY filed_at ASC`).all() as Array<{
         repo: string;
         issue_number: number;
         scout_name: string;
+        title: string;
         filed_at: number;
       }>
-    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, filedAt: r.filed_at }));
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, title: r.title, filedAt: r.filed_at }));
   }
 
   /**
