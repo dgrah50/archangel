@@ -34,6 +34,23 @@ const thread: ThreadRecord = {
 const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"]) =>
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
+describe("Recap machine triage section", () => {
+  const recap = (triage: Parameters<typeof renderRecapComment>[0]["triage"]) => renderRecapComment({ thread, reviews: [], blockers: [], triage });
+  it("labels guidance as machine triage, not the owner, with vendor, decision, cause and steps", () => {
+    const body = recap({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["Narrow the change", "Keep `a.go`"], reason: null });
+    expect(body).toContain("#### Machine triage (factory), not the owner");
+    expect(body).toContain("Vendor: openai. Decision: guidance. Cause: scope_too_broad.");
+    expect(body).toContain("```text\n1. Narrow the change\n2. Keep `a.go`\n```".replace("`a.go`", "`a.go`"));
+  });
+  it("shows an escalation as escalated with its reason, and nothing when triage never ran", () => {
+    const body = recap({ vendor: "anthropic", action: "escalate", cause: "veto_disputed", steps: [], reason: "the veto looks wrong" });
+    expect(body).toContain("Decision: escalated. Cause: veto_disputed.");
+    expect(body).toContain("the veto looks wrong");
+    expect(recap(null)).not.toContain("Machine triage");
+    expect(recap(undefined)).not.toContain("Machine triage");
+  });
+});
+
 describe("Recap proof unavailable vs not captured", () => {
   it("says why when the proof could not be read, and keeps 'not captured' for a Gate run without proof", () => {
     const body = renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null, gateProofError: "GitHub 502\n`bad`" });

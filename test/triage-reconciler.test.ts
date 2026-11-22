@@ -131,6 +131,28 @@ describe("triage outcomes", () => {
     }
   });
 
+  it("records what triage decided in the audit row the Recap reads", async () => {
+    const w = world();
+    try {
+      w.review("openai", "veto");
+      w.escalate();
+      await w.triage();
+      expect(w.ledger.latestTriage(4)).toEqual({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["In `app.go` remove the extra branch"], reason: null });
+      expect(w.ledger.latestTriage(99)).toBeNull();
+    } finally {
+      w.cleanup();
+    }
+    const e = world({ invoker: async () => ({ ...GOOD, decision: "escalate", cause: "findings_conflict", escalateReason: "the reviewers disagree" }) });
+    try {
+      e.review("openai", "veto");
+      e.escalate();
+      await e.triage();
+      expect(e.ledger.latestTriage(4)).toMatchObject({ action: "escalate", cause: "findings_conflict", steps: [], reason: expect.stringContaining("the reviewers disagree") });
+    } finally {
+      e.cleanup();
+    }
+  });
+
   it("an escalate answer releases the Needs You with the triage reason attached, and spends no retry", async () => {
     const w = world({ invoker: async () => ({ ...GOOD, decision: "escalate", cause: "findings_conflict", escalateReason: "the reviewers disagree on the contract" }) });
     try {
