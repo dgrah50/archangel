@@ -196,6 +196,12 @@ export const MAIN_ESCALATION_POLICY = {
     recommendation:
       "Archangel could not confirm main's CI result for this merge. Check the default branch's checks by hand; nothing is retried automatically.",
   },
+  fix_forward_ready: {
+    decisionClass: "live_infrastructure",
+    short: "recommends choosing the fix-forward or the revert",
+    recommendation:
+      "A fix-forward PR for the red main is green and passed the Gate, and the revert PR has not merged. Merge the fix-forward PR, or let the revert land (merge the revert PR); the daemon merges neither and closes the fix-forward if the revert lands first.",
+  },
   red_main_manual: {
     decisionClass: "live_infrastructure",
     short: "recommends reverting or fixing forward by hand",

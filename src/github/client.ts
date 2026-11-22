@@ -509,7 +509,9 @@ export class GitHubAppClient implements GitHubClient {
 
     const parsed = runs.map((cr) => {
       const app = (cr.app ?? {}) as { slug?: string };
+      const out = (cr.output ?? {}) as { title?: string | null; summary?: string | null; text?: string | null };
       return {
+        output: [out.title, out.summary, out.text].filter((x): x is string => Boolean(x)).join("\n").slice(0, 6000),
         id: Number(cr.id),
         name: String(cr.name ?? ""),
         status: String(cr.status ?? "queued") as CheckStatus["status"],
