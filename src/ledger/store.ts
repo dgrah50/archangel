@@ -2079,10 +2079,15 @@ export class Ledger {
     return (this.db.prepare(`SELECT * FROM pitch_pocs ORDER BY rowid`).all() as PocDbRow[]).map(toPocRow);
   }
 
-  recordPitchAttachment(input: { issueNumber: number; sha256: string; kind: "repo"; mime: string; width: number; height: number; bytes: number; caption: string; source: string; now?: number; repo?: string }): void {
+  recordPitchAttachment(input: { issueNumber: number; sha256: string; kind: "repo" | "capture"; mime: string; width: number; height: number; bytes: number; caption: string; source: string; now?: number; repo?: string }): void {
     this.db
       .prepare(`INSERT OR IGNORE INTO pitch_attachments (repo, issue_number, sha256, kind, mime, width, height, bytes, caption, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(input.repo ?? this.repo, input.issueNumber, input.sha256, input.kind, input.mime, input.width, input.height, input.bytes, input.caption, input.source, input.now ?? Date.now());
+  }
+
+  /** A new preview run replaces the old screenshots of the pitch (the files stay: they are content-addressed). */
+  clearPitchCaptures(issueNumber: number, repo = this.repo): void {
+    this.db.prepare(`DELETE FROM pitch_attachments WHERE repo = ? AND issue_number = ? AND kind = 'capture'`).run(repo, issueNumber);
   }
 
   listPitchAttachments(): Array<{ repo: string; issueNumber: number; sha256: string; kind: string; mime: string; width: number; height: number; caption: string; source: string }> {

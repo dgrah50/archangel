@@ -89,6 +89,7 @@
       "src/core/signal-rules.ts",
       "src/core/poc-machine.ts",
       "src/core/pitch-poc.ts",
+      "src/core/pitch-preview.ts",
       "src/core/pitch-diagram.ts"
     ],
     "testDataGlobs": [

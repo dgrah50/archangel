@@ -138,7 +138,7 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
       {row.attachments.length > 0 ? <Pictures items={row.attachments} /> : null}
       {row.pitch.changeDiagram ? <ChangeDiagramBlock diagram={row.pitch.changeDiagram} /> : null}
       {row.pitch.estimates.length > 0 ? <Estimates items={row.pitch.estimates} /> : null}
-      <TryIt row={row} d={d} />
+      <TryIt row={row} d={d} now={now} />
       <Flex gap="10" direction={{ base: "column", xl: "row" }}>
         <Flex direction="column" gap="4" flex="1" minW="0">
           <Field label="The problem">{p.problem}</Field>
@@ -267,8 +267,15 @@ const POC_FAILURES: Record<string, string> = {
   internal: "something went wrong inside Archangel",
 };
 
-/** The proof-of-concept state in plain words. Nothing runs a PoC yet, so there is no preview to open: only the build, its size and how to ask for one. */
-function TryIt({ row, d }: { row: PitchRow; d: PitchesState }) {
+const STOPPED: Record<string, string> = {
+  ttl: "it reached its 60 minute limit",
+  idle: "nobody used it for 15 minutes",
+  owner: "you stopped it",
+  restart: "the runner went away",
+};
+
+/** The proof-of-concept state in plain words. Starting a preview stays a command to copy; the page only shows that one runs and links to it. */
+function TryIt({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }) {
   const poc = row.poc;
   const used = poc === null ? 0 : poc.builds;
   const left = d.pocMaxBuildsPerPitch - used;
@@ -291,9 +298,21 @@ function TryIt({ row, d }: { row: PitchRow; d: PitchesState }) {
           {ask}
         </>
       ) : null}
-      {poc?.state.kind === "ready" ? (
+      {poc?.state.kind === "running" && poc.previewUrl ? (
+        <Flex direction="column" gap="2" align="flex-start">
+          <Text textStyle="body13" color="fg">
+            Running in a sandbox with no network except this machine. Expires in {Math.max(0, Math.ceil((poc.state.expiresAt - now) / 60_000))} min.
+          </Text>
+          <LinkButton href={poc.previewUrl} primary external>
+            Open preview
+          </LinkButton>
+        </Flex>
+      ) : null}
+      {poc?.state.kind === "ready" || poc?.state.kind === "stopped" ? (
         <>
+          {poc.state.kind === "stopped" ? <Text textStyle="body13" color="fg">The preview stopped: {STOPPED[poc.state.reason]}. The screenshots are kept.</Text> : null}
           <Text textStyle="body13" color="fg">A PoC is built, {poc.builds} of {d.pocMaxBuildsPerPitch} builds used. It is the local ref <Text as="span" textStyle="ref">refs/pitch-poc/{row.issueNumber}</Text> and was never pushed.</Text>
+          {row.hasPreview ? <CopyCommand command={`archangel pitch preview ${row.repo} ${row.issueNumber}`} /> : null}
           {poc.diffStat ? <Box as="pre" textStyle="ref" color="fg.muted" borderWidth="1px" borderColor="border" p="3" overflowX="auto">{poc.diffStat}</Box> : null}
           {left > 0 ? ask : null}
         </>
@@ -308,16 +327,17 @@ const assetUrl = (a: PitchAttachment) => `/api/pitch-asset/${a.sha256}`;
 /** Host-validated images from the repo. Only the stored image is shown, by its hash; captions and paths are React text. */
 function Pictures({ items }: { items: PitchAttachment[] }) {
   const [open, setOpen] = useState<number | null>(null);
-  const paths = [...new Set(items.map((a) => a.path))];
+  const paths = [...new Set(items.filter((a) => a.kind === "repo").map((a) => a.path))];
   return (
     <Section gap="3">
       <Flex gap="10" direction={{ base: "column", xl: "row" }} justify="space-between">
         <Box minW="0" maxW="320px">
           <Text textStyle="body13" color="fg.subtle">Pictures, {items.length}</Text>
-          <Text textStyle="meta" color="fg.muted" mt="1">From the repo</Text>
+          {paths.length > 0 ? <Text textStyle="meta" color="fg.muted" mt="1">From the repo</Text> : null}
           {paths.map((path) => (
             <Text key={path} textStyle="ref" color="fg.muted" wordBreak="break-all">{path}</Text>
           ))}
+          {items.some((a) => a.kind === "capture") ? <Text textStyle="meta" color="fg.muted" mt="1">Screenshot taken by Archangel</Text> : null}
         </Box>
         <Flex gap="4" wrap="wrap" align="flex-start">
           {items.map((a, i) => (

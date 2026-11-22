@@ -429,13 +429,13 @@ CREATE TABLE IF NOT EXISTS pitch_attachments (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
   sha256 TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('repo')),
+  kind TEXT NOT NULL CHECK (kind IN ('repo','capture')),
   mime TEXT NOT NULL CHECK (mime IN ('image/png','image/jpeg','image/webp')),
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
   bytes INTEGER NOT NULL,
   caption TEXT NOT NULL,
-  -- repo: "<path>@<mainSha>"
+  -- repo: "<path>@<mainSha>"; capture: "<path>@<pocHeadSha>"
   source TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number, sha256)
