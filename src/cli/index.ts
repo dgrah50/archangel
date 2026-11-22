@@ -14,6 +14,7 @@ import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
+import { gateBump } from "../core/gate-pin.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { renderStages } from "../core/status-text.js";
@@ -520,6 +521,21 @@ program
     } finally {
       ledger.close();
     }
+  });
+
+program
+  .command("gate-bump")
+  .description("Open one PR per watched repo whose Gate workflow pin or template has drifted, with your gh CLI (never merged by this command)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--repo <owner/name>", "Only this repo")
+  .option("--all", "Every project in archangel.yaml")
+  .option("--dry-run", "Report drift and change nothing")
+  .action(async (opts: { config?: string; repo?: string; all?: boolean; dryRun?: boolean }) => {
+    if (!opts.repo === !opts.all) throw new Error("Pass exactly one of --repo <owner/name> or --all");
+    const repos = opts.repo
+      ? [opts.repo]
+      : loadProjectConfigs({ configPath: opts.config }).map((c) => `${c.githubOwner}/${c.githubRepo}`);
+    await gateBump(execRunner, repos, { dryRun: opts.dryRun });
   });
 
 program
