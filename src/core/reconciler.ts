@@ -285,8 +285,9 @@ export class Reconciler {
     // 4b. Pitch housekeeping: record decisions and close pitches nobody decided in 14 days (only when any is open).
     if (this.ledger.countOpenPitches() > 0) {
       try {
-        await syncPitchDecisions(this.ledger, this.github, this.cfg, now);
-        await expireStalePitches(this.ledger, this.github, this.cfg, now, (event, msg) => this.logger.warn(event, msg, { repo: this.ledger.repo }));
+        const log = (event: string, msg: string) => this.logger.warn(event, msg, { repo: this.ledger.repo });
+        await syncPitchDecisions(this.ledger, this.github, this.cfg, now, log);
+        await expireStalePitches(this.ledger, this.github, this.cfg, now, log);
       } catch (err) {
         this.logger.warn("pitch/housekeeping_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
       }

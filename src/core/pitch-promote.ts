@@ -105,11 +105,17 @@ export async function promotePitch(
   } catch (err) {
     if (created.length === 0) throw err;
     // Some owner-authored issues already exist. Mark the pitch decided so a rerun cannot duplicate them, and say what is left.
-    await chainSlices(runner, ledger, input, created);
+    // Record first: chaining runs gh again and may itself fail, which must not skip the record (a rerun would duplicate issues).
     markSlices(ledger, input.issue, indexes.slice(0, created.length), pitch.slices.length, input.now);
     ledger.appendAudit("pitch/promoted", input.issue, "owner", { features: created, slices: indexes.slice(0, created.length), partial: true }, input.now);
+    let chainNote = "";
+    try {
+      await chainSlices(runner, ledger, input, created);
+    } catch (chainErr) {
+      chainNote = ` Chaining the created issues also failed (${chainErr instanceof Error ? chainErr.message : String(chainErr)}); add ${input.labels.readyForAgent} to them yourself.`;
+    }
     throw new Error(
-      `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Those slices are marked promoted and the pitch is left open; rerun to promote the remaining slices.`,
+      `Created ${created.map((n) => `#${n}`).join(", ")} but then failed (${err instanceof Error ? err.message : String(err)}). Those slices are marked promoted and the pitch is left open; rerun to promote the remaining slices.${chainNote}`,
     );
   }
   await chainSlices(runner, ledger, input, created);
