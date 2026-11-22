@@ -121,3 +121,8 @@ export function createSailProvider(opts: { sail: SailConfig; broker: GitBroker; 
     spend: new SailSpend(path.join(opts.dataDir, "sail-spend.json")),
   });
 }
+
+/** Where claude Attempts (implement, revise, rebase) run remotely: Sail only when asked for with `remoteClaudeAttempts`, and only with the subscription CLI (the API-mode SDK runs on this machine). */
+export function remoteAttemptProvider<P>(cfg: { authMode: string; compute: ComputeConfig }, sail: P | undefined): P | undefined {
+  return cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.remoteClaudeAttempts ? sail : undefined;
+}

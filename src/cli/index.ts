@@ -37,7 +37,7 @@ import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
-import { createSailProvider } from "../compute/sail-sdk.js";
+import { createSailProvider, remoteAttemptProvider } from "../compute/sail-sdk.js";
 import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -237,6 +237,7 @@ program
         logger,
         workerId: daemonOwnerId,
         scoutCompute,
+        remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"

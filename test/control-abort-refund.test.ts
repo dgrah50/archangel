@@ -40,9 +40,9 @@ describe("an Attempt aborted for control does not consume attempt budget", () =>
     const implementer: Implementer = {
       async run(input) {
         runs++;
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), `package demo\n\nfunc Val() int { return ${10 + runs} }\n`);
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", `attempt ${runs}`]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), `package demo\n\nfunc Val() int { return ${10 + runs} }\n`);
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", `attempt ${runs}`]);
         // The owner pauses the factory while the Attempt is running: caught by the check right before the push.
         github.issues.get(7)!.labels.push("factory:paused");
         return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };

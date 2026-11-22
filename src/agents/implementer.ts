@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+import type { WorkspaceHandle } from "../compute/lazy-workspace.js";
 import type { WriterRole } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 
 export interface ImplementInput {
   issueNumber: number;
-  cloneDir: string;
+  /** Where the agent may run. Each chain entry runs in exactly one of them: claude in `remote` when there is one, everything else in `local`. */
+  workspaces: { local: WorkspaceHandle; remote?: WorkspaceHandle };
   prompt: string;
   abortController: AbortController;
   maxTurns: number;
@@ -31,6 +33,8 @@ export interface ImplementResult {
   durationMs?: number;
   peakRssKb?: number;
   /** The provider and model that produced this result (replay provenance); absent when none finished. */
+  /** Which workspace the last agent run used; the caller collects from it. Absent means `local`. */
+  ranOn?: "local" | "remote";
   runBy?: { provider: string; model: string | null; accountId?: string };
 }
 
@@ -118,7 +122,7 @@ export class ClaudeSdkImplementer implements Implementer {
       const stream = query({
         prompt: input.prompt,
         options: {
-          cwd: input.cloneDir,
+          cwd: (await input.workspaces.local.workspace()).path,
           model: this.opts.model,
           env: scrubbedEnv,
           abortController: input.abortController,

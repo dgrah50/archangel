@@ -1,3 +1,4 @@
+import { localAt } from "./helpers/local-workspaces.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -33,7 +34,7 @@ describe("implementer vendor tracking across failover", () => {
       });
       const res = await impl.run({
         issueNumber: 1,
-        cloneDir: repo,
+        workspaces: localAt(repo),
         prompt: "fix",
         abortController: new AbortController(),
         maxTurns: 1,

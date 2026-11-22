@@ -58,7 +58,7 @@ describe("pitch proof of concept", () => {
       expect(ledger.reservePocBuild(7).ok).toBe(true);
       const implementer: Implementer = {
         async run(input) {
-          fs.writeFileSync(path.join(input.cloneDir, "watch.ts"), "export const watch = true;\n");
+          fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "watch.ts"), "export const watch = true;\n");
           return { summary: "done", costUsd: 0.1, transcriptPath: null, aborted: false };
         },
       };

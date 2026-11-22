@@ -1,3 +1,4 @@
+import { localAt } from "./helpers/local-workspaces.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,7 +47,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
 
       const res = await impl.run({
         issueNumber: 13,
-        cloneDir: repo,
+        workspaces: localAt(repo),
         prompt: "Fix SSH_CONNECTION",
         abortController: new AbortController(),
         maxTurns: 10,
@@ -67,7 +68,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       seenPrompts.length = 0;
       const res2 = await impl.run({
         issueNumber: 15,
-        cloneDir: repo,
+        workspaces: localAt(repo),
         prompt: "Fix next bug",
         abortController: new AbortController(),
         maxTurns: 10,
@@ -96,7 +97,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       await expect(
         failFast.run({
           issueNumber: 14,
-          cloneDir: repo,
+          workspaces: localAt(repo),
           prompt: "Fix bug",
           abortController: new AbortController(),
           maxTurns: 10,
@@ -124,7 +125,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       const make = (invoker: ConstructorParameters<typeof SubscriptionImplementer>[0]["invoker"]) =>
         new SubscriptionImplementer({ chains: { implement: chain, revise: chain, rebase: chain }, transcriptsDir: path.join(tmp, "t"), networkRetryWaitMs: 0, invoker });
       const run = (impl: SubscriptionImplementer) =>
-        impl.run({ issueNumber: 1, cloneDir: repo, prompt: "Fix", abortController: new AbortController(), maxTurns: 10, timeoutMs: 10_000, maxBudgetUsd: 5, role: "implement" as const });
+        impl.run({ issueNumber: 1, workspaces: localAt(repo), prompt: "Fix", abortController: new AbortController(), maxTurns: 10, timeoutMs: 10_000, maxBudgetUsd: 5, role: "implement" as const });
 
       let calls = 0;
       const dropped = make(async () => {

@@ -114,6 +114,8 @@ export interface AttemptRecord {
   model: string | null;
   /** Which configured account (login) ran it; null for rows from before accounts. */
   accountId: string | null;
+  /** Where the agent ran: "local" or "sail"; null for rows from before it was recorded. */
+  compute: string | null;
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;
   workflowSha256: string | null;
@@ -263,6 +265,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   provider TEXT,
   model TEXT,
   account_id TEXT,
+  compute TEXT,
   prompt_sha256 TEXT,
   workflow_sha256 TEXT,
   duration_ms INTEGER,

@@ -85,6 +85,8 @@ export interface ListedPreview {
 }
 
 export interface ComputeProvider {
+  /** True when the workspace is on another machine: host credentials must never be passed to `exec`, and the workspace path does not exist here. */
+  readonly remote?: boolean;
   prepare(spec: PrepareSpec): Promise<Workspace>;
   /** Rejects only when the command cannot be started; a non-zero exit, a timeout and an abort are results. */
   exec(ws: Workspace, spec: ExecSpec): Promise<ExecResult>;

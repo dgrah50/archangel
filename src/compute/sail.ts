@@ -82,6 +82,7 @@ export interface SailProviderOptions {
 const sh = (script: string): string[] => ["bash", "-c", `set -e; ${script}`];
 
 export class SailProvider implements ComputeProvider {
+  readonly remote = true;
   /** Boxes this process prepared and has not destroyed: the live Attempts that own a box. */
   private readonly live = new Set<string>();
   private readonly startedAt = new Map<string, number>();

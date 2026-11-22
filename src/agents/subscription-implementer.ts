@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { execInGroup } from "../compute/local.js";
+import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -118,7 +117,8 @@ export type CliInvoker = (input: {
   model?: string;
   /** The login this run uses (its home is passed to the CLI); absent means the CLI's default home. */
   account?: Account;
-  cloneDir: string;
+  compute: ComputeProvider;
+  workspace: Workspace;
   prompt: string;
   abortController: AbortController;
   timeoutMs: number;
@@ -139,21 +139,24 @@ export interface SubscriptionImplementerOptions {
   logger?: Logger;
 }
 
-async function defaultCliInvoker(input: {
-  provider: CliProvider;
-  model?: string;
-  account?: Account;
-  cloneDir: string;
-  prompt: string;
-  abortController: AbortController;
-  timeoutMs: number;
-  goCacheDir: string;
-  outputFile: string;
-}): Promise<CliExecResult> {
+const REMOTE_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+function remoteEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: REMOTE_PATH,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    DISABLE_TELEMETRY: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+}
+
+function localEnv(input: { account?: Account; goCacheDir: string }): NodeJS.ProcessEnv {
   const realHome = os.homedir();
   const defaultGoModCache = process.env.GOMODCACHE ?? path.join(realHome, "go", "pkg", "mod");
   // Preserve native CLI login home so subscription OAuth works, while scrubbing GitHub/API tokens & isolating GOCACHE.
-  const env: NodeJS.ProcessEnv = {
+  return {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
     HOME: realHome,
     USER: process.env.USER,
@@ -168,6 +171,23 @@ async function defaultCliInvoker(input: {
     // The one passthrough for a second login: this account's config dir (nothing else from the host env).
     ...accountEnv(input.account),
   };
+}
+
+async function defaultCliInvoker(input: {
+  provider: CliProvider;
+  model?: string;
+  account?: Account;
+  compute: ComputeProvider;
+  workspace: Workspace;
+  prompt: string;
+  abortController: AbortController;
+  timeoutMs: number;
+  goCacheDir: string;
+  outputFile: string;
+}): Promise<CliExecResult> {
+  // A remote box gets no host env at all: its only login is the placeholder CLAUDE_CODE_OAUTH_TOKEN the egress policy provides.
+  const env: NodeJS.ProcessEnv = input.compute.remote ? remoteEnv() : localEnv(input);
+  const cloneDir = input.workspace.path;
 
   let bin: string;
   let args: string[];
@@ -184,7 +204,7 @@ async function defaultCliInvoker(input: {
       "--ephemeral",
       "--json",
       "-C",
-      input.cloneDir,
+      cloneDir,
       "-o",
       input.outputFile,
       ...(input.model ? ["-m", input.model] : []),
@@ -221,7 +241,7 @@ async function defaultCliInvoker(input: {
   }
 
   const { abortController, provider, timeoutMs } = input;
-  const res = await execInGroup(input.cloneDir, {
+  const res = await input.compute.exec(input.workspace, {
     cmd: bin,
     args,
     env,
@@ -260,32 +280,43 @@ function extractErrorEnvelope(stdout: string): string {
   return "";
 }
 
-function mayHaveMutated(cloneDir: string, headBefore: string | null): boolean {
+/** Runs git in the Attempt's workspace through its provider; stdout, or a throw on a non-zero exit. */
+async function gitIn(input: { compute: ComputeProvider; workspace: Workspace }, args: string[]): Promise<string> {
+  const res = await input.compute.exec(input.workspace, {
+    cmd: "git",
+    args,
+    env: { PATH: input.compute.remote ? REMOTE_PATH : (process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    timeoutMs: 60_000,
+  });
+  if (res.code !== 0) throw new Error(`git ${args[0]} exited ${res.code}: ${res.stderr.trim().slice(-200)}`);
+  return res.stdout.trim();
+}
+
+type WorkspaceInput = { compute: ComputeProvider; workspace: Workspace };
+
+async function mayHaveMutated(input: WorkspaceInput, headBefore: string | null): Promise<boolean> {
   try {
-    if (execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0) return true;
-    return headBefore === null || execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim() !== headBefore;
+    if ((await gitIn(input, ["status", "--porcelain"])).length > 0) return true;
+    return headBefore === null || (await gitIn(input, ["rev-parse", "HEAD"])) !== headBefore;
   } catch (_err) {
     // Fail closed: an uninspectable workspace may have been mutated, so the vendor must stay disqualified from reviewing.
     return true;
   }
 }
 
-function headSha(cloneDir: string): string | null {
+async function headSha(input: WorkspaceInput): Promise<string | null> {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
+    return await gitIn(input, ["rev-parse", "HEAD"]);
   } catch (_err) {
     return null;
   }
 }
 
-function captureWorkspaceContinuityContext(cloneDir: string): string {
+async function captureWorkspaceContinuityContext(input: WorkspaceInput): Promise<string> {
   try {
-    const status = execFileSync("git", ["status", "--short"], { cwd: cloneDir, encoding: "utf8" }).trim();
-    const diffStat = execFileSync("git", ["diff", "--stat"], { cwd: cloneDir, encoding: "utf8" }).trim();
-    const recentCommits = execFileSync("git", ["log", "-n", "3", "--oneline"], {
-      cwd: cloneDir,
-      encoding: "utf8",
-    }).trim();
+    const status = await gitIn(input, ["status", "--short"]);
+    const diffStat = await gitIn(input, ["diff", "--stat"]);
+    const recentCommits = await gitIn(input, ["log", "-n", "3", "--oneline"]);
     return [
       "--- CONTINUITY HANDOFF CONTEXT (previous provider hit rate/quota limit) ---",
       `Recent commits:\n${recentCommits || "(none)"}`,
@@ -394,7 +425,6 @@ export class SubscriptionImplementer implements Implementer {
           tried.add(account.id);
           const i = runIndex++;
           const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
-          const prompt = i === 0 ? input.prompt : `${captureWorkspaceContinuityContext(input.cloneDir)}\n\n${input.prompt}`;
           const label = `${entry.provider}${entry.model ? ` (${entry.model})` : ""} [${account.id}]`;
 
           this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { issue: input.issueNumber });
@@ -403,12 +433,17 @@ export class SubscriptionImplementer implements Implementer {
             `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, account: account.id, ts: Date.now() })}\n`,
           );
 
-          const headBefore = headSha(input.cloneDir);
+          // Placement is by capability, never failover: only claude can run on a remote box (its token is injected there); codex and agy keep their local logins.
+          const ranOn: "local" | "remote" = entry.provider === "claude" && input.workspaces.remote ? "remote" : "local";
+          const handle = input.workspaces[ranOn]!;
+          const placed = { compute: handle.compute, workspace: await handle.workspace() };
+          const prompt = i === 0 ? input.prompt : `${await captureWorkspaceContinuityContext(placed)}\n\n${input.prompt}`;
+          const headBefore = await headSha(placed);
           const res = await this.invoker({
             provider: entry.provider,
             model: entry.model,
             account,
-            cloneDir: input.cloneDir,
+            ...placed,
             prompt,
             abortController: input.abortController,
             timeoutMs: input.timeoutMs,
@@ -437,10 +472,10 @@ export class SubscriptionImplementer implements Implementer {
           );
 
           if (res.aborted) {
-            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
+            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ranOn, ...measured() };
           }
 
-          const mutated = mayHaveMutated(input.cloneDir, headBefore);
+          const mutated = await mayHaveMutated(placed, headBefore);
           const reason = res.code === 0 ? exitZeroFailure(res, mutated) : classifyCliFailure(res);
 
           if (reason === null) {
@@ -452,6 +487,7 @@ export class SubscriptionImplementer implements Implementer {
               transcriptPath,
               aborted: false,
               providersUsed,
+              ranOn,
               runBy: { provider: entry.provider, model: entry.model ?? null, accountId: account.id },
               ...measured(),
             };
@@ -476,7 +512,7 @@ export class SubscriptionImplementer implements Implementer {
               `${JSON.stringify({ event: "network_retry", account: account.id, waitMs: this.networkRetryWaitMs, ts: Date.now() })}\n`,
             );
             await abortableSleep(this.networkRetryWaitMs, input.abortController.signal);
-            if (input.abortController.signal.aborted) return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
+            if (input.abortController.signal.aborted) return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ranOn, ...measured() };
             tried.delete(account.id);
             continue;
           }
