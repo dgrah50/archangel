@@ -1,0 +1,63 @@
+/**
+ * Where an Attempt's untrusted work runs. Today only LocalProvider exists (a throwaway clone and a child process on
+ * this machine); a remote ephemeral-VM provider plugs into the same four calls. The caller builds the env and the
+ * argv; the provider never sees a credential it was not handed.
+ */
+
+/** A prepared workspace. `id` is the provider's handle (idempotent destroy keys on it); `path` is where commands run. */
+export interface Workspace {
+  id: string;
+  path: string;
+}
+
+export interface PrepareSpec {
+  issueNumber: number;
+  /** The commit (or unpushed staging ref) the workspace starts at. */
+  startSha: string;
+}
+
+export interface ExecSpec {
+  cmd: string;
+  args: string[];
+  /** The whole environment of the command; nothing is inherited from the host. */
+  env: NodeJS.ProcessEnv;
+  /** Written to the command's stdin, then closed. */
+  stdin?: string;
+  timeoutMs: number;
+  /** Aborting kills the command's whole process group. */
+  signal?: AbortSignal;
+  /** SIGTERM-to-SIGKILL grace for the group kill. */
+  killGraceMs?: number;
+  /** Called when the timeout fires, just before the group is killed. */
+  onTimeout?: () => void;
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
+  /** Peak-RSS poll interval; default 3000. */
+  rssPollMs?: number;
+}
+
+export interface ExecResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** True when `signal` was aborted by the time the command ended. */
+  aborted: boolean;
+  durationMs: number;
+  /** Peak summed RSS of the command's process tree in KB; null when no sample was taken. */
+  peakRssKb: number | null;
+}
+
+/** What the Broker validates and fetches. A remote provider returns a bundle path instead of a clone path. */
+export interface CollectedResult {
+  kind: "clone" | "bundle";
+  path: string;
+}
+
+export interface ComputeProvider {
+  prepare(spec: PrepareSpec): Promise<Workspace>;
+  /** Rejects only when the command cannot be started; a non-zero exit, a timeout and an abort are results. */
+  exec(ws: Workspace, spec: ExecSpec): Promise<ExecResult>;
+  collect(ws: Workspace): Promise<CollectedResult>;
+  /** Safe to call twice, and on a workspace that never finished preparing. */
+  destroy(ws: Workspace): void;
+}

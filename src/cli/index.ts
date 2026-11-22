@@ -569,7 +569,7 @@ program
         );
       }
       console.log(
-        `Duration:    p50=${m.attempts.p50DurationSec ?? "n/a"}s, p95=${m.attempts.p95DurationSec ?? "n/a"}s`,
+        `Duration:    p50=${m.attempts.p50DurationSec ?? "n/a"}s, p95=${m.attempts.p95DurationSec ?? "n/a"}s; peak RSS p50=${m.attempts.p50PeakRssKb ?? "n/a"}KB, p95=${m.attempts.p95PeakRssKb ?? "n/a"}KB`,
       );
       console.log(
         `Shadow:      ${m.shadow.agreed}/${m.shadow.total} agreed (${Math.round(m.shadow.agreementRate * 100)}%)`,

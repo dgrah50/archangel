@@ -27,6 +27,9 @@ export interface ImplementResult {
   providersUsed?: ReviewerVendor[];
   /** Set when the run ended without finishing the job (e.g. the SDK's `error_max_turns`); the Attempt then fails with this cause. */
   failure?: string;
+  /** Wall time of the agent runs in this Attempt, and the highest peak RSS (KB) of their process trees; absent when not measured. */
+  durationMs?: number;
+  peakRssKb?: number;
   /** The provider and model that produced this result (replay provenance); absent when none finished. */
   runBy?: { provider: string; model: string | null; accountId?: string };
 }
