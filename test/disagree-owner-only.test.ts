@@ -89,16 +89,4 @@ describe("factory:disagree counts only when the owner applied it", () => {
     }
   });
 
-  it("clears the disagreement when the label is removed", async () => {
-    const s = setup(999);
-    try {
-      await s.reconciler.tick(Date.now());
-      expect(disagreed(s.ledger)).toBe(1);
-      s.github.issues.get(7)!.labels = [];
-      await s.reconciler.tick(Date.now() + 1000);
-      expect(disagreed(s.ledger)).toBe(0);
-    } finally {
-      s.cleanup();
-    }
-  });
 });

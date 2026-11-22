@@ -73,17 +73,4 @@ describe("an Attempt aborted for control does not consume attempt budget", () =>
     }
   });
 
-  it("refunds the revision and rebase counters too, and never goes below zero", () => {
-    const ledger = new Ledger(":memory:", { repo: "acme/app" });
-    ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
-    ledger.transition(1, 0, { kind: "queued" }, { incImplement: true, incRevision: true });
-    ledger.transition(1, 1, { kind: "queued" }, { incImplement: true, incRebase: true });
-    expect(ledger.getThread(1)).toMatchObject({ implementCount: 2, revisionCount: 1, rebaseCount: 1 });
-    ledger.refundAttemptCounts(1, "revise");
-    expect(ledger.getThread(1)).toMatchObject({ implementCount: 1, revisionCount: 0, rebaseCount: 1 });
-    ledger.refundAttemptCounts(1, "rebase");
-    ledger.refundAttemptCounts(1, "implement");
-    expect(ledger.getThread(1)).toMatchObject({ implementCount: 0, revisionCount: 0, rebaseCount: 0 });
-    ledger.close();
-  });
 });

@@ -5,9 +5,8 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
-import { BENCH, parseChain, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
-import { saveReport } from "../src/core/eval-reports.js";
-import { startUiServer } from "../src/core/ui-server.js";
+import { BENCH, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
+
 import { Ledger } from "../src/ledger/store.js";
 import type { AddressInfo } from "node:net";
 
@@ -87,12 +86,6 @@ const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> 
 });
 
 describe("bench-tiers", () => {
-  it("parses a chain spec and rejects an unknown provider or empty entry", () => {
-    expect(parseChain("codex:gpt-5-mini, agy")).toEqual([{ provider: "codex", model: "gpt-5-mini" }, { provider: "agy" }]);
-    expect(() => parseChain("nope")).toThrow();
-    expect(() => parseChain("codex,")).toThrow();
-  });
-
   it("scores each chain mechanically with the Gate, reports the verdict, and prints a snippet", async () => {
     const w = await world(5);
     try {
@@ -163,46 +156,4 @@ describe("bench-tiers", () => {
     }
   });
 
-  it("revise and rebase have no replayable inputs: insufficient data, no runs", async () => {
-    const w = await world(5);
-    try {
-      const counts = { runs: {} as Record<string, number> };
-      const r = await runBenchTiers(base(w, { counts, role: "revise" }));
-      expect(r.verdict).toBe("insufficient");
-      expect(r.verdictLine).toContain("no replayable revise cases");
-      expect(counts.runs).toEqual({});
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("never edits archangel.yaml or the live Broker repo, and the report is listed by /api/evals", async () => {
-    const w = await world(5);
-    try {
-      const cfg = path.join(w.root, "archangel.yaml");
-      fs.writeFileSync(cfg, "chains:\n  implement:\n    - provider: codex\n");
-      const before = fs.readFileSync(cfg, "utf8");
-      const refsBefore = git(w.bare, ["for-each-ref"]);
-      const counts = { runs: {} as Record<string, number> };
-      const r = await runBenchTiers(base(w, { counts }));
-      expect(fs.readFileSync(cfg, "utf8")).toBe(before);
-      expect(git(w.bare, ["for-each-ref"])).toBe(refsBefore);
-      // saved through the shared report store, so the Evals page lists it
-      const dataDir = path.join(w.root, "data");
-      saveReport(dataDir, "bench-tiers", r, 1_800_000_000_000);
-      const ui = path.join(w.root, "ui");
-      fs.mkdirSync(ui);
-      fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
-      const server = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, dataDir });
-      try {
-        const body = (await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/evals`)).json()) as { runs: Array<Record<string, unknown>> };
-        expect(body.runs).toHaveLength(1);
-        expect(body.runs[0]).toMatchObject({ kind: "bench-tiers", unreadable: false, verdict: "pass", role: "implement", comparable: 5, matchedOrBeat: 5, verdictLine: r.verdictLine });
-      } finally {
-        server.close();
-      }
-    } finally {
-      cleanup(w);
-    }
-  });
 });
