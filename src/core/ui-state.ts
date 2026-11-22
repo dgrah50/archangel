@@ -39,7 +39,7 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
-  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; code: string; reason: string }>;
+  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string }>;
   /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
@@ -47,6 +47,8 @@ export interface UiState {
   /** Owner corrections over the last 30 days, all repos (closed categories only). */
   corrections: CorrectionCounts;
   autonomySteps: Record<string, number>;
+  /** Per repo, when the owner last acted (latest audit row with actor `owner`, the row that resets `autonomySteps`), or null. */
+  ownerLastHeardAt: Record<string, number | null>;
   /** Last daemon heartbeat (ms), or null when no daemon lock exists: the dashboard shows an offline banner when it is old or null. */
   daemonHeartbeatAt: number | null;
   /** Undecided pitches (open or partly promoted), oldest first: the count and the five oldest. */
@@ -163,7 +165,7 @@ export function groupThreads(
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
       const p = describeEscalation(t.phase.code);
-      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, code: t.phase.code, reason: t.phase.reason });
+      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason });
     }
   }
   for (const list of Object.values(stages)) list.sort((a, b) => b.since - a.since);
@@ -212,6 +214,7 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
     faults: schemaGap(() => ledger.listHealthFaults(now)),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
+    ownerLastHeardAt: Object.fromEntries(repos.map((r) => [r, ledger.ownerLastHeardAt(r)])),
     scouts: ledger.listScoutProposals(25).map((p) => ({
       repo: p.repo,
       issueNumber: p.issueNumber,

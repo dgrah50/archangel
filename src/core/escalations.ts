@@ -16,6 +16,8 @@ export type DecisionClass = (typeof DECISION_CLASSES)[number];
 
 export interface EscalationPolicy {
   decisionClass: DecisionClass;
+  /** A phrase under about 60 characters for dashboard rows; `recommendation` is the full text. */
+  short: string;
   recommendation: string;
 }
 
@@ -25,74 +27,89 @@ export interface EscalationPolicy {
 export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   body_changed: {
     decisionClass: "owner_signoff",
+    short: "recommends reading the edited issue body first",
     recommendation:
       "Review the edited issue body. If it is what you want built, remove `needs-you` (or `archangel retry`); otherwise revert the edit.",
   },
   already_fixed: {
     decisionClass: "product_decision",
+    short: "recommends confirming main, then closing",
     recommendation:
       "Confirm the bug no longer reproduces on main and close the issue; if it still does, comment with a reproduction and retry.",
   },
   broker_policy_failed: {
     decisionClass: "owner_signoff",
+    short: "recommends narrowing the issue or taking it over",
     recommendation:
       "The fix needs protected paths or exceeds diff bounds. Narrow the issue, or take it over with `archangel handoff`.",
   },
   gate_failed: {
     decisionClass: "live_infrastructure",
+    short: "recommends reading the Gate output, then retry",
     recommendation:
       "Read the Gate output on the PR. Comment guidance and retry, or close the PR; do not merge without a passing Gate.",
   },
   gate_timeout: {
     decisionClass: "live_infrastructure",
+    short: "recommends re-running CI, then retry",
     recommendation:
       "Required checks never finished. Check the workflow run on the PR, fix or re-run CI, then retry.",
   },
   gate_untrusted: {
     decisionClass: "credentials",
+    short: "recommends verifying the Gate app before retry",
     recommendation:
       "A required check came from an unexpected app. Verify the repo's Gate workflow and app installation before retrying.",
   },
   review_vetoed: {
     decisionClass: "live_infrastructure",
+    short: "recommends reading the findings first",
     recommendation:
       "Read the reviewer findings in the Recap. Comment guidance and retry, merge yourself if the veto is wrong, or close the PR.",
   },
   revision_no_change: {
     decisionClass: "live_infrastructure",
+    short: "recommends commenting new guidance, then retry",
     recommendation:
       "The revision came back byte-identical to the previous head: the implementer could not meet the feedback within the rules. Read its summary and the findings, then comment what it should do differently and retry, or close the PR.",
   },
   existing_test_conflict: {
     decisionClass: "product_decision",
+    short: "recommends deciding whether the test or issue is right",
     recommendation:
       "The issue contradicts an existing test (named in the reason), and existing tests are immutable for the factory. Decide which behaviour is right: edit the issue to match the test, or change the test yourself; then retry or close.",
   },
   review_outage: {
     decisionClass: "credentials",
+    short: "recommends re-login, then retry",
     recommendation: "Reviewer CLIs are unavailable. Run `archangel doctor --smoke`, re-login where needed, then retry.",
   },
   merge_conflict: {
     decisionClass: "live_infrastructure",
+    short: "recommends retry on a fresh Attempt",
     recommendation:
       "The branch conflicts with main and the automatic rebase failed. Retry for a fresh Attempt, or resolve it with `archangel handoff`.",
   },
   attempt_timeout: {
     decisionClass: "spending",
+    short: "recommends narrowing the issue, then retry",
     recommendation: "The Attempt used its whole time budget. Narrow the issue or comment a hint, then retry.",
   },
   attempt_failed: {
     decisionClass: "product_decision",
+    short: "recommends commenting what it missed, then retry",
     recommendation:
       "The implementer could not produce a valid fix. Read its summary, comment what it missed (your comment reaches the next Attempt), then retry.",
   },
   dependency_unmet: {
     decisionClass: "owner_signoff",
+    short: "recommends retrying the slice on its own",
     recommendation:
       "The slice this one was chained after ended without merging (closed or abandoned). Retry to run this slice on its own, or close it if it only made sense after that one.",
   },
   max_attempts: {
     decisionClass: "spending",
+    short: "recommends retry for a fresh budget, or close",
     recommendation: "The Attempt cap is used up. Retry to grant a fresh budget, or close the issue if it is not worth more runs.",
   },
 };
@@ -115,55 +132,66 @@ export function formatDecisionClass(c: DecisionClass): string {
 export const MAIN_ESCALATION_POLICY = {
   correction_draft_unlanded: {
     decisionClass: "owner_signoff",
+    short: "recommends reading the draft, apply it or ignore",
     recommendation:
       "Archangel drafted a change for a repeated correction but its offline eval did not pass (or had too little data), so no PR was opened. Read the draft; apply it yourself, or ignore it. Nothing lands without you.",
   },
   health_fault_repeated: {
     decisionClass: "live_infrastructure",
+    short: "recommends fixing the repeating fault",
     recommendation:
       "A subsystem keeps failing and the daemon keeps surviving it (see the Health block in `archangel status` for the last error). Fix the cause (GitHub access, permissions, the Scout output); this notice repeats at most once a day per error class.",
   },
   factory_retry_disabled: {
     decisionClass: "owner_signoff",
+    short: "recommends editing the repo policy to re-enable",
     recommendation:
       "Factory retries were switched off for this repo because too many ended unmerged, or one was reverted or disputed. It stays off until `.agents/archangel.json` changes in an owner-merged edit (set `escalations.factoryRetry` to `off` to keep it off for good).",
   },
   correction_repeated: {
     decisionClass: "owner_signoff",
+    short: "recommends editing the skill or rubric",
     recommendation:
       "You corrected the factory in this category repeatedly this month. Edit a bundled skill, the review rubric (`review.rubric` in .agents/archangel.json) or the implementer prompt for it (an owner-merged change), then watch whether the count drops. Nothing is drafted automatically.",
   },
   pitch_scout_paused: {
     decisionClass: "owner_signoff",
+    short: "recommends editing or removing the Scout",
     recommendation:
       "Four pitches in a row were not promoted. Edit the Scout entry or its prompt in .agents/archangel.json (an owner-merged change) to resume it, or remove the Scout.",
   },
   autonomy_cap: {
     decisionClass: "spending",
+    short: "recommends replying on any Thread to continue",
     recommendation: "Reply on any Thread or run `archangel retry` to continue.",
   },
   red_main_reverted: {
     decisionClass: "live_infrastructure",
+    short: "recommends merging the revert PR",
     recommendation:
       "Review and merge the revert PR to turn main green, then clear the circuit breaker; the original issue can be retried afterwards.",
   },
   scout_auto_promote_revoked: {
     decisionClass: "owner_signoff",
+    short: "recommends reviewing the Scout proposals",
     recommendation:
       "This Scout's last 3 auto-promoted Threads ended without a merge, so auto-promotion is off for this version. Review its recent proposals, then edit or remove the Scout entry or prompt (a merged edit lifts the revocation).",
   },
   repo_policy_invalid: {
     decisionClass: "owner_signoff",
+    short: "recommends fixing archangel.json via PR",
     recommendation:
       "Fix .agents/archangel.json on the default branch with an owner-merged PR (`archangel doctor` shows the parse error). Archangel takes no new work in this repo until it parses.",
   },
   post_merge_unverified: {
     decisionClass: "live_infrastructure",
+    short: "recommends checking main CI by hand",
     recommendation:
       "Archangel could not confirm main's CI result for this merge. Check the default branch's checks by hand; nothing is retried automatically.",
   },
   red_main_manual: {
     decisionClass: "live_infrastructure",
+    short: "recommends reverting or fixing forward by hand",
     recommendation:
       "Main moved after the bad merge, so no exact revert exists. Revert or fix-forward by hand, then clear the circuit breaker.",
   },
