@@ -145,7 +145,6 @@ export class Ledger {
     this.repo = opts.repo ?? "default";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
-      this.migratePitchesToStateMachine();
       migrateOutbox(this.db);
       this.dropLegacyDaemonCommands();
       this.db.exec(LEDGER_SCHEMA_SQL);
@@ -1970,45 +1969,6 @@ export class Ledger {
    */
   markPitchSlicesPromoted(issueNumber: number, slices: readonly number[], total: number, now = Date.now(), repo = this.repo): boolean {
     return this.stepPitchState(issueNumber, { t: "slices_promoted", slices: [...slices], total }, now, repo).ok;
-  }
-
-  /** One-shot: an older Ledger kept the pitch lifecycle in four separate columns; fold each row into `state_json` and drop the old table. */
-  private migratePitchesToStateMachine(): void {
-    const cols = (this.db.prepare("PRAGMA table_info(pitches)").all() as Array<{ name: string }>).map((c) => c.name);
-    if (cols.length === 0 || !cols.includes("status")) return;
-    this.db.transaction(() => {
-      this.db.exec("ALTER TABLE pitches RENAME TO pitches_v1");
-      this.db.exec(LEDGER_SCHEMA_SQL);
-      const rows = this.db.prepare("SELECT * FROM pitches_v1").all() as Array<Record<string, unknown>>;
-      const insert = this.db.prepare(
-        `INSERT INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, state_json, state_at, pitch_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      for (const r of rows) {
-        const slices = JSON.parse(String(r.promoted_slices ?? "[]")) as number[];
-        let total = slices.length;
-        try {
-          const parsed = JSON.parse(String(r.pitch_json ?? "")) as { slices?: unknown[] };
-          if (Array.isArray(parsed.slices)) total = parsed.slices.length;
-        } catch {
-          // no stored text: treat the recorded slices as the whole pitch
-        }
-        const state: PitchState =
-          r.status === "promoted"
-            ? slices.length === 0
-              ? { kind: "declined", reason: null }
-              : slices.length < total
-                ? { kind: "partially_promoted", promotedSlices: slices, totalSlices: total }
-                : { kind: "promoted", promotedSlices: slices }
-            : r.status === "declined"
-              ? r.expired_at !== null && r.expired_at !== undefined
-                ? { kind: "expired", expiredAt: Number(r.expired_at) }
-                : { kind: "declined", reason: r.decline_reason === null || r.decline_reason === undefined ? null : String(r.decline_reason) }
-              : { kind: "open" };
-        insert.run(r.repo, r.issue_number, r.scout_name, r.trust_hash, r.title, r.title_fp, r.content_sha256, r.filed_at, JSON.stringify(state), r.status_at, String(r.pitch_json ?? ""));
-      }
-      this.db.exec("DROP TABLE pitches_v1");
-    })();
   }
 
   // ---- Eval vault and result cache (V6) ----
