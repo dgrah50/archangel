@@ -34,6 +34,7 @@ export function hostInput(o: Partial<HostWorkflowInput> = {}): HostWorkflowInput
     scoutsEnabled: true,
     maxConcurrentThreads: 2,
     factoryRetry: true,
+    fleetScouts: [],
     isRevoked: () => false,
     ...o,
   };
