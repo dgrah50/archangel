@@ -1,5 +1,6 @@
 import type { ExecResult, ExecSpec } from "../compute/provider.js";
 import type { WorkClass } from "../core/work-class.js";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { execFileGroup } from "../core/spawn-group.js";
 import fs from "node:fs";
@@ -285,6 +286,22 @@ export class GitBroker {
     const listed = await this.runGit(this.bareRepoPath, ["ls-tree", "--name-only", ref, "--", relPath]);
     if (listed.trim() === "") return null;
     return this.runGit(this.bareRepoPath, ["show", `${ref}:${relPath}`]);
+  }
+
+  /**
+   * The commit on `ref` (first-parent) that introduced the version of `relPath` whose sha256 is `sha256`: the oldest commit of
+   * the unbroken run that holds those bytes. Null when no recent version matches. Looks back at most `max` commits.
+   */
+  async commitIntroducingBlob(ref: string, relPath: string, sha256: string, max = 50): Promise<string | null> {
+    const log = await this.runGit(this.bareRepoPath, ["log", "--first-parent", `--max-count=${max}`, "--format=%H", ref, "--", relPath]);
+    let found: string | null = null;
+    for (const sha of log.split("\n").filter(Boolean)) {
+      const text = await this.readFileAtRef(sha, relPath);
+      const match = text !== null && createHash("sha256").update(text).digest("hex") === sha256;
+      if (match) found = sha;
+      else if (found !== null) break;
+    }
+    return found;
   }
 
   /** Binary-safe `readFileAtRef`: the exact bytes of a blob, or null when the path does not exist at that ref. */

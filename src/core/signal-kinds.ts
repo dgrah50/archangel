@@ -10,5 +10,7 @@ export const SIGNAL_KINDS = {
   schedule: { source: "schedule", taint: "owner" },
   /** Computed here from local telemetry by arithmetic only, never from outside text. */
   telemetry_anomaly: { source: "telemetry", taint: "mechanical" },
+  /** Computed here from the Ledger by arithmetic only: a (workflow, prompt) policy version whose outcomes got worse. */
+  policy_regression: { source: "regression_watch", taint: "mechanical" },
 } as const satisfies Record<string, { source: string; taint: SignalTaint }>;
 export type SignalKind = keyof typeof SIGNAL_KINDS;
