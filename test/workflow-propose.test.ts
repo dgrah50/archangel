@@ -1,0 +1,130 @@
+import crypto from "node:crypto";
+import { describe, expect, it } from "vitest";
+import type { OnboardRunner } from "../src/core/onboard.js";
+import { LOOSENS_LABEL, PROPOSE_BRANCH, proposeWorkflow } from "../src/core/workflow-propose.js";
+import { workflowFile } from "./helpers/workflow.js";
+
+const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
+const norm = (o: unknown) => JSON.stringify(o, null, 2) + "\n";
+
+/** Scripted owner `gh`: serves a current workflow file and records every call. */
+function fake(opts: { current?: string | null; openPr?: string; labels?: string[]; prompts?: Record<string, string>; changeOnReread?: boolean }) {
+  const calls: string[] = [];
+  let reads = 0;
+  const runner: OnboardRunner = {
+    async run(_cmd, args) {
+      const line = args.join(" ");
+      calls.push(line);
+      if (line.startsWith("repo view")) return "main\n";
+      if (line.includes("contents/.agents/archangel.json?ref=")) {
+        if (opts.current == null) throw new Error("404");
+        if (args.includes("--jq")) return "blobsha\n";
+        reads++;
+        return opts.changeOnReread && reads > 1 ? opts.current + " " : opts.current;
+      }
+      const sm = /contents\/\.agents\/scouts\/([\w-]+)\.md\?ref=/.exec(line);
+      if (sm) {
+        const p = opts.prompts?.[sm[1]!];
+        if (p === undefined) throw new Error("404");
+        return args.includes("--jq") ? "scoutblob\n" : p;
+      }
+      if (line.startsWith("pr list")) return opts.openPr ?? "";
+      if (line.includes("/git/ref/heads/")) return "tipsha\n";
+      if (line.startsWith("label list")) return (opts.labels ?? []).join("\n");
+      if (line.startsWith("pr create")) return "https://github.com/o/r/pull/9\n";
+      return "";
+    },
+  };
+  return { runner, calls, mutating: () => calls.filter((c) => /label create|-X POST|-X PUT|pr create/.test(c)) };
+}
+
+const current = workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 3 } });
+const quiet = { log: () => {} };
+
+describe("proposeWorkflow", () => {
+  it("opens one PR on the proposal branch, never merging, with loosened fields first in bold and the label", async () => {
+    const f = fake({ current: norm(current) });
+    const proposed = workflowFile([], {
+      gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 5, protectedPaths: ["lock.json"] },
+      landing: { bugfix: "autonomous" },
+    });
+    const { plan, url } = await proposeWorkflow(f.runner, "o/r", JSON.stringify(proposed), { ...quiet, baseFileSha256: sha(norm(current)) });
+    expect(url).toBe("https://github.com/o/r/pull/9");
+    expect(plan.loosens).toBe(true);
+    const body = f.calls.find((c) => c.startsWith("pr create"))!;
+    expect(body).toContain(`--head ${PROPOSE_BRANCH}`);
+    expect(body).toContain(`--label ${LOOSENS_LABEL}`);
+    expect(f.calls.some((c) => /pr merge/.test(c))).toBe(false);
+    expect(f.calls.some((c) => c.startsWith(`label create ${LOOSENS_LABEL}`))).toBe(true);
+    // loosened rows come before tightened ones
+    expect(plan.body.indexOf("**gate.maxFiles**")).toBeGreaterThan(-1);
+    expect(plan.body.indexOf("**landing.bugfix**")).toBeLessThan(plan.body.indexOf("gate.protectedPaths"));
+    expect(plan.body).toContain("| gate.protectedPaths | tightens |");
+    // updating an existing file passes its blob sha
+    expect(f.calls.find((c) => c.includes("-X PUT"))).toContain("sha=blobsha");
+  });
+
+  it("adds no label (and creates none) when nothing loosens", async () => {
+    const f = fake({ current: norm(current) });
+    const proposed = workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 2 } });
+    const { plan } = await proposeWorkflow(f.runner, "o/r", JSON.stringify(proposed), quiet);
+    expect(plan.loosens).toBe(false);
+    expect(f.calls.find((c) => c.startsWith("pr create"))).not.toContain("--label");
+    expect(f.calls.some((c) => c.startsWith("label"))).toBe(false);
+  });
+
+  it("does not recreate the label when it already exists", async () => {
+    const f = fake({ current: norm(current), labels: [LOOSENS_LABEL] });
+    await proposeWorkflow(f.runner, "o/r", JSON.stringify(workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test" } })), quiet);
+    expect(f.calls.some((c) => c.startsWith("label create"))).toBe(false);
+  });
+
+  it("rejects an invalid file (schema or kernel bound) before any gh write", async () => {
+    const f = fake({ current: norm(current) });
+    const tooLoose = workflowFile([], { gate: { testFileGlobs: ["t"], testCmd: "x", maxFiles: 50 } });
+    await expect(proposeWorkflow(f.runner, "o/r", JSON.stringify(tooLoose), quiet)).rejects.toThrow(/gate\.maxFiles/);
+    await expect(proposeWorkflow(f.runner, "o/r", JSON.stringify(workflowFile([], { requiredChecks: ["Gate"] })), quiet)).rejects.toThrow(/requiredChecks/);
+    await expect(proposeWorkflow(f.runner, "o/r", "{nope", quiet)).rejects.toThrow(/not valid JSON/);
+    expect(f.mutating()).toEqual([]);
+  });
+
+  it("refuses a stale base, an already-open proposal, an identical file and a missing Scout prompt", async () => {
+    const f = fake({ current: norm(current) });
+    const proposed = JSON.stringify(workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 2 } }));
+    await expect(proposeWorkflow(f.runner, "o/r", proposed, { ...quiet, baseFileSha256: "0".repeat(64) })).rejects.toThrow(/Stale draft/);
+    const open = fake({ current: norm(current), openPr: "https://github.com/o/r/pull/3" });
+    await expect(proposeWorkflow(open.runner, "o/r", proposed, quiet)).rejects.toThrow(/already open/);
+    await expect(proposeWorkflow(fake({ current: norm(current) }).runner, "o/r", JSON.stringify(current), quiet)).rejects.toThrow(/identical/);
+    const withScout = JSON.stringify(workflowFile([{ name: "s1" }], { gate: current.gate }));
+    await expect(proposeWorkflow(f.runner, "o/r", withScout, quiet)).rejects.toThrow(/no prompt file/);
+    for (const x of [f, open]) expect(x.mutating()).toEqual([]);
+  });
+
+  it("refuses when the file changes between planning and writing", async () => {
+    const f = fake({ current: norm(current), changeOnReread: true });
+    const proposed = JSON.stringify(workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test", maxFiles: 2 } }));
+    await expect(proposeWorkflow(f.runner, "o/r", proposed, quiet)).rejects.toThrow(/changed while planning/);
+    expect(f.mutating()).toEqual([]);
+  });
+
+  it("dry-run prints the plan and makes no mutating call", async () => {
+    const f = fake({ current: norm(current) });
+    const out: string[] = [];
+    const proposed = JSON.stringify(workflowFile([], { landing: { bugfix: "autonomous" }, gate: current.gate }));
+    const { url } = await proposeWorkflow(f.runner, "o/r", proposed, { dryRun: true, log: (s) => out.push(s) });
+    expect(url).toBeNull();
+    expect(f.mutating()).toEqual([]);
+    expect(out.join("\n")).toContain("Dry run: nothing changed.");
+    expect(out.join("\n")).toContain(LOOSENS_LABEL);
+  });
+
+  it("creates the first workflow file (no current file) without a diff and commits Scout prompts", async () => {
+    const f = fake({ current: null });
+    const proposed = JSON.stringify(workflowFile([{ name: "bug-hunt" }]));
+    const { plan } = await proposeWorkflow(f.runner, "o/r", proposed, { ...quiet, scoutPrompts: { "bug-hunt": "Find bugs." } });
+    expect(plan.classified).toBe(false);
+    expect(plan.body).toContain("no semantic diff");
+    expect(plan.files.map((x) => x.path)).toEqual([".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
+    expect(f.calls.filter((c) => c.includes("-X PUT")).every((c) => !c.includes("sha="))).toBe(true);
+  });
+});
