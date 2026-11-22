@@ -46,6 +46,7 @@ export interface GitHubClient {
   verifyLabelActor(issueNumber: number, labelName: string, expectedOwnerId: number): Promise<boolean>;
   getBranchTipSha(branch: string): Promise<string>;
   fileExistsAtRef?(ref: string, filePath: string): Promise<boolean>;
+  getFileContentAtRef?(ref: string, filePath: string): Promise<string>;
   listRepoLabels?(): Promise<string[]>;
   findPrByHeadBranch(branch: string): Promise<GitHubPr | null>;
   createPr(input: { title: string; body: string; head: string; base: string }): Promise<GitHubPr>;
@@ -310,6 +311,19 @@ export class GitHubAppClient implements GitHubClient {
       }
       throw err;
     }
+  }
+
+  async getFileContentAtRef(ref: string, filePath: string): Promise<string> {
+    const file = await this.request<{ content: string; encoding: string }>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/contents/${filePath
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}?ref=${encodeURIComponent(ref)}`,
+      { useEtag: false },
+    );
+    if (file.encoding !== "base64") throw new Error(`Unsupported GitHub contents encoding: ${file.encoding}`);
+    return Buffer.from(file.content, "base64").toString("utf8");
   }
 
   async listRepoLabels(): Promise<string[]> {

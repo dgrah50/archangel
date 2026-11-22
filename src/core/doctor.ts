@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
+import { LandingJsonSchema, loadProjectConfigs, resolvePaths, type ArchangelConfig } from "../config.js";
 import { GitHubAppClient } from "../github/client.js";
 
 const execFileAsync = promisify(execFile);
@@ -307,12 +307,25 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       const hasPreCommit =
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yaml")) ||
         (await gh.fileExistsAtRef(tip, ".pre-commit-config.yml"));
-      const hasLandingJson = await gh.fileExistsAtRef(tip, ".agents/landing.json");
+      let landingError: string | undefined;
+      let hasLandingJson = false;
+      try {
+        const landingRaw = await gh.getFileContentAtRef(tip, ".agents/landing.json");
+        hasLandingJson = true;
+        LandingJsonSchema.parse(JSON.parse(landingRaw));
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("(404)")) {
+          hasLandingJson = false;
+        } else {
+          landingError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      const verificationStatus = landingError ? "fail" : hasPreCommit && hasLandingJson ? "pass" : "warn";
       checks.push({
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
-        status: hasPreCommit && hasLandingJson ? "pass" : "warn",
-        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${hasLandingJson ? "present" : "missing"}`,
+        status: verificationStatus,
+        detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, .agents/landing.json=${landingError ? `invalid: ${landingError}` : hasLandingJson ? "present and valid" : "missing"}`,
         remediation:
           hasPreCommit && hasLandingJson
             ? undefined
