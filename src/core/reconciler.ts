@@ -1322,6 +1322,27 @@ export class Reconciler {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // A halt or kill switch that landed while the Attempt was still cloning or in repo setup is an abort, not a failure
+      // (the policy getters throw once the workflow is gone): return the Thread to where it resumes.
+      if (!this.workflow || task.abortController.signal.aborted) {
+        const cause = task.abortCause ?? "control";
+        this.ledger.finishAttempt(attemptId, {
+          status: "aborted",
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorMessage: `Aborted (${cause})`,
+        });
+        const current = this.ledger.getThread(workingThread.issueNumber);
+        if (current && current.version === workingThread.version) {
+          this.applyMachineEvent(
+            current,
+            { t: "attempt_aborted", cause, now: Date.now() },
+            { auditTopic: "attempt/aborted", auditPayload: { cause, during: msg.slice(0, 120) }, now: Date.now() },
+          );
+        }
+        return;
+      }
       this.ledger.finishAttempt(attemptId, {
         status: "failed",
         costUsd: actualCostUsd,

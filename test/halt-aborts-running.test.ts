@@ -83,4 +83,54 @@ describe("a halted repo stops its in-flight work", () => {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  it("a halt while the Attempt is still in repo setup returns the Thread to the queue instead of escalating it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-halt-setup-"));
+    const seed = path.join(root, "seed");
+    const remoteBare = path.join(root, "remote.git");
+    fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
+    git(seed, ["init", "-b", "main"]);
+    git(seed, ["config", "user.name", "T"]);
+    git(seed, ["config", "user.email", "t@example.com"]);
+    fs.writeFileSync(path.join(seed, "app.go"), "package demo\n");
+    fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson());
+    fs.writeFileSync(path.join(seed, ".agents", "setup"), "sleep 2\n"); // the slow dependency install
+    git(seed, ["add", "-A"]);
+    git(seed, ["commit", "-m", "initial"]);
+    git(root, ["clone", "--bare", seed, remoteBare]);
+    const github = new FakeGitHub(remoteBare);
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+    let runs = 0;
+    const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
+    const rec = new Reconciler({
+      config: cfg, ledger, github, broker,
+      implementer: { async run() { runs++; return { summary: "", costUsd: 0, transcriptPath: null, aborted: false }; } },
+      reviewers: { async reviewAll() { return { results: [], errors: [] }; } },
+      notifier: { async notifyNeedsYou() {}, async sendDigest() {} },
+    });
+    try {
+      github.issues.set(4, {
+        number: 4, title: "Bug 4", body: "b", state: "open", authorId: 999, authorLogin: "o",
+        authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString(),
+      });
+      github.labelActors.set("4:ready-for-agent", 999);
+      await rec.tick(Date.now(), { waitForAttempts: false });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(ledger.getThread(4)!.phase.kind).toBe("working"); // inside setup
+
+      fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}");
+      git(seed, ["add", "-A"]);
+      git(seed, ["commit", "-m", "break the workflow"]);
+      git(seed, ["push", remoteBare, "main"]);
+      await rec.tick(Date.now(), { waitForAttempts: true });
+
+      expect(ledger.getThread(4)!.phase.kind).toBe("queued"); // not needs_you
+      expect(runs).toBe(0);
+      expect(ledger.getAttempt(1)!.status).toBe("aborted");
+    } finally {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });
