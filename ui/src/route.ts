@@ -11,10 +11,11 @@ export type Route =
   | { page: "pipeline" }
   | { page: "health" }
   | { page: "evals" }
+  | { page: "setup"; repo: string | null }
   | { page: "settings"; scope: "machine" | "repo" | "kernel" }
   | { page: "not-found"; hash: string };
 
-type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health" | "settings" | "evals";
+type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health" | "settings" | "evals" | "setup";
 export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> = [
   { page: "overview", label: "Overview", hash: "#/" },
   { page: "needs-you", label: "Needs you", hash: "#/needs-you" },
@@ -23,6 +24,7 @@ export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> 
   { page: "health", label: "Health", hash: "#/health" },
   { page: "evals", label: "Evals", hash: "#/evals" },
   { page: "settings", label: "Settings", hash: "#/settings" },
+  { page: "setup", label: "Setup", hash: "#/setup" },
 ];
 
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
@@ -36,6 +38,9 @@ export function parseRoute(hash: string): Route {
   if (path === "/settings") return { page: "settings", scope: "machine" };
   if (path === "/settings/repo") return { page: "settings", scope: "repo" };
   if (path === "/settings/kernel") return { page: "settings", scope: "kernel" };
+  if (path === "/setup") return { page: "setup", repo: null };
+  const su = /^\/setup\/([^/]+\/[^/]+)$/.exec(path);
+  if (su && SLUG.test(su[1]!)) return { page: "setup", repo: su[1]! };
   if (path === "/evals") return { page: "evals" };
   if (path === "/health") return { page: "health" };
   if (path === "/threads") return { page: "threads" };
