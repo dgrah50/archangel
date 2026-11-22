@@ -14,6 +14,7 @@ import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
+import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
@@ -519,6 +520,14 @@ program
     } finally {
       ledger.close();
     }
+  });
+
+program
+  .command("onboard <repo>")
+  .description("Do the GitHub plumbing for a new repo with your gh CLI: labels and one onboarding PR (never merged by this command)")
+  .option("--dry-run", "Print the plan and change nothing")
+  .action(async (repo: string, opts: { dryRun?: boolean }) => {
+    await onboard(execRunner, repo, { dryRun: opts.dryRun });
   });
 
 program
