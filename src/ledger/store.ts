@@ -42,6 +42,7 @@ import {
   type ReviewVerdict,
   type ScoutProposalRecord,
   type ThreadRecord,
+  type TriageSummary,
 } from "./schema.js";
 
 export function formatDayKey(ts: number, timeZone: string): string {
@@ -1448,6 +1449,21 @@ export class Ledger {
     if (q.sinceMs !== undefined) { where.push(`ts >= ?`); params.push(q.sinceMs); }
     if (q.payload) { where.push(`json_extract(payload_json, '$.${q.payload.key}') = ?`); params.push(q.payload.value); }
     return Boolean(this.db.prepare(`SELECT 1 FROM audit_log WHERE ${where.join(" AND ")} LIMIT 1`).get(...params));
+  }
+
+  /** The latest `factory/triage` audit row of a Thread (what machine triage decided), or null when triage never ran. */
+  latestTriage(issueNumber: number, repo = this.repo): TriageSummary | null {
+    const row = this.listAudit({ repo, topicPrefix: "factory/triage", issueNumber, limit: 1 })[0];
+    if (!row) return null;
+    const p = JSON.parse(row.payloadJson) as { vendor?: unknown; action?: unknown; cause?: unknown; steps?: unknown; reason?: unknown };
+    if (typeof p.vendor !== "string" || (p.action !== "guidance" && p.action !== "escalate") || typeof p.cause !== "string") return null;
+    return {
+      vendor: p.vendor,
+      action: p.action,
+      cause: p.cause,
+      steps: Array.isArray(p.steps) ? p.steps.filter((s): s is string => typeof s === "string") : [],
+      reason: typeof p.reason === "string" ? p.reason : null,
+    };
   }
 
   /** Rows of one audit topic across every repo since `sinceMs` (for limits that are global rather than per repo). */

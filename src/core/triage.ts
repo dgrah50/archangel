@@ -136,7 +136,7 @@ export interface TriageChecks {
 }
 
 export type TriageVerdict =
-  | { action: "guidance"; cause: TriageCause; note: string }
+  | { action: "guidance"; cause: TriageCause; note: string; steps: string[] }
   | { action: "escalate"; cause: TriageCause | "invalid"; reason: string };
 
 /** Pure policy over the model's output. Anything doubtful escalates; nothing here can approve or retry on its own. */
@@ -167,7 +167,7 @@ export async function validateTriage(raw: unknown, checks: TriageChecks, vendor:
     ...o.steps.map((s, i) => `${i + 1}. ${s}`),
     ...(o.keepUnchanged.length > 0 ? ["Keep unchanged:", ...o.keepUnchanged.map((s) => `- ${s}`)] : []),
   ].join("\n");
-  return { action: "guidance", cause: o.cause, note };
+  return { action: "guidance", cause: o.cause, note, steps: o.steps };
 }
 
 /**
