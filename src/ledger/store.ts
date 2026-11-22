@@ -1826,6 +1826,23 @@ export class Ledger {
     return Boolean(row);
   }
 
+  insertTelemetry(r: { ts: number; repo: string | null; name: string; value: number; tagsJson: string }): void {
+    this.db.prepare(`INSERT INTO telemetry (ts, repo, name, value, tags_json) VALUES (?, ?, ?, ?, ?)`).run(r.ts, r.repo, r.name, r.value, r.tagsJson);
+  }
+
+  /** Deletes up to `limit` telemetry rows older than `beforeMs`; call again while it returns `limit`. */
+  pruneTelemetry(beforeMs: number, limit: number): number {
+    return this.db.prepare(`DELETE FROM telemetry WHERE id IN (SELECT id FROM telemetry WHERE ts < ? LIMIT ?)`).run(beforeMs, limit).changes;
+  }
+
+  /** Telemetry rows of one event from `sinceMs` (to `untilMs`, exclusive), optionally for one repo. */
+  listTelemetry(name: string, sinceMs: number, untilMs = Number.MAX_SAFE_INTEGER, repo?: string | null): Array<{ ts: number; repo: string | null; value: number; tags: Record<string, string> }> {
+    const rows = this.db
+      .prepare(`SELECT ts, repo, value, tags_json FROM telemetry WHERE name = ? AND ts >= ? AND ts < ? ${repo === undefined ? "" : repo === null ? "AND repo IS NULL" : "AND repo = ?"} ORDER BY ts`)
+      .all(...([name, sinceMs, untilMs, ...(typeof repo === "string" ? [repo] : [])] as Array<string | number>)) as Array<{ ts: number; repo: string | null; value: number; tags_json: string }>;
+    return rows.map((r) => ({ ts: r.ts, repo: r.repo, value: r.value, tags: JSON.parse(r.tags_json) as Record<string, string> }));
+  }
+
   /** Appends one signal; false when its `dedupe_key` was already ingested (so ingestion is idempotent). */
   insertSignal(s: Omit<SignalRecord, "id">): boolean {
     const r = this.db
