@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { SignalsConfigSchema } from "./core/signal-rules.js";
 import { FLEET_SCOUT_NAMES } from "./core/fleet-scouts.js";
 import type { ReviewerVendor } from "./ledger/schema.js";
 
@@ -307,6 +308,8 @@ export const ConfigSchema = z.object({
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
+  /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
+  signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -406,6 +409,8 @@ export const HostYamlSchema = z.object({
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
+  /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
+  signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -427,6 +432,11 @@ export const HostYamlSchema = z.object({
     [...Object.entries(host.chains).map(([role, chain]) => [`chains.${role}`, chain] as [string, ProviderEntry[]]), ["reviewerChain", host.reviewerChain]],
     (p, message) => ctx.addIssue({ code: "custom", path: p, message }),
   );
+  host.signals.rules.forEach((r, i) => {
+    if (r.repo !== undefined && !host.projects.some((p) => p.repo.toLowerCase() === r.repo!.toLowerCase())) {
+      ctx.addIssue({ code: "custom", path: ["signals", "rules", i, "repo"], message: `rule '${r.name}': '${r.repo}' is not a project in this file` });
+    }
+  });
   // Two entries for one repo would run two Reconcilers over one Broker clone, clones dir and Ledger view.
   const seen = new Set<string>();
   host.projects.forEach((p, i) => {
@@ -572,6 +582,7 @@ export function loadProjectConfigs(opts: {
       factoryRetry: host.factoryRetry,
       fleetScouts: host.fleetScouts,
       fleetMinerSeeds: host.fleetMinerSeeds,
+      signals: host.signals,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,
