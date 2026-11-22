@@ -1404,14 +1404,14 @@ export class Ledger {
 
   // ---- Pitches (V5): owner-decided proposals from pitch Scouts; separate from bug proposals ----
 
-  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson?: string; now?: number; repo?: string }): void {
+  recordPitch(input: { issueNumber: number; scoutName: string; trustHash: string; title: string; titleFp: string; contentSha256: string; pitchJson: string; now?: number; repo?: string }): void {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
         `INSERT OR IGNORE INTO pitches (repo, issue_number, scout_name, trust_hash, title, title_fp, content_sha256, filed_at, status_at, pitch_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now, input.pitchJson ?? "");
+      .run(input.repo ?? this.repo, input.issueNumber, input.scoutName, input.trustHash, input.title, input.titleFp, input.contentSha256, now, now, input.pitchJson);
   }
 
   /** Pitches whose issue is no longer open (closed by the owner or expired) become `declined`. `promoted` is set only by the owner's promote command. */
@@ -1436,6 +1436,20 @@ export class Ledger {
       .prepare(`SELECT issue_number, status, content_sha256, pitch_json FROM pitches WHERE repo = ? AND issue_number = ?`)
       .get(repo, issueNumber) as { issue_number: number; status: "open" | "declined" | "promoted"; content_sha256: string; pitch_json: string } | undefined;
     return r ? { issueNumber: r.issue_number, status: r.status, contentSha256: r.content_sha256, pitchJson: r.pitch_json } : null;
+  }
+
+  /**
+   * Gives back the budget an Attempt consumed when it ended without doing real work (an owner pause/stop or a policy halt):
+   * a flapping control label or workflow must not exhaust `max*AttemptsPerThread` with nothing built.
+   */
+  refundAttemptCounts(issueNumber: number, kind: AttemptKind, repo = this.repo): void {
+    this.db
+      .prepare(
+        `UPDATE threads SET implement_count = MAX(0, implement_count - 1),
+           revision_count = MAX(0, revision_count - ?), rebase_count = MAX(0, rebase_count - ?)
+         WHERE repo = ? AND issue_number = ?`,
+      )
+      .run(kind === "revise" ? 1 : 0, kind === "rebase" ? 1 : 0, repo, issueNumber);
   }
 
   /** Only `archangel pitch promote` (the owner's `gh`) sets this. */
