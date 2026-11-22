@@ -70,7 +70,7 @@ jobs:
 
       - name: Setup Go (when target repository has go.mod)
         if: steps.classify.outputs.is_factory == 'true' && hashFiles('go.mod') != ''
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
