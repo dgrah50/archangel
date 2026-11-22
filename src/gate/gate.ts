@@ -147,13 +147,19 @@ export async function runGateForActions(
   log: (line: string) => void,
   run: (o: GateRunOptions) => Promise<GateReport> = runGate,
   token: string = crypto.randomBytes(16).toString("hex"),
+  /**
+   * The PR head commit the proof belongs to. In Actions the Gate runs on the pull_request MERGE commit, whose SHA is not the check
+   * run's head SHA, and the daemon accepts a proof only for the exact head it is looking at. No valid SHA means no proof is
+   * emitted: a missing proof is shown as missing, a proof for the wrong commit would be worse.
+   */
+  proofHeadSha?: string,
 ): Promise<GateReport> {
   log(`::stop-commands::${token}`);
   const report = await run(opts);
   log(JSON.stringify(report, null, 2));
   log(`::${token}::`);
-  if (report.proof) {
-    const message = JSON.stringify({ head_sha: report.head_sha, ...report.proof })
+  if (report.proof && proofHeadSha !== undefined && /^[0-9a-f]{40}$/.test(proofHeadSha)) {
+    const message = JSON.stringify({ head_sha: proofHeadSha, ...report.proof })
       .replace(/%/g, "%25")
       .replace(/\r/g, "%0D")
       .replace(/\n/g, "%0A");
