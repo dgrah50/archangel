@@ -49,7 +49,8 @@
       "src/core/doctor.ts",
       "src/handoff/paseo.ts",
       "src/core/notifier.ts",
-      "src/core/escalations.ts"
+      "src/core/escalations.ts",
+      "src/core/pitch-expiry.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"

@@ -27,7 +27,7 @@ function needsYouThread(l: Ledger, repo: string, issue: number, now: number) {
 describe("buildDigest", () => {
   it("returns null when there is nothing to report", () => {
     expect(
-      buildDigest({ now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [] }),
+      buildDigest({ now: NOW, needsYou: [], yesterday: { autonomousMerges: 0, ownerMerges: 0, reverts: 0, spendUsd: 0 }, proposals: [], pitches: [] }),
     ).toBeNull();
   });
 
@@ -37,6 +37,7 @@ describe("buildDigest", () => {
       needsYou: [{ repo: "a/b", issueNumber: 7, title: "Bug 7", code: "review_vetoed", since: NOW - 5 * HOUR }],
       yesterday: { autonomousMerges: 2, ownerMerges: 1, reverts: 1, spendUsd: 1.5 },
       proposals: [{ repo: "a/b", issueNumber: 9, scoutName: "bug-hunt" }],
+      pitches: [],
     })!;
     expect(text).toContain("a/b#7 Bug 7");
     expect(text).toContain("live infrastructure");

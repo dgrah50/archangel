@@ -22,6 +22,7 @@ import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
 import { runScoutsForProject, scoutContentHash } from "./scout.js";
+import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import {
@@ -258,6 +259,16 @@ export class Reconciler {
       const issue = await this.resolveIssueForThread(thread, issueMap);
       if (!issue) continue;
       await this.reconcileThread(thread, issue, mainSha, now);
+    }
+
+    // 4b. Pitch housekeeping: record decisions and close pitches nobody decided in 14 days (only when any is open).
+    if (this.ledger.countOpenPitches() > 0) {
+      try {
+        await syncPitchDecisions(this.ledger, this.github, this.cfg, now);
+        await expireStalePitches(this.ledger, this.github, this.cfg, now, (event, msg) => this.logger.warn(event, msg, { repo: this.ledger.repo }));
+      } catch (err) {
+        this.logger.warn("pitch/housekeeping_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
+      }
     }
 
     // 5. Run scheduled daily Scout workflows when repo queue is idle (V2.0).

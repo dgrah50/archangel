@@ -13,6 +13,7 @@ import { MAIN_ESCALATION_POLICY, formatDecisionClass } from "./escalations.js";
 import type { Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { buildClusterBlockFrom } from "./failure-clusters.js";
+import { syncPitchDecisions } from "./pitch-expiry.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
   PITCH_DECLINE_WINDOW_DAYS,
@@ -557,16 +558,7 @@ async function runPitchScout(opts: {
   const summary: ScoutRunSummary = { scoutName: wf.name, status: "ran", filedIssues: [], blockedSecrets: 0, skippedDuplicates: 0 };
 
   // Caps: decided pitches free their slot; at most PITCH_MAX_OPEN stay open per repo.
-  const openIssues = await opts.github.listOpenIssuesByLabel(opts.config.labels.agentPitch);
-  // A pitch whose issue was closed is declined; the owner's own comments on it (their reason) feed the next prompt.
-  for (const d of ledger.syncPitchStatuses(openIssues.map((i) => i.number), now)) {
-    try {
-      const reason = (await opts.github.listOwnerCommentsSince(d.issueNumber, opts.config.ownerUserId, d.filedAt)).join("\n---\n").slice(0, PITCH_DECLINE_REASON_MAX);
-      if (reason) ledger.setPitchDeclineReason(d.issueNumber, reason);
-    } catch {
-      // The reason is a hint for the prompt; the pitch is already declined without it.
-    }
-  }
+  await syncPitchDecisions(ledger, opts.github, opts.config, now);
   if (ledger.isPitchScoutPaused(wf.name, wf.trustHash, PITCH_PAUSE_AFTER_UNPROMOTED)) {
     const marker = wf.trustHash.slice(0, 12);
     if (!ledger.listAudit({ topicPrefix: "pitch/paused", limit: 200 }).some((a) => a.actor === wf.name && a.payloadJson.includes(marker))) {
@@ -659,7 +651,6 @@ async function runPitchScout(opts: {
   return summary;
 }
 
-const PITCH_DECLINE_REASON_MAX = 600;
 const CRITIC_FILE_MAX_CHARS = 8_000;
 
 /**

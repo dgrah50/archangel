@@ -10,6 +10,8 @@ export interface DigestInput {
   yesterday: { autonomousMerges: number | null; ownerMerges: number | null; reverts: number | null; spendUsd: number | null };
   /** Scout proposals still awaiting the owner (no Thread yet); null = could not be read. */
   proposals: Array<{ repo: string; issueNumber: number; scoutName: string }> | null;
+  /** Pitches awaiting the owner's decision (they expire after 14 days); null = could not be read. */
+  pitches: Array<{ repo: string; issueNumber: number; scoutName: string; since: number }> | null;
 }
 
 const UNAVAILABLE = "unavailable";
@@ -27,7 +29,7 @@ function age(ms: number): string {
  */
 export function buildDigest(input: DigestInput): string | null {
   const y = input.yesterday;
-  if (input.needsYou?.length === 0 && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
+  if (input.needsYou?.length === 0 && !input.pitches?.length && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
     return null;
   }
   const n = (v: number | null) => (v === null ? UNAVAILABLE : String(v));
@@ -55,6 +57,12 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.proposals.length > 0) {
     lines.push("", `Scout proposals awaiting you (${input.proposals.length}):`);
     for (const p of input.proposals) lines.push(`  ${p.repo}#${p.issueNumber} (${p.scoutName})`);
+  }
+  if (input.pitches === null) {
+    lines.push("", `Pitches awaiting you: ${UNAVAILABLE}`);
+  } else if (input.pitches.length > 0) {
+    lines.push("", `Pitches awaiting you (${input.pitches.length}; they close unanswered after 14 days):`);
+    for (const p of input.pitches) lines.push(`  ${p.repo}#${p.issueNumber} (${p.scoutName}), open ${age(input.now - p.since)}`);
   }
   return lines.join("\n");
 }
