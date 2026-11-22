@@ -308,9 +308,10 @@ program
   .description("Run offline & online preflight checks (config, PEM, tools, GitHub App least-privilege permissions)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--offline", "Skip GitHub API and Paseo daemon network checks")
+  .option("--smoke", "Also verify each configured subscription CLI is installed and logged in (no model calls)")
   .option("--json", "Output JSON")
-  .action(async (opts: { config?: string; offline?: boolean; json?: boolean }) => {
-    const report = await runDoctor({ configPath: opts.config, offline: opts.offline });
+  .action(async (opts: { config?: string; offline?: boolean; smoke?: boolean; json?: boolean }) => {
+    const report = await runDoctor({ configPath: opts.config, offline: opts.offline, smoke: opts.smoke });
     if (opts.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
