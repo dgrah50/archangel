@@ -36,27 +36,30 @@
 **Requirements**
 
 - Bun 1.4.5+, `git >= 2.38`, and GitHub CLI (`gh`)
-- A least-privilege GitHub App created with `bun scripts/create-github-app.ts`
-- Two or more logged-in AI CLIs (`codex`, `claude`, `agy`) for cross-vendor review
-
-Install from source, onboard a repository, and open the local dashboard.
+- The AI CLIs your `archangel.yaml` chains use, each logged in. The example config uses `codex`, `agy`, and `claude`, and `doctor` fails if any configured one is missing. Trim the chains to the CLIs you have, keeping at least two vendors for cross-vendor review.
 
 ```bash
 git clone https://github.com/dgrah50/archangel.git && cd archangel
-bun install && bun run build && bun link
-archangel onboard owner/my-repo
-archangel doctor --smoke && archangel ui
+bun install
+bun scripts/create-github-app.ts   # creates the App, then writes its ids into .env
+cp archangel.example.yaml archangel.yaml
+bun src/cli/index.ts onboard owner/my-repo
+bun src/cli/index.ts doctor --smoke && bun src/cli/index.ts ui
 ```
 
-Copy `.env.example` to `.env` and [archangel.example.yaml](./archangel.example.yaml) to `archangel.yaml`, merge the onboarding pull request on GitHub, then start the daemon.
+The App script creates a least-privilege GitHub App, saves its key, and waits for you to install it. It then writes `ARCHANGEL_GITHUB_APP_ID`, `ARCHANGEL_GITHUB_INSTALLATION_ID`, and `ARCHANGEL_GITHUB_BOT_USER_ID` into `.env`. If the App has several installations, it asks which to use. Add your own settings from `.env.example` to the same file.
+
+`.env` and `archangel.yaml` are read from the working directory, so keep both in the checkout root and run `archangel` from there. Merge the onboarding pull request on GitHub, then start the daemon.
 
 ```bash
-archangel start              # run in the foreground
-archangel daemon install     # or install as a macOS launchd background service
-archangel daemon restart     # reload after editing archangel.yaml
+bun src/cli/index.ts start             # run in the foreground
+bun src/cli/index.ts daemon install    # or install as a macOS launchd background service
+bun src/cli/index.ts daemon restart    # reload after editing archangel.yaml
 ```
 
-The **Setup and health** page inside `archangel ui` tracks all 8 setup steps directly from your machine and GitHub, displays onboarding PR check status, and links to a prefilled smoke issue.
+> There is one launchd label (`com.archangel.daemon`) per machine, so `daemon install` from a second checkout replaces the first.
+
+The **Setup and health** page inside `archangel ui` tracks the 6 setup groups directly from your machine and GitHub, displays onboarding PR check status, and links to a prefilled smoke issue.
 
 ## Why Archangel?
 
@@ -174,7 +177,7 @@ Start `archangel ui` (loopback `127.0.0.1:4477` by default) to monitor and confi
 | **Pipeline** | Per-repo stage rules (Intake, Build, Gate, Review, Landing, Scouts), skills picker, and PR-only draft panel. |
 | **Pitches** | Read-only Scout pitch viewer with evidence, options considered, slice checkboxes, and copyable promote commands. |
 | **Settings** | Machine settings (`Models`, `Accounts`, `Limits`, `Repos`, `Alerts`), Per-repo, Built-in kernel invariants, and Raw YAML tabs. |
-| **Setup and health** | 8-step setup wizard with derived progress, onboarding PR checks, 24h daemon faults, and saved eval, replay, and tier-benchmark reports. |
+| **Setup and health** | Setup wizard with 6 groups with derived progress, onboarding PR checks, 24h daemon faults, and saved eval, replay, and tier-benchmark reports. |
 
 ### 7. Mechanically verified codebase invariants
 
