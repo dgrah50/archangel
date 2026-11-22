@@ -2,7 +2,7 @@ import { Box, Button, Checkbox, Flex, Text } from "@chakra-ui/react";
 import { useState } from "react";
 import type { PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
-import { CopyCommand, LinkButton, Owed, Page, PageHeadline, Ref, Section } from "./page";
+import { CopyCommand, LinkButton, Page, PageHeadline, Ref, Section } from "./page";
 
 // Pitch text is model-written and untrusted: it is only ever rendered as React text children. The page never promotes or declines:
 // promoting is a command to copy, declining is a link to the issue on GitHub.
@@ -54,13 +54,7 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
   const current = d.open.find((p) => keyOf(p) === picked) ?? d.open[0] ?? null;
   return (
     <Page>
-      <PageHeadline sub="Ideas a Scout thinks are worth building. Nothing starts until you promote a slice.">
-        {n === 0 ? "No pitches need a yes or a no." : (
-          <>
-            <Owed>{n} {n === 1 ? "pitch" : "pitches"}</Owed> {n === 1 ? "needs" : "need"} a yes or a no.
-          </>
-        )}
-      </PageHeadline>
+      <PageHeadline title="Pitches">{n === 0 ? "none open" : `${n} ${n === 1 ? "needs" : "need"} a yes or a no`}</PageHeadline>
       <Flex direction={{ base: "column", lg: "row" }} gap="10" flex="1" align="stretch">
         <Flex direction="column" w={{ lg: "300px" }} flexShrink={0} gap="6">
           {n > 0 ? (

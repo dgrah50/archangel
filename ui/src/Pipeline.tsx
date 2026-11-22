@@ -169,15 +169,15 @@ export function Pipeline({ data, settings }: { data: WorkflowsState; settings: S
   if (!repo) {
     return (
       <Page>
-        <PageHeadline sub="Add a repo in Setup and health, and its line shows up here.">No repo has a line yet.</PageHeadline>
+        <PageHeadline title="Pipeline">no repo has a line yet; add one in Setup and health</PageHeadline>
       </Page>
     );
   }
   return (
     <Page>
       <Flex justify="space-between" align="flex-start" gap="6">
-        <PageHeadline sub="The rules live in the repo. Edits here open a PR that only you can merge.">{`How ${short(repo.repo)}'s line is set up.`}</PageHeadline>
-        <Flex gap="1" p="4px" rounded="12px" bg="bg.muted" mt="10px" flexShrink={0} role="tablist" aria-label="Repo">
+        <PageHeadline title="Pipeline">{`${short(repo.repo)} · rules live in the repo, edits open a PR only you can merge`}</PageHeadline>
+        <Flex gap="1" p="4px" rounded="12px" bg="bg.muted" mt="-9px" flexShrink={0} role="tablist" aria-label="Repo">
           {data.repos.map((r) => (
             <Button key={r.repo} role="tab" aria-selected={r.repo === repo.repo} size="sm" h="36px" px="16px" borderRadius="10px" variant="plain" fontWeight={r.repo === repo.repo ? "500" : "400"} {...(r.repo === repo.repo ? { bg: "bg", color: "fg" } : { color: "fg.muted" })} onClick={() => setPicked(r.repo)}>
               {short(r.repo)}

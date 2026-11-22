@@ -4,7 +4,7 @@ import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
 import { age, recommendationShort } from "./common";
-import { CopyCommand, Dot, LinkButton, Owed, Page, PageHeadline, Ref, Section, Ticked } from "./page";
+import { CopyCommand, Dot, LinkButton, Page, PageHeadline, Ref, Section, Ticked } from "./page";
 import { itemHash, threadHash, type ItemRef } from "./route";
 
 type Item = UiState["needsYou"][number];
@@ -54,7 +54,7 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
   if (queue.length === 0) {
     return (
       <Page>
-        <PageHeadline sub="When a Thread needs a decision only you can make, it shows up here.">Nothing needs you.</PageHeadline>
+        <PageHeadline title="Needs you">nothing needs you</PageHeadline>
         <AnsweredToday answered={state.answeredToday} />
       </Page>
     );
@@ -64,11 +64,9 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
   return (
     <Page pb="0">
       <Flex align="flex-end" justify="space-between" gap="4" wrap="wrap">
-        <PageHeadline sub="Opening one does not answer it. You answer on GitHub, and the factory picks it up within a minute.">
-          <Owed>{queue.length === 1 ? "1 decision" : `${queue.length} decisions`}</Owed>, oldest first.
-        </PageHeadline>
+        <PageHeadline title="Needs you">{queue.length === 1 ? "1 decision" : `${queue.length} decisions, oldest first`}</PageHeadline>
         {next && selected ? (
-          <Flex align="center" gap="4" pb="6" flexShrink={0}>
+          <Flex align="center" gap="4" pb="3.5" flexShrink={0}>
             <Text textStyle="meta" color="fg.muted">
               {queue.indexOf(selected) + 1} of {queue.length}
             </Text>

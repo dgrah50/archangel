@@ -1,7 +1,7 @@
 import { Box, Button, Flex, Link, Text, type FlexProps } from "@chakra-ui/react";
 import { useState, type ReactNode } from "react";
 
-// Page primitives for the dashboard redesign. Every page opens with a plain-sentence headline, then sections of hairline-separated rows
+// Page primitives for the dashboard redesign. Every page opens with its title and its numbers, then sections of hairline-separated rows
 // on the surface: no cards, no shadows. Typography comes from the theme's text styles (headline, rowTitle, label, meta, ref, command ...).
 // Colour language: amber (`owner`) = only the owner can move this, or the factory is about to stop; violet (`unsent`) outlines unsent edits;
 // green (`passed`) marks a passed check next to a text label; everything else is ink and grey.
@@ -17,28 +17,19 @@ export function Page({ children, ...rest }: { children: ReactNode } & FlexProps)
   );
 }
 
-/** One plain sentence stating the situation, plus one grey sentence under it. Wrap the words that need the owner in <Owed>. `lead` is the display size, for the Overview only. */
-export function PageHeadline({ children, sub, lead }: { children: ReactNode; sub?: ReactNode; lead?: boolean }) {
+/** The page title, with the page's numbers beside it in grey. The numbers are the only part that changes, so they are data, not a sentence. */
+export function PageHeadline({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <Flex direction="column" gap="1" pb="6">
-      <Text as="h1" textStyle={lead ? "headlineLead" : "headline"} color="fg">
-        {children}
+    <Flex align="baseline" columnGap="3.5" rowGap="1" wrap="wrap" pb="5">
+      <Text as="h1" textStyle="headline" color="fg" flexShrink={0}>
+        {title}
       </Text>
-      {sub ? (
-        <Text textStyle="headlineSub" color="fg.muted" maxW="64ch">
-          {sub}
+      {children ? (
+        <Text textStyle="body13" color="fg.muted">
+          {children}
         </Text>
       ) : null}
     </Flex>
-  );
-}
-
-/** Amber text for the part of a sentence only the owner can move. */
-export function Owed({ children }: { children: ReactNode }) {
-  return (
-    <Box as="span" color="owner">
-      {children}
-    </Box>
   );
 }
 

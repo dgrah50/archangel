@@ -451,7 +451,7 @@ export function SettingsPage({ scope, settings, workflows, onRetry, children }: 
       {wide ? <Flex justify="flex-end"><Tabs scope={scope} /></Flex> : null}
       <Flex direction={{ base: "column", lg: "row" }} gap="48px" flex="1">
         <Box flex="1" minW="0">
-          <PageHeadline sub={SUB[scope]}>What this machine allows.</PageHeadline>
+          <PageHeadline title="Settings">{SUB[scope]}</PageHeadline>
           {scope === "repo" ? (
             children
           ) : scope === "raw" ? (
