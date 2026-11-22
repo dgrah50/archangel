@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
-import { REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
+import { ConfigError, REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
@@ -71,7 +71,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
       name: "Configuration",
       status: "fail",
       detail: err instanceof Error ? err.message : String(err),
-      remediation: "Copy .env.example -> .env and archangel.example.yaml -> archangel.yaml, then populate required fields.",
+      remediation: err instanceof ConfigError ? err.remediation : "Check archangel.yaml and .env.",
     });
     for (const c of checks) c.scope = "machine";
     return { ok: false, checks };
