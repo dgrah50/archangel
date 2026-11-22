@@ -21,6 +21,7 @@ import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
 import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
+import { captureAttemptInput } from "./attempt-input.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
@@ -1380,7 +1381,15 @@ export class Reconciler {
       promptSha256: promptTemplateSha(kind === "revise" ? "revise" : kind === "rebase" ? "rebase" : "implement", workClassOfBranch(thread.branchName)),
       workflowSha256: this.workflow?.fileSha256 ?? null,
     });
-    if (kind === "implement") await this.pinEval(thread.issueNumber, fromSha);
+    if (kind === "implement") {
+      await this.pinEval(thread.issueNumber, fromSha);
+    } else {
+      // Revise and rebase replay from the head they started on (and, for a rebase, the base it conflicted with): keep both fetchable.
+      const input = captureAttemptInput(kind, { mainSha, gateViolations, structuredFindings });
+      if (input === null) this.logger.warn("eval/input_not_captured", `${kind} input for #${thread.issueNumber} held a secret-like string; this Attempt is not replayable`, { repo: this.ledger.repo, issue: thread.issueNumber });
+      this.ledger.recordAttemptInput(attempt.id, fromSha, input);
+      await this.pinEval(thread.issueNumber, fromSha, kind === "rebase" ? mainSha : null);
+    }
 
     const workingThread = this.applyMachineEvent(
       thread,
