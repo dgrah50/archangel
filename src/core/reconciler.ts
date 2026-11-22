@@ -251,14 +251,15 @@ export class Reconciler {
     const queued = openThreads.filter((t) => t.phase.kind === "queued");
 
     for (const thread of inProgress) {
-      const issue = await this.resolveIssueForThread(thread, issueMap);
+      const issue = await this.readIssueOrSkip(thread, issueMap);
+      if (issue === "skip") continue;
       await this.reconcileThread(thread, issue, mainSha, now);
     }
 
     for (const thread of queued) {
       if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) break;
-      const issue = await this.resolveIssueForThread(thread, issueMap);
-      if (!issue) continue;
+      const issue = await this.readIssueOrSkip(thread, issueMap);
+      if (issue === "skip") continue;
       await this.reconcileThread(thread, issue, mainSha, now);
     }
 
@@ -359,20 +360,27 @@ export class Reconciler {
     }
   }
 
-  private async resolveIssueForThread(
-    thread: ThreadRecord,
-    issueMap: Map<number, GitHubIssue>,
-  ): Promise<GitHubIssue | undefined> {
+  /**
+   * The Thread's issue, or "skip" when it cannot be read this tick. An unreadable issue must never be treated as an issue with no
+   * labels and an unchanged body: that would miss the owner's `factory:stop` and a body edit, and let the Thread land or erase
+   * a `factory:disagree`. The Thread simply waits for the next tick.
+   */
+  private async readIssueOrSkip(thread: ThreadRecord, issueMap: Map<number, GitHubIssue>): Promise<GitHubIssue | "skip"> {
     const cached = issueMap.get(thread.issueNumber);
     if (cached) return cached;
     try {
       const fetched = await this.github.getIssue(thread.issueNumber);
       issueMap.set(thread.issueNumber, fetched);
       return fetched;
-    } catch {
-      return undefined;
+    } catch (err) {
+      this.logger.warn("thread/github_read_failed", `could not read issue #${thread.issueNumber}; the Thread waits for the next tick: ${err instanceof Error ? err.message : String(err)}`, {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+      return "skip";
     }
   }
+
 
   /** Best-effort: pinning is bookkeeping for replay and must never block or fail a tick. */
   private async pinEval(issueNumber: number, ...shas: Array<string | null | undefined>): Promise<void> {

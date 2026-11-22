@@ -168,8 +168,7 @@ describe("digest", () => {
     const text = buildDigest({ ...base, pitches: [{ repo: "a/b", issueNumber: 7, scoutName: "pitch", since: NOW - 3 * DAY }] })!;
     expect(text).toContain("Pitches awaiting you (1; they close unanswered after 14 days):");
     expect(text).toContain("a/b#7 (pitch), open 3d");
-    expect(buildDigest({ ...base, pitches: null })).toBeNull(); // an unreadable list alone does not wake a quiet digest...
-    expect(buildDigest({ ...base, needsYou: null, pitches: null })).toContain("Pitches awaiting you: unavailable"); // ...but is never shown as empty
+    expect(buildDigest({ ...base, pitches: null })).toContain("Pitches awaiting you: unavailable"); // an unreadable list is never treated as empty, even on a quiet day
   });
   it("reads the open pitches from the Ledger", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });

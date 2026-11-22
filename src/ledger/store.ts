@@ -228,6 +228,18 @@ export class Ledger {
     }
   }
 
+  /** Last daemon heartbeat (ms), or null when no lock row exists (never started, or stopped cleanly). */
+  daemonHeartbeatAt(): number | null {
+    const existing = this.getSystemState("daemon_lock");
+    if (!existing) return null;
+    try {
+      const at = (JSON.parse(existing) as { heartbeatAt?: unknown }).heartbeatAt;
+      return typeof at === "number" ? at : null;
+    } catch {
+      return null;
+    }
+  }
+
   isDaemonActive(staleMs: number, now = Date.now()): boolean {
     const existing = this.getSystemState("daemon_lock");
     if (!existing) return false;
@@ -470,6 +482,33 @@ export class Ledger {
       lastError: r.last_error === null ? null : String(r.last_error),
       createdAt: Number(r.created_at),
     }));
+  }
+
+  /** Outbox effects that have failed at least `minAttempts` times (stuck: they are retried forever and never delivered). */
+  listStuckOutbox(minAttempts = 3): OutboxRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM outbox WHERE attempts >= ? ORDER BY id ASC`)
+      .all(minAttempts) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: Number(r.id),
+      repo: String(r.repo),
+      effect: JSON.parse(String(r.effect_json)) as OutboxEffect,
+      attempts: Number(r.attempts),
+      lastError: r.last_error === null ? null : String(r.last_error),
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  /** The autonomy cap was reached and the owner has not been heard from since (an owner audit row clears it). */
+  autonomyCapHitSinceOwner(repo = this.repo): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM audit_log WHERE repo = ? AND topic = 'autonomy/cap_reached'
+             AND id > COALESCE((SELECT MAX(id) FROM audit_log WHERE repo = ? AND actor = 'owner'), 0) LIMIT 1`,
+        )
+        .get(repo, repo),
+    );
   }
 
   /** True while an `add_label` for this label on this issue is still queued (not yet delivered to GitHub). */
