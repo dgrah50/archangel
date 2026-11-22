@@ -355,7 +355,7 @@ async function runShellCmd(
   cmd: string,
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<{ ok: boolean; output: string; status: "passed" | "failed" | "timed_out" | "exec_error" }> {
   try {
     const { stdout, stderr } = await execFileAsync("/bin/sh", ["-eu", "-c", cmd], {
       cwd,
@@ -363,11 +363,14 @@ async function runShellCmd(
       timeout: timeoutMs,
       maxBuffer: 20 * 1024 * 1024,
     });
-    return { ok: true, output: `${stdout}${stderr}`.trim() };
+    return { ok: true, output: `${stdout}${stderr}`.trim(), status: "passed" };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
+    const e = err as { stdout?: string; stderr?: string; message?: string; code?: number | string | null; killed?: boolean; signal?: string | null };
     const out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`.trim() || e.message || String(err);
-    return { ok: false, output: out };
+    // Only a real non-zero exit is a failure. A timeout (killed by our timer) or a command that could not run at all
+    // (spawn error, output buffer overflow) proves nothing about the code under test.
+    const status = e.killed === true && e.signal ? "timed_out" : typeof e.code === "number" ? "failed" : "exec_error";
+    return { ok: false, output: out, status };
   }
 }
 
@@ -757,6 +760,12 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         for (let i = 1; i <= baseRuns; i++) {
           if (junitRe) clearReports(baseDir, junitRe);
           const baseTestRes = await runShellCmd(baseDir, baseCmd, timeoutMs, testEnv);
+          if (baseTestRes.status === "timed_out" || baseTestRes.status === "exec_error") {
+            report.violations.push(
+              `base test command ${baseTestRes.status === "timed_out" ? "timed out" : "could not run"}: that does not prove the new test reproduces the bug (run ${i}/${baseRuns}); failing closed`,
+            );
+            return report;
+          }
           if (!baseTestRes.ok && i === 1) report.proof = { base_output: tailOutput(baseTestRes.output) };
           // With a JUnit report, "red" means a test case from a NEW test file failed; any other failure is not proof.
           let red = !baseTestRes.ok;
