@@ -25,6 +25,7 @@ function needsYouThread(code: EscalationCode): ThreadRecord {
     rebaseCount: 0,
     implementerVendors: [],
     ownerReply: null,
+    retryGrants: 0,
     createdAt: 0,
     updatedAt: 0,
   };
