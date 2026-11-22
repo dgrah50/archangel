@@ -29,7 +29,8 @@ import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } fr
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
-import { defaultScoutCliInvoker, runScoutsForProject, scanForSecrets, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
+import { scanForSecrets, withholdSecrets } from "./secrets.js";
+import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
@@ -1843,7 +1844,7 @@ export class Reconciler {
             try {
               await this.github.postComment(
                 workingThread.issueNumber,
-                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${unpushed.slice(0, 300)}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
+                `Handoff: the agent's last commits could not be pushed to \`${workingThread.branchName}\` (${withholdSecrets(unpushed.slice(0, 300))}). Your workspace may be missing them; the daemon's clone still holds them until it is cleaned.`,
               );
             } catch (err) {
               this.logger.warn("handoff/push_failed_comment_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: workingThread.issueNumber });
@@ -2886,6 +2887,7 @@ export class Reconciler {
           gateProof,
           gateProofError,
           triage,
+          onWithheld: (pattern) => this.logger.warn("recap/secret_withheld", pattern, { repo: this.ledger.repo, issue: thread.issueNumber }),
         }),
       );
     } catch (err) {
