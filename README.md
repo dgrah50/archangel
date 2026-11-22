@@ -123,6 +123,7 @@ When a Thread hits a conflict with an existing test, a reviewer veto, or a produ
 
 - Enable `escalations.factoryRetry: once` in `.agents/archangel.json` to let read-only machine triage attempt one guided recovery before paging you.
 - Every triage run logs vendor, decision, cause, and steps into the PR Recap and tracks outcome labels with automatic per-repo shutoff if retries fail or revert.
+- Set `features.planApproval: owner` to make each `class:feature` Thread post a machine-written plan first and wait. Apply the `plan:approved` label (only your application counts) to approve exactly that plan, or comment to have it re-planned (at most 2 plans, then it asks you).
 - Answer directly on GitHub with inline review comments or `/archangel retry`, `/archangel close`, or `/archangel handoff`. The dashboard stays read-only and never posts as you.
 
 ### 3. Repo-owned pipeline and PR-only policy editing
