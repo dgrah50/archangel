@@ -1,19 +1,26 @@
-import { Badge, Box, Card, Heading, Link, SimpleGrid, Stack, Table, Text } from "@chakra-ui/react";
+import { Badge, Box, Card, Heading, Link, SimpleGrid, Stack, Stat, Table, Text } from "@chakra-ui/react";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
 
-const STAGES = Object.keys({
-  "Working": 0,
-  "Waiting on CI": 0,
-  "In review": 0,
-  "Ready for owner": 0,
-  "Needs you": 0,
-  "Owner driving": 0,
-  "Queued": 0,
-  "Done in last 7 days": 0,
-}) as Array<keyof UiState["stages"]>;
+// "Needs you" is shown prominently above; "Done" is collapsed behind its count.
+const ACTIVE_STAGES = ["Working", "Waiting on CI", "In review", "Ready for owner", "Owner driving", "Queued"] as const satisfies ReadonlyArray<keyof UiState["stages"]>;
+
+const STATUS_PALETTE: Record<string, string> = {
+  working: "blue",
+  awaiting_gate: "yellow",
+  reviewing: "purple",
+  landing: "purple",
+  shadow_ready: "green",
+  owner_driving: "cyan",
+  queued: "gray",
+  merged: "green",
+  "owner merged": "green",
+  "PR closed": "gray",
+  abandoned: "gray",
+  reverted: "red",
+};
 
 function age(ms: number): string {
   const min = Math.max(0, Math.floor(ms / 60_000));
@@ -33,32 +40,59 @@ function GhLink({ repo, kind, num, children }: { repo: string; kind: "issues" | 
   );
 }
 
-function ItemRow({ i, now }: { i: UiItem; now: number }) {
+function ThreadTable({ items, now }: { items: UiItem[]; now: number }) {
   return (
-    <Text>
-      <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink>
-      {i.prNumber ? (
-        <>
-          {" ("}
-          <GhLink repo={i.repo} kind="pull" num={i.prNumber}>{`PR #${i.prNumber}`}</GhLink>
-          {")"}
-        </>
-      ) : null}{" "}
-      {i.title}{" "}
-      <Text as="span" color="fg.muted" textStyle="sm">
-        {i.phase}, {age(now - i.since)}
-      </Text>
-    </Text>
+    <Table.Root size="sm" variant="line">
+      <Table.Body>
+        {items.map((i) => (
+          <Table.Row key={`${i.repo}#${i.issueNumber}`}>
+            <Table.Cell whiteSpace="nowrap">
+              <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink>
+              {i.prNumber ? (
+                <>
+                  {" "}
+                  <GhLink repo={i.repo} kind="pull" num={i.prNumber}>{`PR #${i.prNumber}`}</GhLink>
+                </>
+              ) : null}
+            </Table.Cell>
+            <Table.Cell>{i.title}</Table.Cell>
+            <Table.Cell whiteSpace="nowrap">
+              <Badge colorPalette={STATUS_PALETTE[i.phase] ?? "gray"}>{i.phase.replace(/_/g, " ")}</Badge>
+            </Table.Cell>
+            <Table.Cell whiteSpace="nowrap" color="fg.muted" textAlign="end">
+              {age(now - i.since)}
+            </Table.Cell>
+          </Table.Row>
+        ))}
+      </Table.Body>
+    </Table.Root>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function StatTile({ label, value, help }: { label: string; value: string | number; help?: string }) {
   return (
-    <Box as="section" mt="10">
-      <Heading size="lg" mb="4">
-        {title}
-      </Heading>
-      {children}
+    <Card.Root>
+      <Card.Body py="3">
+        <Stat.Root>
+          <Stat.Label>{label}</Stat.Label>
+          <Stat.ValueText>{value}</Stat.ValueText>
+          {help ? <Stat.HelpText>{help}</Stat.HelpText> : null}
+        </Stat.Root>
+      </Card.Body>
+    </Card.Root>
+  );
+}
+
+function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <Box as="section" mt="12">
+      <Heading size="lg">{title}</Heading>
+      {hint ? (
+        <Text color="fg.muted" textStyle="sm">
+          {hint}
+        </Text>
+      ) : null}
+      <Box mt="4">{children}</Box>
     </Box>
   );
 }
@@ -71,6 +105,7 @@ function Bars({ label, values, days }: { label: string; values: number[]; days: 
     <Card.Root>
       <Card.Body>
         <Text fontWeight="medium">{label}</Text>
+        <Box color="blue.solid">
         <svg role="img" aria-label={`${label}, last ${values.length} days`} width="100%" viewBox={`0 0 ${values.length * w} 48`} preserveAspectRatio="none">
           {values.map((v, idx) => (
             <rect key={days[idx] ?? idx} x={idx * w + 2} y={44 - (v / max) * 40} width={w - 4} height={Math.max(v > 0 ? 2 : 0, (v / max) * 40)} rx="2" fill="currentColor" opacity={0.8}>
@@ -78,6 +113,7 @@ function Bars({ label, values, days }: { label: string; values: number[]; days: 
             </rect>
           ))}
         </svg>
+        </Box>
         <Box display="flex" justifyContent="space-between" color="fg.muted" textStyle="xs">
           <span>{days[0]?.slice(5)}</span>
           <span>{days[days.length - 1]?.slice(5)}</span>
@@ -92,6 +128,10 @@ function Bars({ label, values, days }: { label: string; values: number[]; days: 
 
 export function Dashboard({ state: s }: { state: UiState }) {
   const o = s.outcomes;
+  const repos = Object.keys(s.autonomySteps);
+  const mergedToday = s.daily[s.daily.length - 1]?.merged ?? 0;
+  const done = s.stages["Done in last 7 days"];
+  const activeCount = ACTIVE_STAGES.reduce((t, st) => t + s.stages[st].length, 0);
   return (
     <Box maxW="64rem" mx="auto" p="6">
       <Heading size="2xl">Archangel</Heading>
@@ -99,19 +139,33 @@ export function Dashboard({ state: s }: { state: UiState }) {
         Read-only. Approvals and merges happen on GitHub. Updated {new Date(s.generatedAt).toISOString()}.
       </Text>
 
+      <SimpleGrid columns={{ base: 2, md: 3 }} gap="3" mt="6">
+        <StatTile label="Repos" value={repos.length} />
+        <StatTile label="Merged today" value={mergedToday} />
+        <StatTile label="Needs You" value={s.needsYou.length} help={s.needsYou.length === 0 ? "all clear" : "waiting on you"} />
+        {repos.map((r) => (
+          <StatTile key={r} label={r} value={s.autonomySteps[r] ?? 0} help="autonomous steps since owner" />
+        ))}
+      </SimpleGrid>
+
       <Section title="Needs You">
         {s.needsYou.length === 0 ? (
-          <Text color="fg.muted">Nothing needs you.</Text>
+          <Box borderWidth="1px" borderStyle="dashed" rounded="xl" p="5" color="fg.muted" textAlign="center">
+            Nothing needs you.
+          </Box>
         ) : (
           <Stack gap="3">
             {s.needsYou.map((i) => (
-              <Card.Root key={`${i.repo}#${i.issueNumber}`}>
+              <Card.Root key={`${i.repo}#${i.issueNumber}`} borderLeftWidth="4px" borderLeftColor="orange.solid">
                 <Card.Body>
-                  <Text>
+                  <Text fontWeight="medium">
                     <GhLink repo={i.repo} kind="issues" num={i.issueNumber}>{`${i.repo}#${i.issueNumber}`}</GhLink> {i.title}
                   </Text>
-                  <Text color="fg.muted" textStyle="sm">
-                    <Badge mr="2">{i.decisionClass}</Badge>waiting {age(s.generatedAt - i.since)}
+                  <Text color="fg.muted" textStyle="sm" mt="1">
+                    <Badge colorPalette="orange" mr="2">
+                      {i.decisionClass}
+                    </Badge>
+                    waiting {age(s.generatedAt - i.since)}
                   </Text>
                   <Text mt="2">{i.recommendation}</Text>
                 </Card.Body>
@@ -121,22 +175,33 @@ export function Dashboard({ state: s }: { state: UiState }) {
         )}
       </Section>
 
-      <Section title="Threads">
-        {STAGES.map((st) => (
-          <Box key={st} mb="4">
+      <Section title="Threads" hint={`${activeCount} in flight, ${done.length} finished in the last 7 days`}>
+        {activeCount === 0 ? <Text color="fg.muted">No Threads in flight.</Text> : null}
+        {ACTIVE_STAGES.filter((st) => s.stages[st].length > 0).map((st) => (
+          <Box key={st} mb="5">
             <Heading size="md" mb="1">
-              {st} ({s.stages[st].length})
+              {st}{" "}
+              <Badge variant="subtle" ml="1">
+                {s.stages[st].length}
+              </Badge>
             </Heading>
-            <Stack gap="1">
-              {s.stages[st].map((i) => (
-                <ItemRow key={`${i.repo}#${i.issueNumber}`} i={i} now={s.generatedAt} />
-              ))}
-            </Stack>
+            <ThreadTable items={s.stages[st]} now={s.generatedAt} />
           </Box>
         ))}
+        {done.length > 0 ? (
+          <Box as="details" borderWidth="1px" rounded="xl" px="4" py="2">
+            <Box as="summary" cursor="pointer" fontWeight="medium" py="1">
+              Done in last 7 days{" "}
+              <Badge variant="subtle" ml="1">
+                {done.length}
+              </Badge>
+            </Box>
+            <ThreadTable items={done} now={s.generatedAt} />
+          </Box>
+        ) : null}
       </Section>
 
-      <Section title="Outcomes (all time, per merged fix)">
+      <Section title="Outcomes" hint="All time, per merged fix. Merge count is volume, not success.">
         <Text mb="3">
           Merged fixes: {o.mergedFixes}{" "}
           <Text as="span" color="fg.muted">
@@ -185,7 +250,7 @@ export function Dashboard({ state: s }: { state: UiState }) {
         </SimpleGrid>
       </Section>
 
-      <Section title="Scout activity">
+      <Section title="Scout activity" hint="Most recent Scout proposals.">
         {s.scouts.length === 0 ? (
           <Text color="fg.muted">No Scout proposals.</Text>
         ) : (
