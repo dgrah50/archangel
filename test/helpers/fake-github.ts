@@ -22,6 +22,26 @@ export class FakeGitHub implements GitHubClient {
 
   constructor(private readonly remoteBare: string) {}
 
+  closedPrs: number[] = [];
+  nextCommentId = 1000;
+  /** Posts a comment as `userId` (use `isBot` to mimic an App/bot author) and returns its id. */
+  addComment(n: number, userId: number, body: string, createdAt = Date.now(), isBot = false): number {
+    const id = this.nextCommentId++;
+    const list = this.authoredComments.get(n) ?? [];
+    list.push({ userId, createdAt, body, id, isBot } as never);
+    this.authoredComments.set(n, list);
+    return id;
+  }
+  async listCommentsSince(n: number, sinceMs: number) {
+    return ((this.authoredComments.get(n) ?? []) as unknown as Array<{ id?: number; isBot?: boolean; userId: number; createdAt: number; body: string }>)
+      .filter((c) => c.createdAt > sinceMs)
+      .map((c) => ({ id: c.id ?? 0, userId: c.userId, isBot: Boolean(c.isBot), body: c.body, createdAt: c.createdAt }));
+  }
+  async closePr(prNumber: number): Promise<void> {
+    this.closedPrs.push(prNumber);
+    const pr = this.prs.get(prNumber);
+    if (pr) pr.state = "closed";
+  }
   async getInstallationToken(): Promise<string> {
     return "fake-install-token";
   }

@@ -82,11 +82,14 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
 };
 
+/** One-tap answers the owner can post as a comment on the Thread's issue or PR. */
+export const OWNER_COMMANDS_LINE =
+  "Reply `/archangel retry` with a hint, `/archangel close`, or `/archangel handoff`.";
+
 export function describeEscalation(code: EscalationCode, workClass: "bugfix" | "feature" = "bugfix"): EscalationPolicy {
   const policy = ESCALATION_POLICY[code];
-  return workClass === "feature"
-    ? { ...policy, recommendation: `${policy.recommendation} This is a feature Thread: the owner merges it.` }
-    : policy;
+  const feature = workClass === "feature" ? " This is a feature Thread: the owner merges it." : "";
+  return { ...policy, recommendation: `${policy.recommendation}${feature} ${OWNER_COMMANDS_LINE}` };
 }
 
 export function formatDecisionClass(c: DecisionClass): string {

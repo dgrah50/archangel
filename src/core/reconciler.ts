@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { collectOwnerReply } from "./owner-reply.js";
+import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
 import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass } from "./escalations.js";
 import { REPO_POLICY_PATH, mergeRepoPolicy, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
@@ -11,7 +11,7 @@ import {
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import type { GateProof } from "../gate/gate.js";
-import type { GitHubClient, GitHubIssue, GitHubPr } from "../github/client.js";
+import type { GitHubClient, GitHubIssue, GitHubPr, IssueComment } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
@@ -504,6 +504,127 @@ export class Reconciler {
     return updated;
   }
 
+  /**
+   * Owner retry (label removed or `/archangel retry`): collect the owner's reply, grant one more
+   * Attempt budget, and resume. Returns null (try again next tick) if the reply cannot be fetched.
+   */
+  private async ownerRetry(
+    thread: ThreadRecord,
+    issue: GitHubIssue,
+    via: "label_removed" | "comment",
+    now: number,
+  ): Promise<ThreadRecord | null> {
+    try {
+      const reply = await collectOwnerReply({
+        github: this.github,
+        ownerUserId: this.cfg.ownerUserId,
+        issueNumber: thread.issueNumber,
+        prNumber: thread.phase.kind === "needs_you" ? (thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null) : null,
+        sinceMs: thread.updatedAt,
+      });
+      if (reply) {
+        this.ledger.setOwnerReply(thread.issueNumber, reply, now);
+      }
+      this.ledger.grantRetryBudget(thread.issueNumber, now);
+    } catch (err) {
+      // Never resume without the owner's reply: retry on the next tick.
+      this.logger.warn("thread/owner_reply_fetch_failed", err instanceof Error ? err.message : String(err), {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+      return null;
+    }
+    this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via }, now);
+    return this.applyMachineEvent(
+      thread,
+      { t: "owner_retry" },
+      { bodySha256: sha256(issue.body), auditTopic: "thread/owner_retried", now },
+    );
+  }
+
+  /**
+   * One-tap answers to Needs You: `/archangel retry|close|handoff` as the first line of a comment by
+   * `ownerUserId` on the issue or PR, posted after the Thread entered needs_you. Each comment id is
+   * handled exactly once (durable in the audit log). Anyone else's `/archangel` comment (bots included,
+   * so the Recap can never trigger one) is ignored with an audit row.
+   * Returns the updated Thread when a command moved it, "stop" to end this tick, or null to carry on.
+   */
+  private async processOwnerCommands(
+    thread: ThreadRecord,
+    issue: GitHubIssue | undefined,
+    now: number,
+  ): Promise<ThreadRecord | "stop" | null> {
+    if (thread.phase.kind !== "needs_you") return null;
+    const prNumber = thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null;
+    const places = [thread.issueNumber, ...(prNumber && prNumber !== thread.issueNumber ? [prNumber] : [])];
+    const found: Array<{ where: number; c: IssueComment }> = [];
+    try {
+      for (const where of places) {
+        for (const c of await this.github.listCommentsSince(where, thread.updatedAt)) found.push({ where, c });
+      }
+    } catch (err) {
+      this.logger.warn("thread/owner_command_fetch_failed", err instanceof Error ? err.message : String(err), {
+        repo: this.ledger.repo,
+        issue: thread.issueNumber,
+      });
+      return null;
+    }
+    found.sort((a, b) => a.c.createdAt - b.c.createdAt || a.c.id - b.c.id);
+
+    for (const { where, c } of found) {
+      const firstLine = c.body.trim().split("\n")[0]!.trim();
+      if (!COMMAND_LINE_RE.test(firstLine) || this.ledger.hasHandledOwnerCommand(c.id)) continue;
+      if (c.userId !== this.cfg.ownerUserId) {
+        this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "ignored", `github:${c.userId}${c.isBot ? ":bot" : ""}`, now);
+        continue;
+      }
+      const command = firstLine.split(/\s+/)[1]?.toLowerCase() ?? "";
+      if (command === "retry") {
+        if (!issue) return null;
+        const retried = await this.ownerRetry(thread, issue, "comment", now);
+        if (!retried) return "stop";
+        this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "retry", "owner", now);
+        return retried;
+      }
+      if (command === "close") {
+        const abandoned = this.applyMachineEvent(
+          thread,
+          { t: "owner_abandon" },
+          { auditTopic: "thread/owner_abandoned", auditPayload: { via: "comment" }, now },
+        );
+        if (!abandoned) return "stop";
+        this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "close", "owner", now);
+        if (prNumber) {
+          try {
+            await this.github.closePr(prNumber);
+          } catch (err) {
+            this.logger.warn("thread/owner_close_pr_failed", err instanceof Error ? err.message : String(err), {
+              repo: this.ledger.repo,
+              issue: thread.issueNumber,
+            });
+          }
+        }
+        return "stop";
+      }
+      // Handoff launches an agent in the owner's local Paseo, which the daemon cannot do on its own, and
+      // parking a Thread as owner_driving with nobody driving would stall it. Record the request, point at the CLI.
+      this.ledger.recordOwnerCommand(
+        c.id,
+        thread.issueNumber,
+        command === "handoff" ? "handoff_requested" : "unknown",
+        "owner",
+        now,
+      );
+      await this.github.postComment(
+        where,
+        command === "handoff"
+          ? `Handoff needs your local Paseo, so I left this Thread in Needs You. Run \`archangel handoff ${thread.issueNumber}\` on your machine.`
+          : `Unknown command. Valid commands (first line of a comment): \`/archangel retry\` (text below it is your hint), \`/archangel close\`, \`/archangel handoff\`.`,
+      );
+    }
+    return null;
+  }
+
   private async reconcileThread(
     thread: ThreadRecord,
     issue: GitHubIssue | undefined,
@@ -565,35 +686,15 @@ export class Reconciler {
       return;
     }
 
-    // 5. `needs_you`: if owner cleared the `needs-you` label on GitHub, resume cleanly & re-snapshot bodySha (fixes S4, S15!).
+    // 5. `needs_you`: an owner comment command or clearing the `needs-you` label resumes cleanly & re-snapshots bodySha (fixes S4, S15!).
+    if (thread.phase.kind === "needs_you") {
+      const afterCommands = await this.processOwnerCommands(thread, issue, now);
+      if (afterCommands === "stop") return;
+      if (afterCommands) thread = afterCommands;
+    }
     if (thread.phase.kind === "needs_you") {
       if (issue && !combinedLabels.includes(this.cfg.labels.needsYou)) {
-        try {
-          const reply = await collectOwnerReply({
-            github: this.github,
-            ownerUserId: this.cfg.ownerUserId,
-            issueNumber: thread.issueNumber,
-            prNumber: thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null,
-            sinceMs: thread.updatedAt,
-          });
-          if (reply) {
-            this.ledger.setOwnerReply(thread.issueNumber, reply, now);
-          }
-          this.ledger.grantRetryBudget(thread.issueNumber, now);
-        } catch (err) {
-          // Never resume without the owner's reply: retry on the next tick.
-          this.logger.warn("thread/owner_reply_fetch_failed", err instanceof Error ? err.message : String(err), {
-            repo: this.ledger.repo,
-            issue: thread.issueNumber,
-          });
-          return;
-        }
-        this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via: "label_removed" }, now);
-        const retried = this.applyMachineEvent(
-          thread,
-          { t: "owner_retry" },
-          { bodySha256: sha256(issue.body), auditTopic: "thread/owner_retried", now },
-        );
+        const retried = await this.ownerRetry(thread, issue, "label_removed", now);
         if (retried) {
           thread = retried;
         } else {
