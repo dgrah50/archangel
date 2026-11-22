@@ -15,6 +15,7 @@ export async function syncPitchDecisions(
   github: Pick<GitHubClient, "listOpenIssuesByLabel" | "listOwnerCommentsSince">,
   config: Pick<ArchangelConfig, "labels" | "ownerUserId">,
   now: number,
+  log: (event: string, msg: string) => void = () => undefined,
 ): Promise<number[]> {
   const open = await github.listOpenIssuesByLabel(config.labels.agentPitch);
   const declined = ledger.syncPitchStatuses(open.map((i) => i.number), now);
@@ -22,8 +23,9 @@ export async function syncPitchDecisions(
     try {
       const reason = (await github.listOwnerCommentsSince(d.issueNumber, config.ownerUserId, d.filedAt)).join("\n---\n").slice(0, DECLINE_REASON_MAX);
       if (reason) ledger.setPitchDeclineReason(d.issueNumber, reason);
-    } catch {
-      // The reason is a hint for the prompt; the pitch is already declined without it.
+    } catch (err) {
+      // The reason is a hint for the prompt; the pitch is already declined without it, but say it was lost.
+      log("pitch/decline_reason_failed", `#${d.issueNumber}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return declined.map((d) => d.issueNumber);
@@ -47,8 +49,14 @@ export async function expireStalePitches(
   const expired: number[] = [];
   for (const p of stale) {
     if (!stillOpen.has(p.issueNumber)) continue; // closed some other way: the decline sync records it
-    if ((await github.listOwnerCommentsSince(p.issueNumber, config.ownerUserId, p.filedAt)).length > 0) continue; // the owner engaged
-    await github.closeIssue(p.issueNumber);
+    try {
+      if ((await github.listOwnerCommentsSince(p.issueNumber, config.ownerUserId, p.filedAt)).length > 0) continue; // the owner engaged
+      await github.closeIssue(p.issueNumber);
+    } catch (err) {
+      // One pitch's failure must not block expiring the rest; nothing is recorded, so the next tick retries it.
+      log("pitch/expiry_failed", `#${p.issueNumber}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
     ledger.markPitchExpired(p.issueNumber, now);
     ledger.appendAudit("pitch/expired", p.issueNumber, "archangel", { days: PITCH_EXPIRY_DAYS }, now);
     expired.push(p.issueNumber);
