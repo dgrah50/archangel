@@ -9,7 +9,7 @@ import type { DoctorCheck } from "../../src/core/doctor.js";
 import type { Feed } from "./AppView";
 import { age } from "./common";
 import { EvalsSection } from "./EvalsPage";
-import { FaultsSection, LadderList, ReadError, SmokeChecks, tokenOf, useLadder } from "./HealthPage";
+import { FaultsSection, TelemetrySection, LadderList, ReadError, SmokeChecks, tokenOf, useLadder } from "./HealthPage";
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
@@ -476,6 +476,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
       </Flex>
       <Flex direction="column" gap="10" mt="12">
         <FaultsSection faults={state.faults} now={now} />
+        <TelemetrySection telemetry={state.telemetry} now={now} />
         <EvalsSection evals={evals} now={now} onRetry={onRetry} />
       </Flex>
       <Text textStyle="meta" color="fg.muted" mt="10" maxW="420px">
