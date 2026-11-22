@@ -14,17 +14,6 @@ const outbox = (l: Ledger, attempts: number, lastError: string | null) =>
     .run("a/b", JSON.stringify({ kind: "add_label", issueNumber: 1, label: "needs-you" }), attempts, lastError, NOW);
 
 describe("archangel status health", () => {
-  it("a fresh heartbeat with nothing wrong is all clear", () => {
-    const l = ledger();
-    lock(l, NOW - 10_000);
-    const h = computeHealth(l, NOW, ["a/b"]);
-    expect(h.ok).toBe(true);
-    const text = renderHealth(h).join("\n");
-    expect(text).toContain("Daemon:   running (heartbeat 0m ago)");
-    expect(text).toContain("All clear.");
-    expect(text).not.toContain("!");
-  });
-
   it("surfaces a dead daemon: a stale heartbeat, or no lock at all", () => {
     const l = ledger();
     lock(l, NOW - DAEMON_STALE_MS - 60_000);

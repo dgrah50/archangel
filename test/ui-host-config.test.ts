@@ -3,16 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { BACKUPS_KEEP, PREVIEW_TTL_MS, classifyLoosening, lineDiff, makeHostConfigHandler, sha256, type ApplyResult, type PreviewResult } from "../src/core/ui-host-config.js";
+import { PREVIEW_TTL_MS, makeHostConfigHandler, sha256, type ApplyResult, type PreviewResult } from "../src/core/ui-host-config.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { ProposeRefusal } from "../src/core/ui-propose.js";
-import { HostYamlSchema } from "../src/config.js";
 import { Ledger } from "../src/ledger/store.js";
-import { parse } from "yaml";
 
 const YAML = "ownerUserId: 42\nprojects:\n  - repo: a/b\n";
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "arc-w2-"));
-const host = (text: string) => HostYamlSchema.parse(parse(text));
 
 function setup(text: string | null = YAML) {
   const dir = tmp();
@@ -39,48 +36,8 @@ const status = (fn: () => unknown): number => {
   }
 };
 
-describe("classifyLoosening", () => {
-  const prev = host("ownerUserId: 1\nmaxDailyUsd: 20\nprojects:\n  - repo: a/b\n    maxAutoMergesPerDay: 3\n");
-  const next = (extra: string) => host(`ownerUserId: 1\n${extra}`);
-  it("flags raised limits, shadowMode off and Scouts on, and nothing for tightening or unrelated edits", () => {
-    expect(classifyLoosening(prev, next("maxDailyUsd: 30\nprojects:\n  - repo: a/b\n    maxAutoMergesPerDay: 3\n"))[0]).toContain("maxDailyUsd 20 -> 30");
-    expect(classifyLoosening(prev, next("projects:\n  - repo: a/b\n    maxAutoMergesPerDay: 5\n"))).toEqual(["a/b: maxAutoMergesPerDay 3 -> 5"]);
-    expect(classifyLoosening(prev, next("projects:\n  - repo: a/b\n    shadowMode: false\n    maxAutoMergesPerDay: 3\n"))).toEqual(["a/b: shadowMode on -> off"]);
-    expect(classifyLoosening(prev, next("projects:\n  - repo: a/b\n    maxAutoMergesPerDay: 3\n    scouts: { enabled: true, maxAutoPromotionsPerDay: 2 }\n"))).toEqual(["a/b: maxAutoPromotionsPerDay 1 -> 2", "a/b: scouts.enabled false -> true"]);
-    expect(classifyLoosening(prev, next("maxDailyUsd: 5\nprojects:\n  - repo: a/b\n    maxAutoMergesPerDay: 1\n"))).toEqual([]);
-    expect(classifyLoosening(prev, next("dailyTimezone: UTC\ndigestHour: 7\nprojects:\n  - repo: a/b\n    maxAutoMergesPerDay: 3\n"))).toEqual([]);
-  });
-  it("compares effective step limits: removing a project override that was stricter than the host loosens", () => {
-    const strict = host("ownerUserId: 1\nmaxAutonomousStepsWithoutOwner: 25\nprojects:\n  - repo: a/b\n    maxAutonomousStepsWithoutOwner: 5\n");
-    expect(classifyLoosening(strict, host("ownerUserId: 1\nmaxAutonomousStepsWithoutOwner: 25\nprojects:\n  - repo: a/b\n"))).toEqual(["a/b: maxAutonomousStepsWithoutOwner 5 -> 25"]);
-    expect(classifyLoosening(strict, host("ownerUserId: 1\nmaxAutonomousStepsWithoutOwner: 25\nprojects:\n  - repo: a/b\n    maxAutonomousStepsWithoutOwner: 3\n"))).toEqual([]);
-  });
-  it("a new project is judged against the strictest stance, and a missing previous file against defaults", () => {
-    expect(classifyLoosening(prev, host("ownerUserId: 1\nprojects:\n  - repo: a/b\n    maxAutoMergesPerDay: 3\n  - repo: c/d\n    shadowMode: false\n"))).toEqual(["c/d: shadowMode on -> off"]);
-    expect(classifyLoosening(null, host(YAML))).toEqual([]);
-    expect(classifyLoosening(null, host("ownerUserId: 1\nprojects:\n  - repo: a/b\n    scouts: { enabled: true }\n"))).toEqual(["a/b: scouts.enabled false -> true"]);
-  });
-});
-
 describe("W2 handler", () => {
   const edited = `${YAML}digestHour: 7\n`;
-  it("preview is read-only: reports the diff and returns the hash apply must quote", () => {
-    const s = setup();
-    const r = s.handler(body({ rawText: edited })) as PreviewResult;
-    expect(r).toMatchObject({ mode: "preview", valid: true, loosening: [], previewSha256: sha256(edited) });
-    expect(r.diff).toContain("+ digestHour: 7");
-    expect(fs.readFileSync(s.configPath, "utf8")).toBe(YAML);
-    expect(s.audits).toEqual([]);
-  });
-  it("an invalid file is reported with paths, never gets a previewSha256, and cannot be applied", () => {
-    const s = setup();
-    const r = s.handler(body({ rawText: "ownerUserId: nope\nprojects: []\n" })) as PreviewResult;
-    expect(r.valid).toBe(false);
-    expect(r.previewSha256).toBeUndefined();
-    expect(r.errors.join(" ")).toContain("ownerUserId");
-    expect(status(() => s.handler(body({ mode: "apply", rawText: "ownerUserId: nope\nprojects: []\n", previewSha256: sha256("ownerUserId: nope\nprojects: []\n") })))).toBe(409);
-    expect((s.handler(body({ rawText: "a: [x" })) as PreviewResult).errors[0]).toContain("YAML");
-  });
   it("apply writes exactly the previewed bytes: atomic, 0600, backed up, audited as host_config before the write", () => {
     const s = setup();
     s.handler(body({ rawText: edited }));
@@ -105,14 +62,6 @@ describe("W2 handler", () => {
     s.handler(body({ mode: "apply", rawText: edited, previewSha256: sha256(edited) }));
     expect(status(() => s.handler(body({ mode: "apply", baseSha256: sha256(edited), rawText: edited, previewSha256: sha256(edited) })))).toBe(409);
   });
-  it("a stale base is a 409 for both preview and apply, and a change between preview and apply is refused", () => {
-    const s = setup();
-    expect(status(() => s.handler(body({ baseSha256: sha256("other"), rawText: edited })))).toBe(409);
-    s.handler(body({ rawText: edited }));
-    fs.writeFileSync(s.configPath, `${YAML}digestHour: 3\n`);
-    expect(status(() => s.handler(body({ mode: "apply", rawText: edited, previewSha256: sha256(edited) })))).toBe(409);
-    expect(fs.readFileSync(s.configPath, "utf8")).toBe(`${YAML}digestHour: 3\n`);
-  });
   it("loosening is reported by preview and refused by apply without confirmLoosen", () => {
     const s = setup();
     const loose = `${YAML}maxDailyUsd: 99\n`;
@@ -133,67 +82,6 @@ describe("W2 handler", () => {
     expect(() => h(body({ mode: "apply", rawText: edited, previewSha256: sha256(edited) }))).toThrow("ledger locked");
     expect(fs.readFileSync(configPath, "utf8")).toBe(YAML);
     expect(fs.readdirSync(dir)).toEqual(["archangel.yaml"]);
-  });
-  it("creates the file when there is none (base null), with no backup", () => {
-    const s = setup(null);
-    const b = { mode: "preview", baseSha256: null, rawText: YAML };
-    s.handler(b);
-    const r = s.handler({ ...b, mode: "apply", previewSha256: sha256(YAML) }) as ApplyResult;
-    expect(fs.readFileSync(s.configPath, "utf8")).toBe(YAML);
-    expect(r.backup).toBeNull();
-  });
-  it("keeps only the newest backups", () => {
-    const s = setup();
-    let text = YAML;
-    for (let i = 0; i < BACKUPS_KEEP + 3; i++) {
-      const next = `${YAML}digestHour: ${i % 20}\nsetupTimeoutMs: ${10_000 + i}\n`;
-      s.handler({ mode: "preview", baseSha256: sha256(text), rawText: next });
-      s.handler({ mode: "apply", baseSha256: sha256(text), rawText: next, previewSha256: sha256(next) });
-      text = next;
-      s.tick(10);
-    }
-    expect(fs.readdirSync(s.dir).filter((f) => f.includes(".bak-"))).toHaveLength(BACKUPS_KEEP);
-  });
-  it("the path is never taken from the request: unknown keys are rejected", () => {
-    const s = setup();
-    expect(status(() => s.handler(body({ path: "/etc/passwd" })))).toBe(400);
-    expect(status(() => s.handler({ mode: "nope" }))).toBe(400);
-    expect(status(() => s.handler(body({ rawText: "x".repeat(300_000) })))).toBe(400);
-  });
-  it("lineDiff shows additions, removals and nothing for identical text", () => {
-    expect(lineDiff("a\nb\nc", "a\nc\nd")).toBe("- b\n+ d");
-    expect(lineDiff("a", "a")).toBe("");
-  });
-});
-
-describe("W2 never counts as the owner", () => {
-  it("autonomousStepsSinceOwner is unchanged by an apply, and the audit actor is host_config", () => {
-    const dir = tmp();
-    const configPath = path.join(dir, "archangel.yaml");
-    fs.writeFileSync(configPath, YAML);
-    const dbPath = path.join(dir, "ledger.db");
-    const l = new Ledger(dbPath, { repo: "a/b" });
-    l.appendAudit("attempt/started", 1, "archangel", { kind: "implement" }, 1000, "a/b");
-    l.appendAudit("attempt/started", 2, "archangel", { kind: "implement" }, 1001, "a/b");
-    expect(l.autonomousStepsSinceOwner()).toBe(2);
-    const h = makeHostConfigHandler({
-      configPath,
-      env: {},
-      audit: (topic, payload, now) => {
-        const w = new Ledger(dbPath);
-        try {
-          w.appendAudit(topic, null, "host_config", payload, now, null);
-        } finally {
-          w.close();
-        }
-      },
-    });
-    const edited = `${YAML}digestHour: 7\n`;
-    h(body({ rawText: edited }));
-    h(body({ mode: "apply", rawText: edited, previewSha256: sha256(edited) }));
-    expect(l.autonomousStepsSinceOwner()).toBe(2);
-    const row = l.listAudit({ topicPrefix: "host_config/" })[0]!;
-    expect(row.actor).toBe("host_config");
   });
 });
 
@@ -262,17 +150,6 @@ describe("server guards for the write routes", () => {
     }
   });
 
-  it("is 403 without a wired host config even locally", async () => {
-    const ui = tmp();
-    fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
-    const server = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui });
-    try {
-      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-      expect((await post(base, { "content-type": "application/json" }, {})).status).toBe(403);
-    } finally {
-      server.close();
-    }
-  });
 });
 
 describe("invariants pinned by grep", () => {

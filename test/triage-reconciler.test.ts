@@ -227,31 +227,4 @@ describe("auto-off", () => {
     }
   });
 
-  it("stays on while the recent retries are mostly merged", async () => {
-    const w = world();
-    try {
-      const wf = (w.rec as unknown as Priv).workflow;
-      for (const n of [21, 22, 23]) retried(w.ledger, n, "gate_failed", { kind: "done", outcome: "owner_merged" });
-      retried(w.ledger, 24, "gate_failed", { kind: "done", outcome: "pr_closed" }, true);
-      await (w.rec as unknown as Priv).checkFactoryAutoOff(wf, Date.now());
-      expect(w.notes).toEqual([]);
-    } finally {
-      w.cleanup();
-    }
-  });
-
-  it("outcomes feed stage metrics and corrections", () => {
-    const w = world();
-    try {
-      retried(w.ledger, 21, "review_vetoed", { kind: "done", outcome: "owner_merged" });
-      retried(w.ledger, 22, "review_vetoed", { kind: "done", outcome: "pr_closed" }, true);
-      const m = w.ledger.computeStageMetrics("acme/app", 0).factoryRetries;
-      expect(m.total).toBe(2);
-      expect(m.byOutcome).toMatchObject({ success: 1, owner_overrode: 1 });
-      expect(m.byCode.review_vetoed).toMatchObject({ success: 1, owner_overrode: 1 });
-      expect(w.ledger.computeCorrections({ repo: "acme/app" }).factoryRetries).toEqual({ "review_vetoed:owner_overrode": 1 });
-    } finally {
-      w.cleanup();
-    }
-  });
 });

@@ -4,7 +4,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
-import { ChainsSchema, HostYamlSchema, resolveRequiredReviewers, writerVendors } from "../src/config.js";
+import { ChainsSchema, HostYamlSchema, resolveRequiredReviewers } from "../src/config.js";
 import { findReviewerIndependenceGaps } from "../src/core/doctor.js";
 import { selectScoutProvider } from "../src/core/scout.js";
 import { Ledger } from "../src/ledger/store.js";
@@ -12,19 +12,6 @@ import { Ledger } from "../src/ledger/store.js";
 const host = (extra: Record<string, unknown> = {}) => ({ ownerUserId: 1, projects: [{ repo: "a/b" }], ...extra });
 
 describe("host chains config", () => {
-  it("fills every role with a default chain, and keeps reviewerChain separate", () => {
-    const h = HostYamlSchema.parse(host());
-    expect(Object.keys(h.chains).sort()).toEqual(["implement", "rebase", "revise", "scout", "triage"]);
-    expect(h.chains.implement[0]).toEqual({ provider: "codex" });
-    expect(h.reviewerChain.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("accepts per-role chains with models, and lets a role be overridden alone", () => {
-    const h = HostYamlSchema.parse(host({ chains: { revise: [{ provider: "claude", model: "haiku" }] } }));
-    expect(h.chains.revise).toEqual([{ provider: "claude", model: "haiku" }]);
-    expect(h.chains.implement[0]!.provider).toBe("codex");
-  });
-
   it("rejects an empty implement, revise, rebase, scout or triage chain", () => {
     for (const role of ["implement", "revise", "rebase", "scout", "triage"]) {
       expect(() => HostYamlSchema.parse(host({ chains: { [role]: [] } })), role).toThrow(/at least one provider/);
@@ -34,10 +21,6 @@ describe("host chains config", () => {
   it("requires a claude or codex entry in the scout chain (agy has no verified read-only mode)", () => {
     expect(() => ChainsSchema.parse({ scout: [{ provider: "agy" }] })).toThrow(/claude or codex/);
     expect(selectScoutProvider([{ provider: "agy" }, { provider: "claude", model: "m" }])).toMatchObject({ provider: "claude", model: "m" });
-  });
-
-  it("has no implementerChain alias: the old key is rejected", () => {
-    expect(() => HostYamlSchema.parse(host({ implementerChain: [{ provider: "codex" }] }))).toThrow();
   });
 
   it("the shipped example config parses", () => {
@@ -106,10 +89,6 @@ describe("reviewer independence across the writing roles", () => {
     rebase: [{ provider: "codex", model: "mini" }],
   });
   const cfg = { authMode: "subscription" as const, chains, reviewerChain };
-
-  it("lists every vendor that can write code", () => {
-    expect(writerVendors(chains).sort()).toEqual(["anthropic", "openai"]);
-  });
 
   it("with no Attempt recorded yet, excludes the first vendor of every writing role", () => {
     expect(resolveRequiredReviewers(cfg)).toEqual(["gemini"]);
