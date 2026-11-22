@@ -77,4 +77,17 @@ export const textStyles = {
   "7xl": { value: { fontSize: "7xl", lineHeight: "display", letterSpacing: "display" } },
   "8xl": { value: { fontSize: "8xl", lineHeight: "display", letterSpacing: "display" } },
   "9xl": { value: { fontSize: "9xl", lineHeight: "display", letterSpacing: "display" } },
+
+  // Dashboard redesign. Geist 600 with tight tracking for headlines and big numbers, Inter 13px for body, Geist Mono for refs, SHAs, commands and paths.
+  headline: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "44px", lineHeight: "50px", letterSpacing: "-0.045em" } },
+  headlineSub: { value: { fontFamily: "heading", fontWeight: "400", fontSize: "22px", lineHeight: "30px", letterSpacing: "-0.025em" } },
+  bigNumber: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "28px", lineHeight: "32px", letterSpacing: "-0.04em" } },
+  figure: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "17px", lineHeight: "18px", letterSpacing: "display" } },
+  rowTitle: { value: { fontFamily: "heading", fontWeight: "600", fontSize: "15.5px", lineHeight: "21px", letterSpacing: "-0.02em" } },
+  label: { value: { fontFamily: "body", fontWeight: "500", fontSize: "13px", lineHeight: "18px", letterSpacing: "body" } },
+  body13: { value: { fontFamily: "body", fontSize: "13px", lineHeight: "18px", letterSpacing: "body" } },
+  meta: { value: { fontFamily: "body", fontSize: "12.5px", lineHeight: "18px", letterSpacing: "body" } },
+  caption: { value: { fontFamily: "body", fontSize: "11px", lineHeight: "14px", letterSpacing: "body" } },
+  ref: { value: { fontFamily: "mono", fontSize: "11.5px", letterSpacing: "body" } },
+  command: { value: { fontFamily: "mono", fontSize: "12px", lineHeight: "18px", letterSpacing: "body" } },
 }
