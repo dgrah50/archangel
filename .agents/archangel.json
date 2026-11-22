@@ -46,6 +46,9 @@
       "test/protected-paths.test.ts",
       "src/core/failure-clusters.ts",
       "src/core/replay.ts"
+    ],
+    "testDataGlobs": [
+      "test/helpers/**"
     ]
   },
   "requiredChecks": [
