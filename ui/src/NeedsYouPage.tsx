@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
-import { age } from "./common";
+import { age, recommendationShort } from "./common";
 import { CopyCommand, LinkButton, Owed, Page, PageHeadline, Ref, Section } from "./page";
 import { itemHash, threadHash, type ItemRef } from "./route";
 
@@ -21,6 +21,33 @@ export function nextItem(queue: Item[], current: Item | null): Item | null {
   return queue[(at + 1) % queue.length]!;
 }
 
+const clock = (ts: number, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ts);
+
+/** Decisions answered today (local day per `dailyTimezone`): plain grey rows, the ref in mono. */
+function AnsweredToday({ answered }: { answered: UiState["answeredToday"] }) {
+  if (answered.items.length === 0) return null;
+  return (
+    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border">
+      <Text textStyle="meta" color="fg.muted">
+        Answered today
+      </Text>
+      {answered.items.map((a) => (
+        <Flex key={`${a.repo}#${a.issueNumber}`} gap="4" textStyle="meta" color="fg.muted">
+          <Text textStyle="ref" w="150px" flexShrink={0} truncate>
+            <Ref repo={a.repo} num={a.issueNumber} />
+          </Text>
+          <Text flex="1" minW="0" truncate>
+            {cap(a.decisionClass)}
+          </Text>
+          <Text color="fg.subtle" flexShrink={0}>
+            {clock(a.answeredAt, answered.timeZone)}
+          </Text>
+        </Flex>
+      ))}
+    </Flex>
+  );
+}
+
 /** Read-only: opening an item does not answer it. Answering happens on GitHub; nothing here posts. */
 export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState; item: ItemRef | null; thread: Feed<ThreadDetail>; onRetry: () => void }) {
   const queue = state.needsYou;
@@ -28,6 +55,7 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
     return (
       <Page>
         <PageHeadline sub="When a Thread needs a decision only you can make, it shows up here.">Nothing needs you.</PageHeadline>
+        <AnsweredToday answered={state.answeredToday} />
       </Page>
     );
   }
@@ -85,12 +113,13 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
                     </Text>
                   </Flex>
                   <Text textStyle="meta" color="fg.muted">
-                    {cap(i.decisionClass)} · {i.recommendationShort}
+                    {cap(i.decisionClass)} · {recommendationShort(i)}
                   </Text>
                 </Link>
               </li>
             );
           })}
+          <AnsweredToday answered={state.answeredToday} />
         </Flex>
         <Box flex="1" minW="0" p="7" pb="6">
           {selected === null ? (
@@ -129,13 +158,13 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
       </Flex>
       <Flex direction="column" gap="2" p="6" rounded="20px" bg="bg.muted">
         <Text textStyle="meta" color="fg.muted">
-          The factory recommends
+          {i.threadRecommendation ? "The factory recommends, for this Thread" : "The factory recommends"}
         </Text>
         <Text textStyle="rowTitle" fontSize="18px" color="fg">
-          {i.recommendation}
+          {i.threadRecommendation ? i.threadRecommendation.headline : i.recommendation}
         </Text>
         <Text textStyle="body13" color="fg.muted">
-          {i.reason}
+          {i.threadRecommendation ? i.threadRecommendation.reason : i.reason}
         </Text>
       </Flex>
       {d === null ? (

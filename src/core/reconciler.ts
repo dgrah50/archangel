@@ -30,7 +30,7 @@ import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
-import { buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
+import { buildRecommendationPrompt, buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, vetRecommendation, RecommendationOnlySchema, RECOMMENDATION_ONLY_JSON_SCHEMA, RECOMMENDATION_TIMEOUT_MS, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
 import {
   classifyGate,
   deriveControl,
@@ -894,10 +894,15 @@ export class Reconciler {
         choice.vendor,
       );
     } catch (err) {
+      this.ledger.recordThreadRecommendation(thread.issueNumber, { code, headSha, vendor: choice.vendor, headline: null, reason: null }, now); // that run was this entry's one call
       this.releaseTriage(thread, `the triage run failed (${err instanceof Error ? err.message : String(err)}).`.slice(0, 600), "run_failed", now);
       return;
     } finally {
       if (cloneDir) this.broker.removeClone(cloneDir);
+    }
+    if (verdict.action === "escalate") {
+      // The one recommendation call for this needs_you entry rode on the triage run: record it (or its absence) so nothing asks again.
+      this.ledger.recordThreadRecommendation(thread.issueNumber, { code, headSha, vendor: choice.vendor, headline: verdict.recommendation?.headline ?? null, reason: verdict.recommendation?.reason ?? null }, now);
     }
     this.ledger.appendAudit("factory/triage", thread.issueNumber, "factory", { code, vendor: choice.vendor, action: verdict.action, cause: verdict.cause, ...(verdict.action === "guidance" ? { steps: verdict.steps } : { reason: verdict.reason.slice(0, 300) }) }, now);
     if (verdict.action === "escalate") {
@@ -926,6 +931,52 @@ export class Reconciler {
       undefined,
       true,
     );
+  }
+
+  /**
+   * One read-only recommendation-only run for a needs_you Thread whose triage did not run (or ran and was not for this entry). At most one
+   * per needs_you entry (the audit row is written whatever the outcome), never retried, bounded per repo per day, and only through the
+   * triage chain's read-only invoker. The text is untrusted: vetted, secret-scanned, shown only as machine advice, never posted to GitHub.
+   */
+  private async runRecommendation(thread: ThreadRecord, issue: GitHubIssue | undefined, mainSha: string, now: number): Promise<void> {
+    if (thread.phase.kind !== "needs_you" || !issue || thread.factoryTriage === "pending") return;
+    if (this.ledger.threadRecommendationFor(thread) !== null) return;
+    if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+    if (this.ledger.recommendationsInLast24h(now) >= KERNEL.recommendationsPerRepoPerDay) return;
+    const phase = thread.phase;
+    const headSha = phase.headSha ?? null;
+    const reviews = headSha ? this.ledger.getReviewsForSha(thread.issueNumber, headSha) : [];
+    const choice = pickTriageProvider(this.cfg.chains.triage, {
+      code: phase.code,
+      vetoers: reviews.filter((r) => r.verdict !== "approve").map((r) => r.vendor),
+      implementerVendors: thread.implementerVendors,
+    });
+    if (!choice) return;
+    let headline: string | null = null;
+    let reason: string | null = null;
+    let cloneDir = "";
+    try {
+      const diffText = headSha ? (await this.broker.getDiffAndTouchedFiles(mainSha, headSha)).diffText : "";
+      cloneDir = await this.broker.createThrowawayClone(thread.issueNumber, headSha ?? mainSha);
+      const raw = await this.triageInvoker({
+        provider: choice.provider,
+        model: choice.model,
+        cloneDir,
+        prompt: buildRecommendationPrompt({ issueNumber: issue.number, title: issue.title, body: issue.body, code: phase.code, reason: phase.reason, diffText, summary: thread.lastSummary }),
+        maxProposals: 0,
+        timeoutMs: RECOMMENDATION_TIMEOUT_MS,
+        outputSchema: RECOMMENDATION_ONLY_JSON_SCHEMA,
+      });
+      const only = RecommendationOnlySchema.safeParse(raw);
+      const vetted = only.success ? vetRecommendation(only.data.recommendation, scanForSecrets) : null;
+      headline = vetted?.headline ?? null;
+      reason = vetted?.reason ?? null;
+    } catch (err) {
+      this.logger.warn("recommendation/run_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+    } finally {
+      if (cloneDir) this.broker.removeClone(cloneDir);
+    }
+    this.ledger.recordThreadRecommendation(thread.issueNumber, { code: phase.code, headSha, vendor: choice.vendor, headline, reason }, now);
   }
 
   /** Switches factory retry off for this repo (one Needs You) when its recent retries say it is doing harm. */
@@ -1158,6 +1209,7 @@ export class Reconciler {
       await this.runTriage(thread, issue, mainSha, now);
       return;
     }
+    if (thread.phase.kind === "needs_you") await this.runRecommendation(thread, issue, mainSha, now);
     if (thread.phase.kind === "needs_you") {
       // A missing label only means "owner removed it" once our own add_label has been delivered; while it is
       // still queued (GitHub error, or a race inside this tick) the Thread must keep waiting.

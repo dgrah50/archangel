@@ -355,6 +355,14 @@ export interface ScoutRunSummary {
   skippedDuplicates: number;
 }
 
+export const SCOUT_WEEKLY_MS = 7 * 86_400_000;
+
+/** When a scheduled run is next due: `null` for a Scout with no clock (manual: never; daily: any daemon pass, capped per day), `now` when a weekly Scout is due on the next pass. */
+export function scoutNextDueAt(schedule: ScoutWorkflow["schedule"], lastRunAt: number | null, now: number): number | null {
+  if (schedule !== "weekly") return null;
+  return lastRunAt === null ? now : Math.max(now, lastRunAt + SCOUT_WEEKLY_MS);
+}
+
 export async function runScoutsForProject(opts: {
   config: ArchangelConfig;
   ledger: Ledger;
@@ -377,7 +385,7 @@ export async function runScoutsForProject(opts: {
     if (opts.filterName && w.name !== opts.filterName) return false;
     if (opts.onlyScheduled) {
       if (w.schedule === "manual") return false;
-      if (w.schedule === "weekly" && opts.ledger.scoutRanSince(w.name, now - 7 * 86_400_000)) return false;
+      if (w.schedule === "weekly" && opts.ledger.scoutRanSince(w.name, now - SCOUT_WEEKLY_MS)) return false;
     }
     return true;
   });

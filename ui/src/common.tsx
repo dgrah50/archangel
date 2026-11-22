@@ -18,3 +18,12 @@ export function GhLink({ repo, kind, num, children }: { repo: string; kind: "iss
     </Link>
   );
 }
+
+/** Row-sized recommendation: the per-Thread headline cut at a word boundary, else the class-level short form. */
+export function recommendationShort(i: { recommendationShort: string; threadRecommendation: { headline: string } | null }, max = 50): string {
+  const h = i.threadRecommendation?.headline;
+  if (!h) return i.recommendationShort;
+  if (h.length <= max) return h;
+  const cut = h.slice(0, max - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 20)).replace(/[\s,.;:]+$/, "")}...`;
+}

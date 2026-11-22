@@ -1490,6 +1490,30 @@ export class Ledger {
     };
   }
 
+  /**
+   * One per-Thread recommendation attempt for a needs_you entry (`factory/recommendation` audit row). `headline`/`reason` are null when the
+   * run produced nothing usable: the row still stands, so the same entry is never asked twice. Text is model-written and vetted by the caller.
+   */
+  recordThreadRecommendation(issueNumber: number, p: { code: string; headSha: string | null; vendor: string; headline: string | null; reason: string | null }, now = Date.now()): void {
+    this.appendAudit("factory/recommendation", issueNumber, "factory", p, now);
+  }
+
+  /** The latest attempt row for this Thread when it is for the Thread's current needs_you entry (same code and head), else null. `text` is null when the attempt produced nothing. */
+  threadRecommendationFor(thread: ThreadRecord): { text: { headline: string; reason: string } | null } | null {
+    if (thread.phase.kind !== "needs_you") return null;
+    const row = this.listAudit({ repo: thread.repo, topicPrefix: "factory/recommendation", issueNumber: thread.issueNumber, limit: 1 })[0];
+    if (!row) return null;
+    const p = JSON.parse(row.payloadJson) as { code?: unknown; headSha?: unknown; headline?: unknown; reason?: unknown };
+    if (p.code !== thread.phase.code || (p.headSha ?? null) !== (thread.phase.headSha ?? null)) return null;
+    return { text: typeof p.headline === "string" && typeof p.reason === "string" ? { headline: p.headline, reason: p.reason } : null };
+  }
+
+  recommendationsInLast24h(now = Date.now(), repo = this.repo): number {
+    return (
+      this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/recommendation' AND ts > ?").get(repo, now - 86_400_000) as { n: number }
+    ).n;
+  }
+
   /** Rows of one audit topic across every repo since `sinceMs` (for limits that are global rather than per repo). */
   countAuditAllRepos(topic: string, sinceMs: number): number {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE topic = ? AND ts >= ?").get(topic, sinceMs) as { n: number }).n;
@@ -2068,10 +2092,52 @@ export class Ledger {
 
   /** A pitch Scout pauses for one exact `trustHash` after `n` consecutive pitches that were not promoted. Editing the Scout (a new hash) resumes it. */
   isPitchScoutPaused(scoutName: string, trustHash: string, n: number, repo = this.repo): boolean {
+    return this.pitchUnpromotedStreak(scoutName, trustHash, n, repo) === n;
+  }
+
+  /** How many of this Scout's latest pitches (for one exact `trustHash`, newest first, at most `cap`) in a row were not promoted. */
+  pitchUnpromotedStreak(scoutName: string, trustHash: string, cap: number, repo = this.repo): number {
     const rows = this.db
       .prepare(`SELECT state FROM pitches WHERE repo = ? AND scout_name = ? AND trust_hash = ? ORDER BY filed_at DESC, issue_number DESC LIMIT ?`)
-      .all(repo, scoutName, trustHash, n) as Array<{ state: PitchStateKind }>;
-    return rows.length === n && rows.every((r) => r.state !== "promoted" && r.state !== "partially_promoted");
+      .all(repo, scoutName, trustHash, cap) as Array<{ state: PitchStateKind }>;
+    const firstPromoted = rows.findIndex((r) => r.state === "promoted" || r.state === "partially_promoted");
+    return firstPromoted === -1 ? rows.length : firstPromoted;
+  }
+
+  /** When this Scout last started a run, or null. */
+  lastScoutRunAt(scoutName: string, repo = this.repo): number | null {
+    const row = this.db.prepare(`SELECT MAX(ts) AS ts FROM audit_log WHERE repo = ? AND topic = 'scout/run' AND actor = ?`).get(repo, scoutName) as { ts: number | null };
+    return row.ts;
+  }
+
+  /**
+   * Escalations the owner answered today (local day in the Ledger's timezone): each is one `escalation/raised` row (its code) paired with
+   * the first audit row by actor 'owner' on the same Thread after it. Read-only.
+   */
+  ownerAnswersToday(now: number): Array<{ repo: string; issueNumber: number; code: string; answeredAt: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT o.repo AS repo, o.issue_number AS issue_number, MIN(o.ts) AS ts, e.payload_json AS payload_json
+           FROM audit_log o
+           JOIN audit_log e ON e.id = (SELECT MAX(id) FROM audit_log WHERE repo = o.repo AND issue_number = o.issue_number AND topic = 'escalation/raised' AND id < o.id)
+          WHERE o.actor = 'owner' AND o.issue_number IS NOT NULL AND o.ts >= ?
+          GROUP BY e.id
+          ORDER BY ts DESC`,
+      )
+      .all(now - 2 * 86_400_000) as Array<{ repo: string; issue_number: number; ts: number; payload_json: string }>;
+    const today = this.dayKeyOf(now);
+    const out: Array<{ repo: string; issueNumber: number; code: string; answeredAt: number }> = [];
+    for (const r of rows) {
+      const parsed = tryParseJson(r.payload_json);
+      const code = parsed.ok && typeof (parsed.value as { code?: unknown }).code === "string" ? (parsed.value as { code: string }).code : null;
+      if (code !== null && this.dayKeyOf(r.ts) === today) out.push({ repo: r.repo, issueNumber: r.issue_number, code, answeredAt: r.ts });
+    }
+    return out;
+  }
+
+  /** The IANA timezone this Ledger's "today" is measured in. */
+  get dayTimeZone(): string {
+    return this.timeZone;
   }
 
   /** Did this Scout start a run at or after `sinceMs`? (weekly schedule) */

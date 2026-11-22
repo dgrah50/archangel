@@ -45,6 +45,8 @@ export const KERNEL = {
   factoryRetriesPerThread: 1,
   /** Factory retries per repo in any rolling 24 hours. */
   factoryRetriesPerRepoPerDay: 3,
+  /** Per-Thread recommendation runs (triage's own, or the recommendation-only run) per repo in any rolling 24 hours; each needs_you entry gets at most one. */
+  recommendationsPerRepoPerDay: 10,
 } as const;
 
 const NonBlank = z.string().refine((s) => s.trim().length > 0, "must not be blank");

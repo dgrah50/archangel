@@ -6,7 +6,7 @@ import { CORRECTION_WINDOW_DAYS, correctionCategories, type CorrectionCounts } f
 import type { Ledger, StageMetrics } from "../ledger/store.js";
 import type { EffectiveWorkflow, OkWorkflow, Workflow } from "./workflow.js";
 import { draftFromEffective } from "./ui-propose.js";
-import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import { describeEscalation, ESCALATION_POLICY, formatDecisionClass, type EscalationPolicy } from "./escalations.js";
 import type { ThreadRecord } from "../ledger/schema.js";
 import type { Phase } from "./thread-machine.js";
 
@@ -39,7 +39,7 @@ export interface UiItem {
 
 export interface UiState {
   generatedAt: number;
-  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string }>;
+  needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string; threadRecommendation: { headline: string; reason: string } | null }>;
   /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
@@ -51,6 +51,8 @@ export interface UiState {
   ownerLastHeardAt: Record<string, number | null>;
   /** Last daemon heartbeat (ms), or null when no daemon lock exists: the dashboard shows an offline banner when it is old or null. */
   daemonHeartbeatAt: number | null;
+  /** Decisions the owner answered today (local day in `dailyTimezone`): the escalation's decision class when it was raised, and when the owner first acted on that Thread after. Newest first. */
+  answeredToday: { timeZone: string; items: Array<{ repo: string; issueNumber: number; decisionClass: string; answeredAt: number }> };
   /** Undecided pitches (open or partly promoted), oldest first: the count and the five oldest. */
   pitches: { count: number; items: Array<{ repo: string; issueNumber: number; title: string; filedAt: number }> };
   /** Metered spend today and the last 14 local days (oldest first), against the host's daily cap. `capUsd` is null when archangel.yaml cannot be read. */
@@ -149,6 +151,8 @@ export function groupByNeed(threads: ThreadRecord[], now: number): Record<NeedGr
 export function groupThreads(
   threads: ThreadRecord[],
   now: number,
+  /** The model-written, per-Thread recommendation for a needs_you Thread's current entry (read-only); absent means none. */
+  recommendationOf: (t: ThreadRecord) => { headline: string; reason: string } | null = () => null,
 ): { stages: Record<Stage, UiItem[]>; needsYou: UiState["needsYou"] } {
   const stages = Object.fromEntries(STAGES.map((s) => [s, [] as UiItem[]])) as Record<Stage, UiItem[]>;
   const needsYou: UiState["needsYou"] = [];
@@ -165,7 +169,7 @@ export function groupThreads(
     if (stage) stages[stage].push(item);
     if (t.phase.kind === "needs_you") {
       const p = describeEscalation(t.phase.code);
-      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason });
+      needsYou.push({ ...item, decisionClass: formatDecisionClass(p.decisionClass), recommendation: p.recommendation, recommendationShort: p.short, code: t.phase.code, reason: t.phase.reason, threadRecommendation: recommendationOf(t) });
     }
   }
   for (const list of Object.values(stages)) list.sort((a, b) => b.since - a.since);
@@ -195,13 +199,21 @@ export function readLimits(configPath: string | undefined): { maxDailyUsd: numbe
 /** Pure read of the Ledger into the dashboard's data. Never writes; makes no network calls. */
 export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnType<typeof readLimits> = null): UiState {
   const threads = ledger.listAllThreads();
-  const { stages, needsYou } = groupThreads(threads, now);
+  const { stages, needsYou } = groupThreads(threads, now, (t) => ledger.threadRecommendationFor(t)?.text ?? null);
   const repos = [...new Set(threads.map((t) => t.repo))];
   const known = new Set(threads.map((t) => `${t.repo}#${t.issueNumber}`));
   const pitches = ledger.listOpenPitches();
   const spendDaily = ledger.dailySpend(14, now);
   return {
     generatedAt: now,
+    answeredToday: {
+      timeZone: ledger.dayTimeZone,
+      items: ledger.ownerAnswersToday(now).flatMap((a) => {
+        // The code was written by an earlier build, so a code this build no longer knows is skipped rather than guessed at.
+        const policy = (ESCALATION_POLICY as Record<string, EscalationPolicy | undefined>)[a.code];
+        return policy ? [{ repo: a.repo, issueNumber: a.issueNumber, decisionClass: formatDecisionClass(policy.decisionClass), answeredAt: a.answeredAt }] : [];
+      }),
+    },
     pitches: { count: pitches.length, items: pitches.slice(0, 5).map((p) => ({ repo: p.repo, issueNumber: p.issueNumber, title: p.title, filedAt: p.filedAt })) },
     spend: { todayUsd: spendDaily[spendDaily.length - 1]!.usd, capUsd: limits?.maxDailyUsd ?? null, daily: spendDaily },
     autonomyCaps: limits?.autonomyCaps ?? {},
