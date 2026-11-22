@@ -604,11 +604,11 @@ program
         autoMergesToday,
         circuitBreakers: breakers,
         shadowModeStats: shadow,
-        needsYou: threads.flatMap((t) =>
-          t.phase.kind === "needs_you"
-            ? [{ ...t, decisionClass: describeEscalation(t.phase.code).decisionClass, recommendation: describeEscalation(t.phase.code).recommendation }]
-            : [],
-        ),
+        needsYou: threads.flatMap((t) => {
+          if (t.phase.kind !== "needs_you") return [];
+          const p = describeEscalation(t.phase.code, undefined, t.phase.cause);
+          return [{ ...t, decisionClass: p.decisionClass, recommendation: p.recommendation }];
+        }),
         threads,
         stages: grouped.stages,
       };

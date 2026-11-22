@@ -61,7 +61,7 @@ export function renderRecapComment(input: {
     );
   }
   if (thread.phase.kind === "needs_you") {
-    const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName));
+    const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName), thread.phase.cause);
     lines.push(
       "",
       `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${safe(thread.phase.reason)}`,

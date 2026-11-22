@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ATTEMPT_ERROR_CATEGORIES, type AttemptErrorCategory } from "../ledger/schema.js";
 import { TRUSTED_CHECK_APP_SLUG, dedupeChecksByLatestId, type CheckStatus } from "./blockers.js";
 
 export const AttemptKindSchema = z.enum(["plan", "implement", "revise", "rebase"]);
@@ -100,6 +101,7 @@ export const PhaseSchema = z.discriminatedUnion("kind", [
     kind: z.literal("needs_you"),
     code: EscalationCodeSchema,
     reason: z.string().min(1),
+    cause: z.enum(ATTEMPT_ERROR_CATEGORIES).optional(),
     resumeTo: ResumeTargetSchema,
     prNumber: z.number().int().positive().nullable().optional(),
     headSha: z.string().min(1).nullable().optional(),
@@ -154,6 +156,7 @@ export const OutboxEffectSchema = z.discriminatedUnion("kind", [
     title: z.string(),
     reason: z.string(),
     code: EscalationCodeSchema,
+    cause: z.enum(ATTEMPT_ERROR_CATEGORIES).optional(),
   }),
 ]);
 export type OutboxEffect = z.infer<typeof OutboxEffectSchema>;
@@ -171,7 +174,7 @@ export type MachineEvent =
   | { t: "plan_approved" }
   | { t: "plan_rejected" }
   | { t: "attempt_aborted"; cause: "timeout" | "control" | "handoff"; now: number }
-  | { t: "attempt_failed"; code: EscalationCode; reason: string }
+  | { t: "attempt_failed"; code: EscalationCode; reason: string; cause?: AttemptErrorCategory }
   | { t: "gate_passed" }
   | { t: "head_moved"; pr: PrRef; now: number }
   | { t: "review_outage"; now: number }
@@ -408,6 +411,7 @@ export function stepPhase(
             kind: "needs_you",
             code: ev.code,
             reason: ev.reason,
+            cause: ev.cause,
             resumeTo: phase.resumeTo,
             prNumber: phase.prNumber ?? null,
             headSha: phase.resumeTo.kind === "awaiting_gate" ? phase.resumeTo.headSha : null,
@@ -420,6 +424,7 @@ export function stepPhase(
               title: meta.title,
               reason: ev.reason,
               code: ev.code,
+              cause: ev.cause,
             },
           ],
         );
