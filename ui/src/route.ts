@@ -9,23 +9,38 @@ export type Route =
   | { page: "threads" }
   | { page: "thread"; item: ItemRef }
   | { page: "pipeline" }
+  | { page: "pitches" }
   | { page: "health" }
   | { page: "evals" }
   | { page: "setup"; repo: string | null }
-  | { page: "settings"; scope: "machine" | "repo" | "kernel" }
+  | { page: "settings"; scope: "machine" | "repo" | "accounts" | "kernel" }
   | { page: "not-found"; hash: string };
 
-type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health" | "settings" | "evals" | "setup";
+export type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "pitches" | "settings" | "setup";
 export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> = [
   { page: "overview", label: "Overview", hash: "#/" },
   { page: "needs-you", label: "Needs you", hash: "#/needs-you" },
   { page: "threads", label: "Threads", hash: "#/threads" },
   { page: "pipeline", label: "Pipeline", hash: "#/pipeline" },
-  { page: "health", label: "Health", hash: "#/health" },
-  { page: "evals", label: "Evals", hash: "#/evals" },
+  { page: "pitches", label: "Pitches", hash: "#/pitches" },
   { page: "settings", label: "Settings", hash: "#/settings" },
-  { page: "setup", label: "Setup", hash: "#/setup" },
+  { page: "setup", label: "Setup and health", hash: "#/setup" },
 ];
+
+/** The nav item a route lives under (Health and Evals stay reachable by URL; they sit under Setup and health). */
+export function navPageOf(route: Route): NavPage | null {
+  switch (route.page) {
+    case "thread":
+      return "threads";
+    case "health":
+    case "evals":
+      return "setup";
+    case "not-found":
+      return null;
+    default:
+      return route.page;
+  }
+}
 
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
 export const threadHash = (i: ItemRef) => `#/threads/${i.repo}/${i.issue}`;
@@ -35,8 +50,10 @@ export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "").replace(/\/+$/, "");
   if (path === "") return { page: "overview" };
   if (path === "/pipeline") return { page: "pipeline" };
+  if (path === "/pitches") return { page: "pitches" };
   if (path === "/settings") return { page: "settings", scope: "machine" };
   if (path === "/settings/repo") return { page: "settings", scope: "repo" };
+  if (path === "/settings/accounts") return { page: "settings", scope: "accounts" };
   if (path === "/settings/kernel") return { page: "settings", scope: "kernel" };
   if (path === "/setup") return { page: "setup", repo: null };
   const su = /^\/setup\/([^/]+\/[^/]+)$/.exec(path);

@@ -515,6 +515,7 @@ export class Ledger {
       /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
+      auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
       now?: number;
       repo?: string;
@@ -566,7 +567,7 @@ export class Ledger {
       }
 
       if (opts.auditTopic) {
-        this.appendAudit(opts.auditTopic, issueNumber, "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+        this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
       }
       // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
       if (validated.kind === "needs_you") {
@@ -1266,6 +1267,15 @@ export class Ledger {
     return { spentUsd, reservedUsd, committedUsd: spentUsd + reservedUsd };
   }
 
+  /** Metered USD spent on each of the last `days` local days, oldest first (read-only; days with no row are 0). */
+  dailySpend(days: number, now: number): Array<{ day: string; usd: number }> {
+    const q = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`);
+    return Array.from({ length: days }, (_, i) => {
+      const day = formatDayKey(now - (days - 1 - i) * 86_400_000, this.timeZone);
+      return { day, usd: (q.get(day) as { usd: number } | undefined)?.usd ?? 0 };
+    });
+  }
+
   getSpendToday(now = Date.now()): number {
     return this.getSpendBreakdown(now).spentUsd;
   }
@@ -1562,6 +1572,12 @@ export class Ledger {
       .prepare("SELECT account_id, until_ts, reason FROM account_cooldowns WHERE until_ts > ? ORDER BY account_id")
       .all(now) as Array<{ account_id: string; until_ts: number; reason: string }>;
     return rows.map((r) => ({ account: String(r.account_id), untilTs: Number(r.until_ts), reason: String(r.reason) }));
+  }
+
+  /** Every account's most recent limit error, including ended cooldowns: the last failover away from it. */
+  listAccountSwitches(): Array<{ account: string; at: number; reason: string }> {
+    const rows = this.db.prepare("SELECT account_id, updated_at, reason FROM account_cooldowns").all() as Array<{ account_id: string; updated_at: number; reason: string }>;
+    return rows.map((r) => ({ account: String(r.account_id), at: Number(r.updated_at), reason: String(r.reason) }));
   }
 
   /** The selector's view of this Ledger: cooldowns, usage counters, and the optional free Codex reading. */
@@ -1891,15 +1907,16 @@ export class Ledger {
   }
 
   /** Undecided pitches across every repo, oldest first, for the daily digest. */
-  listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; filedAt: number }> {
+  listOpenPitches(): Array<{ repo: string; issueNumber: number; scoutName: string; title: string; filedAt: number }> {
     return (
-      this.db.prepare(`SELECT repo, issue_number, scout_name, filed_at FROM pitches WHERE state IN ('open', 'partially_promoted') ORDER BY filed_at ASC`).all() as Array<{
+      this.db.prepare(`SELECT repo, issue_number, scout_name, title, filed_at FROM pitches WHERE state IN ('open', 'partially_promoted') ORDER BY filed_at ASC`).all() as Array<{
         repo: string;
         issue_number: number;
         scout_name: string;
+        title: string;
         filed_at: number;
       }>
-    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, filedAt: r.filed_at }));
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name, title: r.title, filedAt: r.filed_at }));
   }
 
   /**

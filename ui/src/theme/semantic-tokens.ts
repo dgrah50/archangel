@@ -132,6 +132,11 @@ const colors = {
       ] as const
     ).map(([arc, chakra]) => [arc, ld(`{colors.${chakra}.600}`, `{colors.${chakra}.300}`)]),
   ),
+  // Dashboard colour language. Amber means exactly one thing: only the owner can move this, or the factory is about to stop.
+  // Violet only outlines unsent edits. Green only marks a passed check, always with a text label. Everything else is ink and grey.
+  owner: ld("{colors.tone.amber}", "{colors.tone.amber}"),
+  unsent: ld("{colors.tone.violet}", "{colors.tone.violet}"),
+  passed: ld("{colors.tone.green}", "{colors.tone.green}"),
   // Selection-control surfaces (switch track, thumb), used by recipes and the Arc bridge.
   control: {
     // Unchecked switch track. Preset-dependent: "aa" is >= 3:1 on the surface, "arc" is Arc's --control-track.

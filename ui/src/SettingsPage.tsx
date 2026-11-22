@@ -1,5 +1,6 @@
 import { Badge, Box, Button, Card, Code, Flex, Heading, Link, Stack, Table, Text } from "@chakra-ui/react";
 import { useState } from "react";
+import { AccountsPanel } from "./AccountsPanel";
 import { HostConfigEditor } from "./HostConfigEditor";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { Feed } from "./AppView";
@@ -132,10 +133,11 @@ function Kernel({ s }: { s: SettingsState }) {
   );
 }
 
-export type SettingsScope = "machine" | "repo" | "kernel";
+export type SettingsScope = "machine" | "repo" | "accounts" | "kernel";
 const SCOPES: Array<{ scope: SettingsScope; label: string; hash: string }> = [
   { scope: "machine", label: "This machine", hash: "#/settings" },
   { scope: "repo", label: "Repo", hash: "#/settings/repo" },
+  { scope: "accounts", label: "Accounts (read-only)", hash: "#/settings/accounts" },
   { scope: "kernel", label: "Kernel (read-only)", hash: "#/settings/kernel" },
 ];
 
@@ -166,6 +168,8 @@ export function SettingsPage({ scope, settings, onRetry, children }: { scope: Se
         <HostConfigEditor view={machineView} onSaved={onRetry} />
       ) : scope === "repo" ? (
         children
+      ) : scope === "accounts" ? (
+        <AccountsPanel />
       ) : settings.data === null ? (
         settings.error ? (
           <Box role="alert" borderWidth="1px" borderColor="red.solid" rounded="md" p="3" mt="6">

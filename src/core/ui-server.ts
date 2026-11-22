@@ -10,13 +10,14 @@ import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doctor.js";
 import { buildHostStatus } from "./host-facts.js";
 import { listReports } from "./eval-reports.js";
+import { buildAccountsState } from "./ui-accounts.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
 import { listAllSkills } from "./skills.js";
 import { makeGhReads, type GhRead } from "./ui-gh.js";
-import { isSchemaBehind, buildUiState, buildWorkflowsState } from "./ui-state.js";
+import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -151,7 +152,7 @@ export async function startUiServer(
     try {
       const pathname = decodeURIComponent((req.url ?? "/").split("?")[0]!);
       if (pathname === "/api/state") {
-        const body = JSON.stringify(buildUiState(ledger));
+        const body = JSON.stringify(buildUiState(ledger, Date.now(), readLimits(opts.configPath)));
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;
@@ -192,6 +193,12 @@ export async function startUiServer(
         if (opts.allowRemote) return sendJson(res, 403, { error: "skills are disabled in remote mode" });
         if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
         return sendJson(res, 200, { skills: listAllSkills() });
+      }
+      if (pathname === "/api/accounts") {
+        // Cooldowns and homes (paths only) of this machine's logins: token required, never served remotely.
+        if (opts.allowRemote) return sendJson(res, 403, { error: "accounts are disabled in remote mode" });
+        if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
+        return sendJson(res, 200, buildAccountsState(ledger, opts.configPath));
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));

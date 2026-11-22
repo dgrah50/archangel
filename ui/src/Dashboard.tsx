@@ -1,180 +1,287 @@
-import { Box, Card, Heading, SimpleGrid, Stat, Table, Text } from "@chakra-ui/react";
-import { correctionCategories } from "../../src/core/corrections.js";
-import type { UiState } from "../../src/core/ui-state.js";
-import { GhLink } from "./common";
+import { Box, Flex, Text } from "@chakra-ui/react";
+import type { HostStatus } from "../../src/core/host-facts.js";
+import type { UiItem, UiState } from "../../src/core/ui-state.js";
+import { age } from "./common";
+import { CopyCommand, LinkButton, Metric, Meter, Owed, Page, PageHeadline, Ref, Row, RowList, Section, Sparkline } from "./page";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
 
-const n = (v: number | null, unit = "") => (v === null ? "n/a" : `${Math.round(v * 10) / 10}${unit}`);
+/** The autonomy count is "near its cap" from this share of the cap. */
+const NEAR_CAP = 0.8;
+/** `launchctl kickstart -k` restarts the launchd agent that `archangel daemon install` writes. */
+const RESTART_COMMAND = "launchctl kickstart -k gui/$(id -u)/com.archangel.daemon";
 
-function StatTile({ label, value, help }: { label: string; value: string | number; help?: string }) {
+const gap = (ms: number) => age(ms).replace(/(\d)([a-z])/, "$1 $2");
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const usd = (v: number, digits = 2) => `$${v.toFixed(digits)}`;
+const ghUrl = (i: UiItem) => `https://github.com/${i.repo}/${i.prNumber ? `pull/${i.prNumber}` : `issues/${i.issueNumber}`}`;
+
+export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus | null }) {
+  const stuck = s.groups.Stuck.length;
+  const landed = s.daily[s.daily.length - 1]?.merged ?? 0;
+  const decisions = s.needsYou.length;
+  const pitches = s.pitches.count;
+  const waiting = decisions + pitches;
   return (
-    <Card.Root>
-      <Card.Body py="3">
-        <Stat.Root>
-          <Stat.Label>{label}</Stat.Label>
-          <Stat.ValueText>{value}</Stat.ValueText>
-          {help ? <Stat.HelpText>{help}</Stat.HelpText> : null}
-        </Stat.Root>
-      </Card.Body>
-    </Card.Root>
+    <Page>
+      <StatusLine state={s} />
+      <PageHeadline sub={`${waiting > 0 && stuck === 0 ? "Everything else is moving. " : ""}${landed} landed today, ${stuck === 0 ? "nothing is stuck" : `${stuck} stuck`}.`}>
+        {waiting === 0 ? (
+          "Nothing is waiting on you."
+        ) : (
+          <>
+            {decisions > 0 ? <Owed>{plural(decisions, "decision")}</Owed> : null}
+            {decisions > 0 && pitches > 0 ? " and " : null}
+            {pitches > 0 ? <Owed>{plural(pitches, "pitch", "pitches")}</Owed> : null} {waiting === 1 ? "is" : "are"} waiting on you.
+          </>
+        )}
+      </PageHeadline>
+      <Flex direction={{ base: "column", lg: "row" }} gap="56px" flexShrink={0}>
+        <Box flex="1" minW="0">
+          {waiting > 0 ? (
+            <RowList>
+              {s.needsYou.map((i, idx) => (
+                <Row
+                  key={`${i.repo}#${i.issueNumber}`}
+                  lead={gap(s.generatedAt - i.since)}
+                  owed={idx === 0}
+                  title={i.title}
+                  meta={
+                    <>
+                      {i.decisionClass.charAt(0).toUpperCase() + i.decisionClass.slice(1)} · <Ref repo={i.repo} num={i.issueNumber} /> · {i.recommendation}
+                    </>
+                  }
+                  action={
+                    <LinkButton href={ghUrl(i)} primary={idx === 0} external>
+                      {idx === 0 ? "Answer on GitHub" : "Open"}
+                    </LinkButton>
+                  }
+                />
+              ))}
+              {pitches > 0 ? (
+                <Row
+                  lead={gap(s.generatedAt - s.pitches.items[0]!.filedAt)}
+                  title={`${plural(pitches, "pitch", "pitches")} from Scouts ${pitches === 1 ? "needs" : "need"} a yes or a no`}
+                  meta={s.pitches.items.map((p) => p.title).join("  ·  ")}
+                  action={<LinkButton href="#/pitches">Review pitches</LinkButton>}
+                />
+              ) : null}
+            </RowList>
+          ) : null}
+        </Box>
+        <StopsNext state={s} host={host} />
+      </Flex>
+      <LineMap state={s} landed={landed} />
+      <Box flex="1" />
+      <Flex gap="40px" flexShrink={0} direction={{ base: "column", md: "row" }} pt="8">
+        <SpendMetric state={s} />
+        <CostMetric state={s} />
+        <AgreementMetric state={s} />
+      </Flex>
+    </Page>
   );
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function StatusLine({ state: s }: { state: UiState }) {
+  const beat = s.daemonHeartbeatAt;
+  const live = beat !== null && s.generatedAt - beat <= 3 * 60_000;
+  const at = new Date(s.generatedAt);
+  const when = `${at.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}, ${at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
   return (
-    <Box as="section" mt="12">
-      <Heading size="lg">{title}</Heading>
-      {hint ? (
-        <Text color="fg.muted" textStyle="sm">
-          {hint}
+    <Flex align="center" gap="2">
+      <Box w="7px" h="7px" rounded="full" flexShrink={0} bg={live ? "passed" : "owner"} />
+      <Text textStyle="meta" lineHeight="18px" color="fg.subtle">
+        {when} · {live ? "daemon running" : "daemon offline"}
+      </Text>
+    </Flex>
+  );
+}
+
+/** "What stops work next, and what clears it": only abnormal things. */
+function StopsNext({ state: s, host }: { state: UiState; host: HostStatus | null }) {
+  const nearCap = Object.entries(s.autonomyCaps)
+    .map(([repo, cap]) => ({ repo, cap, steps: s.autonomySteps[repo] ?? 0 }))
+    .filter((r) => r.steps >= Math.ceil(r.cap * NEAR_CAP));
+  const restart = host?.restartPending === true;
+  return (
+    <Section title="What stops work next, and what clears it." w={{ lg: "316px" }} flexShrink={0} gap="14px">
+      {nearCap.map((r) => {
+        const name = r.repo.split("/").pop();
+        return (
+          <Flex key={r.repo} direction="column" gap="1">
+            <Flex align="baseline" gap="2">
+              <Text textStyle="label" color="fg" flex="1">
+                {r.steps >= r.cap ? `${name} is paused` : `${name} pauses in ${plural(r.cap - r.steps, "step")}`}
+              </Text>
+              <Text textStyle="command" color="owner" whiteSpace="pre">
+                {r.steps} / {r.cap}
+              </Text>
+            </Flex>
+            <Text textStyle="meta" color="fg.muted">
+              It has started {r.steps} Attempts and merges since it last heard from you. Answering a {name} decision, or merging one of its PRs, resets the count.
+            </Text>
+          </Flex>
+        );
+      })}
+      {restart ? (
+        <Flex direction="column" gap="1.5">
+          <Text textStyle="label" color="fg">
+            Host config changed, not loaded yet
+          </Text>
+          <CopyCommand command={RESTART_COMMAND} />
+        </Flex>
+      ) : null}
+      {nearCap.length === 0 && !restart ? (
+        <Text textStyle="meta" color="fg.muted">
+          Nothing is about to stop the factory.
         </Text>
       ) : null}
-      <Box mt="4">{children}</Box>
-    </Box>
+    </Section>
   );
 }
 
-/** Plain SVG bars: no chart dependency. */
-function Bars({ label, values, days }: { label: string; values: number[]; days: string[] }) {
-  const max = Math.max(1, ...values);
-  const w = 14;
+// The line map: one dot per Thread across the stations. Solid = the factory is acting; hollow = waiting, not blocked; amber siding = Needs you.
+const W = 1096;
+const STATIONS = 6;
+const LINE_Y = 50;
+const SIDING_Y = 112;
+const INK = "var(--chakra-colors-fg)";
+const GREY = "var(--chakra-colors-border-emphasized)";
+const TRACK = "var(--chakra-colors-control-rail)";
+const AMBER = "var(--chakra-colors-owner)";
+const SURFACE = "var(--chakra-colors-bg)";
+const stationX = (i: number) => ((i + 0.5) * W) / STATIONS;
+
+type DotKind = "acting" | "waiting-light" | "waiting" | "landed";
+
+function Dots({ n, at, kind }: { n: number; at: number; kind: DotKind }) {
+  const small = kind === "landed";
+  const shown = Math.min(n, small ? 9 : 7);
+  const step = small ? 16 : 22;
   return (
-    <Card.Root>
-      <Card.Body>
-        <Text fontWeight="medium">{label}</Text>
-        <Box color="blue.solid">
-        <svg role="img" aria-label={`${label}, last ${values.length} days`} width="100%" viewBox={`0 0 ${values.length * w} 48`} preserveAspectRatio="none">
-          {values.map((v, idx) => (
-            <rect key={days[idx] ?? idx} x={idx * w + 2} y={44 - (v / max) * 40} width={w - 4} height={Math.max(v > 0 ? 2 : 0, (v / max) * 40)} rx="2" fill="currentColor" opacity={0.8}>
-              <title>{`${days[idx] ?? ""}: ${v}`}</title>
-            </rect>
+    <>
+      {Array.from({ length: shown }, (_, k) => {
+        const x = stationX(at) + (k - (shown - 1) / 2) * step;
+        if (kind === "acting") return <circle key={k} cx={x} cy={20} r={9} fill={INK} />;
+        if (kind === "landed") return <circle key={k} cx={x} cy={22} r={5} fill={GREY} />;
+        if (kind === "waiting") return <circle key={k} cx={x} cy={20} r={7.5} fill={SURFACE} stroke={INK} strokeWidth={3} />;
+        return <circle key={k} cx={x} cy={20} r={8} fill={SURFACE} stroke={GREY} strokeWidth={2.5} />;
+      })}
+    </>
+  );
+}
+
+function LineMap({ state: s, landed }: { state: UiState; landed: number }) {
+  const need = s.needsYou.length;
+  const oldest = (l: UiItem[]) => (l.length > 0 ? ` · oldest ${gap(s.generatedAt - Math.min(...l.map((i) => i.since)))}` : "");
+  const stations: Array<{ label: string; list: UiItem[] | number; kind: DotKind }> = [
+    { label: "Queued", list: s.stages.Queued, kind: "waiting-light" },
+    { label: "Working", list: s.stages.Working, kind: "acting" },
+    { label: "Gate", list: s.stages["Waiting on CI"], kind: "acting" },
+    { label: "Review", list: s.stages["In review"], kind: "acting" },
+    { label: "Ready for you to merge", list: s.stages["Ready for owner"], kind: "waiting" },
+    { label: "Landed today", list: landed, kind: "landed" },
+  ];
+  return (
+    <Box pt="34px" flexShrink={0}>
+      <Flex>
+        {stations.map((st) => {
+          const n = typeof st.list === "number" ? st.list : st.list.length;
+          return (
+            <Flex key={st.label} direction="column" align="center" flex="1" textAlign="center" textStyle="meta" lineHeight="17px">
+              <Text textStyle="label" fontSize="12.5px" lineHeight="17px" color="fg">
+                {st.label}
+              </Text>
+              <Text color="fg.muted">
+                {n}
+                {typeof st.list === "number" ? "" : oldest(st.list)}
+              </Text>
+            </Flex>
+          );
+        })}
+      </Flex>
+      <Box position="relative" mt="12px">
+        <svg viewBox={`0 0 ${W} 140`} width="100%" role="img" aria-label="Where every Thread is on the line" style={{ display: "block" }}>
+          <path d={`M20 ${LINE_Y}H1070`} fill="none" stroke={TRACK} strokeWidth="3" strokeLinecap="round" />
+          <path d={`M1062 ${LINE_Y - 8}L1073 ${LINE_Y}L1062 ${LINE_Y + 8}`} fill="none" stroke={TRACK} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          {need > 0 ? <path d={`M${stationX(3)} ${LINE_Y}C${stationX(3)} 92 676 ${SIDING_Y} 724 ${SIDING_Y}H800`} fill="none" stroke={AMBER} strokeWidth="3" strokeLinecap="round" /> : null}
+          {stations.map((_, i) => (
+            <circle key={i} cx={stationX(i)} cy={LINE_Y} r="5.5" fill={SURFACE} stroke={GREY} strokeWidth="2.5" />
           ))}
+          {stations.map((st, i) => (
+            <Dots key={st.label} n={typeof st.list === "number" ? st.list : st.list.length} at={i} kind={st.kind} />
+          ))}
+          {need > 0 ? (
+            <>
+              {Array.from({ length: Math.min(need - 1, 2) }, (_, k) => (
+                <circle key={k} cx={742 + k * 26} cy={SIDING_Y} r="9" fill={AMBER} />
+              ))}
+              <circle cx="800" cy={SIDING_Y} r="12" fill={AMBER} />
+              <circle cx="800" cy={SIDING_Y} r="17" fill="none" stroke={AMBER} strokeWidth="1.5" opacity="0.4" />
+            </>
+          ) : null}
         </svg>
-        </Box>
-        <Box display="flex" justifyContent="space-between" color="fg.muted" textStyle="xs">
-          <span>{days[0]?.slice(5)}</span>
-          <span>{days[days.length - 1]?.slice(5)}</span>
-        </Box>
-        <Text color="fg.muted" textStyle="sm">
-          total {values.reduce((a, b) => a + b, 0)}
-        </Text>
-      </Card.Body>
-    </Card.Root>
+        {need > 0 ? (
+          <Flex direction="column" gap="1px" position="absolute" left={`${(828 / W) * 100}%`} top={`${(93 / 140) * 100}%`}>
+            <Text textStyle="rowTitle" fontSize="14.5px" lineHeight="20px" color="owner" whiteSpace="pre">
+              Needs you · {need}
+            </Text>
+            <Text textStyle="meta" lineHeight="17px" color="fg.muted" whiteSpace="pre">
+              Parked off the line, nothing else waits.
+            </Text>
+          </Flex>
+        ) : null}
+        <Flex direction="column" gap="5px" position="absolute" left="0" top={`${(102 / 140) * 100}%`}>
+          <Legend solid>The factory is acting</Legend>
+          <Legend>Waiting, not blocked</Legend>
+        </Flex>
+      </Box>
+    </Box>
   );
 }
 
-export function Dashboard({ state: s }: { state: UiState }) {
-  const o = s.outcomes;
-  const repos = Object.keys(s.autonomySteps);
-  const mergedToday = s.daily[s.daily.length - 1]?.merged ?? 0;
+function Legend({ solid, children }: { solid?: boolean; children: string }) {
   return (
-    <Box maxW="64rem" mx="auto" p="6">
-      <Heading size="2xl">Archangel</Heading>
-      <Text color="fg.muted" textStyle="sm">
-        Read-only. Approvals and merges happen on GitHub. Updated {new Date(s.generatedAt).toISOString()}.
+    <Flex align="center" gap="2">
+      <Box w="10px" h="10px" rounded="full" boxSizing="border-box" flexShrink={0} {...(solid ? { bg: "fg" } : { borderWidth: "2.5px", borderColor: "fg" })} />
+      <Text textStyle="meta" fontSize="12px" lineHeight="17px" color="fg.subtle">
+        {children}
       </Text>
+    </Flex>
+  );
+}
 
-      <SimpleGrid columns={{ base: 2, md: 3 }} gap="3" mt="6">
-        <StatTile label="Repos" value={repos.length} />
-        <StatTile label="Merged today" value={mergedToday} />
-        <StatTile label="Needs You" value={s.needsYou.length} help={s.needsYou.length === 0 ? "all clear" : "waiting on you"} />
-        {repos.map((r) => (
-          <StatTile key={r} label={r} value={s.autonomySteps[r] ?? 0} help="autonomous steps since owner" />
-        ))}
-      </SimpleGrid>
+function SpendMetric({ state: s }: { state: UiState }) {
+  const { todayUsd, capUsd } = s.spend;
+  return (
+    <Metric label="Spent today" value={usd(todayUsd)} aside={capUsd === null ? undefined : `of ${usd(capUsd, 0)}`} visual={capUsd === null ? undefined : <Meter fraction={todayUsd / capUsd} />}>
+      {capUsd === null ? "Metered API only. The daily cap is unavailable: archangel.yaml could not be read." : `Metered API only. At ${usd(capUsd, 0)} the factory stops until midnight; raise it in Settings.`}
+    </Metric>
+  );
+}
 
-      <Section title="Outcomes" hint="All time, per merged fix. Merge count is volume, not success.">
-        <Text mb="3">
-          Merged fixes: {o.mergedFixes}{" "}
-          <Text as="span" color="fg.muted">
-            (volume)
-          </Text>
-        </Text>
-        <SimpleGrid columns={{ base: 1, md: 2 }} gap="3">
-          <Card.Root>
-            <Card.Body>
-              <Text>
-                Metered cost: {o.costUsdPerFix === null ? "n/a" : `$${o.costUsdPerFix.toFixed(2)}`} (total ${o.meteredUsdTotal.toFixed(2)}; subscription runs count $0)
-              </Text>
-              <Text>
-                Attempts: {n(o.attemptsPerFix)}, attempt time {n(o.attemptMinutesPerFix, "m")}
-              </Text>
-              <Text>
-                Reverts: {n(o.revertsPerFix)} ({o.reverts})
-              </Text>
-              <Text>
-                Rework: {n(o.reworkAttemptsPerFix)} extra attempts ({o.reworkAttemptsTotal} total)
-              </Text>
-            </Card.Body>
-          </Card.Root>
-          <Card.Root>
-            <Card.Body>
-              <Text fontWeight="medium">Vendor agreement with owner</Text>
-              {Object.keys(o.vendorAgreement).length === 0 ? <Text>n/a</Text> : null}
-              {Object.entries(o.vendorAgreement).map(([v, a]) => (
-                <Text key={v}>
-                  {v}: {a.rate === null ? "n/a" : `${Math.round(a.rate * 100)}%`} ({a.undisputed}/{a.approvedMerges})
-                </Text>
-              ))}
-              <Text fontWeight="medium" mt="3">
-                Owner corrections (last {s.corrections.windowDays ?? 30} days)
-              </Text>
-              {correctionCategories(s.corrections).filter((c) => c.count > 0).length === 0 ? <Text>none</Text> : null}
-              {correctionCategories(s.corrections)
-                .filter((c) => c.count > 0)
-                .map((c) => (
-                  <Text key={c.category}>
-                    {c.category}: {c.count}
-                  </Text>
-                ))}
-              <Text fontWeight="medium" mt="3">
-                Autonomy
-              </Text>
-              {Object.keys(s.autonomySteps).length === 0 ? <Text>n/a</Text> : null}
-              {Object.entries(s.autonomySteps).map(([r, c]) => (
-                <Text key={r}>
-                  {r}: {c} autonomous steps since owner
-                </Text>
-              ))}
-            </Card.Body>
-          </Card.Root>
-          <Bars label="Merged fixes per day" values={s.daily.map((d) => d.merged)} days={s.daily.map((d) => d.day)} />
-          <Bars label="Rework attempts per day" values={s.daily.map((d) => d.reworkAttempts)} days={s.daily.map((d) => d.day)} />
-        </SimpleGrid>
-      </Section>
+function CostMetric({ state: s }: { state: UiState }) {
+  const cost = s.outcomes.costUsdPerFix;
+  // Per day: that day's metered spend over the fixes that landed that day.
+  const trend = s.daily.map((d, i) => (d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null));
+  const first = trend.find((v) => v !== null) ?? null;
+  return (
+    <Metric label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} visual={<Sparkline values={trend} label="Cost per merged fix, last 14 days" />}>
+      {first !== null && cost !== null && first > cost ? `Down from ${usd(first)} two weeks ago. ` : ""}
+      Subscription runs count $0. Change models in Pipeline.
+    </Metric>
+  );
+}
 
-      <Section title="Scout activity" hint="Most recent Scout proposals.">
-        {s.scouts.length === 0 ? (
-          <Text color="fg.muted">No Scout proposals.</Text>
-        ) : (
-          <Table.Root size="sm">
-            <Table.Header>
-              <Table.Row>
-                <Table.ColumnHeader>Repo</Table.ColumnHeader>
-                <Table.ColumnHeader>Issue</Table.ColumnHeader>
-                <Table.ColumnHeader>Scout</Table.ColumnHeader>
-                <Table.ColumnHeader>Auto-promoted</Table.ColumnHeader>
-                <Table.ColumnHeader>Has Thread</Table.ColumnHeader>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {s.scouts.map((p) => (
-                <Table.Row key={`${p.repo}#${p.issueNumber}`}>
-                  <Table.Cell>{p.repo}</Table.Cell>
-                  <Table.Cell>
-                    <GhLink repo={p.repo} kind="issues" num={p.issueNumber}>{`#${p.issueNumber}`}</GhLink>
-                  </Table.Cell>
-                  <Table.Cell>{p.scoutName}</Table.Cell>
-                  <Table.Cell>{p.autoPromoted ? "yes" : "no"}</Table.Cell>
-                  <Table.Cell>{p.hasThread ? "yes" : "no"}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Root>
-        )}
-      </Section>
-    </Box>
+function AgreementMetric({ state: s }: { state: UiState }) {
+  const v = Object.values(s.outcomes.vendorAgreement);
+  const approved = v.reduce((n, a) => n + a.approvedMerges, 0);
+  const agreed = v.reduce((n, a) => n + a.undisputed, 0);
+  return (
+    <Metric label="Would-merge verdicts you agreed with" value={approved === 0 ? "n/a" : `${Math.round((agreed / approved) * 100)}%`}>
+      {approved === 0 ? "No reviewed merges yet. " : `${agreed} of ${approved} reviewed merges you did not dispute. `}
+      This is the evidence for letting a repo land on its own.
+    </Metric>
   );
 }
