@@ -10,15 +10,19 @@ export type Route =
   | { page: "thread"; item: ItemRef }
   | { page: "pipeline" }
   | { page: "health" }
+  | { page: "evals" }
+  | { page: "settings"; scope: "machine" | "repo" | "kernel" }
   | { page: "not-found"; hash: string };
 
-type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health";
+type NavPage = "overview" | "needs-you" | "threads" | "pipeline" | "health" | "settings" | "evals";
 export const NAV: ReadonlyArray<{ page: NavPage; label: string; hash: string }> = [
   { page: "overview", label: "Overview", hash: "#/" },
   { page: "needs-you", label: "Needs you", hash: "#/needs-you" },
   { page: "threads", label: "Threads", hash: "#/threads" },
   { page: "pipeline", label: "Pipeline", hash: "#/pipeline" },
   { page: "health", label: "Health", hash: "#/health" },
+  { page: "evals", label: "Evals", hash: "#/evals" },
+  { page: "settings", label: "Settings", hash: "#/settings" },
 ];
 
 const SLUG = /^[\w.-]+\/[\w.-]+$/;
@@ -29,6 +33,10 @@ export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "").replace(/\/+$/, "");
   if (path === "") return { page: "overview" };
   if (path === "/pipeline") return { page: "pipeline" };
+  if (path === "/settings") return { page: "settings", scope: "machine" };
+  if (path === "/settings/repo") return { page: "settings", scope: "repo" };
+  if (path === "/settings/kernel") return { page: "settings", scope: "kernel" };
+  if (path === "/evals") return { page: "evals" };
   if (path === "/health") return { page: "health" };
   if (path === "/threads") return { page: "threads" };
   if (path === "/needs-you") return { page: "needs-you", item: null };

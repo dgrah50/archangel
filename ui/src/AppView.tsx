@@ -4,9 +4,14 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
 import { Dashboard } from "./Dashboard";
 import { NeedsYouPage } from "./NeedsYouPage";
+import { EvalsPage } from "./EvalsPage";
+import type { EvalsState } from "../../src/core/eval-reports.js";
+import { SettingsPage } from "./SettingsPage";
+import type { SettingsState } from "../../src/core/ui-settings.js";
 import { HealthPage } from "./HealthPage";
 import { ThreadDetailPage } from "./ThreadDetailPage";
 import { ThreadsPage } from "./ThreadsPage";
+import { SCHEMA_BEHIND } from "./payload";
 import { Pipeline } from "./Pipeline";
 import type { Route } from "./route";
 import { Shell } from "./Shell";
@@ -16,6 +21,8 @@ export interface Feed<T> {
   data: T | null;
   at: number | null;
   error: string | null;
+  /** Server error code of the latest failure, when it sent one (for example `ledger_schema_behind`). */
+  code?: string | null;
 }
 
 export const POLL_MS = 15_000;
@@ -80,6 +87,8 @@ export function AppView({
   route,
   state,
   workflows,
+  evals,
+  settings,
   host,
   thread,
   logs,
@@ -89,6 +98,8 @@ export function AppView({
   route: Route;
   state: Feed<UiState>;
   workflows: Feed<WorkflowsState>;
+  evals: Feed<EvalsState>;
+  settings: Feed<SettingsState>;
   host: Feed<HostStatus>;
   thread: Feed<ThreadDetail>;
   logs: Feed<LogsPayload>;
@@ -100,7 +111,7 @@ export function AppView({
     return (
       <Box maxW="40rem" mx="auto" mt="10" p="5">
         <Notice tone="red">
-          <Text fontWeight="medium">Cannot load the dashboard.</Text>
+          <Text fontWeight="medium">{state.code === SCHEMA_BEHIND ? "The Ledger schema is behind." : "Cannot load the dashboard."}</Text>
           <Text textStyle="sm">{state.error}</Text>
           <Button size="sm" mt="2" onClick={onRetry}>
             Retry
@@ -122,7 +133,13 @@ export function AppView({
       {route.page === "needs-you" ? <NeedsYouPage state={state.data} item={route.item} /> : null}
       {route.page === "threads" ? <ThreadsPage state={state.data} /> : null}
       {route.page === "thread" ? <ThreadDetailPage item={route.item} thread={thread} logs={logs} now={now} onRetry={onRetry} /> : null}
-      {route.page === "health" ? <HealthPage /> : null}
+      {route.page === "health" ? <HealthPage faults={state.data.faults} now={now} /> : null}
+      {route.page === "evals" ? <EvalsPage evals={evals} now={now} onRetry={onRetry} /> : null}
+      {route.page === "settings" ? (
+        <SettingsPage scope={route.scope} settings={settings} onRetry={onRetry}>
+          <PipelinePage workflows={workflows} onRetry={onRetry} />
+        </SettingsPage>
+      ) : null}
       {route.page === "pipeline" ? <PipelinePage workflows={workflows} onRetry={onRetry} /> : null}
       {route.page === "not-found" ? (
         <Box maxW="40rem" mx="auto" p="6">

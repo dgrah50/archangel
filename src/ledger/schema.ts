@@ -53,6 +53,32 @@ export interface ThreadRecord {
   updatedAt: number;
 }
 
+/** Why an Attempt ended unsuccessfully, recorded at the source (never scraped from prose later). */
+export const ATTEMPT_ERROR_CATEGORIES = [
+  "cas_rejected",
+  "aborted",
+  "no_change",
+  "timeout",
+  "provider_unavailable",
+  "setup_failed",
+  "implementer_failed",
+  "static_rejection",
+  "gate_or_policy",
+  "other",
+] as const;
+export type AttemptErrorCategory = (typeof ATTEMPT_ERROR_CATEGORIES)[number];
+
+/** Thrown inside an Attempt where the cause is known, so the catch-all records a real category instead of "other". */
+export class AttemptError extends Error {
+  constructor(
+    readonly category: AttemptErrorCategory,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AttemptError";
+  }
+}
+
 export interface AttemptRecord {
   id: number;
   repo: string;
@@ -63,6 +89,8 @@ export interface AttemptRecord {
   costUsd: number;
   transcriptPath: string | null;
   errorMessage: string | null;
+  /** null while running, on success, and on rows from before the category was recorded. */
+  errorCategory: AttemptErrorCategory | null;
   startedAt: number;
   finishedAt: number | null;
   /** Replay provenance, set when the Attempt ran (null for rows from before capture). */

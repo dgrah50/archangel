@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { AppView } from "./AppView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useFeed, useHash } from "./feeds";
-import { isHostStatus, isLogs, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
+import { isEvalsState, isHostStatus, isSettingsState, isLogs, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
 import { Provider } from "./provider";
 import { parseRoute } from "./route";
 
@@ -14,7 +14,9 @@ function App() {
   const route = parseRoute(useHash());
   const [state, loadState] = useFeed("/api/state", isUiState);
   // Each page polls only its own feeds.
-  const [workflows, loadWorkflows] = useFeed("/api/workflows", isWorkflowsState, route.page === "pipeline");
+  const [workflows, loadWorkflows] = useFeed("/api/workflows", isWorkflowsState, route.page === "pipeline" || (route.page === "settings" && route.scope === "repo"));
+  const [evals, loadEvals] = useFeed("/api/evals", isEvalsState, route.page === "evals");
+  const [settings, loadSettings] = useFeed("/api/settings", isSettingsState, route.page === "settings" && route.scope !== "repo");
   const [host, loadHost] = useFeed("/api/host", isHostStatus);
   const t = route.page === "thread" ? route.item : null;
   const key = t ? `${encodeURI(t.repo)}/${t.issue}` : "";
@@ -28,13 +30,15 @@ function App() {
   const retry = () => {
     loadState();
     loadHost();
-    if (route.page === "pipeline") loadWorkflows();
+    if (route.page === "pipeline" || (route.page === "settings" && route.scope === "repo")) loadWorkflows();
+    if (route.page === "settings" && route.scope !== "repo") loadSettings();
+    if (route.page === "evals") loadEvals();
     if (t) {
       loadThread();
       loadLogs();
     }
   };
-  return <AppView route={route} state={state} workflows={workflows} host={host} thread={thread} logs={logs} now={now} onRetry={retry} />;
+  return <AppView route={route} state={state} workflows={workflows} evals={evals} settings={settings} host={host} thread={thread} logs={logs} now={now} onRetry={retry} />;
 }
 
 createRoot(document.getElementById("root")!).render(

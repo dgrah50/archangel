@@ -22,6 +22,7 @@ import { proposeWorkflow } from "../core/workflow-propose.js";
 import { renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
 import { prepareCandidates } from "../core/eval-candidate.js";
 import { ARCHANGEL_ROOT } from "../core/onboard.js";
+import { saveReport } from "../core/eval-reports.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { TelegramNotifier } from "../core/notifier.js";
@@ -51,6 +52,7 @@ function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): Reviewer
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
+        accounts: cfg.accounts,
         defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
@@ -185,6 +187,7 @@ program
         cfg.authMode === "subscription"
           ? new SubscriptionImplementer({
               chains: cfg.chains,
+              accounts: cfg.accounts,
               transcriptsDir: paths.transcriptsDir,
               cooldowns,
               logger,
@@ -684,6 +687,7 @@ program
         }
         reports.push(await runReplay({ repo, bareRepoPath, seeds: ledger.listReplaySeeds(sinceMs, repo), runTests: opts.runTests }));
       }
+      if (reports.length > 0) saveReport(dataDir, "replay", reports);
       if (opts.json) console.log(JSON.stringify(reports, null, 2));
       else for (const r of reports) console.log(renderReplay(r));
       if (reports.some((r) => r.regressions > 0)) process.exit(1);
@@ -764,6 +768,7 @@ evalCmd
         heldout: opts.heldout,
         maxCases,
       });
+      saveReport(dataDir, "eval", report);
       console.log(opts.json ? JSON.stringify(report, null, 2) : renderEval(report));
       process.exitCode = report.result === "pass" ? 0 : report.result === "fail" ? 1 : 2;
     } finally {
@@ -796,7 +801,7 @@ program
       return;
     }
     const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, logFile: path.join(paths.dataDir, "archangel.log.jsonl"), configPath: opts.config, dataDir: paths.dataDir, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

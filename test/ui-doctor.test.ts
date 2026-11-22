@@ -10,7 +10,7 @@ import type { DoctorReport } from "../src/core/doctor.js";
 import { makeDoctorHandler, redactSecrets } from "../src/core/ui-doctor.js";
 import { startUiServer } from "../src/core/ui-server.js";
 import { Ledger } from "../src/ledger/store.js";
-import { HealthPage, LadderView, commandIn } from "../ui/src/HealthPage.js";
+import { FaultsPanel, HealthPage, LadderView, commandIn } from "../ui/src/HealthPage.js";
 import { parseRoute } from "../ui/src/route.js";
 
 const html = (el: ReturnType<typeof createElement>) => renderToStaticMarkup(createElement(ChakraProvider, { value: defaultSystem, children: el }));
@@ -121,10 +121,34 @@ describe("Health page", () => {
     expect(out).toMatch(/<button[^>]*disabled/);
   });
   it("the page renders its three ladders and routes", () => {
-    const out = html(createElement(HealthPage));
+    const out = html(createElement(HealthPage, { faults: [], now: 1000 }));
     for (const t of ["This machine", "Subscription CLIs (smoke)", "GitHub wiring"]) expect(out).toContain(t);
     expect(parseRoute("#/health")).toEqual({ page: "health" });
     expect(commandIn("Run `gh auth login` first")).toBe("gh auth login");
     expect(commandIn("nothing")).toBeNull();
+  });
+});
+
+describe("Faults panel", () => {
+  const render = (faults: Parameters<typeof FaultsPanel>[0]["faults"]) => html(createElement(FaultsPanel, { faults, now: 10 * 3_600_000 }));
+  it("says so when nothing survived, and lists classes with counts, ages and the error as text", () => {
+    expect(render([])).toContain("No errors survived in the last 24h.");
+    const out = render([{ repo: "a/b", category: "github_api", firstSeen: 2 * 3_600_000, lastSeen: 9 * 3_600_000, count: 7, recent24h: 4, lastError: "<script>alert(1)</script>" }]);
+    expect(out).not.toContain("<script>alert");
+    expect(out).toContain("&lt;script&gt;");
+    for (const t of ["a/b", "github_api", "8h ago", "1h ago"]) expect(out).toContain(t);
+    expect(out).not.toContain("No errors survived");
+  });
+  it("a null faults section (schema behind) shows its own message, not the empty copy", () => {
+    const out = render(null);
+    expect(out).toContain("Faults are unavailable");
+    expect(out).not.toContain("No errors survived");
+  });
+  it("the state guard rejects a payload without faults", async () => {
+    const { isUiState } = await import("../ui/src/payload.js");
+    const { buildUiState } = await import("../src/core/ui-state.js");
+    const s = buildUiState(new Ledger(":memory:"), 1000);
+    expect(isUiState(s)).toBe(true);
+    expect(isUiState({ ...s, faults: undefined })).toBe(false);
   });
 });

@@ -81,6 +81,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
     expect(selectScoutProvider([{ provider: "agy" }, { provider: "claude" }])).toEqual({
       provider: "claude",
       model: undefined,
+      account: { id: "claude", provider: "claude" },
     });
   });
 

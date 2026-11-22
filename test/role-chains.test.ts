@@ -33,7 +33,7 @@ describe("host chains config", () => {
 
   it("requires a claude or codex entry in the scout chain (agy has no verified read-only mode)", () => {
     expect(() => ChainsSchema.parse({ scout: [{ provider: "agy" }] })).toThrow(/claude or codex/);
-    expect(selectScoutProvider([{ provider: "agy" }, { provider: "claude", model: "m" }])).toEqual({ provider: "claude", model: "m" });
+    expect(selectScoutProvider([{ provider: "agy" }, { provider: "claude", model: "m" }])).toMatchObject({ provider: "claude", model: "m" });
   });
 
   it("has no implementerChain alias: the old key is rejected", () => {
@@ -139,7 +139,7 @@ describe("metrics: per-role breakdown", () => {
     const finish = (kind: "implement" | "revise" | "rebase", status: "succeeded" | "failed", provider: string, model: string, cost: number) => {
       const a = l.startAttempt(1, kind, 10);
       l.recordAttemptProvenance(a.id, { provider, model });
-      l.finishAttempt(a.id, { status, costUsd: cost }, 20);
+      l.finishAttempt(a.id, status === "succeeded" ? { status, costUsd: cost } : { status, costUsd: cost, errorMessage: "x", errorCategory: "other" }, 20);
     };
     finish("implement", "succeeded", "codex", "big", 0.5);
     finish("revise", "succeeded", "codex", "mini", 0);
