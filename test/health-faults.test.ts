@@ -12,6 +12,7 @@ import { buildUiState } from "../src/core/ui-state.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -32,7 +33,7 @@ async function world() {
   const cfg = ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake" });
   const warnings: string[] = [];
   const notices: unknown[] = [];
-  const rec = new Reconciler({
+  const rec = new Reconciler({ triageInvoker: noCli,
     config: cfg, ledger, github,
     broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),
     implementer: { async run() { throw new Error("unused"); } },

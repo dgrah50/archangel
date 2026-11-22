@@ -12,6 +12,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { workflowFile } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 async function run(policy: string | null) {
   const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -46,7 +47,7 @@ async function run(policy: string | null) {
     authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString(),
   });
   github.labelActors.set("5:ready-for-agent", 999);
-  const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+  const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
   try {
     await reconciler.tick(Date.now(), { waitForAttempts: true });
     await reconciler.tick(Date.now(), { waitForAttempts: true });
@@ -110,7 +111,7 @@ describe("post-merge monitoring does not depend on the current workflow", () => 
       ledger.upsertThread({ issueNumber: 5, title: "t", themeLabel: null, bodySha256: "b", phase: { kind: "done", outcome: "merged" }, mode: "autonomous", now: 1 });
       const merge = ledger.recordMerge({ issueNumber: 5, prNumber: 9, headSha: "h", squashSha: mainSha, shadowOnly: false, mainRequired: ["Test"], now: 1 });
       expect(ledger.getMerge(merge.id)!.mainRequired).toEqual(["Test"]);
-      const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+      const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       // Red check seen: the watch moved on (rerun requested), proving the recorded list was used.
       expect(ledger.getMerge(merge.id)!.mainWatch.kind).not.toBe("watching");

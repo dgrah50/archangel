@@ -13,6 +13,7 @@ import type { GitHubClient, GitHubIssue } from "../src/github/client.js";
 import { Ledger } from "../src/ledger/store.js";
 import { SCOUT_PROMPT, hashOfScout, okWorkflow, workflowFile, workflowJson } from "./helpers/workflow.js";
 import { scoutDeps } from "./helpers/scout-deps.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const BUG_HUNT = { name: "bug-hunt", schedule: "daily", maxProposals: 2 };
 const AUTO_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "auto" };
@@ -293,7 +294,7 @@ describe("Scout engine", () => {
         getCheckRunsForRef: async () => [],
       } as unknown as GitHubClient;
 
-      const rec = new Reconciler({
+      const rec = new Reconciler({ triageInvoker: noCli,
         config: makeConfig({
           scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
           maxConcurrentThreads: 1,
@@ -328,7 +329,7 @@ describe("Scout engine", () => {
 
       // Also verify unset githubAppBotUserId + authorId=0 never fails open
       const ledger2 = new Ledger(":memory:", { repo: "acme/app" });
-      const rec2 = new Reconciler({
+      const rec2 = new Reconciler({ triageInvoker: noCli,
         config: ConfigSchema.parse({
           githubOwner: "acme",
           githubRepo: "app",
@@ -458,7 +459,7 @@ describe("Scout engine", () => {
         getIssue: async (n: number) => issues.find((i) => i.number === n)!,
         getCheckRunsForRef: async () => [],
       } as unknown as GitHubClient;
-      const rec = new Reconciler({
+      const rec = new Reconciler({ triageInvoker: noCli,
         config: makeConfig({
           scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
           maxConcurrentThreads: 1,

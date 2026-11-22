@@ -12,6 +12,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -50,7 +51,7 @@ describe("needs-you label that has not landed yet", () => {
       githubPrivateKeyPem: "fake",
     });
     const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     try {
       github.issues.set(5, {
         number: 5, title: "Bug", body: "b", state: "open", authorId: 999, authorLogin: "o",

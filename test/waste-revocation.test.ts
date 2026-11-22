@@ -12,6 +12,7 @@ import type { DoneOutcome } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { SCOUT_PROMPT, hashOfScout, workflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const AUTO_SCOUT = { name: "auto-hunt", schedule: "daily", maxProposals: 2, promotion: "auto" };
 const HASH = hashOfScout(AUTO_SCOUT);
@@ -77,7 +78,7 @@ describe("waste revocation notification", () => {
       const implementer: Implementer = { async run() { throw new Error("unused"); } };
       const reviewers: ReviewerSuite = { async reviewAll() { return { results: [], errors: [] }; } };
       const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
-      const rec = new Reconciler({ config: cfg, ledger, github: new FakeGitHub(remoteBare), broker, implementer, reviewers, notifier });
+      const rec = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github: new FakeGitHub(remoteBare), broker, implementer, reviewers, notifier });
 
       await rec.tick(Date.now());
       await rec.tick(Date.now() + 30_000);

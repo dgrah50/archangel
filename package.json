@@ -34,7 +34,7 @@
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "lint": "bun scripts/lint.ts",
     "verify:formal": "bun formal/check.ts",
-    "test": "bun test --parallel --timeout=30000",
+    "test": "bun test --parallel --timeout=30000 --timings=test/timings.json",
     "test:all": "bun run typecheck && bun run test",
     "start": "bun src/cli/index.ts start",
     "dev": "bun src/cli/index.ts"

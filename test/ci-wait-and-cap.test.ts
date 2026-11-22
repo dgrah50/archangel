@@ -14,6 +14,7 @@ import { classifyGate, stepPhase, type Phase } from "../src/core/thread-machine.
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const MIN = 60_000;
 const gh = (name: string, status: CheckStatus["status"], conclusion: string | null, id = 1): CheckStatus & { id: number } => ({
@@ -87,7 +88,7 @@ describe("autonomy cap", () => {
       githubPrivateKeyPem: "fake", maxAutonomousStepsWithoutOwner: 1,
       requiredChecks: ["Gate"],
     });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     try {
       for (const n of [2, 3]) {
         github.issues.set(n, {

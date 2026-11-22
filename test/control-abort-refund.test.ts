@@ -12,6 +12,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -52,7 +53,7 @@ describe("an Attempt aborted for control does not consume attempt budget", () =>
       githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
       githubPrivateKeyPem: "fake", maxImplementAttemptsPerThread: 2,
     });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     try {
       github.issues.set(7, {
         number: 7, title: "Bug", body: "b", state: "open", authorId: 999, authorLogin: "o",

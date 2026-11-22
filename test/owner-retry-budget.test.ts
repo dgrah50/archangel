@@ -12,6 +12,7 @@ import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
+import { noCli } from "./helpers/no-cli.js";
 
 describe("owner retry after an exhausted budget", () => {
   it("grants one more revision, so the owner's reply reaches an Attempt instead of re-escalating on the same red SHA", async () => {
@@ -49,7 +50,7 @@ describe("owner retry after an exhausted budget", () => {
       githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
       githubPrivateKeyPem: "fake", maxRevisionsPerThread: 0,
     });
-    const reconciler = new Reconciler({ config: cfg, ledger, github, broker, implementer, reviewers, notifier });
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
     const red = [
       { id: 1, name: "Gate", status: "completed" as const, conclusion: "failure", appSlug: "github-actions" },
       { id: 2, name: "Test", status: "completed" as const, conclusion: "success", appSlug: "github-actions" },
