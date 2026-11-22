@@ -39,7 +39,7 @@ import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
 import { LocalProvider } from "../compute/local.js";
 import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
-import { createSailProvider } from "../compute/sail-sdk.js";
+import { createSailProvider, remoteAttemptProvider } from "../compute/sail-sdk.js";
 import type { SailProvider } from "../compute/sail.js";
 import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -241,6 +241,7 @@ program
         logger,
         workerId: daemonOwnerId,
         scoutCompute,
+        remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
         previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [4477] }),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:

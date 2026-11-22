@@ -22,6 +22,7 @@ import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, Ledger } from "../ledger/store.js";
 import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { LocalProvider } from "../compute/local.js";
+import { LazyWorkspace, type WorkspaceHandle } from "../compute/lazy-workspace.js";
 import type { ComputeProvider, Workspace } from "../compute/provider.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
 import { captureAttemptInput } from "./attempt-input.js";
@@ -74,6 +75,8 @@ export interface ReconcilerDeps {
   triageInvoker?: ScoutCliInvoker;
   /** Where Scouts run when the host config says so; absent means this machine. Implement, revise and review always stay local. */
   scoutCompute?: ComputeProvider;
+  /** Where claude Attempts (implement, revise, rebase) run when they run remotely; unset keeps every Attempt local. */
+  remoteAttemptCompute?: ComputeProvider;
   /** A sandboxing provider for previews. Without it no PR screenshots are taken. */
   previewCompute?: ComputeProvider;
 }
@@ -132,6 +135,7 @@ export class Reconciler {
   private readonly broker: GitBroker;
   private readonly compute: ComputeProvider;
   private readonly scoutCompute: ComputeProvider | undefined;
+  private readonly remoteAttemptCompute: ComputeProvider | undefined;
   private readonly previewCompute: ComputeProvider | undefined;
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
@@ -174,6 +178,7 @@ export class Reconciler {
     this.broker = deps.broker;
     this.compute = new LocalProvider(deps.broker);
     this.scoutCompute = deps.scoutCompute;
+    this.remoteAttemptCompute = deps.remoteAttemptCompute;
     this.previewCompute = deps.previewCompute;
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
@@ -257,7 +262,7 @@ export class Reconciler {
     if (issueNumber === null) return;
     const abortController = new AbortController();
     const webPreview = this.previewCompute && this.workflow.preview?.kind === "web" ? this.workflow.preview : null;
-    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, sandbox: this.previewCompute!, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
+    const promise = runPocBuild({ ledger: this.ledger, broker: this.broker, compute: this.scoutCompute ?? this.compute, local: this.compute, implementer: this.implementer, cfg: this.cfg, gate: this.effectiveGate, preview: webPreview ? { policy: webPreview, sandbox: this.previewCompute!, workspaceDir: (n) => pocWorkspaceDir(resolvePaths(this.cfg).dataDir, this.ledger.repo, n) } : null }, issueNumber, mainSha, abortController, now)
       .catch((err: unknown) => this.recordFault("poc_build", err, now, issueNumber!))
       .finally(() => {
         this.pocBuild = null;
@@ -1745,24 +1750,31 @@ export class Reconciler {
     structuredFindings: Array<{ vendor: string; findings: ReviewFinding[] }>,
     task: RunningTask,
   ): Promise<void> {
-    let cloneDir = "";
-    let workspace: Workspace | null = null;
     let actualCostUsd = 0;
     let transcriptPath: string | null = null;
+    // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
+    const handleFor = (compute: ComputeProvider) =>
+      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha }, async (ws) => {
+        // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
+        try {
+          await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
+        } catch (err) {
+          // The repo's own setup script failed: the repo's problem, not a provider outage.
+          if (!this.workflow || task.abortController.signal.aborted) throw err;
+          throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
+        }
+      });
+    const local = handleFor(this.compute);
+    const remote = this.remoteAttemptCompute ? handleFor(this.remoteAttemptCompute) : undefined;
+    const destroyWorkspaces = () => {
+      local.destroy();
+      remote?.destroy();
+    };
+    let ranOn: WorkspaceHandle = local;
 
     try {
-      workspace = await this.compute.prepare({ issueNumber: workingThread.issueNumber, startSha: fromSha });
-      cloneDir = workspace.path;
-      task.cloneDir = cloneDir;
-
-      // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
-      try {
-        await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
-      } catch (err) {
-        // The repo's own setup script failed: the repo's problem, not a provider outage.
-        if (!this.workflow || task.abortController.signal.aborted) throw err;
-        throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
-      }
+      // Without a remote provider the one workspace is prepared up front, exactly as before.
+      if (!remote) await local.workspace();
 
       const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
       const repoInstructions = await loadRepoInstructions(this.broker, mainSha);
@@ -1817,7 +1829,7 @@ export class Reconciler {
       const result: ImplementResult = await this.implementer
         .run({
         issueNumber: issue.number,
-        cloneDir,
+        workspaces: { local, ...(remote ? { remote } : {}) },
         prompt,
         abortController: task.abortController,
         maxTurns: this.cfg.implementMaxTurns,
@@ -1833,6 +1845,8 @@ export class Reconciler {
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
+      if (result.ranOn === "remote" && remote) ranOn = remote;
+      this.ledger.recordAttemptProvenance(attemptId, { compute: ranOn.compute.remote ? "sail" : "local" });
       if (result.durationMs !== undefined) this.ledger.recordAttemptMeasure(attemptId, { durationMs: result.durationMs, peakRssKb: result.peakRssKb ?? null });
       this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {
@@ -1860,8 +1874,8 @@ export class Reconciler {
         if (cause === "handoff") {
           let unpushed: string | null = null;
           try {
-            const val = await this.broker.fetchAndValidateFromClone(
-              (await this.compute.collect(workspace!)).path,
+            const val = await this.broker.fetchAndValidateCollected(
+              await ranOn.compute.collect(await ranOn.workspace()),
               workingThread.issueNumber,
               mainSha,
               this.effectiveGate,
@@ -1924,8 +1938,8 @@ export class Reconciler {
       }
 
       // Hardened fetch + pre-push validation (including local `archangel-gate` if built — Neon P1).
-      const validation = await this.broker.fetchAndValidateFromClone(
-        (await this.compute.collect(workspace!)).path,
+      const validation = await this.broker.fetchAndValidateCollected(
+        await ranOn.compute.collect(await ranOn.workspace()),
         workingThread.issueNumber,
         mainSha,
         this.effectiveGate,
@@ -2000,8 +2014,7 @@ export class Reconciler {
           if (backToQueued) {
             // Release current runningTasks entry before spawning the pre-push revision.
             this.runningTasks.delete(workingThread.issueNumber);
-            this.compute.destroy(workspace);
-            cloneDir = "";
+            destroyWorkspaces();
             await this.spawnAttempt(
               backToQueued,
               issue,
@@ -2176,7 +2189,7 @@ export class Reconciler {
       if (this.runningTasks.get(workingThread.issueNumber) === task) {
         this.runningTasks.delete(workingThread.issueNumber);
       }
-      if (workspace) this.compute.destroy(workspace);
+      destroyWorkspaces();
     }
   }
 

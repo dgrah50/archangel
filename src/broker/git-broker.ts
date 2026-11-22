@@ -1,3 +1,4 @@
+import type { ExecResult, ExecSpec } from "../compute/provider.js";
 import type { WorkClass } from "../core/work-class.js";
 import { execFile } from "node:child_process";
 import { execFileGroup } from "../core/spawn-group.js";
@@ -367,10 +368,22 @@ export class GitBroker {
     cloneDir: string,
     mainSha: string,
     timeoutMs = 5 * 60_000,
+    /** Runs the script on a remote workspace instead of in `cloneDir` on this machine. */
+    remote?: (spec: ExecSpec) => Promise<ExecResult>,
   ): Promise<{ ran: boolean; stdout: string }> {
     const script = await this.readFileAtRef(mainSha, ".agents/setup");
     if (!script || !script.trim()) {
       return { ran: false, stdout: "" };
+    }
+    if (remote) {
+      const res = await remote({
+        cmd: "/bin/sh",
+        args: ["-eu", "-c", script],
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/tmp", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+        timeoutMs,
+      });
+      if (res.code !== 0) throw new Error(`repo setup exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-300)}`);
+      return { ran: true, stdout: res.stdout };
     }
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-setup-home-"));
     try {

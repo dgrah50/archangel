@@ -43,9 +43,9 @@ async function harness(mainChange: "unrelated" | "same-line") {
   const implementer: Implementer = {
     async run(input) {
       if (/rebase/i.test(input.prompt)) rebaseKinds.push("rebase");
-      fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
-      git(input.cloneDir, ["add", "-A"]);
-      git(input.cloneDir, ["commit", "-m", "fix"]);
+      fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
+      git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+      git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]);
       return { summary: "Done.", costUsd: 0, transcriptPath: null, aborted: false };
     },
   };
