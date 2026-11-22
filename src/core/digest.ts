@@ -4,11 +4,15 @@ import type { EscalationCode } from "./thread-machine.js";
 export interface DigestInput {
   now: number;
   /** All configured projects, not one repo. */
-  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; since: number }>;
-  yesterday: { autonomousMerges: number; ownerMerges: number; reverts: number; spendUsd: number };
-  /** Scout proposals still awaiting the owner (no Thread yet). */
-  proposals: Array<{ repo: string; issueNumber: number; scoutName: string }>;
+  /** null = could not be read ("unavailable"), distinct from an empty list. */
+  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; since: number }> | null;
+  /** Each figure is null when it could not be computed ("unavailable"), distinct from a real 0. */
+  yesterday: { autonomousMerges: number | null; ownerMerges: number | null; reverts: number | null; spendUsd: number | null };
+  /** Scout proposals still awaiting the owner (no Thread yet); null = could not be read. */
+  proposals: Array<{ repo: string; issueNumber: number; scoutName: string }> | null;
 }
+
+const UNAVAILABLE = "unavailable";
 
 function age(ms: number): string {
   const min = Math.max(0, Math.floor(ms / 60_000));
@@ -17,30 +21,38 @@ function age(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-/** Plain-text daily digest, or null when there is nothing to say (no Needs You and a quiet yesterday). */
+/**
+ * Plain-text daily digest, or null when there is nothing to say: Needs You is known to be empty and every figure of
+ * yesterday is a known zero. A figure that could not be computed is never treated as zero, so it keeps the digest alive.
+ */
 export function buildDigest(input: DigestInput): string | null {
   const y = input.yesterday;
-  if (input.needsYou.length === 0 && y.autonomousMerges + y.ownerMerges + y.reverts === 0 && y.spendUsd === 0) {
+  if (input.needsYou?.length === 0 && y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 && y.spendUsd === 0) {
     return null;
   }
+  const n = (v: number | null) => (v === null ? UNAVAILABLE : String(v));
   const lines = ["Archangel daily digest"];
-  if (input.needsYou.length > 0) {
+  if (input.needsYou === null) {
+    lines.push("", `Needs You: ${UNAVAILABLE}`);
+  } else if (input.needsYou.length > 0) {
     lines.push("", `Needs You (${input.needsYou.length}):`);
-    for (const n of input.needsYou) {
-      const p = describeEscalation(n.code);
-      lines.push(`${n.repo}#${n.issueNumber} ${n.title}`);
-      lines.push(`  ${formatDecisionClass(p.decisionClass)}, waiting ${age(input.now - n.since)}`);
+    for (const item of input.needsYou) {
+      const p = describeEscalation(item.code);
+      lines.push(`${item.repo}#${item.issueNumber} ${item.title}`);
+      lines.push(`  ${formatDecisionClass(p.decisionClass)}, waiting ${age(input.now - item.since)}`);
       lines.push(`  Recommended: ${p.recommendation}`);
     }
   }
   lines.push(
     "",
     "Yesterday:",
-    `  Merges: ${y.autonomousMerges} autonomous, ${y.ownerMerges} owner`,
-    `  Reverts (red main): ${y.reverts}`,
-    `  Metered spend: $${y.spendUsd.toFixed(2)}`,
+    `  Merges: ${n(y.autonomousMerges)} autonomous, ${n(y.ownerMerges)} owner`,
+    `  Reverts (red main): ${n(y.reverts)}`,
+    `  Metered spend: ${y.spendUsd === null ? UNAVAILABLE : `$${y.spendUsd.toFixed(2)}`}`,
   );
-  if (input.proposals.length > 0) {
+  if (input.proposals === null) {
+    lines.push("", `Scout proposals awaiting you: ${UNAVAILABLE}`);
+  } else if (input.proposals.length > 0) {
     lines.push("", `Scout proposals awaiting you (${input.proposals.length}):`);
     for (const p of input.proposals) lines.push(`  ${p.repo}#${p.issueNumber} (${p.scoutName})`);
   }
@@ -78,8 +90,14 @@ export async function sendDigestIfDue(
   const today = ledger.dayKeyOf(opts.now);
   if (ledger.digestSentFor(today)) return false;
   const input = ledger.collectDigestInput(opts.now);
-  const open = await opts.openProposals();
-  input.proposals = input.proposals.filter((p) => open.has(`${p.repo}#${p.issueNumber}`));
+  if (input.proposals !== null) {
+    try {
+      const open = await opts.openProposals();
+      input.proposals = input.proposals.filter((p) => open.has(`${p.repo}#${p.issueNumber}`));
+    } catch {
+      input.proposals = null; // GitHub read failed: say "unavailable", do not list stale proposals or pretend there are none
+    }
+  }
   const text = buildDigest(input);
   if (text === null) return false;
   await notifier.sendDigest(text);

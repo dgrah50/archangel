@@ -30,7 +30,12 @@ const CODE_QUALITY_RULES: string[] = [
   "- No fallbacks, compatibility shims, dual old/new code paths, or swallow-and-substitute error handling. Change every call site and delete the code you replace in the same diff.",
   "- Make the smallest diff that fixes the issue. Do not add an abstraction, option, or file that has a single caller.",
   "- When a fix touches multi-flag or nullable state, make the state explicit (one closed union or one transition function) instead of adding another boolean.",
+  "- Before using any API, read the repository's local docs and type definitions for it. Do not look anything up on the web.",
 ];
+
+/** Closing instruction shared by implement and revision prompts: surface the choices made without asking. */
+const ASSUMPTIONS_RULE =
+  "End your final summary with an `Assumptions:` heading followed by one `- ` line per decision you made without asking (or `Assumptions: none`).";
 
 export function buildImplementPrompt(input: {
   issueNumber: number;
@@ -64,6 +69,7 @@ export function buildImplementPrompt(input: {
           "Finish with a concise plain-text summary of the feature, the new test file/name, and the implementation.",
         ]
       : ["Finish with a concise plain-text summary of the root cause, the new reproduction test file/name, and the fix."]),
+    ASSUMPTIONS_RULE,
   ].join("\n");
 }
 
@@ -115,6 +121,7 @@ export function buildRevisionPrompt(input: {
     ...CODE_QUALITY_RULES,
     "",
     "Commit your revision to the current branch. Do NOT attempt to push.",
+    ASSUMPTIONS_RULE,
   );
 
   return parts.join("\n");
@@ -153,6 +160,10 @@ export function formatOwnerReply(reply: string | null | undefined): string[] {
   ];
 }
 
+const REVIEWER_EXPECT_LINE =
+  "Before reading the diff, state in one line what fix you would expect for this issue, then compare the diff against it.";
+const REVIEWER_SIBLING_LINE = "Check sibling code paths and callers of the changed code for the same defect.";
+
 export function buildOpenAiReviewerPrompt(input: {
   issueNumber: number;
   title: string;
@@ -169,6 +180,9 @@ export function buildOpenAiReviewerPrompt(input: {
     "--- BEGIN ISSUE DATA ---",
     input.body.slice(0, 8_000),
     "--- END ISSUE DATA ---",
+    "",
+    REVIEWER_EXPECT_LINE,
+    REVIEWER_SIBLING_LINE,
     "",
     "--- BEGIN UNIFIED DIFF DATA ---",
     input.diffText.slice(0, 40_000),
@@ -206,6 +220,9 @@ export function buildGeminiAdversarialPrompt(input: {
     "--- BEGIN ISSUE DATA ---",
     input.body.slice(0, 8_000),
     "--- END ISSUE DATA ---",
+    "",
+    REVIEWER_EXPECT_LINE,
+    REVIEWER_SIBLING_LINE,
     "",
     "--- BEGIN UNIFIED DIFF DATA ---",
     input.diffText.slice(0, 40_000),
