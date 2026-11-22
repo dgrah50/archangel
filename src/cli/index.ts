@@ -623,7 +623,7 @@ program
   .option("--run-tests", "Also run the repo's test commands (full Gate on good fixes, and the mutants only tests can catch). Executes repo code on this machine.")
   .option("--json", "Output JSON")
   .action(async (opts: { config?: string; dataDir?: string; repo?: string; since?: string; runTests?: boolean; json?: boolean }) => {
-    const dataDir = resolveDataDirFromOpts(opts);
+    const dataDir = resolveDataDir(opts);
     const root = resolvePaths({ dataDir });
     if (!fs.existsSync(root.ledgerDbPath)) {
       console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
