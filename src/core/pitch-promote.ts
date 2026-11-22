@@ -36,30 +36,19 @@ export function sliceIssueBody(pitchIssue: number, pitch: PitchItem, sliceIndex:
 }
 
 /** `--slice 1,3` to zero-based indexes in ascending order; every entry must be an integer in range, with no repeats. */
-function parseSlices(arg: string, total: number): number[] {
+export function parseSlices(arg: string, total: number): number[] {
   const nums = arg.split(",").map((part) => (/^\s*\d+\s*$/.test(part) ? Number(part) : NaN));
   if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > total)) throw new Error(`--slice must be one or more whole numbers between 1 and ${total}, comma-separated (got '${arg}')`);
   if (new Set(nums).size !== nums.length) throw new Error(`--slice lists a slice more than once (got '${arg}')`);
   return nums.map((n) => n - 1).sort((a, b) => a - b);
 }
 
-export async function promotePitch(
+/** The pitch the owner is about to act on, checked against GitHub: open, labelled, and byte-identical to what was filed. */
+export async function loadPromotablePitch(
   runner: OnboardRunner,
   ledger: Ledger,
-  input: {
-    repo: string;
-    issue: number;
-    /** 1-based slice numbers as typed: one (`2`) or a comma list (`1,3`). Default: every slice not yet promoted. */
-    slice?: string;
-    /** Make the slices created by this call linear: each waits (queued) for the one before it to merge. */
-    chain?: boolean;
-    yes: boolean;
-    labels: Pick<Labels, "readyForAgent" | "feature" | "agentPitch">;
-    confirm: (question: string) => Promise<boolean>;
-    log: (s: string) => void;
-    now?: number;
-  },
-): Promise<number[]> {
+  input: { repo: string; issue: number; labels: { agentPitch: string } },
+): Promise<{ row: NonNullable<ReturnType<Ledger["getPitch"]>>; pitch: PitchItem; promotedSoFar: number[] }> {
   if (!REPO_SLUG_RE.test(input.repo)) throw new Error(`Expected owner/name, got '${input.repo}'`);
   const row = ledger.getPitch(input.issue);
   if (!row) throw new Error(`#${input.issue} is not a pitch recorded by this Ledger`);
@@ -81,6 +70,27 @@ export async function promotePitch(
   }
 
   const pitch = PitchOutputSchema.shape.pitches.element.parse(JSON.parse(row.pitchJson));
+  return { row, pitch, promotedSoFar };
+}
+
+export async function promotePitch(
+  runner: OnboardRunner,
+  ledger: Ledger,
+  input: {
+    repo: string;
+    issue: number;
+    /** 1-based slice numbers as typed: one (`2`) or a comma list (`1,3`). Default: every slice not yet promoted. */
+    slice?: string;
+    /** Make the slices created by this call linear: each waits (queued) for the one before it to merge. */
+    chain?: boolean;
+    yes: boolean;
+    labels: Pick<Labels, "readyForAgent" | "feature" | "agentPitch">;
+    confirm: (question: string) => Promise<boolean>;
+    log: (s: string) => void;
+    now?: number;
+  },
+): Promise<number[]> {
+  const { row, pitch, promotedSoFar } = await loadPromotablePitch(runner, ledger, input);
   const remaining = pitch.slices.map((_, i) => i).filter((i) => !promotedSoFar.includes(i));
   const indexes = input.slice === undefined ? remaining : parseSlices(input.slice, pitch.slices.length);
   const again = indexes.filter((i) => promotedSoFar.includes(i));
@@ -158,7 +168,7 @@ async function chainSlices(
 }
 
 /** The state machine is the authority: a refusal here means the pitch moved under us, and the issues already created must be reported. */
-function markSlices(ledger: Ledger, issue: number, slices: number[], total: number, now?: number): void {
+export function markSlices(ledger: Ledger, issue: number, slices: number[], total: number, now?: number): void {
   if (!ledger.markPitchSlicesPromoted(issue, slices, total, now)) {
     throw new Error(`Pitch #${issue} could not record slices ${slices.map((i) => i + 1).join(", ")} (see the pitch/illegal_transition audit row); the issues already opened are listed above.`);
   }
