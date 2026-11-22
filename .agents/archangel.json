@@ -45,7 +45,11 @@
       "src/core/pitch.ts",
       "test/protected-paths.test.ts",
       "src/core/failure-clusters.ts",
-      "src/core/replay.ts"
+      "src/core/replay.ts",
+      "src/core/doctor.ts",
+      "src/handoff/paseo.ts",
+      "src/core/notifier.ts",
+      "src/core/escalations.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
