@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
@@ -23,6 +24,7 @@ import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject } from "../core/scout.js";
+import { promotePitch } from "../core/pitch-promote.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
@@ -36,6 +38,21 @@ import { Ledger } from "../ledger/store.js";
 
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
+
+function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): ReviewerSuite {
+  return cfg.authMode === "subscription"
+    ? new SubscriptionReviewerSuite({
+        chain: cfg.reviewerChain,
+        primaryImplementerVendor: providerToVendor(cfg.implementerChain[0]!.provider),
+      })
+    : new MastraReviewerSuite({
+        openaiApiKey: cfg.openaiApiKey!,
+        googleApiKey: cfg.googleApiKey!,
+        openaiModel: cfg.openaiReviewerModel,
+        geminiModel: cfg.geminiReviewerModel,
+        mastraDbPath,
+      });
+}
 
 const program = new Command();
 
@@ -122,19 +139,7 @@ program
       rootLedger.heartbeatDaemonLock(daemonOwnerId);
     }, 30_000);
 
-    const reviewers: ReviewerSuite =
-      first.authMode === "subscription"
-        ? new SubscriptionReviewerSuite({
-            chain: first.reviewerChain,
-            primaryImplementerVendor: providerToVendor(first.implementerChain[0]!.provider),
-          })
-        : new MastraReviewerSuite({
-            openaiApiKey: first.openaiApiKey!,
-            googleApiKey: first.googleApiKey!,
-            openaiModel: first.openaiReviewerModel,
-            geminiModel: first.geminiReviewerModel,
-            mastraDbPath: sharedPaths.mastraDbPath,
-          });
+    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath);
     const notifier = new TelegramNotifier({
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
@@ -277,6 +282,41 @@ program
 
     await runTick();
     scheduleNext();
+  });
+
+const pitchCmd = program.command("pitch").description("Pitch Scout proposals");
+pitchCmd
+  .command("promote <repo> <issue>")
+  .description("Turn a pitch into owner-authored class:feature issues with your gh (prints every body and asks to confirm)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--slice <n>", "Promote only slice N (default: every slice)")
+  .option("--yes", "Skip the confirmation prompt", false)
+  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; yes?: boolean }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+    const paths = resolvePaths(cfg);
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
+    try {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const created = await promotePitch(execRunner, ledger, {
+          repo,
+          issue: Number(issueArg),
+          slice: opts.slice === undefined ? undefined : Number(opts.slice),
+          yes: Boolean(opts.yes),
+          labels: cfg.labels,
+          confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
+          log: (s) => console.log(s),
+        });
+        console.log(`Promoted pitch #${issueArg} to ${created.map((n) => `#${n}`).join(", ")}.`);
+      } finally {
+        rl.close();
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    } finally {
+      ledger.close();
+    }
   });
 
 program
@@ -1044,6 +1084,8 @@ scoutCmd
         github,
         broker,
         workflow,
+        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath),
+        notifier: new TelegramNotifier({ botToken: cfg.telegramBotToken, chatId: cfg.telegramChatId }),
         mainSha,
         filterName: name,
         dryRun: Boolean(opts.dryRun),
