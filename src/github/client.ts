@@ -358,7 +358,7 @@ export class GitHubAppClient implements GitHubClient {
       );
       return true;
     } catch (err) {
-      if (err instanceof Error && err.message.includes("(404)")) {
+      if (err instanceof GitHubHttpError && err.status === 404) {
         return false;
       }
       throw err;
@@ -376,10 +376,13 @@ export class GitHubAppClient implements GitHubClient {
           .join("/")}?ref=${encodeURIComponent(ref)}`,
         { useEtag: false },
       );
-      if (res.encoding !== "base64" || typeof res.content !== "string") return null;
+      // A file the Contents API will not inline (over 1 MB, a submodule, a directory) is not a missing file.
+      if (res.encoding !== "base64" || typeof res.content !== "string") {
+        throw new Error(`GitHub returned ${filePath} at ${ref} without inline content (encoding ${String(res.encoding)}); cannot read it`);
+      }
       return Buffer.from(res.content, "base64").toString("utf8");
     } catch (err) {
-      if (err instanceof Error && err.message.includes("(404)")) return null;
+      if (err instanceof GitHubHttpError && err.status === 404) return null;
       throw err;
     }
   }
@@ -651,7 +654,7 @@ export class GitHubAppClient implements GitHubClient {
         `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
       );
     } catch (err) {
-      if (!(err instanceof Error && err.message.includes("(404)"))) {
+      if (!(err instanceof GitHubHttpError && err.status === 404)) {
         throw err;
       }
     }

@@ -29,7 +29,7 @@ const feed = <T = never,>(data: T | null, at: number | null, error: string | nul
 const noState = (error: string | null = null) => feed<UiState>(null, null, error);
 const noWfs = (error: string | null = null) => feed<WorkflowsState>(null, null, error);
 const view = (state: Feed<UiState>, workflows: Feed<WorkflowsState>, now = NOW, route: Route = { page: "overview" }) =>
-  html(createElement(AppView, { route, state, workflows, now, onRetry: () => {} }));
+  html(createElement(AppView, { route, state, workflows, thread: { data: null, at: null, error: null }, logs: { data: null, at: null, error: null }, now, onRetry: () => {} }));
 const pipelineView = (state: Feed<UiState>, workflows: Feed<WorkflowsState>) => view(state, workflows, NOW, { page: "pipeline" });
 
 describe("dashboard states are distinct", () => {
@@ -52,13 +52,13 @@ describe("dashboard states are distinct", () => {
     const l = new Ledger(":memory:", { repo: "a/b" });
     l.setSystemState("daemon_lock", JSON.stringify({ ownerId: "x", pid: 1, heartbeatAt: NOW }), NOW);
     const out = view(feed(buildUiState(l, NOW), NOW), feed(wfs, NOW));
-    expect(out).toContain("Nothing needs you.");
+    expect(out).toContain("Nothing needs you");
     expect(out).not.toContain('role="alert"');
   });
 
   it("failed refresh with old data: shows the data plus a red banner saying how old it is", () => {
     const out = view(feed(liveState(), NOW - 120_000, "/api/state: HTTP 500"), feed(wfs, NOW));
-    expect(out).toContain("needs help");
+    expect(out).toContain("1 need you");
     expect(out).toContain("Refresh failed (/api/state: HTTP 500). Showing data from 2m ago; it may be out of date.");
   });
 

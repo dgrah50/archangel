@@ -16,6 +16,7 @@ export function useFeed<T>(url: string, valid: (v: unknown) => v is T, enabled =
   }, [url, valid]);
   useEffect(() => {
     if (!enabled) return;
+    setFeed(empty()); // a different url is a different resource: never show the old one's data under it
     load();
     const poll = setInterval(load, POLL_MS);
     return () => clearInterval(poll);

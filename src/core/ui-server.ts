@@ -7,6 +7,7 @@ import type { Ledger } from "../ledger/store.js";
 import { REPO_SLUG_RE } from "../config.js";
 import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
+import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -65,7 +66,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; logFile?: string },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
@@ -133,6 +134,19 @@ export async function startUiServer(
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;
+      }
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const thread = /^\/api\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(pathname);
+      if (thread || pathname === "/api/logs") {
+        const repo = thread ? thread[1]! : (url.searchParams.get("repo") ?? "");
+        const issue = Number(thread ? thread[2] : url.searchParams.get("issue"));
+        if (!REPO_SLUG_RE.test(repo) || !Number.isSafeInteger(issue) || issue < 1) return sendJson(res, 400, { error: "repo must be owner/name and issue a positive integer" });
+        if (thread) {
+          const detail = buildThreadDetail(ledger, repo, issue);
+          return detail ? sendJson(res, 200, detail) : sendJson(res, 404, { error: `no Thread ${repo}#${issue}` });
+        }
+        const limit = Number(url.searchParams.get("limit") ?? 100);
+        return sendJson(res, 200, readLogs(opts.logFile ?? null, repo, issue, Number.isFinite(limit) ? Math.min(limit, LOG_MAX) : 100));
       }
       const file = path.resolve(uiDir, "." + (pathname === "/" ? "/index.html" : pathname));
       if (!file.startsWith(uiDir + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {

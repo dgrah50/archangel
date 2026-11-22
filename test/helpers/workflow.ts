@@ -33,6 +33,7 @@ export function hostInput(o: Partial<HostWorkflowInput> = {}): HostWorkflowInput
     scoutRunsPerDay: 2,
     scoutsEnabled: true,
     maxConcurrentThreads: 2,
+    factoryRetry: true,
     isRevoked: () => false,
     ...o,
   };
