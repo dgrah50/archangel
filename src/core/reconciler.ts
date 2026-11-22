@@ -16,7 +16,7 @@ import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
-import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
+import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, type Ledger } from "../ledger/store.js";
 import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { computeBlockers, isShadowReady } from "./blockers.js";
@@ -1331,6 +1331,7 @@ export class Reconciler {
         status: "aborted",
         reservedUsd,
         costUsd: 0,
+        errorCategory: "cas_rejected",
         errorMessage: "CAS transition to working rejected",
       });
       return false;
@@ -1384,7 +1385,13 @@ export class Reconciler {
       task.cloneDir = cloneDir;
 
       // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
-      await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
+      try {
+        await this.broker.runRepoSetup(cloneDir, mainSha, this.cfg.setupTimeoutMs);
+      } catch (err) {
+        // The repo's own setup script failed: the repo's problem, not a provider outage.
+        if (!this.workflow || task.abortController.signal.aborted) throw err;
+        throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
+      }
 
       const prompt =
         kind === "implement"
@@ -1418,7 +1425,8 @@ export class Reconciler {
                 ownerReply: workingThread.ownerReply,
               });
 
-      const result: ImplementResult = await this.implementer.run({
+      const result: ImplementResult = await this.implementer
+        .run({
         issueNumber: issue.number,
         cloneDir,
         prompt,
@@ -1428,7 +1436,11 @@ export class Reconciler {
         maxBudgetUsd: reservedUsd,
         preferVendors: kind === "implement" ? undefined : workingThread.implementerVendors,
         role: kind,
-      });
+        })
+        .catch((err: unknown) => {
+          // The implementer (every provider in its chain) threw: that is a provider failure, whatever its prose says.
+          throw err instanceof AttemptError ? err : new AttemptError("provider_unavailable", err instanceof Error ? err.message : String(err));
+        });
 
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
@@ -1438,7 +1450,7 @@ export class Reconciler {
       }
 
       // The implementer said it did not finish (budget or turn limit, an execution error): an explicit failed Attempt, with its cost.
-      if (result.failure && !result.aborted) throw new Error(`implementer ended with ${result.failure}`);
+      if (result.failure && !result.aborted) throw new AttemptError("implementer_failed", `implementer ended with ${result.failure}`);
 
       // The repo may have been halted while the implementer ran: treat that like a control abort.
 
@@ -1449,6 +1461,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: cause === "timeout" ? "timeout" : "aborted",
           errorMessage: `Aborted (${cause})`,
         });
         if (cause === "control") this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
@@ -1520,6 +1533,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: "static_rejection",
           errorMessage: validation.protectedViolations.join("; "),
         });
         const latest = this.ledger.getThread(workingThread.issueNumber);
@@ -1546,6 +1560,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: "gate_or_policy",
           errorMessage: rep.violations.join("; "),
         });
 
@@ -1611,6 +1626,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: "no_change",
           errorMessage: "Revision attempt produced no new changes (identical SHA)",
         });
         const latest = this.ledger.getThread(workingThread.issueNumber);
@@ -1647,6 +1663,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: "aborted",
           errorMessage: "Aborted right before push due to owner stop/pause label",
         });
         this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
@@ -1710,6 +1727,7 @@ export class Reconciler {
           costUsd: actualCostUsd,
           reservedUsd,
           transcriptPath,
+          errorCategory: cause === "timeout" ? "timeout" : "aborted",
           errorMessage: `Aborted (${cause})`,
         });
         if (cause === "control") this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
@@ -1728,6 +1746,7 @@ export class Reconciler {
         costUsd: actualCostUsd,
         reservedUsd,
         transcriptPath,
+        errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
       const latest = this.ledger.getThread(workingThread.issueNumber);

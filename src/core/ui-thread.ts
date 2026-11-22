@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import type { Ledger } from "../ledger/store.js";
-import { categorizeAttemptError } from "./metrics-block.js";
 
 /** Read-only views for the Thread detail page. Every string here is untrusted text: the UI renders it only as React children. */
 
@@ -49,7 +48,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
       details: [
         { label: "provider", value: [a.provider, a.model].filter(Boolean).join(" / ") || "unknown" },
         { label: "duration", value: duration },
-        ...(a.errorMessage ? [{ label: "error category", value: categorizeAttemptError(a.errorMessage) }] : []),
+        ...(a.errorMessage ? [{ label: "error category", value: a.errorCategory ?? "other" }] : []),
         ...(a.transcriptPath ? [{ label: "transcript", value: a.transcriptPath }] : []),
       ],
     });
