@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import { Reconciler } from "../src/core/reconciler.js";
+import { stepPhase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
@@ -41,7 +42,9 @@ async function world() {
     labels: ["needs-you"], updatedAt: new Date().toISOString(),
   });
   const t = ledger.upsertThread({ issueNumber: 4, title: "Bug", bodySha256: sha("b"), now: 1 });
-  ledger.transition(4, t.version, { kind: "needs_you", code: "review_vetoed", reason: "x", resumeTo: { kind: "queued" } } as never, { now: 2 });
+  const esc = stepPhase(t.phase, t.mode, { t: "escalate", code: "review_vetoed", reason: "x" }, { issueNumber: 4, title: "Bug", needsYouLabel: "needs-you" });
+  if (!esc.ok) throw new Error(esc.reject);
+  ledger.transition(4, t.version, esc.next, { now: 2 });
   return { root, github, ledger, rec };
 }
 import crypto from "node:crypto";
@@ -71,7 +74,10 @@ describe("removing needs-you resumes a Thread only when the owner removed it", (
       w.github.issues.get(4)!.labels = []; // our add_label never landed
       w.github.labelRemovers.set("4:needs-you", 0); // the timeline has no owner removal
       w.ledger.upsertThread({ issueNumber: 5, title: "x", bodySha256: sha("x"), now: 1 });
-      w.ledger.transition(5, w.ledger.getThread(5)!.version, { kind: "queued" }, { effects: [{ kind: "add_label", issueNumber: 4, label: "needs-you" }] });
+      const t5 = w.ledger.getThread(5)!;
+      const esc5 = stepPhase(t5.phase, t5.mode, { t: "escalate", code: "review_vetoed", reason: "x" }, { issueNumber: 5, title: "x", needsYouLabel: "needs-you" });
+      if (!esc5.ok) throw new Error(esc5.reject);
+      w.ledger.transition(5, t5.version, esc5.next, { effects: [{ kind: "add_label", issueNumber: 4, label: "needs-you" }] });
       const row = w.ledger.listDueOutbox()[0]!;
       w.ledger.deadLetterOutbox(row.id, "gave up");
       expect(w.ledger.hasPendingLabelAdd(4, "needs-you")).toBe(false);

@@ -45,8 +45,12 @@ describe("a PR merged on GitHub", () => {
     try {
       const sha = git(remoteBare, ["rev-parse", "main"]);
       const track = (issue: number, pr: number, mergedBy: number) => {
-        ledger.upsertThread({ issueNumber: issue, title: `t${issue}`, bodySha256: "x" });
-        ledger.transition(issue, ledger.getThread(issue)!.version, { kind: "awaiting_gate", prNumber: pr, headSha: sha, baseSha: sha, since: 1, nudgedAt: 0 } as never);
+        ledger.upsertThread({
+          issueNumber: issue,
+          title: `t${issue}`,
+          bodySha256: "x",
+          phase: { kind: "awaiting_gate", prNumber: pr, headSha: sha, baseSha: sha, since: 1, nudgedAt: 0 },
+        });
         github.issues.set(issue, {
           number: issue, title: `t${issue}`, body: "b", state: "open", authorId: 999, authorLogin: "o",
           authorAssociation: "OWNER", labels: [], updatedAt: new Date().toISOString(),

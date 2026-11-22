@@ -756,10 +756,13 @@ export class Reconciler {
       incImplement?: boolean;
       incRevision?: boolean;
       incRebase?: boolean;
+      ownerReply?: string | null;
+      grantRetryBudget?: boolean;
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
       auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
+      extraAudits?: Array<{ topic: string; actor: "archangel" | "owner" | "factory"; payload: unknown }>;
       now?: number;
     } = {},
   ): ThreadRecord | null {
@@ -917,7 +920,7 @@ export class Reconciler {
       this.releaseTriage(thread, "the factory retry is no longer available.", "retry_unavailable", now);
       return;
     }
-    const resumed = this.applyMachineEvent(thread, { t: "factory_retry" }, { factoryTriage: "done", auditTopic: "factory/resumed", now });
+    const resumed = this.applyMachineEvent(thread, { t: "factory_retry", now }, { factoryTriage: "done", auditTopic: "factory/resumed", now });
     if (!resumed) return; // lost the compare-and-set: the next tick finds the retry spent and escalates
     await this.spawnAttempt(
       resumed,
@@ -964,18 +967,15 @@ export class Reconciler {
     via: "label_removed" | "comment",
     now: number,
   ): Promise<ThreadRecord | null> {
+    let reply: string | null = null;
     try {
-      const reply = await collectOwnerReply({
+      reply = await collectOwnerReply({
         github: this.github,
         ownerUserId: this.cfg.ownerUserId,
         issueNumber: thread.issueNumber,
         prNumber: thread.phase.kind === "needs_you" ? (thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null) : null,
         sinceMs: thread.updatedAt,
       });
-      if (reply) {
-        this.ledger.setOwnerReply(thread.issueNumber, reply, now);
-      }
-      this.ledger.grantRetryBudget(thread.issueNumber, now);
     } catch (err) {
       // Never resume without the owner's reply: retry on the next tick.
       this.logger.warn("thread/owner_reply_fetch_failed", err instanceof Error ? err.message : String(err), {
@@ -984,11 +984,23 @@ export class Reconciler {
       });
       return null;
     }
-    this.ledger.appendAudit("thread/owner_retry", thread.issueNumber, "owner", { via, code: thread.phase.kind === "needs_you" ? thread.phase.code : null }, now);
     return this.applyMachineEvent(
       thread,
-      { t: "owner_retry" },
-      { bodySha256: sha256(issue.body), auditTopic: "thread/owner_retried", now },
+      { t: "owner_retry", now },
+      {
+        bodySha256: sha256(issue.body),
+        ownerReply: reply ?? undefined,
+        grantRetryBudget: true,
+        auditTopic: "thread/owner_retried",
+        extraAudits: [
+          {
+            topic: "thread/owner_retry",
+            actor: "owner",
+            payload: { via, code: thread.phase.kind === "needs_you" ? thread.phase.code : null },
+          },
+        ],
+        now,
+      },
     );
   }
 

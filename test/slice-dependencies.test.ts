@@ -9,6 +9,7 @@ import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
 import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
+import { stepPhase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
 import { goWorkflowJson } from "./helpers/workflow.js";
@@ -58,7 +59,13 @@ function setup() {
   const tick = (i: number) => reconciler.tick(Date.now() + i * 1000, { waitForAttempts: true });
   const finish = (n: number, outcome: "merged" | "owner_merged" | "pr_closed" | "abandoned") => {
     const t = ledger.getThread(n)!;
-    ledger.transition(n, t.version, { kind: "done", outcome });
+    const ev =
+      outcome === "abandoned"
+        ? ({ t: "owner_abandon" } as const)
+        : ({ t: "pr_observed", status: outcome === "pr_closed" ? "closed" : "merged" } as const);
+    const stepped = stepPhase(t.phase, t.mode, ev, { issueNumber: n, title: t.title, needsYouLabel: "needs-you" });
+    if (!stepped.ok) throw new Error(stepped.reject);
+    ledger.transition(n, t.version, stepped.next);
   };
   return { ledger, ran, notes, tick, finish, github, cleanup: () => { ledger.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } };
 }

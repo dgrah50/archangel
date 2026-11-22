@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { stepPhase, type MachineEvent, type Mode, type Phase } from "../src/core/thread-machine.js";
 import { Ledger } from "../src/ledger/store.js";
+
+function mustStep(phase: Phase, mode: Mode, ev: MachineEvent, issueNumber = 1) {
+  const res = stepPhase(phase, mode, ev, { issueNumber, title: "t", needsYouLabel: "needs-you" });
+  if (!res.ok) throw new Error(res.reject);
+  return res.next;
+}
 
 describe("Ledger (CAS transitions, daemon lock, budget reservations, multi-project)", () => {
   it("enforces compare-and-set version checks and sweeps ONLY working phases on startup", () => {
@@ -20,17 +27,11 @@ describe("Ledger (CAS transitions, daemon lock, budget reservations, multi-proje
       const tWorking = ledger.transition(
         42,
         0,
-        {
-          kind: "working",
-          attemptId: att.id,
-          attempt: "implement",
-          fromSha: "base1",
-          resumeTo: { kind: "queued" },
-        },
+        mustStep(t1.phase, t1.mode, { t: "start_working", attemptId: att.id, attempt: "implement", fromSha: "base1" }, 42),
         { now: 2000 },
       );
       expect(tWorking?.version).toBe(1);
-      expect(ledger.transition(42, 0, { kind: "done", outcome: "abandoned" })).toBeNull();
+      expect(ledger.transition(42, 0, mustStep(t1.phase, t1.mode, { t: "owner_abandon" }, 42))).toBeNull();
 
       // Create a second thread already in needs_you — startup sweep MUST NOT touch it (Opus L1)!
       ledger.upsertThread({
@@ -114,7 +115,7 @@ describe("Ledger outbox ordering", () => {
       ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
       const effects = Array.from({ length: 51 }, (_, i) => ({ kind: "add_label" as const, issueNumber: i + 1, label: "needs-you" }));
       const t = ledger.getThread(1)!;
-      ledger.transition(1, t.version, { kind: "queued" }, { effects });
+      ledger.transition(1, t.version, mustStep(t.phase, t.mode, { t: "escalate", code: "gate_failed", reason: "x" }), { effects });
       const first = ledger.listDueOutbox();
       expect(first).toHaveLength(50);
       for (const row of first) ledger.failOutbox(row.id, "poison");
@@ -143,12 +144,49 @@ describe("daemon lock heartbeat", () => {
       ledger.close();
     }
   });
+
+  it("refuses to release another daemon's lock and rolls back retry grants when CAS loses a race", () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    try {
+      expect(ledger.acquireDaemonLock("d1", 1000, 10_000)).toBe(true);
+      expect(ledger.acquireDaemonLock("d2", 1000, 12_000)).toBe(true);
+      ledger.releaseDaemonLock("d1");
+      expect(ledger.heartbeatDaemonLock("d2", 12_500)).toBe(true);
+
+      const t = ledger.upsertThread({
+        issueNumber: 7,
+        title: "Race",
+        bodySha256: "h1",
+        phase: { kind: "needs_you", code: "gate_failed", reason: "failed", resumeTo: { kind: "queued" } },
+        now: 1000,
+      });
+      const retryNext = mustStep(t.phase, t.mode, { t: "owner_retry", now: 2000 }, 7);
+      // Simulate another transition winning first.
+      expect(ledger.transition(7, t.version, mustStep(t.phase, t.mode, { t: "owner_abandon" }, 7), { now: 1500 })).not.toBeNull();
+      // Stale retry CAS fails: no retry budget, no owner reply, no thread/owner_retry audit row.
+      expect(
+        ledger.transition(7, t.version, retryNext, {
+          ownerReply: "try again",
+          grantRetryBudget: true,
+          extraAudits: [{ topic: "thread/owner_retry", actor: "owner", payload: { via: "comment", code: "gate_failed" } }],
+          now: 2000,
+        }),
+      ).toBeNull();
+      const after = ledger.getThread(7)!;
+      expect(after.phase).toMatchObject({ kind: "done", outcome: "abandoned" });
+      expect(after.retryGrants).toBe(0);
+      expect(after.ownerReply).toBeNull();
+      expect(ledger.listAudit({ topicPrefix: "thread/owner_retry" })).toHaveLength(0);
+    } finally {
+      ledger.close();
+    }
+  });
 });
 
 describe("Ledger outbox lifecycle", () => {
   const queue = (ledger: Ledger, effect: unknown) => {
-    ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
-    ledger.transition(1, ledger.getThread(1)!.version, { kind: "queued" }, { effects: [effect as never] });
+    const t = ledger.upsertThread({ issueNumber: 1, title: "t", bodySha256: "x" });
+    ledger.transition(1, t.version, mustStep(t.phase, t.mode, { t: "escalate", code: "gate_failed", reason: "x" }), { effects: [effect as never] });
     return ledger.listDueOutbox()[0]!;
   };
 

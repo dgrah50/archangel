@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import { Ledger } from "../src/ledger/store.js";
 
 describe("ledger reads fail closed on unreadable state", () => {
-  it("a corrupt daemon lock reads as an active daemon", () => {
+  it("a corrupt daemon lock reads as an active daemon and blocks acquireDaemonLock", () => {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     ledger.setSystemState("daemon_lock", "{not json", Date.now());
     expect(ledger.isDaemonActive(60_000)).toBe(true);
+    expect(ledger.acquireDaemonLock("d2", 60_000)).toBe(false);
     ledger.setSystemState("daemon_lock", JSON.stringify({ ownerId: "x" }), Date.now());
     expect(ledger.isDaemonActive(60_000)).toBe(true);
+    expect(ledger.acquireDaemonLock("d2", 60_000)).toBe(false);
+    ledger.close();
   });
 
   it("a malformed scout/run row counts against the daily cap", () => {

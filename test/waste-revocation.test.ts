@@ -22,13 +22,14 @@ let clock = 1000;
 /** One auto-promoted proposal (oldest first via `clock`) whose Thread ended as `end`. */
 function promote(ledger: Ledger, issue: number, end: End, hash = HASH) {
   const now = clock++;
-  const t = ledger.upsertThread({ issueNumber: issue, title: `i${issue}`, bodySha256: `s${issue}`, now });
+  const phase =
+    end === "needs_you"
+      ? ({ kind: "needs_you", code: "review_vetoed", reason: "x", resumeTo: { kind: "queued" } } as const)
+      : end === "in_flight"
+        ? ({ kind: "queued" } as const)
+        : ({ kind: "done", outcome: end } as const);
+  ledger.upsertThread({ issueNumber: issue, title: `i${issue}`, bodySha256: `s${issue}`, phase, now });
   ledger.recordScoutProposal({ issueNumber: issue, scoutName: "auto-hunt", contentSha256: `c${issue}`, titleFp: `f${issue}`, fileSha256: hash, autoPromoted: true, now });
-  if (end === "needs_you") {
-    ledger.transition(issue, t.version, { kind: "needs_you", code: "review_vetoed", reason: "x", resumeTo: { kind: "queued" } } as never, { now });
-  } else if (end !== "in_flight") {
-    ledger.transition(issue, t.version, { kind: "done", outcome: end }, { now });
-  }
 }
 
 describe("waste revocation of auto-promotion", () => {

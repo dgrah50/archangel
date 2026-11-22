@@ -20,6 +20,7 @@ import Database from "better-sqlite3";
 import {
   MainWatchSchema,
   PhaseSchema,
+  stepPhase,
   type AttemptKind,
   type EscalationCode,
   type MainWatch,
@@ -27,6 +28,7 @@ import {
   type OutboxEffect,
   type Phase,
   type PhaseKind,
+  type ValidatedPhase,
 } from "../core/thread-machine.js";
 import { parseAttemptInput, type AttemptInput } from "../core/attempt-input.js";
 import {
@@ -193,22 +195,6 @@ export class Ledger {
     }
   }
 
-  /** Stores the owner's reply to the latest escalation (capped) so the next Attempt sees it. */
-  setOwnerReply(issueNumber: number, reply: string | null, now = Date.now()): void {
-    const text = reply && reply.trim() ? reply.trim().slice(0, OWNER_REPLY_MAX_CHARS) : null;
-    this.db
-      .prepare("UPDATE threads SET owner_reply = ?, updated_at = ? WHERE repo = ? AND issue_number = ?")
-      .run(text, now, this.repo, issueNumber);
-    this.appendAudit("thread/owner_reply", issueNumber, "owner", { chars: text?.length ?? 0 }, now);
-  }
-
-  /** An owner retry grants the Thread one more implement and one more revision Attempt. */
-  grantRetryBudget(issueNumber: number, now = Date.now()): void {
-    this.db
-      .prepare("UPDATE threads SET retry_grants = retry_grants + 1, factory_guidance = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?")
-      .run(now, this.repo, issueNumber);
-  }
-
   /**
    * Ends a held-back escalation: marks triage done and queues the Needs You effects (label and notification) that were held
    * back, in one step, with the factory actor's audit row saying why.
@@ -330,22 +316,26 @@ export class Ledger {
   // --- Single Daemon Lock (Opus Step 4 / R9) ---
 
   acquireDaemonLock(ownerId: string, staleMs: number, now = Date.now()): boolean {
-    const tx = this.db.transaction(() => {
+    const tx = this.db.transaction((): boolean => {
       const existing = this.getSystemState("daemon_lock");
       if (existing) {
+        let parsed: { ownerId?: unknown; heartbeatAt?: unknown };
         try {
-          const parsed = JSON.parse(existing) as { ownerId: string; heartbeatAt: number };
-          if (parsed.ownerId !== ownerId && now - parsed.heartbeatAt < staleMs) {
-            return false;
-          }
+          parsed = JSON.parse(existing) as { ownerId?: unknown; heartbeatAt?: unknown };
         } catch {
-          // Corrupted lock row: overwrite cleanly.
+          return false;
+        }
+        if (typeof parsed.heartbeatAt !== "number" || !Number.isFinite(parsed.heartbeatAt)) {
+          return false;
+        }
+        if (parsed.ownerId !== ownerId && now - parsed.heartbeatAt < staleMs) {
+          return false;
         }
       }
       this.setSystemState("daemon_lock", JSON.stringify({ ownerId, pid: process.pid, heartbeatAt: now }), now);
       return true;
     });
-    return tx();
+    return tx.immediate();
   }
 
   /** Refreshes the lock if this daemon still owns it. False means the lock is gone, unreadable or another daemon's: the caller must stop. */
@@ -367,16 +357,19 @@ export class Ledger {
   }
 
   releaseDaemonLock(ownerId: string): void {
-    const existing = this.getSystemState("daemon_lock");
-    if (!existing) return;
-    try {
-      const parsed = JSON.parse(existing) as { ownerId: string };
-      if (parsed.ownerId === ownerId) {
-        this.db.prepare(`DELETE FROM system_state WHERE key = 'daemon_lock'`).run();
+    const tx = this.db.transaction(() => {
+      const existing = this.getSystemState("daemon_lock");
+      if (!existing) return;
+      try {
+        const parsed = JSON.parse(existing) as { ownerId?: unknown };
+        if (parsed.ownerId === ownerId) {
+          this.db.prepare(`DELETE FROM system_state WHERE key = 'daemon_lock'`).run();
+        }
+      } catch {
+        // Leave an unreadable lock row in place rather than deleting a live daemon's lock.
       }
-    } catch {
-      // Ignore
-    }
+    });
+    tx.immediate();
   }
 
   /** Last daemon heartbeat (ms), or null when no lock row exists (never started, or stopped cleanly). */
@@ -502,7 +495,7 @@ export class Ledger {
   transition(
     issueNumber: number,
     expectedVersion: number,
-    nextPhase: Phase,
+    nextPhase: ValidatedPhase,
     opts: {
       nextMode?: Mode;
       effects?: OutboxEffect[];
@@ -511,11 +504,14 @@ export class Ledger {
       incImplement?: boolean;
       incRevision?: boolean;
       incRebase?: boolean;
+      ownerReply?: string | null;
+      grantRetryBudget?: boolean;
       /** Set in the same step as the phase change, so a held-back escalation can never be left without its marker. */
       factoryTriage?: "pending" | "done";
       auditTopic?: string;
       auditActor?: "archangel" | "owner";
       auditPayload?: unknown;
+      extraAudits?: Array<{ topic: string; actor: "archangel" | "owner" | "factory"; payload: unknown }>;
       now?: number;
       repo?: string;
     } = {},
@@ -523,6 +519,12 @@ export class Ledger {
     const repo = opts.repo ?? this.repo;
     const now = opts.now ?? Date.now();
     const validated = PhaseSchema.parse(nextPhase);
+    const replyText =
+      opts.ownerReply !== undefined
+        ? opts.ownerReply && opts.ownerReply.trim()
+          ? opts.ownerReply.trim().slice(0, OWNER_REPLY_MAX_CHARS)
+          : null
+        : undefined;
 
     const tx = this.db.transaction((): ThreadRecord | null => {
       const sets: string[] = ["phase_json = ?", "version = version + 1", "updated_at = ?"];
@@ -543,6 +545,13 @@ export class Ledger {
       if (opts.incImplement) sets.push("implement_count = implement_count + 1");
       if (opts.incRevision) sets.push("revision_count = revision_count + 1");
       if (opts.incRebase) sets.push("rebase_count = rebase_count + 1");
+      if (replyText !== undefined) {
+        sets.push("owner_reply = ?");
+        vals.push(replyText);
+      }
+      if (opts.grantRetryBudget) {
+        sets.push("retry_grants = retry_grants + 1", "factory_guidance = NULL");
+      }
       if (opts.factoryTriage !== undefined) {
         sets.push("factory_triage = ?");
         vals.push(opts.factoryTriage);
@@ -565,8 +574,14 @@ export class Ledger {
           .run(repo, JSON.stringify(eff), now);
       }
 
+      if (replyText !== undefined) {
+        this.appendAudit("thread/owner_reply", issueNumber, "owner", { chars: replyText?.length ?? 0 }, now, repo);
+      }
       if (opts.auditTopic) {
         this.appendAudit(opts.auditTopic, issueNumber, opts.auditActor ?? "archangel", opts.auditPayload ?? { next: validated.kind }, now, repo);
+      }
+      for (const a of opts.extraAudits ?? []) {
+        this.appendAudit(a.topic, issueNumber, a.actor, a.payload, now, repo);
       }
       // One durable row per escalation, carrying its code, so failure clustering has history after the Thread resumes.
       if (validated.kind === "needs_you") {
@@ -576,7 +591,7 @@ export class Ledger {
       return this.getThread(issueNumber, repo);
     });
 
-    return tx();
+    return tx.immediate();
   }
 
   /**
@@ -598,21 +613,17 @@ export class Ledger {
           )
           .run(now, repo, t.issueNumber);
 
-        const nextPhase: Phase =
-          t.phase.resumeTo.kind === "awaiting_gate"
-            ? {
-                kind: "awaiting_gate",
-                prNumber: t.phase.resumeTo.prNumber,
-                headSha: t.phase.resumeTo.headSha,
-                baseSha: t.phase.resumeTo.baseSha,
-                since: now,
-                nudgedAt: null,
-              }
-            : { kind: "queued" };
+        const stepped = stepPhase(
+          t.phase,
+          t.mode,
+          { t: "restart_recovered", now },
+          { issueNumber: t.issueNumber, title: t.title, needsYouLabel: "" },
+        );
+        if (!stepped.ok) continue;
 
-        const updated = this.transition(t.issueNumber, t.version, nextPhase, {
+        const updated = this.transition(t.issueNumber, t.version, stepped.next, {
           auditTopic: "thread/stale_swept",
-          auditPayload: { previousAttempt: t.phase.attempt, next: nextPhase.kind },
+          auditPayload: { previousAttempt: t.phase.attempt, next: stepped.next.kind },
           now,
           repo,
         });
@@ -623,7 +634,7 @@ export class Ledger {
         .prepare(`UPDATE daily_spend SET reserved_usd = 0, updated_at = ? WHERE reserved_usd > 0`)
         .run(now);
     });
-    tx();
+    tx.immediate();
     return recovered;
   }
 
@@ -742,21 +753,24 @@ export class Ledger {
    * move) when the transition is not allowed or lost a race, so a CLI timeout and the daemon cannot both win.
    */
   stepCommandState(id: number, ev: CommandEvent, now = Date.now()): boolean {
-    const row = this.db.prepare(`SELECT repo, issue_number, state_json, version FROM daemon_commands WHERE id = ?`).get(id) as
-      | { repo: string; issue_number: number; state_json: string; version: number }
-      | undefined;
-    if (!row) return false;
-    const state = CommandStateSchema.parse(JSON.parse(row.state_json));
-    const step = stepCommand(state, ev);
-    if (!step.ok) {
-      this.appendAudit("command/illegal_transition", row.issue_number, "archangel", { id, from: state.kind, event: ev.t }, now, row.repo);
-      return false;
-    }
-    return (
-      this.db
-        .prepare(`UPDATE daemon_commands SET state_json = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?`)
-        .run(JSON.stringify(step.next), now, id, row.version).changes === 1
-    );
+    const tx = this.db.transaction((): boolean => {
+      const row = this.db.prepare(`SELECT repo, issue_number, state_json, version FROM daemon_commands WHERE id = ?`).get(id) as
+        | { repo: string; issue_number: number; state_json: string; version: number }
+        | undefined;
+      if (!row) return false;
+      const state = CommandStateSchema.parse(JSON.parse(row.state_json));
+      const step = stepCommand(state, ev);
+      if (!step.ok) {
+        this.appendAudit("command/illegal_transition", row.issue_number, "archangel", { id, from: state.kind, event: ev.t }, now, row.repo);
+        return false;
+      }
+      return (
+        this.db
+          .prepare(`UPDATE daemon_commands SET state_json = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?`)
+          .run(JSON.stringify(step.next), now, id, row.version).changes === 1
+      );
+    });
+    return tx.immediate();
   }
 
   /** The daemon takes a pending command. False when the CLI already cancelled it (or another claim won). */
