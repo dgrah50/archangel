@@ -110,6 +110,9 @@ export interface ScoutProposalRecord {
   scoutName: string;
   contentSha256: string;
   titleFp: string;
+  /** sha256 of the Scout file (at main) that produced this proposal. */
+  fileSha256: string | null;
+  autoPromoted: boolean;
   createdAt: number;
 }
 
@@ -268,6 +271,8 @@ CREATE TABLE IF NOT EXISTS scout_proposals (
   scout_name TEXT NOT NULL,
   content_sha256 TEXT NOT NULL,
   title_fp TEXT NOT NULL,
+  file_sha256 TEXT,
+  auto_promoted INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (repo, issue_number)
 );

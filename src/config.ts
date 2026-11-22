@@ -74,6 +74,8 @@ export const ScoutsConfigSchema = z.object({
   enabled: z.boolean().default(false),
   maxRunsPerDay: z.number().int().min(1).max(10).default(2),
   maxOpenProposals: z.number().int().min(1).max(10).default(3),
+  /** Hard host cap on Scout proposals promoted without the owner (only for Scouts with `autoPromote: true`). */
+  maxAutoPromotionsPerDay: z.number().int().min(0).max(5).default(1),
 });
 
 export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
@@ -104,6 +106,8 @@ export const ConfigSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
+  digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
   /** Autonomous steps (Attempt starts + auto-merges) allowed before the owner is next heard from. */
   maxAutonomousStepsWithoutOwner: z.number().int().min(1).default(25),
@@ -145,6 +149,7 @@ export const ConfigSchema = z.object({
     enabled: false,
     maxRunsPerDay: 2,
     maxOpenProposals: 3,
+    maxAutoPromotionsPerDay: 1,
   }),
 
   // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
@@ -205,6 +210,7 @@ const HostProjectYamlSchema = z.object({
     enabled: false,
     maxRunsPerDay: 2,
     maxOpenProposals: 3,
+    maxAutoPromotionsPerDay: 1,
   }),
 });
 
@@ -214,6 +220,8 @@ export const HostYamlSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
+  digestHour: z.number().int().min(0).max(23).default(9),
   authMode: AuthModeSchema.default("subscription"),
   implementerChain: z
     .array(ProviderEntrySchema)
@@ -398,6 +406,7 @@ export function loadProjectConfigs(opts: {
         pollIntervalMs: host.pollIntervalMs,
         maxDailyUsd: host.maxDailyUsd,
         dailyTimezone: host.dailyTimezone,
+        digestHour: host.digestHour,
         maxConcurrentThreads: proj.maxConcurrentThreads,
         maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
         shadowMode: proj.shadowMode,

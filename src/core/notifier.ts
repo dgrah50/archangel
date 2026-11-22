@@ -7,6 +7,8 @@ export interface Notifier {
     recommendation: string;
     url?: string;
   }): Promise<void>;
+  /** Plain-text daily digest across all projects. */
+  sendDigest(text: string): Promise<void>;
 }
 
 /**
@@ -43,6 +45,14 @@ export class TelegramNotifier implements Notifier {
       .filter(Boolean)
       .join("\n");
 
+    await this.send(text);
+  }
+
+  async sendDigest(text: string): Promise<void> {
+    await this.send(text);
+  }
+
+  private async send(text: string): Promise<void> {
     if (!this.botToken || !this.chatId) {
       return;
     }

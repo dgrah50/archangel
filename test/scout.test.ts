@@ -52,7 +52,7 @@ function makeConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConfig {
     githubPrivateKeyPem: "fake",
     githubAppBotUserId: 777,
     authMode: "subscription",
-    scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3 },
+    scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
     ...overrides,
   });
 }
@@ -91,7 +91,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
         githubAppId: "123",
         githubInstallationId: 456,
         githubPrivateKeyPem: "fake",
-        scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3 },
+        scouts: { enabled: true, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
       }),
     ).toThrow(/githubAppBotUserId/);
   });
@@ -292,7 +292,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
 
       const rec = new Reconciler({
         config: makeConfig({
-          scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3 },
+          scouts: { enabled: false, maxRunsPerDay: 2, maxOpenProposals: 3, maxAutoPromotionsPerDay: 1 },
           maxConcurrentThreads: 1,
         }),
         ledger,
@@ -310,7 +310,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
           }),
         },
         reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
-        notifier: { notifyNeedsYou: async () => {} },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
       });
 
       await rec.tick(Date.now(), { waitForAttempts: false });
@@ -342,7 +342,7 @@ describe("V2.0 Scout Engine security & behavior (Opus H1-H3, M1-M5)", () => {
           run: async () => ({ ok: false, costUsd: 0, turns: 0, summary: "", transcriptPath: "", aborted: false }),
         },
         reviewers: { reviewAll: async () => ({ results: [], errors: [] }) },
-        notifier: { notifyNeedsYou: async () => {} },
+        notifier: { notifyNeedsYou: async () => {}, sendDigest: async () => {} },
       });
       await rec2.tick(Date.now(), { waitForAttempts: false });
       expect(ledger2.getThread(105)).toBeNull();

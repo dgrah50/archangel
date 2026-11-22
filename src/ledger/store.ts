@@ -1,3 +1,4 @@
+import type { DigestInput } from "../core/digest.js";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -80,6 +81,13 @@ export class Ledger {
       }
       if (!cols.some((c) => c.name === "owner_reply")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
+      }
+      const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
+      if (!spCols.some((c) => c.name === "file_sha256")) {
+        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
+      }
+      if (!spCols.some((c) => c.name === "auto_promoted")) {
+        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN auto_promoted INTEGER NOT NULL DEFAULT 0");
       }
     } else {
       this.db.pragma("busy_timeout = 5000");
@@ -1003,6 +1011,8 @@ export class Ledger {
     scoutName: string;
     contentSha256: string;
     titleFp: string;
+    fileSha256?: string | null;
+    autoPromoted?: boolean;
     now?: number;
     repo?: string;
   }): void {
@@ -1010,10 +1020,19 @@ export class Ledger {
     const now = input.now ?? Date.now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO scout_proposals (repo, issue_number, scout_name, content_sha256, title_fp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO scout_proposals (repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(repo, input.issueNumber, input.scoutName, input.contentSha256, input.titleFp, now);
+      .run(
+        repo,
+        input.issueNumber,
+        input.scoutName,
+        input.contentSha256,
+        input.titleFp,
+        input.fileSha256 ?? null,
+        input.autoPromoted ? 1 : 0,
+        now,
+      );
     this.appendAudit(
       "scout/proposal_filed",
       input.issueNumber,
@@ -1028,7 +1047,7 @@ export class Ledger {
     try {
       const row = this.db
         .prepare(
-          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, created_at
+          `SELECT repo, issue_number, scout_name, content_sha256, title_fp, file_sha256, auto_promoted, created_at
            FROM scout_proposals WHERE repo = ? AND issue_number = ?`,
         )
         .get(repo, issueNumber) as Record<string, unknown> | undefined;
@@ -1039,6 +1058,8 @@ export class Ledger {
         scoutName: String(row.scout_name),
         contentSha256: String(row.content_sha256),
         titleFp: String(row.title_fp),
+        fileSha256: row.file_sha256 === null || row.file_sha256 === undefined ? null : String(row.file_sha256),
+        autoPromoted: Number(row.auto_promoted) === 1,
         createdAt: Number(row.created_at),
       };
     } catch {
@@ -1055,6 +1076,35 @@ export class Ledger {
     } catch {
       return false;
     }
+  }
+
+  /** Auto-promoted Scout proposals filed in the last 24 hours (host daily cap). */
+  countRecentAutoPromotions(now = Date.now(), repo = this.repo): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM scout_proposals WHERE repo = ? AND auto_promoted = 1 AND created_at > ?`)
+      .get(repo, now - 24 * 3600_000) as { n: number };
+    return Number(row.n);
+  }
+
+  /**
+   * Auto-promotion trust for one exact version of a Scout file is revoked once any fix it
+   * auto-promoted was disagreed with, reverted, or turned main red. Editing the Scout file
+   * (an owner-merged change under `.agents/`) yields a new hash and a clean slate.
+   */
+  isScoutAutoPromoteRevoked(scoutName: string, fileSha256: string, repo = this.repo): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM scout_proposals p
+         LEFT JOIN merges m ON m.repo = p.repo AND m.issue_number = p.issue_number
+         LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+         WHERE p.repo = ? AND p.scout_name = ? AND p.file_sha256 = ? AND p.auto_promoted = 1
+           AND (m.disagreed = 1
+                OR json_extract(m.main_watch_json, '$.kind') = 'red'
+                OR json_extract(t.phase_json, '$.outcome') = 'reverted')
+         LIMIT 1`,
+      )
+      .get(repo, scoutName, fileSha256);
+    return Boolean(row);
   }
 
   /**
@@ -1102,6 +1152,66 @@ export class Ledger {
       return true;
     });
     return tx();
+  }
+
+  // ---- Daily digest ----
+
+  dayKeyOf(ts: number): string {
+    return formatDayKey(ts, this.timeZone);
+  }
+
+  digestSentFor(dayKey: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM audit_log WHERE topic = 'digest/sent' AND json_extract(payload_json, '$.dayKey') = ? LIMIT 1`)
+      .get(dayKey);
+    return Boolean(row);
+  }
+
+  markDigestSent(dayKey: string, now = Date.now()): void {
+    this.appendAudit("digest/sent", null, "archangel", { dayKey }, now, null);
+  }
+
+  /**
+   * Digest inputs across ALL repos in this Ledger. Needs You age is time since the Thread's last transition (`updated_at`).
+   * "Yesterday" is the local day before today in the Ledger timezone. Reverts are yesterday's merges whose main-watch is now red
+   * (no timestamp is recorded for the red transition itself). Owner merges come from `thread/owner_merged` audit rows.
+   */
+  collectDigestInput(now: number): DigestInput {
+    const yKey = formatDayKey(now - 86_400_000, this.timeZone);
+    const needsYou = this.listAllThreads(["needs_you"]).flatMap((t) =>
+      t.phase.kind === "needs_you"
+        ? [{ repo: t.repo, issueNumber: t.issueNumber, title: t.title, code: t.phase.code, since: t.updatedAt }]
+        : [],
+    );
+    const merges = (
+      this.db.prepare(`SELECT * FROM merges WHERE day_key = ? AND shadow_only = 0`).all(yKey) as Record<string, unknown>[]
+    ).map(mapMerge);
+    const ownerMerges = (
+      this.db
+        .prepare(`SELECT ts FROM audit_log WHERE topic = 'thread/owner_merged' AND ts >= ?`)
+        .all(now - 3 * 86_400_000) as Array<{ ts: number }>
+    ).filter((r) => formatDayKey(r.ts, this.timeZone) === yKey).length;
+    const spend = this.db.prepare(`SELECT usd FROM daily_spend WHERE day_key = ?`).get(yKey) as { usd: number } | undefined;
+    const proposals = (
+      this.db
+        .prepare(
+          `SELECT p.repo, p.issue_number, p.scout_name FROM scout_proposals p
+           LEFT JOIN threads t ON t.repo = p.repo AND t.issue_number = p.issue_number
+           WHERE t.issue_number IS NULL ORDER BY p.created_at ASC`,
+        )
+        .all() as Array<{ repo: string; issue_number: number; scout_name: string }>
+    ).map((r) => ({ repo: r.repo, issueNumber: r.issue_number, scoutName: r.scout_name }));
+    return {
+      now,
+      needsYou,
+      yesterday: {
+        autonomousMerges: merges.length,
+        ownerMerges,
+        reverts: merges.filter((x) => x.mainWatch.kind === "red").length,
+        spendUsd: spend?.usd ?? 0,
+      },
+      proposals,
+    };
   }
 
   // ---- Operational Metrics & Self-Improvement Telemetry ----
