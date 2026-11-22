@@ -67,7 +67,9 @@
       "src/core/ui-settings.ts",
       "src/core/accounts.ts",
       "src/core/eval-reports.ts",
-      "src/core/ui-host-config.ts"
+      "src/core/ui-host-config.ts",
+      "src/core/ui-onboard.ts",
+      "src/core/ui-gh.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
@@ -94,5 +96,8 @@
   ],
   "landing": {
     "bugfix": "autonomous"
+  },
+  "escalations": {
+    "factoryRetry": "once"
   }
 }

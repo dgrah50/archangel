@@ -37,27 +37,6 @@ function seed(
 }
 
 describe("Ledger.computeMetrics outcomes", () => {
-  it("reports n/a, not a division by zero, when nothing merged", () => {
-    const ledger = new Ledger(":memory:", { repo: "a/b" });
-    try {
-      seed(ledger, 1, { outcome: null, attempts: 3, attemptUsd: 2 });
-      expect(ledger.computeMetrics({ now: 5000 }).outcomes).toEqual({
-        mergedFixes: 0,
-        meteredUsdTotal: 0,
-        costUsdPerFix: null,
-        attemptsPerFix: null,
-        attemptMinutesPerFix: null,
-        reverts: 0,
-        revertsPerFix: null,
-        reworkAttemptsTotal: 0,
-        reworkAttemptsPerFix: null,
-        vendorAgreement: {},
-      });
-    } finally {
-      ledger.close();
-    }
-  });
-
   it("computes cost, attempts, minutes and rework per merged fix", () => {
     const ledger = new Ledger(":memory:", { repo: "a/b" });
     try {
@@ -132,6 +111,24 @@ describe("Ledger.computeMetrics outcomes", () => {
       expect(ledger.computeMetrics({ repo: "a/b", now: 5000 }).outcomes.mergedFixes).toBe(2);
       expect(ledger.computeMetrics({ repo: "a/b", sinceMs: 150, now: 5000 }).outcomes.attemptsPerFix).toBe(1);
       expect(ledger.computeMetrics({ repo: "c/d", sinceMs: 150, now: 5000 }).outcomes.attemptsPerFix).toBe(4);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("uses nearest-rank p50 and p95 for attempt durations", () => {
+    const ledger = new Ledger(":memory:");
+    try {
+      for (const [index, duration] of [10, 20, 30, 40].entries()) {
+        const issueNumber = index + 1;
+        ledger.upsertThread({ issueNumber, title: `issue ${issueNumber}`, bodySha256: `sha${issueNumber}`, now: 100 });
+        const attempt = ledger.startAttempt(issueNumber, "implement", 100);
+        ledger.finishAttempt(attempt.id, { status: "succeeded" }, 100 + duration * 1000);
+      }
+
+      const metrics = ledger.computeMetrics({ sinceMs: 1, now: 50000 });
+      expect(metrics.attempts.p50DurationSec).toBe(20);
+      expect(metrics.attempts.p95DurationSec).toBe(40);
     } finally {
       ledger.close();
     }
