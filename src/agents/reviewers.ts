@@ -33,6 +33,7 @@ export interface ReviewRequest {
   diffText: string;
   touchedFiles: Record<string, string>;
   reviewRubric?: string;
+  repoInstructions?: string | null;
   skipVendors?: ReviewerVendor[];
   excludeVendors?: ReviewerVendor[];
 }
