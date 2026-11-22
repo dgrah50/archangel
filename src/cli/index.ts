@@ -7,6 +7,7 @@ import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
+import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
@@ -128,8 +129,11 @@ program
       throw new Error("Another live Archangel daemon already holds the Ledger lock.");
     }
 
+    // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
-      rootLedger.heartbeatDaemonLock(daemonOwnerId);
+      if (rootLedger.heartbeatDaemonLock(daemonOwnerId)) return;
+      console.error("[archangel] Lost the Ledger daemon lock to another process; shutting down.");
+      void cleanup().finally(() => process.exit(1));
     }, 30_000);
 
     const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath);
@@ -209,8 +213,17 @@ program
 
     let stopping = false;
     let nextTimer: NodeJS.Timeout | null = null;
+    let inFlightTick: Promise<void> | null = null;
+    let cleanupDone: Promise<void> | null = null;
 
-    const runTick = async () => {
+    const runTick = (): Promise<void> => {
+      inFlightTick = runTickBody().finally(() => {
+        inFlightTick = null;
+      });
+      return inFlightTick;
+    };
+
+    const runTickBody = async () => {
       for (const { repoSlug, rec } of reconcilers) {
         if (stopping) break;
         try {
@@ -237,16 +250,21 @@ program
       }
     };
 
-    const cleanup = async () => {
-      stopping = true;
-      if (nextTimer) clearTimeout(nextTimer);
-      clearInterval(lockHeartbeat);
-      for (const { rec } of reconcilers) {
-        rec.abortAllActive("control");
-        await rec.waitForActiveTasks();
-      }
-      rootLedger.releaseDaemonLock(daemonOwnerId);
-      rootLedger.close();
+    // Idempotent (a second signal joins the first) and waits for the tick in flight, so nothing wakes on a closed Ledger.
+    const cleanup = (): Promise<void> => {
+      cleanupDone ??= (async () => {
+        stopping = true;
+        if (nextTimer) clearTimeout(nextTimer);
+        clearInterval(lockHeartbeat);
+        for (const { rec } of reconcilers) {
+          rec.abortAllActive("control");
+          await rec.waitForActiveTasks();
+        }
+        await inFlightTick;
+        rootLedger.releaseDaemonLock(daemonOwnerId);
+        rootLedger.close();
+      })();
+      return cleanupDone;
     };
 
     if (opts.once) {
@@ -921,10 +939,14 @@ program
       if (reply) ledger.setOwnerReply(issueNumber, reply);
       ledger.grantRetryBudget(issueNumber);
       await github.removeLabel(issueNumber, cfg.labels.needsYou);
-      ledger.transition(issueNumber, thread.version, stepped.next, {
-        bodySha256: sha256(issue.body),
-        auditTopic: "thread/owner_retried",
-      });
+      requireTransition(
+        ledger.transition(issueNumber, thread.version, stepped.next, {
+          bodySha256: sha256(issue.body),
+          auditTopic: "thread/owner_retried",
+        }),
+        repoSlug,
+        issueNumber,
+      );
       ledger.appendAudit("thread/owner_retry", issueNumber, "owner", { via: "cli", code: thread.phase.kind === "needs_you" ? thread.phase.code : null });
       console.log(`Retried ${repoSlug}#${issueNumber} -> phase '${stepped.next.kind}'.`);
     } finally {
@@ -953,9 +975,11 @@ program
         { issueNumber, title: thread.title, needsYouLabel: cfg.labels.needsYou },
       );
       if (!stepped.ok) throw new Error(stepped.reject);
-      ledger.transition(issueNumber, thread.version, stepped.next, {
-        auditTopic: "thread/owner_abandoned",
-      });
+      requireTransition(
+        ledger.transition(issueNumber, thread.version, stepped.next, { auditTopic: "thread/owner_abandoned" }),
+        repoSlug,
+        issueNumber,
+      );
       console.log(`Abandoned ${repoSlug}#${issueNumber}.`);
     } finally {
       ledger.close();

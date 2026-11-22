@@ -209,7 +209,7 @@ export function buildScoutCliArgs(
   ];
 }
 
-function parseEnvelope(stdout: string): unknown {
+export function parseEnvelope(stdout: string): unknown {
   const lines = stdout.trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]?.trim();
@@ -234,7 +234,7 @@ function parseEnvelope(stdout: string): unknown {
       }
       return obj;
     } catch (err) {
-      if (err instanceof Error && !err.message.includes("JSON")) throw err;
+      if (!(err instanceof SyntaxError)) throw err;
     }
   }
   return undefined;
@@ -283,16 +283,24 @@ export async function defaultScoutCliInvoker(input: {
     });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), input.timeoutMs);
+    let killTimer: NodeJS.Timeout | undefined;
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 2000);
+    }, input.timeoutMs);
     child.stdout.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
     child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
     child.on("error", (err) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       reject(err);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       try {
         if (code !== 0) {
           reject(new Error(`${input.provider} scout exited ${code}: ${(stderr || stdout).trim().slice(-600)}`));
@@ -310,6 +318,7 @@ export async function defaultScoutCliInvoker(input: {
         fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       }
     });
+    child.stdin.on("error", () => undefined); // a CLI that exits before reading its prompt shows up as its exit code, not an uncaught EPIPE
     child.stdin.write(input.prompt);
     child.stdin.end();
   });

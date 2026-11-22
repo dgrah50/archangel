@@ -22,6 +22,8 @@ export interface ImplementResult {
   transcriptPath: string | null;
   aborted: boolean;
   providersUsed?: ReviewerVendor[];
+  /** Set when the run ended without finishing the job (e.g. the SDK's `error_max_turns`); the Attempt then fails with this cause. */
+  failure?: string;
   /** The provider and model that produced this result (replay provenance); absent when none finished. */
   runBy?: { provider: string; model: string | null };
 }
@@ -104,6 +106,7 @@ export class ClaudeSdkImplementer implements Implementer {
     const logStream = fs.createWriteStream(transcriptPath, { flags: "a" });
     let summary = "";
     let costUsd = 0;
+    let failure: string | undefined;
 
     try {
       const stream = query({
@@ -138,6 +141,8 @@ export class ClaudeSdkImplementer implements Implementer {
           costUsd = typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : costUsd;
           if (msg.subtype === "success") {
             summary = msg.result ?? "";
+          } else {
+            failure = msg.subtype; // error_max_turns, error_max_budget_usd, error_during_execution, ...
           }
         }
       }
@@ -148,6 +153,7 @@ export class ClaudeSdkImplementer implements Implementer {
         transcriptPath,
         aborted: input.abortController.signal.aborted,
         runBy: { provider: "claude", model: this.opts.model },
+        ...(failure ? { failure } : {}),
       };
     } catch (err) {
       if (input.abortController.signal.aborted) {

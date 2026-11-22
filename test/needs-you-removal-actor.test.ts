@@ -80,4 +80,24 @@ describe("removing needs-you resumes a Thread only when the owner removed it", (
       fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  it("a dead-lettered needs-you label add is not read as the owner retrying", async () => {
+    const w = await world();
+    try {
+      w.github.issues.get(4)!.labels = []; // our add_label never landed
+      w.github.labelRemovers.set("4:needs-you", 0); // the timeline has no owner removal
+      w.ledger.upsertThread({ issueNumber: 5, title: "x", bodySha256: sha("x"), now: 1 });
+      w.ledger.transition(5, w.ledger.getThread(5)!.version, { kind: "queued" }, { effects: [{ kind: "add_label", issueNumber: 4, label: "needs-you" }] });
+      const row = w.ledger.listDueOutbox()[0]!;
+      w.ledger.deadLetterOutbox(row.id, "gave up");
+      expect(w.ledger.hasPendingLabelAdd(4, "needs-you")).toBe(false);
+      await w.rec.tick(Date.now(), { waitForAttempts: true });
+      expect(w.ledger.getThread(4)!.phase.kind).toBe("needs_you");
+      expect(w.ledger.getThread(4)!.retryGrants).toBe(0);
+      expect(w.ledger.listAudit({ topicPrefix: "thread/owner_retry" })).toHaveLength(0);
+    } finally {
+      w.ledger.close();
+      fs.rmSync(w.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });
