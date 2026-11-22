@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { HostYamlSchema } from "../config.js";
+import { HostYamlSchema, type Chains } from "../config.js";
 
 /**
  * The data directory for read-only commands (`status`, `metrics`, `ui`, ...). `--data-dir` wins; otherwise it comes from the host
@@ -21,10 +21,10 @@ export function resolveDataDir(opts: { config?: string; dataDir?: string }, env:
 export function resolveHostSettings(
   opts: { config?: string; dataDir?: string },
   env: NodeJS.ProcessEnv = process.env,
-): { dataDir: string; authMode: "subscription" | "api"; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; implementerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }> } {
+): { dataDir: string; authMode: "subscription" | "api"; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; chains: Chains } {
   const candidate = opts.config ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
   const file = path.resolve(candidate);
   if (!fs.existsSync(file)) throw new Error(`Host config not found: ${file}`);
   const host = HostYamlSchema.parse(parseYaml(fs.readFileSync(file, "utf8")));
-  return { dataDir: opts.dataDir ?? host.dataDir, authMode: host.authMode, reviewerChain: host.reviewerChain, implementerChain: host.implementerChain };
+  return { dataDir: opts.dataDir ?? host.dataDir, authMode: host.authMode, reviewerChain: host.reviewerChain, chains: host.chains };
 }

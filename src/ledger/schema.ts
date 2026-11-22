@@ -302,6 +302,18 @@ CREATE TABLE IF NOT EXISTS system_state (
   updated_at INTEGER NOT NULL
 );
 
+-- Explicit per-repo health facts: a subsystem error class the daemon survived (log-and-continue) is counted here, never only logged.
+CREATE TABLE IF NOT EXISTS health_faults (
+  repo TEXT NOT NULL,
+  category TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  last_error TEXT NOT NULL,
+  recent_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (repo, category)
+);
+
 CREATE TABLE IF NOT EXISTS provider_cooldowns (
   provider TEXT PRIMARY KEY,
   until_ts INTEGER NOT NULL,

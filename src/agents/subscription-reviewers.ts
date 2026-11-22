@@ -240,7 +240,8 @@ export function defaultReviewerCliInvoker(input: {
 
 export interface SubscriptionReviewerOptions {
   chain: ProviderEntry[];
-  primaryImplementerVendor: ReviewerVendor;
+  /** Vendors excluded when a request names none: the first provider of each writing role's chain. */
+  defaultExcludeVendors: ReviewerVendor[];
   timeoutMs?: number;
   invoker?: ReviewerCliInvoker;
   /** Prompt templates; defaults to the current ones (eval passes a candidate's). */
@@ -257,7 +258,7 @@ export interface SubscriptionReviewerOptions {
  */
 export class SubscriptionReviewerSuite implements ReviewerSuite {
   private readonly chain: ProviderEntry[];
-  private readonly primaryImplementerVendor: ReviewerVendor;
+  private readonly defaultExcludeVendors: ReviewerVendor[];
   private readonly timeoutMs: number;
   private readonly invoker: ReviewerCliInvoker;
   private readonly prompts: ReviewPromptBuilders;
@@ -265,7 +266,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
   constructor(opts: SubscriptionReviewerOptions) {
     this.prompts = opts.prompts ?? DEFAULT_REVIEW_PROMPTS;
     this.chain = opts.chain;
-    this.primaryImplementerVendor = opts.primaryImplementerVendor;
+    this.defaultExcludeVendors = opts.defaultExcludeVendors;
     this.timeoutMs = opts.timeoutMs ?? 180_000;
     this.invoker = opts.invoker ?? defaultReviewerCliInvoker;
   }
@@ -275,7 +276,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
     const excluded = new Set<ReviewerVendor>(
       req.excludeVendors && req.excludeVendors.length > 0
         ? req.excludeVendors
-        : [this.primaryImplementerVendor],
+        : this.defaultExcludeVendors,
     );
 
     // Eligible independent providers in configured preference order (deduped by vendor).

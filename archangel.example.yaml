@@ -24,9 +24,27 @@ reviewerOutageMaxMs: 21600000       # how long to wait for reviewers before esca
 # Native CLI subscriptions with fallback chains (no API keys required),
 # or switch to `authMode: api` for metered API keys in .env.
 authMode: subscription
-implementerChain:
-  - provider: codex
-  - provider: agy
+# One chain per role, so menial work can run on cheaper models than the first implementation.
+# Each entry is { provider, model? }; the first entry that is not cooling down runs, the rest are failover.
+# Vendor independence applies across implement, revise and rebase: no reviewer shares a vendor with any of them.
+chains:
+  implement:
+    - provider: codex
+      model: gpt-5.4          # the expensive tier for the first, hardest pass
+    - provider: agy
+  revise:
+    - provider: codex
+      model: gpt-5.4-mini     # a cheaper tier for review feedback (vendor stickiness still applies)
+    - provider: agy
+  rebase:
+    - provider: codex
+      model: gpt-5.4-mini     # LLM rebase only; the deterministic Broker rebase costs 0 tokens
+    - provider: agy
+  scout:                      # read-only Scouts: needs a claude or codex entry
+    - provider: claude
+    - provider: codex
+  triage:                     # reserved for escalation triage; validated, not used yet
+    - provider: claude
 reviewerChain:
   - provider: agy
   - provider: claude

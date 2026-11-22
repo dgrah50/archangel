@@ -1,9 +1,11 @@
 import { Badge, Box, Flex, Heading, Link, Text } from "@chakra-ui/react";
+import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiState } from "../../src/core/ui-state.js";
+import type { Feed } from "./AppView";
 import { NAV, itemHash, type Route } from "./route";
 
 /** Left nav on wide screens, a top bar on narrow ones, plus a persistent header strip (daemon status, Needs You count). */
-export function Shell({ route, state, children }: { route: Route; state: UiState | null; children: React.ReactNode }) {
+export function Shell({ route, state, host, children }: { route: Route; state: UiState | null; host: Feed<HostStatus>; children: React.ReactNode }) {
   const needs = state?.needsYou.length ?? null;
   return (
     <Flex direction={{ base: "column", md: "row" }} minH="100vh">
@@ -22,6 +24,13 @@ export function Shell({ route, state, children }: { route: Route; state: UiState
       <Box flex="1" minW="0">
         <Flex as="header" aria-label="Status" gap="3" align="center" px="6" py="2" borderBottomWidth="1px" borderColor="border" textStyle="sm">
           <Daemon state={state} />
+          {host.data?.restartPending ? (
+            <Badge colorPalette="orange" title="archangel.yaml on disk differs from what the daemon loaded. Host settings apply after a restart.">
+              Host config changed: restart pending
+            </Badge>
+          ) : host.data === null && host.error ? (
+            <Badge colorPalette="red" title={host.error}>host status unavailable</Badge>
+          ) : null}
           {needs === null ? null : needs === 0 ? (
             <Text color="fg.muted">Nothing needs you</Text>
           ) : (
