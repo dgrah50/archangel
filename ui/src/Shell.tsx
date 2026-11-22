@@ -1,0 +1,42 @@
+import { Badge, Box, Flex, Heading, Link, Text } from "@chakra-ui/react";
+import type { UiState } from "../../src/core/ui-state.js";
+import { NAV, type Route } from "./route";
+
+/** Left nav on wide screens, a top bar on narrow ones, plus a persistent header strip (daemon status, Needs You count). */
+export function Shell({ route, state, children }: { route: Route; state: UiState | null; children: React.ReactNode }) {
+  const needs = state?.needsYou.length ?? null;
+  return (
+    <Flex direction={{ base: "column", md: "row" }} minH="100vh">
+      <Box as="nav" aria-label="Pages" borderColor="border" borderBottomWidth={{ base: "1px", md: "0" }} borderEndWidth={{ md: "1px" }} w={{ md: "13rem" }} flexShrink={0} p="4">
+        <Heading size="md" mb={{ base: "2", md: "4" }}>
+          Archangel
+        </Heading>
+        <Flex direction={{ base: "row", md: "column" }} gap="1" wrap="wrap">
+          {NAV.map((n) => (
+            <Link key={n.page} href={n.hash} aria-current={route.page === n.page ? "page" : undefined} px="2" py="1" rounded="md" fontWeight={route.page === n.page ? "semibold" : "normal"} bg={route.page === n.page ? "bg.muted" : undefined} textDecoration="none">
+              {n.label}
+            </Link>
+          ))}
+        </Flex>
+      </Box>
+      <Box flex="1" minW="0">
+        <Flex as="header" aria-label="Status" gap="3" align="center" px="6" py="2" borderBottomWidth="1px" borderColor="border" textStyle="sm">
+          <Daemon state={state} />
+          {needs === null ? null : needs === 0 ? (
+            <Text color="fg.muted">Nothing needs you</Text>
+          ) : (
+            <Badge colorPalette="orange">{needs} need you</Badge>
+          )}
+        </Flex>
+        {children}
+      </Box>
+    </Flex>
+  );
+}
+
+function Daemon({ state }: { state: UiState | null }) {
+  if (state === null) return <Badge>daemon unknown</Badge>;
+  const beat = state.daemonHeartbeatAt;
+  const live = beat !== null && state.generatedAt - beat <= 3 * 60_000;
+  return <Badge colorPalette={live ? "green" : "red"}>{live ? "daemon running" : "daemon offline"}</Badge>;
+}
