@@ -17,7 +17,7 @@ import { readCodexUsage, type AccountLedger } from "../core/accounts.js";
 import type { Account } from "../config.js";
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import {
   MainWatchSchema,
   PhaseSchema,
@@ -133,7 +133,7 @@ export interface HealthFault {
 }
 
 export class Ledger {
-  private readonly db: Database.Database;
+  private readonly db: Database;
   private readonly timeZone: string;
   readonly repo: string;
 
@@ -144,7 +144,7 @@ export class Ledger {
     if (!opts.readonly && dbPath !== ":memory:") {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     }
-    this.db = new Database(dbPath, { readonly: opts.readonly ?? false });
+    this.db = new Database(dbPath, opts.readonly ? { readonly: true } : { create: true, readwrite: true });
     this.repo = opts.repo ?? "default";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
@@ -192,7 +192,7 @@ export class Ledger {
         this.db.exec("ALTER TABLE scout_proposals ADD COLUMN auto_promoted INTEGER NOT NULL DEFAULT 0");
       }
     } else {
-      this.db.pragma("busy_timeout = 5000");
+      this.db.exec("PRAGMA busy_timeout = 5000");
     }
   }
 
@@ -448,7 +448,7 @@ export class Ledger {
 
   listThreads(states?: PhaseKind[], repo: string | null = this.repo): ThreadRecord[] {
     const where: string[] = [];
-    const params: unknown[] = [];
+    const params: SQLQueryBindings[] = [];
     if (repo !== null) {
       where.push("repo = ?");
       params.push(repo);
@@ -509,7 +509,7 @@ export class Ledger {
 
     const tx = this.db.transaction((): ThreadRecord | null => {
       const sets: string[] = ["phase_json = ?", "version = version + 1", "updated_at = ?"];
-      const vals: unknown[] = [JSON.stringify(validated), now];
+      const vals: SQLQueryBindings[] = [JSON.stringify(validated), now];
 
       if (opts.nextMode !== undefined) {
         sets.push("mode = ?");
@@ -675,7 +675,7 @@ export class Ledger {
              AND json_extract(effect_json, '$.issueNumber') = ?
              AND json_extract(effect_json, '$.label') = ? LIMIT 1`,
         )
-        .get(repo, issueNumber, label) !== undefined
+        .get(repo, issueNumber, label) !== null
     );
   }
 
@@ -1467,7 +1467,7 @@ export class Ledger {
    */
   hasAudit(q: { topic: string; actor?: string; issueNumber?: number; sinceMs?: number; payload?: { key: "category" | "trustHash"; value: string } }, repo = this.repo): boolean {
     const where = [`repo = ?`, `topic = ?`];
-    const params: unknown[] = [repo, q.topic];
+    const params: SQLQueryBindings[] = [repo, q.topic];
     if (q.actor !== undefined) { where.push(`actor = ?`); params.push(q.actor); }
     if (q.issueNumber !== undefined) { where.push(`issue_number = ?`); params.push(q.issueNumber); }
     if (q.sinceMs !== undefined) { where.push(`ts >= ?`); params.push(q.sinceMs); }
@@ -1523,7 +1523,7 @@ export class Ledger {
     opts: { repo?: string; topicPrefix?: string; issueNumber?: number; limit?: number } = {},
   ): AuditLogEntry[] {
     const where: string[] = [];
-    const params: unknown[] = [];
+    const params: SQLQueryBindings[] = [];
     if (opts.repo) {
       where.push(`repo = ?`);
       params.push(opts.repo);
@@ -2263,7 +2263,7 @@ export class Ledger {
       ),
     );
     const reverted = (t: ThreadRecord) => (t.phase.kind === "done" && t.phase.outcome === "reverted") || redIssues.has(t.issueNumber);
-    const count = (sql: string, ...params: unknown[]) => (this.db.prepare(sql).get(...params) as { n: number }).n;
+    const count = (sql: string, ...params: SQLQueryBindings[]) => (this.db.prepare(sql).get(...params) as { n: number }).n;
     const auditCount = (topic: string, actor?: string) =>
       count(
         `SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = ? AND ts >= ?${actor ? " AND actor = ?" : ""}`,
@@ -2518,7 +2518,7 @@ export class Ledger {
     const excluded = this.issuesFiledByScouts(opts.excludeScouts ?? [], repo);
     const keep = (issue: number | null) => issue === null || !excluded.has(issue);
     const scope = repo ? " AND repo = ?" : "";
-    const args = (...a: unknown[]) => (repo ? [...a, repo] : a);
+    const args = (...a: SQLQueryBindings[]) => (repo ? [...a, repo] : a);
     const escalations = (
       this.db
         .prepare(`SELECT ts, repo, issue_number, payload_json FROM audit_log WHERE topic = 'escalation/raised' AND ts >= ?${scope}`)
@@ -2636,7 +2636,7 @@ export class Ledger {
       }
     }
 
-    const attParams: unknown[] = [since];
+    const attParams: SQLQueryBindings[] = [since];
     const attWhere =
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
@@ -2692,7 +2692,7 @@ export class Ledger {
       return Number(arr[idx]!.toFixed(1));
     };
 
-    const revParams: unknown[] = [since];
+    const revParams: SQLQueryBindings[] = [since];
     const revWhere =
       (repoFilter ? "WHERE created_at >= ? AND repo = ?" : "WHERE created_at >= ?") + notExcluded("issue_number");
     if (repoFilter) revParams.push(repoFilter);
@@ -2708,7 +2708,7 @@ export class Ledger {
       byVendor[r.vendor] = bucket;
     }
 
-    const outParams: unknown[] = ["review/outage_started", since];
+    const outParams: SQLQueryBindings[] = ["review/outage_started", since];
     const outWhere =
       (repoFilter ? "WHERE topic = ? AND ts >= ? AND repo = ?" : "WHERE topic = ? AND ts >= ?") + notExcluded("issue_number");
     if (repoFilter) outParams.push(repoFilter);
@@ -2935,7 +2935,7 @@ function mapCommand(r: Record<string, unknown>): DaemonCommandRecord {
 }
 
 /** An outbox table from before explicit states gains `state` and `next_attempt_at`; existing rows stay deliverable. */
-function migrateOutbox(db: Database.Database): void {
+function migrateOutbox(db: Database): void {
   const cols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   if (cols.length === 0 || cols.some((c) => c.name === "state")) return;
   db.exec("ALTER TABLE outbox ADD COLUMN state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'retrying', 'dead_letter'))");
