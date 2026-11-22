@@ -42,6 +42,21 @@ export function formatDayKey(ts: number, timeZone: string): string {
 
 export const OWNER_REPLY_MAX_CHARS = 4000;
 
+export interface OutcomeMetrics {
+  mergedFixes: number;
+  /** Metered USD only (attempts.cost_usd + reviews.cost_usd); subscription CLI runs record $0. */
+  meteredUsdTotal: number;
+  costUsdPerFix: number | null;
+  attemptsPerFix: number | null;
+  attemptMinutesPerFix: number | null;
+  reverts: number;
+  revertsPerFix: number | null;
+  /** Attempts beyond the first, per merged fix. */
+  reworkAttemptsTotal: number;
+  reworkAttemptsPerFix: number | null;
+  vendorAgreement: Record<string, { approvedMerges: number; undisputed: number; rate: number | null }>;
+}
+
 export class Ledger {
   private readonly db: Database.Database;
   private readonly timeZone: string;
@@ -690,18 +705,22 @@ export class Ledger {
   }
 
   /**
-   * Synchronizes shadow disagreement idempotently (no duplicate audit rows on unchanged ticks).
+   * Synchronizes owner disagreement idempotently (no duplicate audit rows on unchanged ticks).
+   * Applies to every merge row of the Thread, shadow or autonomous. Returns how many merge rows the Thread has
+   * (0 means there is nothing to mark).
    */
-  markShadowDisagree(issueNumber: number, disagreed = true, repo = this.repo): void {
+  markDisagree(issueNumber: number, disagreed = true, repo = this.repo): number {
     const flag = disagreed ? 1 : 0;
     const res = this.db
-      .prepare(
-        `UPDATE merges SET disagreed = ? WHERE repo = ? AND issue_number = ? AND shadow_only = 1 AND disagreed != ?`,
-      )
+      .prepare(`UPDATE merges SET disagreed = ? WHERE repo = ? AND issue_number = ? AND disagreed != ?`)
       .run(flag, repo, issueNumber, flag);
     if (res.changes > 0) {
       this.appendAudit("shadow/disagree", issueNumber, "owner", { disagreed }, Date.now(), repo);
     }
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS cnt FROM merges WHERE repo = ? AND issue_number = ?`)
+      .get(repo, issueNumber) as { cnt: number };
+    return row.cnt;
   }
 
   getShadowStats(repo: string | null = null, sinceMs = 0): {
@@ -1072,6 +1091,81 @@ export class Ledger {
 
   // ---- Operational Metrics & Self-Improvement Telemetry ----
 
+  /**
+   * Outcome metrics over the merged fixes among `threads` (the window and repo filters are applied by the caller, on Thread creation time).
+   * A merged fix is a Thread that landed on main: done with outcome merged, owner_merged or reverted.
+   * Cost and attempt figures cover all Attempts and reviews of those Threads, including failed ones that preceded the merge.
+   * A merge is "disputed" if the owner marked it disagreed or main-watch went red; vendor agreement counts merges the vendor approved
+   * (review on the merged head sha) that were not disputed. Ratios are null when the denominator is 0.
+   */
+  private computeOutcomeMetrics(threads: ThreadRecord[]): OutcomeMetrics {
+    const landed = threads.filter(
+      (t) =>
+        t.phase.kind === "done" &&
+        (t.phase.outcome === "merged" || t.phase.outcome === "owner_merged" || t.phase.outcome === "reverted"),
+    );
+    const ratio = (n: number, d: number): number | null => (d > 0 ? Number((n / d).toFixed(3)) : null);
+    let meteredUsd = 0;
+    let attempts = 0;
+    let attemptMs = 0;
+    let rework = 0;
+    let reverts = 0;
+    const vendors: Record<string, { approvedMerges: number; undisputed: number }> = {};
+    for (const t of landed) {
+      const a = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS usd,
+                  COALESCE(SUM(CASE WHEN finished_at >= started_at THEN finished_at - started_at ELSE 0 END), 0) AS ms
+           FROM attempts WHERE repo = ? AND issue_number = ?`,
+        )
+        .get(t.repo, t.issueNumber) as { n: number; usd: number; ms: number };
+      const r = this.db
+        .prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM reviews WHERE repo = ? AND issue_number = ?`)
+        .get(t.repo, t.issueNumber) as { usd: number };
+      meteredUsd += a.usd + r.usd;
+      attempts += a.n;
+      attemptMs += a.ms;
+      rework += Math.max(0, a.n - 1);
+
+      const merges = (
+        this.db
+          .prepare(`SELECT * FROM merges WHERE repo = ? AND issue_number = ? ORDER BY id ASC`)
+          .all(t.repo, t.issueNumber) as Record<string, unknown>[]
+      ).map(mapMerge);
+      const reverted =
+        (t.phase.kind === "done" && t.phase.outcome === "reverted") || merges.some((m) => m.mainWatch.kind === "red");
+      if (reverted) reverts++;
+      const last = merges[merges.length - 1];
+      if (!last) continue;
+      const disputed = reverted || merges.some((m) => m.disagreed);
+      const approvals = this.db
+        .prepare(`SELECT vendor FROM reviews WHERE repo = ? AND issue_number = ? AND head_sha = ? AND verdict = 'approve'`)
+        .all(t.repo, t.issueNumber, last.headSha) as Array<{ vendor: string }>;
+      for (const { vendor } of approvals) {
+        const v = (vendors[vendor] ??= { approvedMerges: 0, undisputed: 0 });
+        v.approvedMerges++;
+        if (!disputed) v.undisputed++;
+      }
+    }
+    const fixes = landed.length;
+    const vendorAgreement: OutcomeMetrics["vendorAgreement"] = {};
+    for (const [vendor, v] of Object.entries(vendors)) {
+      vendorAgreement[vendor] = { ...v, rate: ratio(v.undisputed, v.approvedMerges) };
+    }
+    return {
+      mergedFixes: fixes,
+      meteredUsdTotal: Number(meteredUsd.toFixed(4)),
+      costUsdPerFix: fixes > 0 ? Number((meteredUsd / fixes).toFixed(4)) : null,
+      attemptsPerFix: ratio(attempts, fixes),
+      attemptMinutesPerFix: fixes > 0 ? Number((attemptMs / 60_000 / fixes).toFixed(2)) : null,
+      reverts,
+      revertsPerFix: ratio(reverts, fixes),
+      reworkAttemptsTotal: rework,
+      reworkAttemptsPerFix: ratio(rework, fixes),
+      vendorAgreement,
+    };
+  }
+
   computeMetrics(opts: { repo?: string | null; sinceMs?: number; now?: number } = {}): {
     windowDays: number | null;
     threads: {
@@ -1095,6 +1189,7 @@ export class Ledger {
       outageEvents: number;
     };
     shadow: { total: number; agreed: number; disagreed: number; agreementRate: number };
+    outcomes: OutcomeMetrics;
     activeCooldowns: Array<{ provider: string; untilTs: number; reason: string }>;
   } {
     const now = opts.now ?? Date.now();
@@ -1210,6 +1305,7 @@ export class Ledger {
         outageEvents: Number(outageRow.cnt),
       },
       shadow: this.getShadowStats(repoFilter, since),
+      outcomes: this.computeOutcomeMetrics(threads),
       activeCooldowns: this.listActiveCooldowns(now),
     };
   }
