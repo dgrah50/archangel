@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { AppView } from "./AppView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useFeed, useHash } from "./feeds";
-import { isEvalsState, isHostStatus, isSettingsState, isLogs, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
+import { isEvalsState, isHostStatus, isSettingsState, isThreadDetail, isUiState, isWorkflowsState } from "./payload";
 import { Provider } from "./provider";
 import { parseRoute } from "./route";
 
@@ -21,7 +21,6 @@ function App() {
   const t = route.page === "thread" ? route.item : null;
   const key = t ? `${encodeURI(t.repo)}/${t.issue}` : "";
   const [thread, loadThread] = useFeed(`/api/threads/${key}`, isThreadDetail, t !== null);
-  const [logs, loadLogs] = useFeed(t ? `/api/logs?repo=${encodeURIComponent(t.repo)}&issue=${t.issue}&limit=100` : "/api/logs", isLogs, t !== null);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 5_000);
@@ -33,12 +32,9 @@ function App() {
     if (route.page === "pipeline" || route.page === "setup" || (route.page === "settings" && route.scope === "repo")) loadWorkflows();
     if ((route.page === "settings" && route.scope !== "repo") || route.page === "setup") loadSettings();
     if (route.page === "evals") loadEvals();
-    if (t) {
-      loadThread();
-      loadLogs();
-    }
+    if (t) loadThread();
   };
-  return <AppView route={route} state={state} workflows={workflows} evals={evals} settings={settings} host={host} thread={thread} logs={logs} now={now} onRetry={retry} />;
+  return <AppView route={route} state={state} workflows={workflows} evals={evals} settings={settings} host={host} thread={thread} now={now} onRetry={retry} />;
 }
 
 createRoot(document.getElementById("root")!).render(
