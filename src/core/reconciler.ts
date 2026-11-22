@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
+import { ATTEMPT_FAILURE_ADVICE, MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
 import { resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -36,7 +36,7 @@ import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
-import { loadWorkflow, workflowError } from "./workflow-load.js";
+import { loadRepoInstructions, loadWorkflow, workflowError } from "./workflow-load.js";
 import { shouldAutoOff } from "./factory-retry.js";
 import { emit } from "./telemetry.js";
 import { buildRecommendationPrompt, buildTriagePrompt, isTriageEligible, pickTriageProvider, validateTriage, vetRecommendation, RecommendationOnlySchema, RECOMMENDATION_ONLY_JSON_SCHEMA, RECOMMENDATION_TIMEOUT_MS, TRIAGE_JSON_SCHEMA, TRIAGE_TIMEOUT_MS, type TriageEligibleCode } from "./triage.js";
@@ -1729,6 +1729,7 @@ export class Reconciler {
       }
 
       const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
+      const repoInstructions = await loadRepoInstructions(this.broker, mainSha);
       const prompt =
         kind === "plan"
           ? buildPlanPrompt({
@@ -1738,6 +1739,7 @@ export class Reconciler {
               repoName: `${this.cfg.githubOwner}/${this.cfg.githubRepo}`,
               ownerReply: workingThread.ownerReply,
               previousPlan: this.ledger.latestThreadPlan(workingThread.issueNumber)?.text ?? null,
+              repoInstructions,
               maxChars: PLAN_MAX_CHARS,
             })
           : kind === "implement"
@@ -1750,6 +1752,7 @@ export class Reconciler {
               ownerReply: workingThread.ownerReply,
               factoryGuidance: workingThread.factoryGuidance,
               approvedPlan,
+              repoInstructions,
               workClass: workClassOfBranch(workingThread.branchName),
             })
           : kind === "revise"
@@ -1763,6 +1766,7 @@ export class Reconciler {
                 ownerReply: workingThread.ownerReply,
                 factoryGuidance: workingThread.factoryGuidance,
                 approvedPlan,
+                repoInstructions,
                 workClass: workClassOfBranch(workingThread.branchName),
               })
             : buildRebasePrompt({
@@ -1771,6 +1775,7 @@ export class Reconciler {
                 baseBranch: this.cfg.defaultBranch,
                 gate: this.effectiveGate,
                 ownerReply: workingThread.ownerReply,
+                repoInstructions,
               });
 
       const result: ImplementResult = await this.implementer
@@ -1786,8 +1791,8 @@ export class Reconciler {
         role: kind === "plan" ? "implement" : kind,
         })
         .catch((err: unknown) => {
-          // The implementer (every provider in its chain) threw: that is a provider failure, whatever its prose says.
-          throw err instanceof AttemptError ? err : new AttemptError("provider_unavailable", err instanceof Error ? err.message : String(err));
+          // An implementer failure that did not name its cause.
+          throw err instanceof AttemptError ? err : new AttemptError("implementer_failed", err instanceof Error ? err.message : String(err));
         });
 
       actualCostUsd = result.costUsd;
@@ -2120,13 +2125,14 @@ export class Reconciler {
         errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
+      const advice = err instanceof AttemptError ? ATTEMPT_FAILURE_ADVICE[err.category] : undefined;
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}` },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}${advice ? ` ${advice}` : ""}` },
           { auditTopic: "thread/needs_you" },
         );
       }
@@ -2309,6 +2315,7 @@ export class Reconciler {
           diffText,
           touchedFiles,
           reviewRubric: this.effectiveReviewRubric,
+          repoInstructions: await loadRepoInstructions(this.broker, mainSha),
           skipVendors: [...haveVendors],
           excludeVendors,
         });
