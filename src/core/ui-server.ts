@@ -9,6 +9,7 @@ import { ARCHANGEL_ROOT, type OnboardRunner } from "./onboard.js";
 import { ProposeRefusal, handlePropose } from "./ui-propose.js";
 import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doctor.js";
 import { buildHostStatus } from "./host-facts.js";
+import { buildSettingsState } from "./ui-settings.js";
 import { buildThreadDetail, readLogs, LOG_MAX } from "./ui-thread.js";
 import { buildUiState, buildWorkflowsState } from "./ui-state.js";
 
@@ -150,6 +151,7 @@ export async function startUiServer(
         }
         return sendJson(res, 200, await doctor(scope as DoctorScope, smoke));
       }
+      if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));
       if (pathname === "/api/host") return sendJson(res, 200, buildHostStatus(ledger, opts.configPath));
       const url = new URL(req.url ?? "/", "http://localhost");
       const thread = /^\/api\/threads\/([^/]+\/[^/]+)\/(\d+)$/.exec(pathname);

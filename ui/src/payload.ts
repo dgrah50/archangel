@@ -1,5 +1,6 @@
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { LogsPayload, ThreadDetail } from "../../src/core/ui-thread.js";
+import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
 const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -35,6 +36,10 @@ export function isThreadDetail(v: unknown): v is ThreadDetail {
 
 export function isHostStatus(v: unknown): v is HostStatus {
   return obj(v) && typeof v.reported === "boolean" && typeof v.restartPending === "boolean" && typeof v.disk === "string";
+}
+
+export function isSettingsState(v: unknown): v is SettingsState {
+  return obj(v) && obj(v.host) && typeof v.host.state === "string" && obj(v.status) && Array.isArray(v.env) && obj(v.kernel) && Array.isArray(v.kernel.universalProtected);
 }
 
 export function isLogs(v: unknown): v is LogsPayload {
