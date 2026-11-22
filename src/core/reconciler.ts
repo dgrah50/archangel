@@ -930,6 +930,21 @@ export class Reconciler {
 
       case "queued": {
         if (!issue || this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+        // A chained pitch slice waits, queued, until the slice before it has merged; if that one ended unmerged, ask the owner once.
+        const dependsOn = this.ledger.getThreadDependency(thread.issueNumber);
+        if (dependsOn !== null) {
+          const pred = this.ledger.getThread(dependsOn);
+          if (!pred || pred.phase.kind !== "done") return;
+          this.ledger.clearThreadDependency(thread.issueNumber); // consumed: a retry after the Needs You runs the slice on its own
+          if (pred.phase.outcome !== "merged" && pred.phase.outcome !== "owner_merged") {
+            this.applyMachineEvent(
+              thread,
+              { t: "escalate", code: "dependency_unmet", reason: `Slice #${dependsOn} ended ${pred.phase.outcome} instead of merging, so this chained slice has not started.` },
+              { auditTopic: "thread/needs_you", now },
+            );
+            return;
+          }
+        }
         await this.spawnAttempt(thread, issue, "implement", mainSha, [], [], now);
         return;
       }

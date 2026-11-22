@@ -1535,6 +1535,24 @@ export class Ledger {
       .run(now, JSON.stringify(merged), repo, issueNumber);
   }
 
+  addThreadDependency(issueNumber: number, dependsOn: number, now = Date.now(), repo = this.repo): void {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO thread_dependencies (repo, issue_number, depends_on, created_at) VALUES (?, ?, ?, ?)`)
+      .run(repo, issueNumber, dependsOn, now);
+  }
+
+  /** The issue this one waits for, or null. */
+  getThreadDependency(issueNumber: number, repo = this.repo): number | null {
+    const r = this.db.prepare(`SELECT depends_on FROM thread_dependencies WHERE repo = ? AND issue_number = ?`).get(repo, issueNumber) as
+      | { depends_on: number }
+      | undefined;
+    return r ? r.depends_on : null;
+  }
+
+  clearThreadDependency(issueNumber: number, repo = this.repo): void {
+    this.db.prepare(`DELETE FROM thread_dependencies WHERE repo = ? AND issue_number = ?`).run(repo, issueNumber);
+  }
+
   countOpenPitches(repo = this.repo): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM pitches WHERE repo = ? AND status = 'open'`).get(repo) as { n: number }).n;
   }
