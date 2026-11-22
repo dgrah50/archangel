@@ -2270,6 +2270,8 @@ export class Ledger {
       topErrors: Array<{ error: string; count: number }>;
       /** Failed attempts bucketed into fixed categories (never contains error text). */
       errorCategories: Record<string, number>;
+      /** Per role (implement, revise, rebase): is the cheap tier good enough? `models` counts finished Attempts by provider/model. */
+      byRole: Record<string, { attempts: number; succeeded: number; failed: number; aborted: number; costUsd: number; models: Record<string, number> }>;
     };
     reviews: {
       byVendor: Record<string, { approve: number; veto: number }>;
@@ -2313,8 +2315,12 @@ export class Ledger {
       (repoFilter ? "WHERE started_at >= ? AND repo = ?" : "WHERE started_at >= ?") + notExcluded("issue_number");
     if (repoFilter) attParams.push(repoFilter);
     const attemptRows = this.db
-      .prepare(`SELECT status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
+      .prepare(`SELECT kind, cost_usd, provider, model, status, started_at, finished_at, error_message FROM attempts ${attWhere}`)
       .all(...attParams) as Array<{
+      kind: string;
+      cost_usd: number;
+      provider: string | null;
+      model: string | null;
       status: string;
       started_at: number;
       finished_at: number | null;
@@ -2327,8 +2333,17 @@ export class Ledger {
     const durationsSec: number[] = [];
     const errorCounts = new Map<string, number>();
     const errorCategories: Record<string, number> = {};
+    const byRole: Record<string, { attempts: number; succeeded: number; failed: number; aborted: number; costUsd: number; models: Record<string, number> }> = {};
 
     for (const a of attemptRows) {
+      const role = (byRole[a.kind] ??= { attempts: 0, succeeded: 0, failed: 0, aborted: 0, costUsd: 0, models: {} });
+      role.attempts++;
+      role.costUsd = Number((role.costUsd + a.cost_usd).toFixed(4));
+      if (a.status === "succeeded" || a.status === "failed" || a.status === "aborted") role[a.status]++;
+      if (a.provider) {
+        const key = `${a.provider}/${a.model ?? "default"}`;
+        role.models[key] = (role.models[key] ?? 0) + 1;
+      }
       if (a.status === "succeeded") succeeded++;
       else if (a.status === "failed") failed++;
       else if (a.status === "aborted") aborted++;
@@ -2401,6 +2416,7 @@ export class Ledger {
         p95DurationSec: percentile(durationsSec, 0.95),
         topErrors,
         errorCategories,
+        byRole,
       },
       reviews: {
         byVendor,

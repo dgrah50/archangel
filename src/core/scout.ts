@@ -125,11 +125,11 @@ export function scanForSecrets(text: string): string | null {
 /**
  * Selects the first read-only-verified Scout provider (`claude` or `codex`; excludes `agy` per Opus H1).
  */
-export function selectScoutProvider(reviewerChain: ProviderEntry[]): {
+export function selectScoutProvider(scoutChain: ProviderEntry[]): {
   provider: ScoutCliProvider;
   model?: string;
 } | null {
-  for (const entry of reviewerChain) {
+  for (const entry of scoutChain) {
     if (entry.provider === "claude" || entry.provider === "codex") {
       return { provider: entry.provider, model: entry.model };
     }
@@ -384,9 +384,9 @@ export async function runScoutsForProject(opts: {
   }
 
   if (selected.length === 0) return [];
-  const providerChoice = selectScoutProvider(opts.config.reviewerChain);
+  const providerChoice = selectScoutProvider(opts.config.chains.scout);
   if (!providerChoice) {
-    throw new Error("No claude or codex provider configured in reviewerChain for Scout execution.");
+    throw new Error("No claude or codex provider configured in chains.scout for Scout execution.");
   }
   if (!opts.github.createIssue) {
     throw new Error("GitHubClient does not support createIssue.");

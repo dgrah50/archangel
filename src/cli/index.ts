@@ -8,7 +8,7 @@ import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, providerToVendor, resolvePaths, type ArchangelConfig } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolvePaths, type ArchangelConfig } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
 import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
@@ -51,7 +51,7 @@ function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string): Reviewer
   return cfg.authMode === "subscription"
     ? new SubscriptionReviewerSuite({
         chain: cfg.reviewerChain,
-        primaryImplementerVendor: providerToVendor(cfg.implementerChain[0]!.provider),
+        defaultExcludeVendors: primaryWriterVendors(cfg.chains),
       })
     : new MastraReviewerSuite({
         openaiApiKey: cfg.openaiApiKey!,
@@ -157,7 +157,7 @@ program
     logger.info(
       "daemon/started",
       first.authMode === "subscription"
-        ? `Auth mode: subscription (impl=${first.implementerChain.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
+        ? `Auth mode: subscription (impl=${first.chains.implement.map((e) => e.provider).join("->")}, revise=${first.chains.revise.map((e) => e.provider).join("->")}, rebase=${first.chains.rebase.map((e) => e.provider).join("->")}, scout=${first.chains.scout.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
         : "Auth mode: api (metered keys)",
     );
 
@@ -184,7 +184,7 @@ program
       const implementer =
         cfg.authMode === "subscription"
           ? new SubscriptionImplementer({
-              chain: cfg.implementerChain,
+              chains: cfg.chains,
               transcriptsDir: paths.transcriptsDir,
               cooldowns,
               logger,
@@ -524,6 +524,13 @@ program
       console.log(
         `Attempts:    ${m.attempts.total} total (${m.attempts.succeeded} ok, ${m.attempts.failed} fail, ${m.attempts.aborted} abort; ${Math.round(m.attempts.successRate * 100)}% success)`,
       );
+      for (const [role, r] of Object.entries(m.attempts.byRole).sort()) {
+        const done = r.succeeded + r.failed + r.aborted;
+        const models = Object.entries(r.models).map(([k, n]) => `${k} x${n}`).join(", ");
+        console.log(
+          `  ${role.padEnd(9)} ${r.attempts} attempts, ${done > 0 ? Math.round((r.succeeded / done) * 100) : 0}% ok, $${r.costUsd.toFixed(2)} metered${models ? ` (${models})` : ""}`,
+        );
+      }
       console.log(
         `Duration:    p50=${m.attempts.p50DurationSec ?? "n/a"}s, p95=${m.attempts.p95DurationSec ?? "n/a"}s`,
       );
@@ -751,7 +758,7 @@ evalCmd
       const report = await runEval({
         ledger,
         sources: evalSources(ledger, dataDir, opts.repo),
-        suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, primaryImplementerVendor: providerToVendor(host.implementerChain[0]!.provider), prompts }),
+        suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts }),
         baseline: baseline.prompts,
         candidate,
         heldout: opts.heldout,
