@@ -36,7 +36,8 @@ function sniff(b: Buffer): ImageMime | null {
   return null;
 }
 
-export async function ingestImage(input: Buffer, dataDir: string): Promise<IngestedImage> {
+/** `maxWidth` narrows the re-encode below the default (small images for GitHub); it can never widen it. */
+export async function ingestImage(input: Buffer, dataDir: string, opts: { maxWidth?: number } = {}): Promise<IngestedImage> {
   const mime = sniff(input);
   if (!mime) throw new Error("not a PNG, JPEG or WebP image");
   if (input.length > INGEST_MAX_INPUT_BYTES) throw new Error(`image is over ${INGEST_MAX_INPUT_BYTES} bytes`);
@@ -44,7 +45,7 @@ export async function ingestImage(input: Buffer, dataDir: string): Promise<Inges
   const head = await sharp(input, { limitInputPixels: INGEST_MAX_PIXELS }).metadata();
   const { width: w, height: h } = head;
   if (!w || !h || w > INGEST_MAX_SIDE_PX || h > INGEST_MAX_SIDE_PX || w * h > INGEST_MAX_PIXELS) throw new Error("image dimensions are over the limit");
-  const pipeline = sharp(input, { limitInputPixels: INGEST_MAX_PIXELS, failOn: "error" }).rotate().resize({ width: INGEST_MAX_WIDTH, withoutEnlargement: true });
+  const pipeline = sharp(input, { limitInputPixels: INGEST_MAX_PIXELS, failOn: "error" }).rotate().resize({ width: Math.min(opts.maxWidth ?? INGEST_MAX_WIDTH, INGEST_MAX_WIDTH), withoutEnlargement: true });
   const { data, info } = await (mime === "image/png" ? pipeline.png({ compressionLevel: 9 }) : mime === "image/jpeg" ? pipeline.jpeg({ quality: 80 }) : pipeline.webp({ quality: 80 })).toBuffer({ resolveWithObject: true });
   if (data.length > INGEST_MAX_OUTPUT_BYTES) throw new Error(`re-encoded image is over ${INGEST_MAX_OUTPUT_BYTES} bytes`);
   const sha256 = crypto.createHash("sha256").update(data).digest("hex");
