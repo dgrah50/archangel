@@ -151,6 +151,14 @@ export class FakeGitHub implements GitHubClient {
     list.push(body);
     this.comments.set(issueOrPrNumber, list);
   }
+  async upsertMarkedComment(issueOrPrNumber: number, _marker: string, body: string): Promise<void> {
+    await this.upsertRecapComment(issueOrPrNumber, body);
+  }
+  assetPushes: Array<{ ref: string; paths: string[] }> = [];
+  async publishAssets(input: { ref: string; files: Array<{ path: string }> }): Promise<{ commitSha: string }> {
+    this.assetPushes.push({ ref: input.ref, paths: input.files.map((f) => f.path) });
+    return { commitSha: "c".repeat(40) };
+  }
   async postComment(issueOrPrNumber: number, body: string): Promise<void> {
     await this.upsertRecapComment(issueOrPrNumber, body);
   }

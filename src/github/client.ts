@@ -89,6 +89,10 @@ export interface GitHubClient {
   /** Reproduction-test output the Gate emitted as an annotation on its check run for `headSha`, or null. */
   getGateProof(checkRunId: number, headSha: string): Promise<GateProof | null>;
   upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void>;
+  /** Creates or replaces the one comment that contains `marker`. */
+  upsertMarkedComment(issueOrPrNumber: number, marker: string, body: string): Promise<void>;
+  /** The only push that is not a factory branch: commits image files to the dedicated assets branch. Refuses any other ref or path. */
+  publishAssets(input: AssetsPush): Promise<{ commitSha: string }>;
   postComment(issueOrPrNumber: number, body: string): Promise<void>;
   addLabels(issueNumber: number, labels: string[]): Promise<void>;
   removeLabel(issueNumber: number, label: string): Promise<void>;
@@ -141,6 +145,28 @@ function endpointClass(urlOrEndpoint: string): TelemetryTags<"github_call_ms">["
 }
 function statusClass(status: number): TelemetryTags<"github_call_ms">["status"] {
   return status === 429 ? "429" : status >= 500 ? "5xx" : status >= 400 ? "4xx" : "2xx";
+}
+
+/** The dedicated orphan branch for images embedded in PR descriptions and comments. It is not main and not a factory branch. */
+export const ASSETS_REF = "refs/heads/archangel/assets";
+const ASSET_PATH = /^(prs|pitches)\/\d{1,9}\/[0-9a-f]{64}\.png$/;
+const ASSET_MAX_FILES = 3;
+const ASSET_MAX_BYTES = 1024 * 1024;
+
+export interface AssetsPush {
+  ref: string;
+  files: Array<{ path: string; bytes: Buffer }>;
+  message: string;
+}
+
+/** What an assets push may touch; throws on anything else. Pure, so the narrowness is checked before any request is made. */
+export function assertAssetsPush(input: AssetsPush): void {
+  if (input.ref !== ASSETS_REF) throw new Error(`publishAssets only writes ${ASSETS_REF}, not ${input.ref}`);
+  if (input.files.length < 1 || input.files.length > ASSET_MAX_FILES) throw new Error(`publishAssets takes 1 to ${ASSET_MAX_FILES} files`);
+  for (const f of input.files) {
+    if (!ASSET_PATH.test(f.path)) throw new Error(`publishAssets only writes prs/<n>/<sha256>.png or pitches/<n>/<sha256>.png, not ${f.path}`);
+    if (f.bytes.length > ASSET_MAX_BYTES) throw new Error(`publishAssets file over ${ASSET_MAX_BYTES} bytes`);
+  }
 }
 
 export class GitHubAppClient implements GitHubClient {
@@ -596,11 +622,15 @@ export class GitHubAppClient implements GitHubClient {
   }
 
   async upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void> {
+    await this.upsertMarkedComment(issueOrPrNumber, RECAP_MARKER, body);
+  }
+
+  async upsertMarkedComment(issueOrPrNumber: number, marker: string, body: string): Promise<void> {
     const comments = await this.requestAllPages<{ id: number; body?: string }>(
       `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueOrPrNumber}/comments?per_page=100`,
       { useEtag: false },
     );
-    const existing = comments.find((c) => (c.body ?? "").includes(RECAP_MARKER));
+    const existing = comments.find((c) => (c.body ?? "").includes(marker));
     if (existing) {
       await this.request(
         "PATCH",
@@ -610,6 +640,34 @@ export class GitHubAppClient implements GitHubClient {
       return;
     }
     await this.postComment(issueOrPrNumber, body);
+  }
+
+  /**
+   * Adds the files to `archangel/assets` in one commit and returns its sha, for commit-pinned blob URLs. The branch is created as an
+   * orphan on first use, so it shares no history with main. Plain (non-force) ref updates: a concurrent writer makes this fail, not clobber.
+   */
+  async publishAssets(input: AssetsPush): Promise<{ commitSha: string }> {
+    assertAssetsPush(input);
+    const base = `/repos/${this.cfg.owner}/${this.cfg.repo}/git`;
+    const branch = ASSETS_REF.slice("refs/".length);
+    let parent: { sha: string; tree: string } | null = null;
+    try {
+      const ref = await this.request<{ object: { sha: string } }>("GET", `${base}/ref/${branch}`, { useEtag: false });
+      const commit = await this.request<{ tree: { sha: string } }>("GET", `${base}/commits/${ref.object.sha}`, { useEtag: false });
+      parent = { sha: ref.object.sha, tree: commit.tree.sha };
+    } catch (err) {
+      if (!(err instanceof GitHubHttpError && err.status === 404)) throw err;
+    }
+    const tree: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+    for (const f of input.files) {
+      const blob = await this.request<{ sha: string }>("POST", `${base}/blobs`, { body: { content: f.bytes.toString("base64"), encoding: "base64" } });
+      tree.push({ path: f.path, mode: "100644", type: "blob", sha: blob.sha });
+    }
+    const newTree = await this.request<{ sha: string }>("POST", `${base}/trees`, { body: { ...(parent ? { base_tree: parent.tree } : {}), tree } });
+    const commit = await this.request<{ sha: string }>("POST", `${base}/commits`, { body: { message: input.message, tree: newTree.sha, parents: parent ? [parent.sha] : [] } });
+    if (parent) await this.request("PATCH", `${base}/refs/${branch}`, { body: { sha: commit.sha, force: false } });
+    else await this.request("POST", `${base}/refs`, { body: { ref: ASSETS_REF, sha: commit.sha } });
+    return { commitSha: commit.sha };
   }
 
   /** Bodies of comments written by `ownerUserId` strictly after `sinceMs`, oldest first. */

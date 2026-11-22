@@ -240,6 +240,7 @@ program
         workerId: daemonOwnerId,
         scoutCompute,
         remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
+        previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [4477] }),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"
@@ -460,7 +461,7 @@ pitchCmd
       const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
       const local = new LocalProvider(broker);
       const running = await startPocPreview(
-        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs },
+        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs, github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }) },
         Number(issueArg),
       );
       process.once("SIGINT", running.close);
