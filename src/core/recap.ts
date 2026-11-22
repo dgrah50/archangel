@@ -5,6 +5,7 @@ import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
+import { renderShotImages, type ShotLink } from "./pr-shots.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
@@ -21,6 +22,8 @@ export function renderRecapComment(input: {
   gateProofError?: string | null;
   /** What machine triage decided for this Thread (a `factory/triage` audit row); null/undefined when triage never ran. */
   triage?: TriageSummary | null;
+  /** Small screenshots of the PR head, already published by the host; rendered as a short section. */
+  shots?: ShotLink[];
   /** Called with the pattern name when agent-authored text was withheld for matching the secret scan. */
   onWithheld?: (pattern: string) => void;
 }): string {
@@ -82,6 +85,10 @@ export function renderRecapComment(input: {
     const assumptions = extractAssumptions(summaryText);
     lines.push("", "#### Implementer Assumptions", "_Decisions made without asking, quoted from the implementer's summary as plain text._", "");
     lines.push(...(assumptions === null ? ["_none stated_"] : fencedText(assumptions)));
+  }
+
+  if (input.shots && input.shots.length > 0) {
+    lines.push("", "#### Screenshots", "_Taken by Archangel from a sandboxed run of this head. The images are host-built links to the `archangel/assets` branch._", "", renderShotImages(input.shots));
   }
 
   const unavailable = input.gateProof ? null : (input.gateProofError ?? null);

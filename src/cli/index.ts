@@ -13,7 +13,7 @@ import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
-import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
+import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
@@ -188,6 +188,8 @@ program
     const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const sailProviders: SailProvider[] = [];
+    const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
+    let lastTranscriptPrune = 0;
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -239,6 +241,7 @@ program
         logger,
         workerId: daemonOwnerId,
         scoutCompute,
+        previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [4477] }),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"
@@ -315,6 +318,17 @@ program
           if (!opts.once) emit("tick_ms", Date.now() - t0, {}, repoSlug);
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
+        }
+      }
+      if (Date.now() - lastTranscriptPrune >= 3_600_000) {
+        lastTranscriptPrune = Date.now();
+        for (const dir of transcriptDirs) {
+          try {
+            const n = pruneTranscripts(dir, Date.now() - TRANSCRIPT_RETENTION_MS);
+            if (n > 0) console.log(`[archangel] Pruned ${n} old transcript file(s) in ${dir}`);
+          } catch (err) {
+            console.error("[archangel] Transcript prune error:", err);
+          }
         }
       }
       try {
@@ -459,7 +473,7 @@ pitchCmd
       const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
       const local = new LocalProvider(broker);
       const running = await startPocPreview(
-        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs },
+        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs, github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }) },
         Number(issueArg),
       );
       process.once("SIGINT", running.close);

@@ -32,6 +32,7 @@ import { renderRecapComment } from "./recap.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
+import { capturePrShots, getPrShots, setPrShots } from "./pr-shots.js";
 import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
@@ -73,6 +74,8 @@ export interface ReconcilerDeps {
   triageInvoker?: ScoutCliInvoker;
   /** Where Scouts run when the host config says so; absent means this machine. Implement, revise and review always stay local. */
   scoutCompute?: ComputeProvider;
+  /** A sandboxing provider for previews. Without it no PR screenshots are taken. */
+  previewCompute?: ComputeProvider;
 }
 
 /** What the drafting half needs from outside: the Scout CLI, the eval, the PR opener and a PR status lookup. */
@@ -129,6 +132,7 @@ export class Reconciler {
   private readonly broker: GitBroker;
   private readonly compute: ComputeProvider;
   private readonly scoutCompute: ComputeProvider | undefined;
+  private readonly previewCompute: ComputeProvider | undefined;
   private readonly implementer: Implementer;
   private readonly reviewers: ReviewerSuite;
   private readonly notifier: Notifier;
@@ -138,6 +142,7 @@ export class Reconciler {
   private isTicking = false;
   private readonly runningTasks = new Map<number, RunningTask>();
   /** The one PoC build in flight, if any: it takes a concurrency slot like a Thread's Attempt. */
+  private prShot: Promise<void> | null = null;
   private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
@@ -169,6 +174,7 @@ export class Reconciler {
     this.broker = deps.broker;
     this.compute = new LocalProvider(deps.broker);
     this.scoutCompute = deps.scoutCompute;
+    this.previewCompute = deps.previewCompute;
     this.implementer = deps.implementer;
     this.reviewers = deps.reviewers;
     this.notifier = deps.notifier;
@@ -184,8 +190,8 @@ export class Reconciler {
 
   /** Waits for all in-flight background attempts to settle (useful for `--once`, shutdown, and tests). */
   async waitForActiveTasks(): Promise<void> {
-    while (this.runningTasks.size > 0 || this.pocBuild) {
-      await Promise.allSettled([...[...this.runningTasks.values()].map((t) => t.promise), ...(this.pocBuild ? [this.pocBuild.promise] : [])]);
+    while (this.runningTasks.size > 0 || this.pocBuild || this.prShot) {
+      await Promise.allSettled([...[...this.runningTasks.values()].map((t) => t.promise), ...(this.pocBuild ? [this.pocBuild.promise] : []), ...(this.prShot ? [this.prShot] : [])]);
     }
     await this.draftChain;
   }
@@ -257,6 +263,32 @@ export class Reconciler {
         this.pocBuild = null;
       });
     this.pocBuild = { abortController, promise };
+  }
+
+  /**
+   * After the Gate and the reviews pass, previews the PR head in the sandbox and puts 1 to 2 small screenshots in the Recap. Once per
+   * head sha (an attempt that fails is recorded as empty, never retried), one at a time, in the background. Only repos whose policy
+   * declares a web `preview`, and only when the host gave the reconciler a sandboxing provider.
+   */
+  private startPrShots(thread: ThreadRecord, pr: GitHubPr, repost: () => Promise<void>): void {
+    const preview = this.workflow?.preview;
+    if (!this.previewCompute || preview?.kind !== "web" || this.prShot || getPrShots(this.ledger, pr.number, pr.headSha) !== null) return;
+    const now = Date.now();
+    setPrShots(this.ledger, pr.number, pr.headSha, [], now);
+    const repoSlug = this.ledger.repo;
+    this.prShot = capturePrShots(
+      { github: this.github, repoSlug, local: this.compute, sandbox: this.previewCompute, preview, dataDir: resolvePaths(this.cfg).dataDir, installTimeoutMs: this.cfg.setupTimeoutMs },
+      { issueNumber: thread.issueNumber, prNumber: pr.number, headSha: pr.headSha },
+    )
+      .then(async (links) => {
+        setPrShots(this.ledger, pr.number, pr.headSha, links, Date.now());
+        this.ledger.appendAudit("pr_shots/published", thread.issueNumber, "archangel", { pr: pr.number, count: links.length }, Date.now());
+        await repost();
+      })
+      .catch((err: unknown) => this.recordFault("pr_shots", err, now, thread.issueNumber))
+      .finally(() => {
+        this.prShot = null;
+      });
   }
 
   /** Dashboard read path: the latest resolution (ok, missing or invalid) per repo, so the UI never calls GitHub. */
@@ -2645,7 +2677,9 @@ export class Reconciler {
         { auditTopic: "thread/shadow_ready", now },
       );
       if (updated) {
-        await this.postRecapSafe(updated, pr, blockers, isOwnerMergeClass ? undefined : { wouldMerge: true });
+        const recapOpts = isOwnerMergeClass ? undefined : { wouldMerge: true };
+        await this.postRecapSafe(updated, pr, blockers, recapOpts);
+        this.startPrShots(updated, pr, () => this.postRecapSafe(this.ledger.getThread(updated.issueNumber) ?? updated, pr, blockers, recapOpts));
       }
       return;
     }
@@ -2897,6 +2931,7 @@ export class Reconciler {
           gateProof,
           gateProofError,
           triage,
+          shots: getPrShots(this.ledger, pr.number, pr.headSha) ?? [],
           onWithheld: (pattern) => this.logger.warn("recap/secret_withheld", pattern, { repo: this.ledger.repo, issue: thread.issueNumber }),
         }),
       );
