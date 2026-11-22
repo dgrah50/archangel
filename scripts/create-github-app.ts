@@ -3,6 +3,8 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline/promises";
+import { discoverInstallation, upsertEnvFile, type Installation } from "./github-app-ids.js";
 
 const PORT = Number(process.env.ARCHANGEL_APP_SETUP_PORT ?? 4321);
 const CALLBACK_URL = `http://127.0.0.1:${PORT}/callback`;
@@ -25,26 +27,41 @@ const manifest = {
   default_events: [],
 };
 
-function upsertEnvFile(updates: Record<string, string>): void {
-  let content = fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH, "utf8") : "";
-  for (const [key, value] of Object.entries(updates)) {
-    const re = new RegExp(`^${key}=.*$`, "m");
-    const line = `${key}=${value}`;
-    if (re.test(content)) {
-      content = content.replace(re, line);
-    } else {
-      content = `${content.trimEnd()}\n${line}\n`.replace(/^\n/, "");
-    }
-  }
-  fs.writeFileSync(ENV_PATH, content, { encoding: "utf8", mode: 0o600 });
-}
-
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+async function chooseInstallation(installs: Installation[]): Promise<Installation> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log("[archangel] The App has more than one installation:");
+    installs.forEach((i, n) => console.log(`  ${n + 1}) ${i.account.login} (installation ${i.id})`));
+    for (;;) {
+      const n = Number(await rl.question("Which one should Archangel use? "));
+      if (Number.isInteger(n) && n >= 1 && n <= installs.length) return installs[n - 1]!;
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+async function waitForInstall(appId: string, pem: string, slug: string): Promise<void> {
+  try {
+    const ids = await discoverInstallation({ appId, pem, slug, choose: chooseInstallation });
+    upsertEnvFile(ENV_PATH, {
+      ARCHANGEL_GITHUB_INSTALLATION_ID: ids.installationId,
+      ARCHANGEL_GITHUB_BOT_USER_ID: ids.botUserId,
+    });
+    console.log(`[archangel] Updated ${ENV_PATH} with ARCHANGEL_GITHUB_INSTALLATION_ID and ARCHANGEL_GITHUB_BOT_USER_ID`);
+  } catch (err) {
+    console.error(`[archangel] ${err instanceof Error ? err.message : String(err)}. Set the two ids in .env by hand.`);
+  } finally {
+    server.close();
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -102,7 +119,7 @@ const server = http.createServer(async (req, res) => {
 
       fs.mkdirSync(PEM_DIR, { recursive: true, mode: 0o700 });
       fs.writeFileSync(PEM_PATH, data.pem, { encoding: "utf8", mode: 0o600 });
-      upsertEnvFile({
+      upsertEnvFile(ENV_PATH, {
         ARCHANGEL_GITHUB_APP_ID: String(data.id),
         ARCHANGEL_GITHUB_PRIVATE_KEY_PATH: PEM_PATH,
       });
@@ -111,7 +128,9 @@ const server = http.createServer(async (req, res) => {
       console.log(`\n[archangel] Created GitHub App '${data.name}' (ID: ${data.id})`);
       console.log(`[archangel] Saved chmod 600 PEM to ${PEM_PATH}`);
       console.log(`[archangel] Updated ${ENV_PATH} with ARCHANGEL_GITHUB_APP_ID=${data.id}`);
-      console.log(`[archangel] Next: install it ONLY on your target repositories at: ${installUrl}\n`);
+      console.log(`[archangel] Next: install it ONLY on your target repositories at: ${installUrl}`);
+      console.log("[archangel] Waiting for the installation (this fills in the installation id and bot user id)...\n");
+      void waitForInstall(String(data.id), data.pem, data.slug);
 
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!doctype html>
@@ -121,10 +140,9 @@ const server = http.createServer(async (req, res) => {
   <p><b>App:</b> ${escapeHtml(data.name)} (ID: <code>${data.id}</code>)</p>
   <p>Saved PEM to <code>${escapeHtml(PEM_PATH)}</code> (<code>chmod 600</code>) and updated <code>.env</code>.</p>
   <p><a href="${escapeHtml(installUrl)}" style="font-size: 16px;">Step 2: Install ONLY on your target repositories &rarr;</a></p>
-  <p>After clicking Install, you can close this tab and tell Archangel "installed" so it auto-fills <code>ARCHANGEL_GITHUB_INSTALLATION_ID</code>.</p>
+  <p>After you install it, the terminal running this script fills in <code>ARCHANGEL_GITHUB_INSTALLATION_ID</code> and <code>ARCHANGEL_GITHUB_BOT_USER_ID</code> in <code>.env</code>. You can close this tab.</p>
 </body>
 </html>`);
-      setTimeout(() => server.close(), 1500);
     } catch (err) {
       res.writeHead(500);
       res.end(err instanceof Error ? err.message : String(err));
