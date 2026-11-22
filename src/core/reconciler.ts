@@ -14,7 +14,7 @@ import {
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import type { GateProof } from "../gate/gate.js";
-import type { GitHubClient, GitHubIssue, GitHubPr, IssueComment } from "../github/client.js";
+import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
 import type { MergeRecord, ReviewFinding, ReviewerVendor, ThreadRecord } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 import { branchNameFor, workClassOfBranch, type WorkClass } from "./work-class.js";
@@ -64,6 +64,8 @@ interface RunningTask {
 }
 
 const POST_MERGE_WATCH_TIMEOUT_MS = 2 * 60 * 60_000;
+/** How long a requested rerun may take to show up before the original failure counts as the verdict. */
+const RERUN_GRACE_MS = 10 * 60_000;
 const REVIEW_RESERVATION_USD = 0.25;
 
 /**
@@ -2001,6 +2003,17 @@ export class Reconciler {
    * Uses `MainWatch`, the non-Gate checks recorded on the merge row, tracks exact rerun IDs,
    * enforces watch timeout, and isolates each merge in its own try/catch.
    */
+  private async notifyPostMergeUnverified(m: MergeRecord, reason: string): Promise<void> {
+    const policy = MAIN_ESCALATION_POLICY.post_merge_unverified;
+    await this.notifier.notifyNeedsYou({
+      issueNumber: m.issueNumber,
+      title: `Main unverified after merge of PR #${m.prNumber}`,
+      reason,
+      decisionClass: formatDecisionClass(policy.decisionClass),
+      recommendation: policy.recommendation,
+    });
+  }
+
   private async reconcilePostMergeMain(mainSha: string, now: number): Promise<void> {
     const pending = this.ledger.listPendingPostMergeChecks();
     if (pending.length === 0) return;
@@ -2009,7 +2022,8 @@ export class Reconciler {
     // workflow can never leave a red main unwatched.
     for (const m of pending) {
       if (m.mainRequired.length === 0) {
-        // Only rows from before checks were recorded can get here. Nothing can be verified, so close the row loudly.
+        // Only rows from before checks were recorded can get here. Nothing can be verified, so say so and close the row.
+        await this.notifyPostMergeUnverified(m, "no required main checks were recorded for this merge");
         this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
         this.ledger.appendAudit("post_merge/missing_required_checks", m.issueNumber, "archangel", { mergeId: m.id }, now);
         continue;
@@ -2045,6 +2059,8 @@ export class Reconciler {
 
     if (matched.length < mainRequired.length || matched.some((c) => c.status !== "completed")) {
       if (now - startedAt > POST_MERGE_WATCH_TIMEOUT_MS) {
+        // Main's CI never reported on this merge: nobody knows whether main is green. Say so before closing the watch.
+        await this.notifyPostMergeUnverified(m, "main CI did not report on this merge within 2 hours");
         this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
         this.ledger.appendAudit("post_merge/timed_out", m.issueNumber, "archangel", { mergeId: m.id }, now);
       }
@@ -2057,6 +2073,13 @@ export class Reconciler {
       return;
     }
 
+    if (watch.kind === "rerun_requested") {
+      // The rerun was asked for; the failed run stays "completed/failure" until GitHub shows the new one. Failures that are still
+      // the runs we asked to rerun are not a verdict yet: wait, but only for a while (a rerun that never appears is a real failure).
+      const stale = failed.filter((c) => watch.runIds.includes(c.id));
+      if (stale.length > 0 && now - watch.at < RERUN_GRACE_MS) return;
+    }
+
     if (watch.kind === "watching") {
       const runIds: number[] = [];
       let rerunPermitted = true;
@@ -2065,14 +2088,15 @@ export class Reconciler {
           await this.github.rerunCheckRun(f.id);
           runIds.push(f.id);
         } catch (err) {
-          // Under strict ADR-0004 least-privilege (checks:read, no checks:write), rerequest returns 403.
-          // Fail closed immediately into circuit-breaker + exact revert PR instead of wedging in `watching`.
+          // Only "forbidden" means the App cannot rerun (ADR-0004 least privilege: checks:read, no checks:write), which is a
+          // permanent answer: confirm red main now. Any other error is transient: leave the watch as it is and retry next tick.
+          if (!(err instanceof GitHubHttpError && err.status === 403)) throw err;
           rerunPermitted = false;
           this.ledger.appendAudit(
             "post_merge/rerun_unavailable",
             m.issueNumber,
             "archangel",
-            { mergeId: m.id, checkRunId: f.id, error: err instanceof Error ? err.message : String(err) },
+            { mergeId: m.id, checkRunId: f.id, error: err.message },
             now,
           );
           break;
@@ -2086,9 +2110,8 @@ export class Reconciler {
     }
 
     if (watch.kind === "rerun_requested" || watch.kind === "watching") {
-      // Wait if GitHub hasn't yet reflected the rerun (or if the rerun is still in progress).
-      // Since our GitHub client deduplicates to latest id, if all failed ids are still completed+failed,
-      // confirm red main!
+      // Confirmed red. Everything before the final state change is safe to repeat, and the state changes last: if the revert PR
+      // or the alert fails, the watch is still pending and the next tick retries instead of losing the alert.
       const reason = `main CI failed on factory squash ${m.squashSha.slice(0, 10)} (issue #${m.issueNumber})`;
       this.ledger.setCircuitBreaker(true, reason, now);
 
@@ -2096,17 +2119,14 @@ export class Reconciler {
         const rev = await this.broker.createExactRevertBranch(m.issueNumber, mainSha, m.squashSha);
         const freshRemoteUrl = await this.github.getRemoteUrlWithToken();
         await this.broker.pushFactoryBranch(rev.branchName, rev.headSha, freshRemoteUrl);
-        const revertPr = await this.github.createPr({
-          title: `revert(#${m.issueNumber}): revert ${m.squashSha.slice(0, 8)} after red main`,
-          body: `Automated exact-inverse revert of ${m.squashSha} (PR #${m.prNumber}) after confirmed CI failure on \`${this.cfg.defaultBranch}\`.\n\nGlobal landing circuit breaker is now **TRIPPED**.`,
-          head: rev.branchName,
-          base: this.cfg.defaultBranch,
-        });
-        this.ledger.updateMergeMainWatch(m.id, {
-          kind: "red",
-          revertPrNumber: revertPr.number,
-          escalated: false,
-        });
+        const revertPr =
+          (await this.github.findPrByHeadBranch(rev.branchName)) ??
+          (await this.github.createPr({
+            title: `revert(#${m.issueNumber}): revert ${m.squashSha.slice(0, 8)} after red main`,
+            body: `Automated exact-inverse revert of ${m.squashSha} (PR #${m.prNumber}) after confirmed CI failure on \`${this.cfg.defaultBranch}\`.\n\nGlobal landing circuit breaker is now **TRIPPED**.`,
+            head: rev.branchName,
+            base: this.cfg.defaultBranch,
+          }));
         await this.notifier.notifyNeedsYou({
           issueNumber: m.issueNumber,
           title: `Red main after merge of PR #${m.prNumber}`,
@@ -2114,12 +2134,8 @@ export class Reconciler {
           decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.red_main_reverted.decisionClass),
           recommendation: MAIN_ESCALATION_POLICY.red_main_reverted.recommendation,
         });
+        this.ledger.updateMergeMainWatch(m.id, { kind: "red", revertPrNumber: revertPr.number, escalated: false });
       } else {
-        this.ledger.updateMergeMainWatch(m.id, {
-          kind: "red",
-          revertPrNumber: null,
-          escalated: true,
-        });
         await this.notifier.notifyNeedsYou({
           issueNumber: m.issueNumber,
           title: `Red main on ${m.squashSha.slice(0, 8)} (multiple merges interleaved)`,
@@ -2127,6 +2143,7 @@ export class Reconciler {
           decisionClass: formatDecisionClass(MAIN_ESCALATION_POLICY.red_main_manual.decisionClass),
           recommendation: MAIN_ESCALATION_POLICY.red_main_manual.recommendation,
         });
+        this.ledger.updateMergeMainWatch(m.id, { kind: "red", revertPrNumber: null, escalated: true });
       }
     }
   }
