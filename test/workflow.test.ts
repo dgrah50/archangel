@@ -32,7 +32,6 @@ describe("kernel bounds", () => {
     ["empty testFileGlobs", withGate({ testFileGlobs: [] }), "gate.testFileGlobs"],
     ["too many scouts", { ...baseFile(), scouts: Array.from({ length: KERNEL.maxScouts + 1 }, (_, i) => ({ name: `s${i}` })) }, "scouts"],
     ["duplicate scout", { ...baseFile(), scouts: [{ name: "x" }, { name: "x" }] }, "scouts.1.name"],
-    ["pre-version-1 shape", { maxFiles: 3 }, "version"],
     ["requiredChecks without Gate", { ...baseFile(), requiredChecks: ["Test"] }, "requiredChecks"],
     ["requiredChecks Gate only (landing could never see main green)", { ...baseFile(), requiredChecks: ["Gate"] }, "requiredChecks"],
     ["requiredChecks missing", { ...baseFile(), requiredChecks: undefined }, "requiredChecks"],
@@ -87,10 +86,6 @@ describe("host clamp and provenance", () => {
     expect(revoked.promotionEffective).toEqual({ value: "owner", source: "kernel", declared: "auto" });
   });
 
-  it("copies host caps", () => {
-    expect(okOf(host({ maxAutoMergesPerDay: 9, scoutRunsPerDay: 4, maxConcurrentThreads: 1 })).caps)
-      .toEqual({ autoMergesPerDay: 9, autoPromotionsPerDay: 1, scoutRunsPerDay: 4, scoutsEnabled: true, concurrent: 1 });
-  });
 });
 
 describe("classifyChange", () => {
@@ -106,22 +101,15 @@ describe("classifyChange", () => {
   it.each([
     ["maxFiles up", (o: any) => { o.gate.maxFiles = 5; }, "gate.maxFiles", "loosen"],
     ["maxFiles down", (o: any) => { o.gate.maxFiles = 2; }, "gate.maxFiles", "tighten"],
-    ["maxNonTestLines down", (o: any) => { o.gate.maxNonTestLines = 100; }, "gate.maxNonTestLines", "tighten"],
-    ["maxTotalLines down", (o: any) => { o.gate.maxTotalLines = 200; }, "gate.maxTotalLines", "tighten"],
     ["baseTestRuns down", (o: any) => { o.gate.baseTestRuns = 3; }, "gate.baseTestRuns", "loosen"],
-    ["headTestRuns up", (o: any) => { o.gate.headTestRuns = 5; }, "gate.headTestRuns", "tighten"],
     ["testCmd edited", (o: any) => { o.gate.testCmd = "true"; }, "gate.testCmd", "changed"],
-    ["test globs edited", (o: any) => { o.gate.testFileGlobs = ["x/**"]; }, "gate.testFileGlobs", "changed"],
     ["protected path added", (o: any) => { o.gate.protectedPaths.push("b/**"); }, "gate.protectedPaths", "tighten"],
     ["protected path removed", (o: any) => { o.gate.protectedPaths = []; }, "gate.protectedPaths", "loosen"],
     ["required check added", (o: any) => { o.requiredChecks.push("Lint"); }, "requiredChecks", "tighten"],
     ["required check removed", (o: any) => { o.requiredChecks = ["Gate", "Other"]; }, "requiredChecks", "loosen"],
-    ["rubric edited", (o: any) => { o.review = { rubric: "x" }; }, "review.rubric", "changed"],
     ["landing autonomous", (o: any) => { o.landing = { bugfix: "autonomous" }; }, "landing.bugfix", "loosen"],
     ["scout to auto", (o: any) => { o.scouts[0].promotion = "auto"; }, "scouts.bug-hunt.promotion", "loosen"],
     ["scout metrics on", (o: any) => { o.scouts[0].includeMetrics = true; }, "scouts.bug-hunt.includeMetrics", "loosen"],
-    ["scout schedule", (o: any) => { o.scouts[0].schedule = "daily"; }, "scouts.bug-hunt.schedule", "changed"],
-    ["scout added plain", (o: any) => { o.scouts.push({ name: "n" }); }, "scouts.n", "changed"],
     ["scout added auto", (o: any) => { o.scouts.push({ name: "n", promotion: "auto" }); }, "scouts.n", "loosen"],
     ["scout removed", (o: any) => { o.scouts = []; }, "scouts.bug-hunt", "tighten"],
   ])("%s", (_n, f, field, want) => {

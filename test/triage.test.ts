@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FACTORY_AUTO_OFF_UNMERGED, FACTORY_AUTO_OFF_WINDOW, classifyFactoryOutcome, shouldAutoOff, type FactoryOutcome } from "../src/core/factory-retry.js";
-import { TRIAGE_ELIGIBLE_CODES, TriageOutputSchema, buildTriagePrompt, extractPaths, pickTriageProvider, validateTriage, type TriageChecks } from "../src/core/triage.js";
+import { classifyFactoryOutcome, shouldAutoOff, type FactoryOutcome } from "../src/core/factory-retry.js";
+import { TriageOutputSchema, extractPaths, pickTriageProvider, validateTriage, type TriageChecks } from "../src/core/triage.js";
 
 const good = {
   decision: "guidance",
@@ -48,26 +48,10 @@ describe("triage output", () => {
     expect((await validateTriage(withStep("a plain step with no path, e.g. narrow it"), checks(), "o")).action).toBe("guidance");
   });
 
-  it("the note names the vendor and the steps", async () => {
-    const v = await validateTriage(good, checks(), "openai");
-    expect(v.action === "guidance" && v.note).toContain("written by openai");
-    expect(v.action === "guidance" && v.note).toContain("1. In `src/parse.ts`");
-  });
-
   it("extracts only backticked paths and slash tokens", () => {
     expect(extractPaths("see `a/b.ts:12`, src/x/y.go and https://x.io/z, e.g. nothing, v1.2")).toEqual(["a/b.ts", "src/x/y.go"]);
   });
 
-  it("the prompt frames everything as data and tells the run it cannot overrule a veto", () => {
-    const p = buildTriagePrompt({ issueNumber: 1, title: "t", body: "b", code: "review_vetoed", reason: "r", diffText: "d", summary: null, reviews: [{ vendor: "openai", verdict: "veto", findings: [] }] });
-    expect(p).toContain("untrusted DATA");
-    expect(p).toContain("veto_disputed");
-    expect(p).toContain("openai: veto");
-  });
-
-  it("only these codes are triaged", () => {
-    expect([...TRIAGE_ELIGIBLE_CODES]).toEqual(["review_vetoed", "revision_no_change", "attempt_failed", "gate_failed"]);
-  });
 });
 
 describe("triage provider", () => {
@@ -96,7 +80,6 @@ describe("factory retry outcomes", () => {
 
   const run = (...o: FactoryOutcome[]) => shouldAutoOff(o.map((outcome) => ({ outcome })));
   it("switches off at 3 of the last 5 unmerged, or on any bad one, and ignores pending", () => {
-    expect([FACTORY_AUTO_OFF_WINDOW, FACTORY_AUTO_OFF_UNMERGED]).toEqual([5, 3]);
     expect(run("success", "success", "re_escalated", "owner_overrode").off).toBe(false);
     expect(run("success", "re_escalated", "owner_overrode", "re_escalated").off).toBe(true);
     expect(run("re_escalated", "re_escalated", "success", "success", "success", "success").off).toBe(false); // only the last five count

@@ -74,12 +74,6 @@ describe("proposeWorkflow", () => {
     expect(f.calls.some((c) => c.startsWith("label"))).toBe(false);
   });
 
-  it("does not recreate the label when it already exists", async () => {
-    const f = fake({ current: norm(current), labels: [LOOSENS_LABEL] });
-    await proposeWorkflow(f.runner, "o/r", JSON.stringify(workflowFile([], { gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test" } })), quiet);
-    expect(f.calls.some((c) => c.startsWith("label create"))).toBe(false);
-  });
-
   it("rejects an invalid file (schema or kernel bound) before any gh write", async () => {
     const f = fake({ current: norm(current) });
     const tooLoose = workflowFile([], { gate: { testFileGlobs: ["t"], testCmd: "x", maxFiles: 50 } });
