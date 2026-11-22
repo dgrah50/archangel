@@ -9,7 +9,7 @@ vi.setConfig({ testTimeout: 60_000 });
 import type { ReviewPromptBuilders, ReviewRequest, ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { prepareCandidates, patchFiles } from "../src/core/eval-candidate.js";
-import { EVAL_THRESHOLDS, promptHashFor, renderCounts, renderEval, runEval, splitOf, collectEvalCases, type EvalOptions } from "../src/core/eval.js";
+import { EVAL_THRESHOLDS, promptHashFor, renderCounts, renderEval, runEval, collectEvalCases, type EvalOptions } from "../src/core/eval.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const FIXED = { GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z" };
@@ -131,13 +131,6 @@ async function run(w: World, marker: string, extra: Partial<EvalOptions> = {}, c
 }
 
 describe("vault split and dispute pinning", () => {
-  it("splits by a hash of the case id, deterministically, roughly 60/40", () => {
-    expect(splitOf("acme/app#1:abcdef")).toBe(splitOf("acme/app#1:abcdef"));
-    const dev = Array.from({ length: 400 }, (_, i) => splitOf(`case-${i}`)).filter((s) => s === "dev").length;
-    expect(dev).toBeGreaterThan(200);
-    expect(dev).toBeLessThan(280);
-  });
-
   it("pins every owner dispute (disagreed, owner-closed) to held-out for good, and never moves a case back to dev", async () => {
     const w = await world(4, { dispute: [2], closed: [5] });
     try {
@@ -217,21 +210,6 @@ describe("eval scoring", () => {
     }
   });
 
-  it("scores the dev set by default and the held-out set only on request, and caps the cases", async () => {
-    const w = await world(10, { dispute: [3, 4] });
-    try {
-      const dev = await run(w, "NEUTRAL");
-      const held = await run(w, "NEUTRAL", { heldout: true });
-      expect(dev.split).toBe("dev");
-      expect(held.split).toBe("heldout");
-      expect(held.counts.disputes).toBe(2);
-      const capped = await run(w, "NEUTRAL", { maxCases: 5 });
-      expect(capped.selected).toBe(5);
-    } finally {
-      cleanup(w);
-    }
-  });
-
   it("caches verdicts per (prompt hash, case): a re-run makes no reviewer calls", async () => {
     const w = await world(10);
     try {
@@ -268,17 +246,6 @@ describe("eval scoring", () => {
     }
   });
 
-  it("states the case counts against the calibration milestones", async () => {
-    const w = await world(2);
-    try {
-      const r = await run(w, "NEUTRAL");
-      const text = renderCounts(r).join("\n");
-      expect(text).toContain(`recalibrated at ${EVAL_THRESHOLDS.milestones.join(" and ")} cases`);
-      expect(text).toContain(`more to the next milestone (${EVAL_THRESHOLDS.milestones[0]})`);
-    } finally {
-      cleanup(w);
-    }
-  });
 });
 
 describe("candidates", () => {

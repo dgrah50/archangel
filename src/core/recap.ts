@@ -3,7 +3,7 @@ import { describeEscalation, formatDecisionClass } from "./escalations.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
-import type { ReviewFinding, ReviewRecord, ThreadRecord } from "../ledger/schema.js";
+import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
 
@@ -17,6 +17,8 @@ export function renderRecapComment(input: {
   gateProof?: GateProof | null;
   /** Why the proof could not be read (a GitHub error): shown as "Gate proof unavailable", distinct from a Gate run that emitted no proof. */
   gateProofError?: string | null;
+  /** What machine triage decided for this Thread (a `factory/triage` audit row); null/undefined when triage never ran. */
+  triage?: TriageSummary | null;
 }): string {
   const { thread, reviews, blockers } = input;
   const pr = extractPrFromPhase(thread.phase);
@@ -56,6 +58,16 @@ export function renderRecapComment(input: {
       `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${thread.phase.reason}`,
       `> **Recommended:** ${policy.recommendation}`,
     );
+  }
+  if (input.triage) {
+    const t = input.triage;
+    lines.push(
+      "",
+      "#### Machine triage (factory), not the owner",
+      `Vendor: ${t.vendor}. Decision: ${t.action === "guidance" ? "guidance" : "escalated"}. Cause: ${t.cause}.`,
+    );
+    if (t.action === "guidance" && t.steps.length > 0) lines.push("", ...fencedText(t.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")));
+    else if (t.action === "escalate" && t.reason) lines.push("", ...fencedText(t.reason));
   }
   const summaryText = input.summary ?? thread.lastSummary;
   if (summaryText) {

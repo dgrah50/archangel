@@ -897,7 +897,7 @@ export class Reconciler {
     } finally {
       if (cloneDir) this.broker.removeClone(cloneDir);
     }
-    this.ledger.appendAudit("factory/triage", thread.issueNumber, "factory", { code, vendor: choice.vendor, action: verdict.action, cause: verdict.cause }, now);
+    this.ledger.appendAudit("factory/triage", thread.issueNumber, "factory", { code, vendor: choice.vendor, action: verdict.action, cause: verdict.cause, ...(verdict.action === "guidance" ? { steps: verdict.steps } : { reason: verdict.reason.slice(0, 300) }) }, now);
     if (verdict.action === "escalate") {
       this.releaseTriage(thread, `${verdict.cause}: ${verdict.reason}`, verdict.cause, now);
       return;
@@ -2582,6 +2582,7 @@ export class Reconciler {
     opts: { wouldMerge?: boolean } = {},
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
+    const triage = this.ledger.latestTriage(thread.issueNumber);
     let gateProof: GateProof | null = null;
     let gateProofError: string | null = null;
     try {
@@ -2606,6 +2607,7 @@ export class Reconciler {
           wouldMerge: opts.wouldMerge,
           gateProof,
           gateProofError,
+          triage,
         }),
       );
     } catch (err) {

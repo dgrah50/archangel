@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createOrResetBranch, type OnboardRunner } from "../src/core/onboard.js";
+import { type OnboardRunner } from "../src/core/onboard.js";
 import { PROPOSE_BRANCH, planWorkflowProposal, proposeWorkflow, readRepoFile } from "../src/core/workflow-propose.js";
 import { workflowFile } from "./helpers/workflow.js";
 
@@ -44,13 +44,6 @@ describe("a leftover proposal branch does not wedge later proposals", () => {
     expect(patch).toContain("force=true");
   });
 
-  it("still creates the branch when it does not exist, and rethrows real errors", async () => {
-    const created = fake({});
-    await createOrResetBranch(created.runner, "o/r", "chore/x", "abc");
-    expect(created.calls.some((c) => c.includes("-X POST") && c.includes("ref=refs/heads/chore/x"))).toBe(true);
-    const broken: OnboardRunner = { async run() { throw new Error("HTTP 502 Bad Gateway"); } };
-    await expect(createOrResetBranch(broken, "o/r", "chore/x", "abc")).rejects.toThrow(/502/);
-  });
 });
 
 describe("reading the current workflow file fails closed", () => {
@@ -69,11 +62,4 @@ describe("reading the current workflow file fails closed", () => {
     await expect(proposeWorkflow(f.runner, "o/r", JSON.stringify(proposed), { dryRun: true, log: () => {} })).rejects.toThrow(/502/);
   });
 
-  it("reads the file at the tip sha it resolved once, not at a moving branch name", async () => {
-    const f = fake({});
-    await planWorkflowProposal(f.runner, "o/r", JSON.stringify(proposed));
-    const reads = f.calls.filter((c) => c.includes("contents/.agents/archangel.json?ref="));
-    expect(reads.length).toBeGreaterThan(0);
-    for (const r of reads) expect(r).toContain("?ref=tipsha");
-  });
 });

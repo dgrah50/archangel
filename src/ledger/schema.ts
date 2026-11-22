@@ -81,6 +81,14 @@ export class AttemptError extends Error {
   }
 }
 
+export interface TriageSummary {
+  vendor: string;
+  action: "guidance" | "escalate";
+  cause: string;
+  steps: string[];
+  reason: string | null;
+}
+
 export interface AttemptRecord {
   id: number;
   repo: string;

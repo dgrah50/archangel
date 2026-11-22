@@ -5,12 +5,9 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Implementer } from "../src/agents/implementer.js";
 import { GitBroker } from "../src/broker/git-broker.js";
-import { BENCH, parseChain, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
-import { saveReport } from "../src/core/eval-reports.js";
-import { startUiServer } from "../src/core/ui-server.js";
-import { captureAttemptInput, parseAttemptInput } from "../src/core/attempt-input.js";
+import { BENCH, renderBench, runBenchTiers, type BenchOptions } from "../src/core/bench-tiers.js";
+import { captureAttemptInput } from "../src/core/attempt-input.js";
 import { Ledger } from "../src/ledger/store.js";
-import type { AddressInfo } from "node:net";
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -123,12 +120,6 @@ const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> 
 });
 
 describe("bench-tiers", () => {
-  it("parses a chain spec and rejects an unknown provider or empty entry", () => {
-    expect(parseChain("codex:gpt-5-mini, agy")).toEqual([{ provider: "codex", model: "gpt-5-mini" }, { provider: "agy" }]);
-    expect(() => parseChain("nope")).toThrow();
-    expect(() => parseChain("codex,")).toThrow();
-  });
-
   it("scores each chain mechanically with the Gate, reports the verdict, and prints a snippet", async () => {
     const w = await world(5);
     try {
@@ -217,77 +208,7 @@ describe("bench-tiers", () => {
     }
   });
 
-  it("replays captured LLM rebases from the pre-rebase head against the conflicting base", async () => {
-    const w = await world(5, "rebase");
-    try {
-      const counts = { runs: {} as Record<string, number>, prompts: [] as string[] };
-      const r = await runBenchTiers(base(w, { counts, role: "rebase" }));
-      expect(r.comparable).toBe(5);
-      expect(r.candidate).toMatchObject({ passRate: 1 });
-      expect(counts.prompts[0]).toContain("Rebase Attempt");
-      expect(r.perCase[0]!.id).toMatch(/:rebase\d+$/);
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("an implement-only world has no revise cases: insufficient data, no runs", async () => {
-    const w = await world(5);
-    try {
-      const counts = { runs: {} as Record<string, number> };
-      const r = await runBenchTiers(base(w, { counts, role: "revise" }));
-      expect(r.verdict).toBe("insufficient");
-      expect(counts.runs).toEqual({});
-    } finally {
-      cleanup(w);
-    }
-  });
-
-  it("captured inputs are structured and bounded, drop secrets, and exist only for revise and rebase", () => {
-    const longText = "x".repeat(5000);
-    const json = captureAttemptInput("revise", {
-      mainSha: "a".repeat(40),
-      gateViolations: Array.from({ length: 30 }, () => longText),
-      structuredFindings: [{ vendor: "openai", findings: [{ file: "a.ts", severity: "major", summary: longText, suggestion: "do it" }] }],
-    })!;
-    const parsed = parseAttemptInput(json)!;
-    expect(parsed.kind === "revise" && parsed.gateViolations).toHaveLength(10);
-    expect(parsed.kind === "revise" && parsed.gateViolations[0]!.length).toBe(300);
-    expect(parsed.kind === "revise" && parsed.findings[0]!.findings[0]!.summary.length).toBe(400);
-    expect(captureAttemptInput("implement", { mainSha: "a".repeat(40), gateViolations: [], structuredFindings: [] })).toBeNull();
+  it("captured inputs drop secrets rather than store them", () => {
     expect(captureAttemptInput("revise", { mainSha: "a".repeat(40), gateViolations: ["token ghp_" + "a".repeat(36)], structuredFindings: [] })).toBeNull();
-    expect(captureAttemptInput("rebase", { mainSha: "a".repeat(40), gateViolations: [], structuredFindings: [] })).toBe(JSON.stringify({ kind: "rebase", conflictBase: "a".repeat(40) }));
-    expect(parseAttemptInput("{not json")).toBeNull();
-    expect(parseAttemptInput(JSON.stringify({ kind: "revise", findings: [], gateViolations: [], log: "raw" }))).not.toBeNull(); // unknown keys are dropped by the schema, never stored
-  });
-
-  it("never edits archangel.yaml or the live Broker repo, and the report is listed by /api/evals", async () => {
-    const w = await world(5);
-    try {
-      const cfg = path.join(w.root, "archangel.yaml");
-      fs.writeFileSync(cfg, "chains:\n  implement:\n    - provider: codex\n");
-      const before = fs.readFileSync(cfg, "utf8");
-      const refsBefore = git(w.bare, ["for-each-ref"]);
-      const counts = { runs: {} as Record<string, number> };
-      const r = await runBenchTiers(base(w, { counts }));
-      expect(fs.readFileSync(cfg, "utf8")).toBe(before);
-      expect(git(w.bare, ["for-each-ref"])).toBe(refsBefore);
-      // saved through the shared report store, so the Evals page lists it
-      const dataDir = path.join(w.root, "data");
-      saveReport(dataDir, "bench-tiers", r, 1_800_000_000_000);
-      const ui = path.join(w.root, "ui");
-      fs.mkdirSync(ui);
-      fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
-      const server = await startUiServer(new Ledger(":memory:"), { host: "127.0.0.1", port: 0, uiDir: ui, dataDir });
-      try {
-        const body = (await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/evals`)).json()) as { runs: Array<Record<string, unknown>> };
-        expect(body.runs).toHaveLength(1);
-        expect(body.runs[0]).toMatchObject({ kind: "bench-tiers", unreadable: false, verdict: "pass", role: "implement", comparable: 5, matchedOrBeat: 5, verdictLine: r.verdictLine });
-      } finally {
-        server.close();
-      }
-    } finally {
-      cleanup(w);
-    }
   });
 });

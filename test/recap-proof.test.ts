@@ -34,6 +34,16 @@ const thread: ThreadRecord = {
 const render = (gateProof?: Parameters<typeof renderRecapComment>[0]["gateProof"]) =>
   renderRecapComment({ thread, reviews: [], blockers: [], gateProof });
 
+describe("Recap machine triage section", () => {
+  it("labels triage as machine triage, not the owner, and omits it when triage never ran", () => {
+    const recap = (triage: Parameters<typeof renderRecapComment>[0]["triage"]) => renderRecapComment({ thread, reviews: [], blockers: [], triage });
+    const body = recap({ vendor: "openai", action: "guidance", cause: "scope_too_broad", steps: ["Narrow the change"], reason: null });
+    expect(body).toContain("#### Machine triage (factory), not the owner");
+    expect(body).toContain("Vendor: openai. Decision: guidance. Cause: scope_too_broad.");
+    expect(recap(null)).not.toContain("Machine triage");
+  });
+});
+
 describe("Recap proof unavailable vs not captured", () => {
   it("says why when the proof could not be read, and keeps 'not captured' for a Gate run without proof", () => {
     const body = renderRecapComment({ thread, reviews: [], blockers: [], gateProof: null, gateProofError: "GitHub 502\n`bad`" });

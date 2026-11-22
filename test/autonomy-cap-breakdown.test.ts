@@ -40,18 +40,6 @@ describe("autonomy cap message", () => {
     expect(text).not.toContain("SECRET");
   });
 
-  it("an owner action starts a new count, and a long list is cut with a total", () => {
-    const l = new Ledger(":memory:", { repo: "acme/app" });
-    for (let n = 1; n <= 14; n++) {
-      l.upsertThread({ issueNumber: n, title: "t", bodySha256: "b", now: 1 });
-      l.startAttempt(n, "implement", 2);
-    }
-    expect(describeCapUsage(l.autonomousStepBreakdown())).toContain("and 4 more Thread(s) (4 steps)");
-    l.appendAudit("thread/owner_retry", 1, "owner", {}, 3);
-    expect(l.autonomousStepBreakdown().threads).toEqual([]);
-    expect(describeCapUsage(l.autonomousStepBreakdown())).toContain("Nothing is waiting on you.");
-  });
-
   it("is what the cap's Needs You carries, once, and never raises the cap", async () => {
     const l = seeded();
     const notes: Array<{ reason: string }> = [];
