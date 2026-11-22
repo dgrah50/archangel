@@ -1706,6 +1706,7 @@ export class Reconciler {
       headSha: pr.headSha,
       squashSha,
       shadowOnly: false,
+      mainRequired: this.effectiveRequiredChecks.filter((n) => n !== "Gate"),
       now,
     });
     const mergedThread = this.applyMachineEvent(
@@ -1724,19 +1725,19 @@ export class Reconciler {
 
   /**
    * Post-merge main health watch (Opus Step 5 / R10 / S11 / S13):
-   * Uses `MainWatch`, configured non-Gate `requiredChecks`, tracks exact rerun IDs,
+   * Uses `MainWatch`, the non-Gate checks recorded on the merge row, tracks exact rerun IDs,
    * enforces watch timeout, and isolates each merge in its own try/catch.
    */
   private async reconcilePostMergeMain(mainSha: string, now: number): Promise<void> {
     const pending = this.ledger.listPendingPostMergeChecks();
     if (pending.length === 0) return;
 
-    const mainRequired = this.effectiveRequiredChecks.filter((n) => n !== "Gate");
-    if (mainRequired.length === 0) return;
-
+    // Each merge is watched against the checks recorded when it merged, so an invalid or edited
+    // workflow can never leave a red main unwatched.
     for (const m of pending) {
+      if (m.mainRequired.length === 0) continue;
       try {
-        await this.reconcileOnePostMerge(m, mainRequired, mainSha, now);
+        await this.reconcileOnePostMerge(m, m.mainRequired, mainSha, now);
       } catch (err) {
         this.ledger.appendAudit(
           "post_merge/error",

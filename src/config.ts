@@ -287,14 +287,8 @@ export function resolvePaths(
 }
 
 /**
- * Merges optional repo-side `.agents/archangel.json` (read strictly from `main` tip)
- * onto host policy. Repo config can ONLY tighten bounds or add extra checks/protected paths,
- * never loosen host limits (ADR-0004).
- */
-
-/**
- * Loads multi-project host config from `archangel.yaml` (if present or specified) merged with
- * secrets strictly from `env`, or falls back to single-repo env config.
+ * Loads multi-project host config from `archangel.yaml` merged with secrets strictly from `env`.
+ * A missing file is an error: there is no environment-only configuration.
  */
 export function loadProjectConfigs(opts: {
   configPath?: string;
@@ -304,102 +298,64 @@ export function loadProjectConfigs(opts: {
   const candidatePath = opts.configPath ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
   const resolvedConfig = path.resolve(candidatePath);
 
-  if (opts.configPath || fs.existsSync(resolvedConfig)) {
-    const rawText = fs.readFileSync(resolvedConfig, "utf8");
-    const yamlObj = parseYaml(rawText);
-    const host = HostYamlSchema.parse(yamlObj);
-
-    return host.projects.map((proj) => {
-      const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
-      return ConfigSchema.parse({
-        githubOwner,
-        githubRepo,
-        defaultBranch: proj.defaultBranch,
-        workspace: proj.workspace,
-        ownerUserId: host.ownerUserId,
-        githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
-        githubInstallationId:
-          proj.githubInstallationId ??
-          (env.ARCHANGEL_GITHUB_INSTALLATION_ID
-            ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
-            : undefined),
-        githubPrivateKeyPem: resolvePrivateKeyPem(env),
-        githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
-          ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
-          : undefined,
-        dataDir: host.dataDir,
-        pollIntervalMs: host.pollIntervalMs,
-        maxDailyUsd: host.maxDailyUsd,
-        dailyTimezone: host.dailyTimezone,
-        digestHour: host.digestHour,
-        maxConcurrentThreads: proj.maxConcurrentThreads,
-        maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
-        maxAutonomousStepsWithoutOwner: proj.maxAutonomousStepsWithoutOwner ?? host.maxAutonomousStepsWithoutOwner,
-        maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
-        maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
-        maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
-        implementMaxTurns: host.implementMaxTurns,
-        implementTimeoutMs: host.implementTimeoutMs,
-        setupTimeoutMs: host.setupTimeoutMs,
-        staleLeaseMs: host.staleLeaseMs,
-        gateStartGraceMs: host.gateStartGraceMs,
-        gateTimeoutMs: host.gateTimeoutMs,
-        reviewerOutageMaxMs: host.reviewerOutageMaxMs,
-        shadowMode: proj.shadowMode,
-        scouts: proj.scouts,
-        authMode: host.authMode,
-        implementerChain: host.implementerChain,
-        reviewerChain: host.reviewerChain,
-        claudeModel: host.claudeModel,
-        openaiReviewerModel: host.openaiReviewerModel,
-        geminiReviewerModel: host.geminiReviewerModel,
-        paseoHost: host.paseoHost ?? (env.PASEO_HOST || undefined),
-        paseoHome: host.paseoHome ?? (env.PASEO_HOME || undefined),
-        anthropicApiKey: env.ANTHROPIC_API_KEY,
-        openaiApiKey: env.OPENAI_API_KEY,
-        googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
-        telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
-        telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
-      });
-    });
+  if (!fs.existsSync(resolvedConfig)) {
+    throw new Error(`Host config not found: ${resolvedConfig} (copy archangel.example.yaml to archangel.yaml)`);
   }
+  const rawText = fs.readFileSync(resolvedConfig, "utf8");
+  const yamlObj = parseYaml(rawText);
+  const host = HostYamlSchema.parse(yamlObj);
 
-  return [loadConfigFromEnv(env)];
-}
-
-export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): ArchangelConfig {
-  const raw = {
-    githubOwner: env.ARCHANGEL_GITHUB_OWNER,
-    githubRepo: env.ARCHANGEL_GITHUB_REPO,
-    defaultBranch: env.ARCHANGEL_DEFAULT_BRANCH ?? "main",
-    ownerUserId: env.ARCHANGEL_OWNER_USER_ID ? Number(env.ARCHANGEL_OWNER_USER_ID) : undefined,
-    githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
-    githubInstallationId: env.ARCHANGEL_GITHUB_INSTALLATION_ID
-      ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
-      : undefined,
-    githubPrivateKeyPem: resolvePrivateKeyPem(env),
-    githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
-      ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
-      : undefined,
-    dataDir: env.ARCHANGEL_DATA_DIR ?? ".archangel",
-    maxConcurrentThreads: env.ARCHANGEL_MAX_CONCURRENT ? Number(env.ARCHANGEL_MAX_CONCURRENT) : 2,
-    pollIntervalMs: env.ARCHANGEL_POLL_MS ? Number(env.ARCHANGEL_POLL_MS) : 30_000,
-    maxDailyUsd: env.ARCHANGEL_MAX_DAILY_USD ? Number(env.ARCHANGEL_MAX_DAILY_USD) : 20,
-    dailyTimezone: env.ARCHANGEL_TIMEZONE ?? "America/New_York",
-    maxAutoMergesPerDay: env.ARCHANGEL_MAX_MERGES_PER_DAY
-      ? Number(env.ARCHANGEL_MAX_MERGES_PER_DAY)
-      : 3,
-    shadowMode: env.ARCHANGEL_SHADOW_MODE !== "false",
-    anthropicApiKey: env.ANTHROPIC_API_KEY,
-    openaiApiKey: env.OPENAI_API_KEY,
-    googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
-    claudeModel: env.ARCHANGEL_CLAUDE_MODEL ?? "claude-sonnet-4-6",
-    openaiReviewerModel: env.ARCHANGEL_OPENAI_MODEL ?? "gpt-5.4",
-    geminiReviewerModel: env.ARCHANGEL_GEMINI_MODEL ?? "gemini-2.5-pro",
-    paseoHost: env.PASEO_HOST || undefined,
-    paseoHome: env.PASEO_HOME || undefined,
-    telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
-    telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
-  };
-  return ConfigSchema.parse(raw);
+  return host.projects.map((proj) => {
+    const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
+    return ConfigSchema.parse({
+      githubOwner,
+      githubRepo,
+      defaultBranch: proj.defaultBranch,
+      workspace: proj.workspace,
+      ownerUserId: host.ownerUserId,
+      githubAppId: env.ARCHANGEL_GITHUB_APP_ID,
+      githubInstallationId:
+        proj.githubInstallationId ??
+        (env.ARCHANGEL_GITHUB_INSTALLATION_ID
+          ? Number(env.ARCHANGEL_GITHUB_INSTALLATION_ID)
+          : undefined),
+      githubPrivateKeyPem: resolvePrivateKeyPem(env),
+      githubAppBotUserId: env.ARCHANGEL_GITHUB_BOT_USER_ID
+        ? Number(env.ARCHANGEL_GITHUB_BOT_USER_ID)
+        : undefined,
+      dataDir: host.dataDir,
+      pollIntervalMs: host.pollIntervalMs,
+      maxDailyUsd: host.maxDailyUsd,
+      dailyTimezone: host.dailyTimezone,
+      digestHour: host.digestHour,
+      maxConcurrentThreads: proj.maxConcurrentThreads,
+      maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
+      maxAutonomousStepsWithoutOwner: proj.maxAutonomousStepsWithoutOwner ?? host.maxAutonomousStepsWithoutOwner,
+      maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
+      maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
+      maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
+      implementMaxTurns: host.implementMaxTurns,
+      implementTimeoutMs: host.implementTimeoutMs,
+      setupTimeoutMs: host.setupTimeoutMs,
+      staleLeaseMs: host.staleLeaseMs,
+      gateStartGraceMs: host.gateStartGraceMs,
+      gateTimeoutMs: host.gateTimeoutMs,
+      reviewerOutageMaxMs: host.reviewerOutageMaxMs,
+      shadowMode: proj.shadowMode,
+      scouts: proj.scouts,
+      authMode: host.authMode,
+      implementerChain: host.implementerChain,
+      reviewerChain: host.reviewerChain,
+      claudeModel: host.claudeModel,
+      openaiReviewerModel: host.openaiReviewerModel,
+      geminiReviewerModel: host.geminiReviewerModel,
+      paseoHost: host.paseoHost ?? (env.PASEO_HOST || undefined),
+      paseoHome: host.paseoHome ?? (env.PASEO_HOME || undefined),
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+      openaiApiKey: env.OPENAI_API_KEY,
+      googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
+      telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
+      telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
+    });
+  });
 }

@@ -166,7 +166,7 @@ export async function buildPlan(
           JSON.stringify({
             version: 1,
             gate: { testFileGlobs: globs, testCmd: "npm test", protectedPaths },
-            requiredChecks: ["Test"],
+            requiredChecks: ["Gate", "Test"],
           }),
           stack,
         ),

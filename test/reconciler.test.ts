@@ -15,6 +15,7 @@ import type { GitHubClient, GitHubIssue, GitHubPr } from "../src/github/client.j
 import { handoffThreadToPaseo, resumeThreadFromPaseo, type PaseoRunner } from "../src/handoff/paseo.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
+import { goWorkflowJson } from "./helpers/workflow.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -29,7 +30,6 @@ function makeTestConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConf
     githubInstallationId: 67890,
     githubPrivateKeyPem: "fake",
     shadowMode: true,
-    requiredChecks: ["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"],
     ...overrides,
   });
 }
@@ -45,7 +45,7 @@ function setupRepo(): { root: string; remoteBare: string } {
   fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
   fs.writeFileSync(path.join(seed, "app.go"), "package demo\n\nfunc Val() int { return 1 }\n");
   fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), "{}\n");
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson(["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"]));
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   git(root, ["clone", "--bare", seed, remoteBare]);

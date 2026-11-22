@@ -89,6 +89,10 @@ export class Ledger {
       if (!cols.some((c) => c.name === "retry_grants")) {
         this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
       }
+      const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
+      if (!mergeCols.some((c) => c.name === "main_required_json")) {
+        this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
+      }
       const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
       if (!spCols.some((c) => c.name === "file_sha256")) {
         this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
@@ -644,6 +648,8 @@ export class Ledger {
     headSha: string;
     squashSha?: string | null;
     shadowOnly: boolean;
+    /** Non-Gate required checks to watch on main after this merge. */
+    mainRequired?: string[];
     now?: number;
     repo?: string;
   }): MergeRecord {
@@ -667,8 +673,8 @@ export class Ledger {
 
     const info = this.db
       .prepare(
-        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, main_watch_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO merges (repo, issue_number, pr_number, head_sha, squash_sha, shadow_only, day_key, main_watch_json, main_required_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
@@ -679,6 +685,7 @@ export class Ledger {
         input.shadowOnly ? 1 : 0,
         dayKey,
         JSON.stringify(initialWatch),
+        JSON.stringify(input.mainRequired ?? []),
         now,
       );
     this.appendAudit(
@@ -1624,6 +1631,7 @@ function mapMerge(r: Record<string, unknown>): MergeRecord {
     disagreed: Number(r.disagreed) === 1,
     dayKey: String(r.day_key),
     mainWatch: MainWatchSchema.parse(JSON.parse(String(r.main_watch_json))),
+    mainRequired: JSON.parse(String(r.main_required_json ?? "[]")) as string[],
     createdAt: Number(r.created_at),
   };
 }

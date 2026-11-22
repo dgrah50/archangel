@@ -24,6 +24,7 @@ const thread: ThreadRecord = {
   implementerVendors: [],
   ownerReply: null,
   retryGrants: 0,
+  workflowSha256: null,
   createdAt: 0,
   updatedAt: 0,
 };

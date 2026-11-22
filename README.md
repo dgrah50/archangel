@@ -51,13 +51,13 @@ npm run build
 
 ## The workflow file
 
-Each repo's `.agents/archangel.json` (`"version": 1`, strict) is its whole workflow: Gate bounds and test commands, required checks, the review rubric, whether bugfixes may land on their own, and its Scouts. Values beyond the kernel's bounds (diff size, test-run counts) make the file invalid, and an invalid or missing file halts that repo (one Needs You) instead of falling back to anything. See `templates/go/.agents/archangel.json` or this repo's own file.
+Each repo's `.agents/archangel.json` (`"version": 1`, strict) is its whole workflow: Gate bounds and test commands, required checks, the review rubric, whether bugfixes may land on their own, and its Scouts. Values beyond the kernel's bounds (diff size, test-run counts) make the file invalid, and `requiredChecks` must name `Gate` and at least one other CI check; an invalid or missing file halts that repo (one Needs You) instead of falling back to anything. See `templates/go/.agents/archangel.json` or this repo's own file.
 
 ```json
 {
   "version": 1,
   "gate": { "testFileGlobs": ["**/*_test.go"], "testCmd": "go test ./...", "protectedPaths": ["go.mod"] },
-  "requiredChecks": ["Test"],
+  "requiredChecks": ["Gate", "Test"],
   "landing": { "bugfix": "owner" },
   "scouts": [{ "name": "bug-hunt", "schedule": "daily", "skills": ["general/bug-hunt", "go/*"], "promotion": "owner" }]
 }

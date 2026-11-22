@@ -38,7 +38,7 @@ export const KERNEL = {
   minHeadTestRuns: GATE_DEFAULTS.headTestRuns,
   universalProtectedPrefixes: UNIVERSAL_PROTECTED_PREFIXES,
   universalProtectedExact: [...UNIVERSAL_PROTECTED_EXACT],
-  implicitRequiredCheck: "Gate",
+  gateCheck: "Gate",
   reviewQuorum: 2,
   maxScouts: 5,
 } as const;
@@ -76,13 +76,17 @@ export const WorkflowV2 = z
         protectedPaths: z.array(Glob).default([]),
       })
       .strict(),
-    requiredChecks: z.array(z.string().min(1)).default([]),
+    /** Must name `Gate` and at least one other CI check, or landing could never see main green. */
+    requiredChecks: z.array(z.string().min(1)),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
     landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
   })
   .strict()
   .superRefine((wf, ctx) => {
+    if (!wf.requiredChecks.includes(KERNEL.gateCheck) || !wf.requiredChecks.some((c) => c !== KERNEL.gateCheck)) {
+      ctx.addIssue({ code: "custom", path: ["requiredChecks"], message: `requiredChecks must include '${KERNEL.gateCheck}' and at least one other CI check` });
+    }
     if (wf.gate.maxTotalLines < wf.gate.maxNonTestLines) {
       ctx.addIssue({ code: "custom", path: ["gate", "maxTotalLines"], message: "maxTotalLines must be >= maxNonTestLines" });
     }
@@ -236,7 +240,7 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     status: "ok",
     fileSha256,
     gate,
-    requiredChecks: [...new Set([KERNEL.implicitRequiredCheck, ...wf.requiredChecks])],
+    requiredChecks: [...new Set(wf.requiredChecks)],
     rubric: wf.review.rubric,
     landingBugfix,
     scouts,

@@ -7,6 +7,7 @@ import {
 const baseFile = () => ({
   version: 1,
   gate: { testFileGlobs: ["test/**/*.test.ts"], testCmd: "npm test" },
+  requiredChecks: ["Gate", "Test"],
   scouts: [{ name: "bug-hunt", skills: ["general/bug-hunt"] }],
 });
 const host = (o: Partial<HostWorkflowInput> = {}): HostWorkflowInput => ({
@@ -31,7 +32,10 @@ describe("kernel bounds", () => {
     ["empty testFileGlobs", withGate({ testFileGlobs: [] }), "gate.testFileGlobs"],
     ["too many scouts", { ...baseFile(), scouts: Array.from({ length: KERNEL.maxScouts + 1 }, (_, i) => ({ name: `s${i}` })) }, "scouts"],
     ["duplicate scout", { ...baseFile(), scouts: [{ name: "x" }, { name: "x" }] }, "scouts.1.name"],
-    ["v1 shape", { maxFiles: 3 }, "version"],
+    ["pre-version-1 shape", { maxFiles: 3 }, "version"],
+    ["requiredChecks without Gate", { ...baseFile(), requiredChecks: ["Test"] }, "requiredChecks"],
+    ["requiredChecks Gate only (landing could never see main green)", { ...baseFile(), requiredChecks: ["Gate"] }, "requiredChecks"],
+    ["requiredChecks missing", { ...baseFile(), requiredChecks: undefined }, "requiredChecks"],
     ["unknown key", { ...baseFile(), labels: {} }, "labels"],
     ["bad skill ref", { ...baseFile(), scouts: [{ name: "x", skills: ["../x"] }] }, "scouts.0.skills"],
   ])("rejects %s", (_n, file, where) => {
@@ -45,7 +49,7 @@ describe("kernel bounds", () => {
     expect(ok.status).toBe("ok");
     if (ok.status === "ok") {
       expect(ok.gate).toMatchObject({ maxNonTestLines: 150, maxTotalLines: 300, maxFiles: 5, baseTestRuns: 3, headTestRuns: 2 });
-      expect(ok.requiredChecks).toEqual(["Gate"]);
+      expect(ok.requiredChecks).toEqual(["Gate", "Test"]);
     }
     expect(resolveWorkflow(host(), { ...repo(baseFile()), fileRaw: "{nope" }).status).toBe("invalid");
     expect(resolveWorkflow(host(), repo(null)).status).toBe("missing");
@@ -93,7 +97,7 @@ describe("classifyChange", () => {
   const prev = parse({
     ...baseFile(),
     gate: { ...baseFile().gate, maxFiles: 3, baseTestRuns: 4, protectedPaths: ["a/**"] },
-    requiredChecks: ["Test"],
+    requiredChecks: ["Gate", "Test"],
     scouts: [{ name: "bug-hunt" }],
   });
   const edit = (f: (o: any) => void) => { const o = structuredClone(prev) as any; f(o); return parse(o); };
@@ -111,7 +115,7 @@ describe("classifyChange", () => {
     ["protected path added", (o: any) => { o.gate.protectedPaths.push("b/**"); }, "gate.protectedPaths", "tighten"],
     ["protected path removed", (o: any) => { o.gate.protectedPaths = []; }, "gate.protectedPaths", "loosen"],
     ["required check added", (o: any) => { o.requiredChecks.push("Lint"); }, "requiredChecks", "tighten"],
-    ["required check removed", (o: any) => { o.requiredChecks = []; }, "requiredChecks", "loosen"],
+    ["required check removed", (o: any) => { o.requiredChecks = ["Gate", "Other"]; }, "requiredChecks", "loosen"],
     ["rubric edited", (o: any) => { o.review = { rubric: "x" }; }, "review.rubric", "changed"],
     ["landing autonomous", (o: any) => { o.landing = { bugfix: "autonomous" }; }, "landing.bugfix", "loosen"],
     ["scout to auto", (o: any) => { o.scouts[0].promotion = "auto"; }, "scouts.bug-hunt.promotion", "loosen"],
@@ -137,7 +141,7 @@ describe("trustHash", () => {
 
   it("is stable across unrelated edits, key order and defaults", () => {
     const h = hashOf(baseFile());
-    const other = { ...baseFile(), gate: { ...baseFile().gate, maxFiles: 2 }, requiredChecks: ["X"], review: { rubric: "r" },
+    const other = { ...baseFile(), gate: { ...baseFile().gate, maxFiles: 2 }, requiredChecks: ["Gate", "X"], review: { rubric: "r" },
       scouts: [{ name: "other" }, ...baseFile().scouts] };
     expect(trustHash(parse(other).scouts[1]!, "p")).toBe(h);
     expect(hashOf({ ...baseFile(), scouts: [{ skills: ["general/bug-hunt"], name: "bug-hunt", schedule: "manual", promotion: "owner" }] })).toBe(h);

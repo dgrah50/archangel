@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WorkflowV2 } from "../src/core/workflow.js";
 import { buildPlan, detectStack, onboard, type OnboardRunner } from "../src/core/onboard.js";
 
 const SHA = "a".repeat(40);
@@ -46,26 +47,32 @@ describe("buildPlan", () => {
     expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
     expect(plan.files[0]!.content).toContain(`ARCHANGEL_GATE_SHA: ${SHA}`);
     expect(plan.files[1]!.content).toContain("go test");
-    expect(plan.files[2]!.content).toContain("skills: [general/bug-hunt, general/input-validation, go/*]");
+    const wf = JSON.parse(plan.files[1]!.content);
+    expect(wf).toMatchObject({ version: 1, requiredChecks: ["Gate", "Test"] });
+    expect(wf.scouts).toEqual([{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: ["general/bug-hunt", "general/input-validation", "go/*"] }]);
+    expect(WorkflowV2.safeParse(wf).success).toBe(true);
+    expect(plan.files[2]!.content.startsWith("---")).toBe(false); // body-only prompt, no frontmatter
     expect(plan.labelsToCreate).not.toContain("needs-you");
     expect(plan.labelsToCreate).toContain("ready-for-agent");
   });
 
-  it("adds only the missing files", async () => {
+  it("adds only the missing files, and no Scout prompt without a new workflow file to declare it", async () => {
     const { runner } = fake({ tree: ["go.mod", ".agents/archangel.json", ".github/workflows/archangel-gate.yml"] });
     const plan = await buildPlan(runner, "o/r");
-    expect(plan.files.map((f) => f.path)).toEqual([".agents/scouts/bug-hunt.md"]);
+    expect(plan.files).toEqual([]);
     expect(plan.skipped).toHaveLength(2);
+    expect(plan.notes.join(" ")).toContain("add a Scout entry");
   });
 
   it("derives the node starter from existing tests and package.json scripts.test", async () => {
     const { runner } = fake({ tree: ["package.json", "package-lock.json", "src/a.test.ts"], pkg: { scripts: { test: "vitest run" } } });
     const plan = await buildPlan(runner, "o/r");
     const policy = JSON.parse(plan.files.find((f) => f.path === ".agents/archangel.json")!.content);
-    expect(policy.testFileGlobs).toEqual(["**/*.test.ts"]);
-    expect(policy.testCmd).toBe("npm test");
-    expect(policy.extraProtectedPaths).toEqual(["package.json", "package-lock.json"]);
-    expect(plan.files.find((f) => f.path === ".agents/scouts/bug-hunt.md")!.content).toContain("typescript/*");
+    expect(WorkflowV2.safeParse(policy).success).toBe(true);
+    expect(policy.gate.testFileGlobs).toEqual(["**/*.test.ts"]);
+    expect(policy.gate.testCmd).toBe("npm test");
+    expect(policy.gate.protectedPaths).toEqual(["package.json", "package-lock.json"]);
+    expect(policy.scouts[0].skills).toContain("typescript/*");
   });
 
   it("does not guess a node policy without scripts.test, and still plans the rest", async () => {
@@ -81,7 +88,7 @@ describe("buildPlan", () => {
     const plan = await buildPlan(runner, "o/r");
     expect(plan.stack).toBeNull();
     expect(plan.notes.join(" ")).toContain("by hand");
-    expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".agents/scouts/bug-hunt.md"]);
+    expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
   });
 
   it("refuses a dirty Archangel checkout or a HEAD that is not on origin/main", async () => {

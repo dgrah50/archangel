@@ -84,6 +84,8 @@ export interface MergeRecord {
   disagreed: boolean;
   dayKey: string;
   mainWatch: MainWatch;
+  /** Non-Gate checks that must be green on main after this merge, recorded at merge time (never re-read from policy). */
+  mainRequired: string[];
   createdAt: number;
 }
 
@@ -209,6 +211,7 @@ CREATE TABLE IF NOT EXISTS merges (
   disagreed INTEGER NOT NULL DEFAULT 0,
   day_key TEXT NOT NULL,
   main_watch_json TEXT NOT NULL,
+  main_required_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
