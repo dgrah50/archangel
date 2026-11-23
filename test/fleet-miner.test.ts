@@ -70,7 +70,7 @@ describe("fleet PR-Miner", () => {
     } as unknown as GitHubClient;
     const config = ConfigSchema.parse({
       githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
-      githubPrivateKeyPem: "fake", githubAppBotUserId: 777, authMode: "subscription",
+      githubPrivateKeyPem: "fake", githubAppBotUserId: 777,
       scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
     });
     const prompts: string[] = [];

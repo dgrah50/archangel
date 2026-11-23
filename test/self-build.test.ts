@@ -62,7 +62,7 @@ describe("archangel pitch promote --build", () => {
 
       const url = await selfBuild(runner, ledger, {
         repo: "acme/app", issue: 7, slice: "1", yes: true, labels: { agentPitch: "agent-pitch" },
-        cfg: { implementMaxTurns: 5, implementTimeoutMs: 60_000, setupTimeoutMs: 60_000, maxDailyUsd: 5 },
+        cfg: { implementTimeoutMs: 60_000, setupTimeoutMs: 60_000 },
         implementer, confirm: async () => false, log: () => {},
       });
 

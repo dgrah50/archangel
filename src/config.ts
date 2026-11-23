@@ -189,8 +189,6 @@ export function writerVendors(chains: Pick<Chains, WriterRole>): ReviewerVendor[
   return [...new Set(WRITER_ROLES.flatMap((r) => chains[r].map((e) => providerToVendor(e.provider))))];
 }
 
-export const AuthModeSchema = z.enum(["subscription", "api"]);
-
 export function providerToVendor(provider: CliProvider): ReviewerVendor {
   if (provider === "codex") return "openai";
   if (provider === "agy") return "gemini";
@@ -263,7 +261,6 @@ const AttemptLimitFields = {
 
 /** Host-level execution timeouts and liveness windows. */
 const TimeoutFields = {
-  implementMaxTurns: z.number().int().min(1).default(40),
   implementTimeoutMs: z.number().int().min(30_000).default(20 * 60_000),
   setupTimeoutMs: z.number().int().min(5_000).default(5 * 60_000),
   staleLeaseMs: z.number().int().min(10_000).default(3 * 60_000),
@@ -376,7 +373,6 @@ export const ConfigSchema = z.object({
   // Data paths (separate DB files to prevent SQLITE_BUSY — ADR-0001)
   dataDir: z.string().min(1).default(".archangel"),
   ledgerDbPath: z.string().min(1).optional(),
-  mastraDbPath: z.string().min(1).optional(),
   brokerBareRepoPath: z.string().min(1).optional(),
   clonesDir: z.string().min(1).optional(),
 
@@ -426,20 +422,13 @@ export const ConfigSchema = z.object({
     maxAutoPromotionsPerDay: 1,
   }),
 
-  // Models, auth mode (native CLI subscriptions vs metered API keys), & optional notifications/handoff
-  authMode: AuthModeSchema.default("api"),
+  // Provider chains and optional notifications/handoff
   chains: ChainsSchema.default(ChainsSchema.parse({})),
   accounts: z.array(AccountSchema).default(DEFAULT_ACCOUNTS),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
     .default([{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }]),
-  anthropicApiKey: z.string().min(1).optional(),
-  openaiApiKey: z.string().min(1).optional(),
-  googleApiKey: z.string().min(1).optional(),
-  claudeModel: z.string().default("claude-sonnet-4-6"),
-  openaiReviewerModel: z.string().default("gpt-5.4"),
-  geminiReviewerModel: z.string().default("gemini-2.5-pro"),
 
   paseoHost: z.string().optional(),
   paseoHome: z.string().optional(),
@@ -514,16 +503,12 @@ export const HostYamlSchema = z.object({
   production: ProductionConfigSchema.optional(),
   ...AttemptLimitFields,
   ...TimeoutFields,
-  authMode: AuthModeSchema.default("subscription"),
   chains: ChainsSchema.default(ChainsSchema.parse({})),
   accounts: z.array(AccountSchema).default(DEFAULT_ACCOUNTS),
   reviewerChain: z
     .array(ProviderEntrySchema)
     .min(2)
     .default([{ provider: "agy" }, { provider: "claude" }, { provider: "codex" }]),
-  claudeModel: z.string().default("claude-sonnet-4-6"),
-  openaiReviewerModel: z.string().default("gpt-5.4"),
-  geminiReviewerModel: z.string().default("gemini-2.5-pro"),
   paseoHost: z.string().optional(),
   paseoHome: z.string().optional(),
   projects: z.array(HostProjectYamlSchema).min(1),
@@ -551,12 +536,9 @@ export const HostYamlSchema = z.object({
  * Resolves the 2 independent reviewer vendors required for a project (ADR-0003: implementer != reviewer).
  */
 export function resolveRequiredReviewers(
-  cfg: Pick<ArchangelConfig, "authMode" | "chains" | "reviewerChain">,
+  cfg: Pick<ArchangelConfig, "chains" | "reviewerChain">,
   threadImplementerVendors: ReviewerVendor[] = [],
 ): ReviewerVendor[] {
-  if (cfg.authMode === "api") {
-    return ["openai", "gemini"];
-  }
   // When actual implementer vendor(s) are known for this thread, block ONLY those vendors
   // (so a provider skipped via cooldown can still review cleanly — Opus B1).
   const blocked = new Set<ReviewerVendor>(
@@ -588,7 +570,6 @@ function resolvePrivateKeyPem(env: NodeJS.ProcessEnv): string | undefined {
 export interface ResolvedPaths {
   dataDir: string;
   ledgerDbPath: string;
-  mastraDbPath: string;
   brokerBareRepoPath: string;
   clonesDir: string;
   transcriptsDir: string;
@@ -597,7 +578,7 @@ export interface ResolvedPaths {
 export function resolvePaths(
   cfg: Pick<
     ArchangelConfig,
-    "dataDir" | "ledgerDbPath" | "mastraDbPath" | "brokerBareRepoPath" | "clonesDir"
+    "dataDir" | "ledgerDbPath" | "brokerBareRepoPath" | "clonesDir"
   > & { githubOwner?: string; githubRepo?: string },
 ): ResolvedPaths {
   const dataDir = resolveUserPath(cfg.dataDir);
@@ -607,7 +588,6 @@ export function resolvePaths(
   return {
     dataDir,
     ledgerDbPath: cfg.ledgerDbPath ? resolveUserPath(cfg.ledgerDbPath) : path.join(dataDir, "ledger.db"),
-    mastraDbPath: cfg.mastraDbPath ? resolveUserPath(cfg.mastraDbPath) : path.join(dataDir, "mastra.db"),
     brokerBareRepoPath: cfg.brokerBareRepoPath
       ? resolveUserPath(cfg.brokerBareRepoPath)
       : path.join(projectDir, "broker.git"),
@@ -682,7 +662,6 @@ export function loadProjectConfigs(opts: {
       maxImplementAttemptsPerThread: proj.maxImplementAttemptsPerThread ?? host.maxImplementAttemptsPerThread,
       maxRevisionsPerThread: proj.maxRevisionsPerThread ?? host.maxRevisionsPerThread,
       maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
-      implementMaxTurns: host.implementMaxTurns,
       implementTimeoutMs: host.implementTimeoutMs,
       setupTimeoutMs: host.setupTimeoutMs,
       staleLeaseMs: host.staleLeaseMs,
@@ -697,18 +676,11 @@ export function loadProjectConfigs(opts: {
       research: host.research,
       production: host.production,
       scouts: proj.scouts,
-      authMode: host.authMode,
       chains: host.chains,
       accounts: host.accounts,
       reviewerChain: host.reviewerChain,
-      claudeModel: host.claudeModel,
-      openaiReviewerModel: host.openaiReviewerModel,
-      geminiReviewerModel: host.geminiReviewerModel,
       paseoHost: host.paseoHost ?? (env.PASEO_HOST || undefined),
       paseoHome: host.paseoHome ?? (env.PASEO_HOME || undefined),
-      anthropicApiKey: env.ANTHROPIC_API_KEY,
-      openaiApiKey: env.OPENAI_API_KEY,
-      googleApiKey: env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY,
       telegramBotToken: env.ARCHANGEL_TELEGRAM_BOT_TOKEN || undefined,
       telegramChatId: env.ARCHANGEL_TELEGRAM_CHAT_ID || undefined,
     }), resolvedConfig);

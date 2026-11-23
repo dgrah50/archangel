@@ -75,9 +75,8 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
         workspaces: localAt(repo),
         prompt: "Fix SSH_CONNECTION",
         abortController: new AbortController(),
-        maxTurns: 10,
         timeoutMs: 10_000,
-        maxBudgetUsd: 5, role: "implement" as const,
+        role: "implement" as const,
       });
 
       expect(res.aborted).toBe(false);
@@ -96,9 +95,8 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
         workspaces: localAt(repo),
         prompt: "Fix next bug",
         abortController: new AbortController(),
-        maxTurns: 10,
         timeoutMs: 10_000,
-        maxBudgetUsd: 5, role: "implement" as const,
+        role: "implement" as const,
       });
       expect(seenPrompts.map((p) => p.provider)).toEqual(["agy"]);
       expect(res2.providersUsed).toEqual(["gemini"]);
@@ -125,9 +123,8 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
           workspaces: localAt(repo),
           prompt: "Fix bug",
           abortController: new AbortController(),
-          maxTurns: 10,
           timeoutMs: 10_000,
-          maxBudgetUsd: 5, role: "implement" as const,
+          role: "implement" as const,
         }),
       ).rejects.toThrow(/test failed/);
     } finally {
@@ -150,7 +147,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       const make = (invoker: ConstructorParameters<typeof SubscriptionImplementer>[0]["invoker"]) =>
         new SubscriptionImplementer({ chains: { implement: chain, revise: chain, rebase: chain }, transcriptsDir: path.join(tmp, "t"), networkRetryWaitMs: 0, invoker });
       const run = (impl: SubscriptionImplementer) =>
-        impl.run({ issueNumber: 1, workspaces: localAt(repo), prompt: "Fix", abortController: new AbortController(), maxTurns: 10, timeoutMs: 10_000, maxBudgetUsd: 5, role: "implement" as const });
+        impl.run({ issueNumber: 1, workspaces: localAt(repo), prompt: "Fix", abortController: new AbortController(), timeoutMs: 10_000, role: "implement" as const });
 
       let calls = 0;
       const dropped = make(async () => {
@@ -189,7 +186,7 @@ describe("inner CLI sandbox by placement", () => {
         transcriptsDir: fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sub-test-")),
       });
       await impl
-        .run({ issueNumber: 1, workspaces: { local: handle, remote: handle } as never, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role: "rebase" })
+        .run({ issueNumber: 1, workspaces: { local: handle, remote: handle } as never, prompt: "p", abortController: new AbortController(), timeoutMs: 1000, role: "rebase" })
         .catch(() => undefined);
     };
     await run(false, "codex");

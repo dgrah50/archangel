@@ -140,7 +140,6 @@ function Independence({ f }: { f: HostForm }) {
       </Box>
     );
   }
-  if (f.authMode === "api") return <Text textStyle="body13" color="fg.muted" ml={{ md: "68px" }}>In api mode the reviewers are fixed, so there is nothing to check here.</Text>;
   return (
     <Flex direction="column" gap="0.5" ml={{ md: "68px" }}>
       {ind.writers.map((w) => {
@@ -162,17 +161,6 @@ function Models({ f, b, onOp }: { f: HostForm; b: HostForm; onOp: (op: Op) => vo
       {WRITER_CHAINS.map((r) => <ChainRow key={r} label={r === "implement" ? "Build" : `${r[0]!.toUpperCase()}${r.slice(1)}`} chain={f.chains[r]} base={b.chains[r]} path={["chains", r]} onOp={onOp} />)}
       <ChainRow label="Review" chain={f.reviewerChain} base={b.reviewerChain} path={["reviewerChain"]} onOp={onOp} backup />
       <Independence f={f} />
-      <Flex align="center" gap="3" wrap="wrap">
-        <Text textStyle="body13" fontSize="14px" color="fg.muted" w="56px" flexShrink={0}>Sign-in</Text>
-        <NativeSelect.Root size="sm" w="12rem">
-          <NativeSelect.Field aria-label="Auth mode" value={f.authMode} {...(f.authMode !== b.authMode ? unsentOutline : {})} onChange={(e) => onOp((t) => editField(t, ["authMode"], e.target.value))}>
-            <option value="subscription">subscription</option>
-            <option value="api">api</option>
-          </NativeSelect.Field>
-          <NativeSelect.Indicator />
-        </NativeSelect.Root>
-        <Text textStyle="meta" color="fg.subtle">Subscription uses each CLI's own login. Api uses metered keys.</Text>
-      </Flex>
     </Block>
   );
 }

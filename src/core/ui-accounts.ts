@@ -54,7 +54,7 @@ export function buildAccountsState(ledger: Ledger, configPath: string | undefine
       roles: chains.filter(([, chain]) => chain.some((e) => accountsFor(c.accounts, e).some((x) => x.id === a.id))).map(([role]) => role),
     };
   });
-  const warnings = c.authMode === "subscription" && c.accounts.filter((a) => a.provider === "agy").length > 1 ? [AGY_HOME_WARNING] : [];
+  const warnings = c.accounts.filter((a) => a.provider === "agy").length > 1 ? [AGY_HOME_WARNING] : [];
   const implicit = c.accounts.length === DEFAULT_ACCOUNTS.length && c.accounts.every((a, i) => a.id === DEFAULT_ACCOUNTS[i]!.id && !a.home && a.maxAttemptsPerDay === undefined);
   return { state: "ok", generatedAt: now, implicit, accounts, warnings };
 }

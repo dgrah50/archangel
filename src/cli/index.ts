@@ -12,8 +12,7 @@ import { resolveDataDir, resolveHostSettings, resolveUiSettings } from "./data-d
 import { INIT_NEXT_STEPS, runInit } from "./init.js";
 import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, resolveUserPath, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
-import { ClaudeSdkImplementer } from "../agents/implementer.js";
-import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
+import type { ReviewerSuite } from "../agents/reviewers.js";
 import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
 import type { ReviewPromptBuilders } from "../agents/reviewers.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
@@ -55,7 +54,6 @@ import { execFileGroup } from "../core/spawn-group.js";
 import { promotePitch } from "../core/pitch-promote.js";
 import { selfBuild } from "../core/self-build.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
-import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
 import { correctionCategories } from "../core/corrections.js";
 import { describeEscalation, formatDecisionClass } from "../core/escalations.js";
@@ -70,21 +68,13 @@ import { emit, setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS }
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
 
-function makeReviewerSuite(cfg: ArchangelConfig, mastraDbPath: string, ledger: Ledger): ReviewerSuite {
-  return cfg.authMode === "subscription"
-    ? new SubscriptionReviewerSuite({
-        chain: cfg.reviewerChain,
-        accounts: cfg.accounts,
-        accountState: ledger.accountState(cfg.accounts),
-        defaultExcludeVendors: primaryWriterVendors(cfg.chains),
-      })
-    : new MastraReviewerSuite({
-        openaiApiKey: cfg.openaiApiKey!,
-        googleApiKey: cfg.googleApiKey!,
-        openaiModel: cfg.openaiReviewerModel,
-        geminiModel: cfg.geminiReviewerModel,
-        mastraDbPath,
-      });
+function makeReviewerSuite(cfg: ArchangelConfig, ledger: Ledger): ReviewerSuite {
+  return new SubscriptionReviewerSuite({
+    chain: cfg.reviewerChain,
+    accounts: cfg.accounts,
+    accountState: ledger.accountState(cfg.accounts),
+    defaultExcludeVendors: primaryWriterVendors(cfg.chains),
+  });
 }
 
 const program = new Command();
@@ -147,15 +137,6 @@ program
       consoleOutput: true,
     });
 
-    if (
-      first.authMode === "api" &&
-      (!first.anthropicApiKey || !first.openaiApiKey || !first.googleApiKey)
-    ) {
-      throw new Error(
-        "authMode=api requires ANTHROPIC_API_KEY, OPENAI_API_KEY, and GOOGLE_GENERATIVE_AI_API_KEY (or set authMode: subscription in archangel.yaml).",
-      );
-    }
-
     const rootLedger = new Ledger(sharedPaths.ledgerDbPath, { timeZone: first.dailyTimezone });
 
     // Single daemon lock prevents `start` and `start --once` from colliding or sweeping live work (Opus R9 / Codex #6).
@@ -175,7 +156,7 @@ program
       void cleanup("lock_lost").finally(() => process.exit(1));
     }, 30_000);
 
-    const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath, rootLedger);
+    const reviewers = makeReviewerSuite(first, rootLedger);
     const notifier = new TelegramNotifier({
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
@@ -185,12 +166,8 @@ program
     const chain = (entries: Array<{ provider: string }>) => entries.map((e) => e.provider).join("->");
     logger.info(
       "daemon/started",
-      `Started (pid ${process.pid}) on ${projects.map((p) => `${p.githubOwner}/${p.githubRepo}`).join(", ")}; ${
-        first.authMode === "subscription"
-          ? `subscription CLIs (impl=${chain(first.chains.implement)}, revise=${chain(first.chains.revise)}, rebase=${chain(first.chains.rebase)}, scout=${chain(first.chains.scout)}, reviewers=${chain(first.reviewerChain)})`
-          : "metered API keys"
-      }`,
-      { data: { pid: process.pid, repos: projects.map((p) => `${p.githubOwner}/${p.githubRepo}`), authMode: first.authMode, once: Boolean(opts.once) } },
+      `Started (pid ${process.pid}) on ${projects.map((p) => `${p.githubOwner}/${p.githubRepo}`).join(", ")}; subscription CLIs (impl=${chain(first.chains.implement)}, revise=${chain(first.chains.revise)}, rebase=${chain(first.chains.rebase)}, scout=${chain(first.chains.scout)}, reviewers=${chain(first.reviewerChain)})`,
+      { data: { pid: process.pid, repos: projects.map((p) => `${p.githubOwner}/${p.githubRepo}`), once: Boolean(opts.once) } },
     );
 
     /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
@@ -198,8 +175,8 @@ program
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
     const sailProviders: SailProvider[] = [];
     // One broker per dedicated login: it alone refreshes that login and puts only the access token in a Sail secret.
-    const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
-    const agyBrokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.agyBrokerHome ? [resolveUserPath(cfg.compute.sail.agyBrokerHome)] : [])));
+    const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
+    const agyBrokerHomes = new Set(projects.flatMap((cfg) => (cfg.compute.provider === "sail" && cfg.compute.sail?.agyBrokerHome ? [resolveUserPath(cfg.compute.sail.agyBrokerHome)] : [])));
     const brokers = [...[...brokerHomes].map((home) => codexBrokerAdapter(home)), ...[...agyBrokerHomes].map((home) => agyBrokerAdapter(home))].map(
       (adapter) => new TokenBroker(adapter, sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => logger.error("broker/token", m)),
     );
@@ -230,27 +207,18 @@ program
           ? createSailProvider({ sail: cfg.compute.sail, broker, dataDir: paths.dataDir, repoSlug })
           : undefined;
       if (scoutCompute) sailProviders.push(scoutCompute);
-      const pemPath = process.env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH?.trim();
-      const implementer =
-        cfg.authMode === "subscription"
-          ? new SubscriptionImplementer({
-              chains: cfg.chains,
-              accounts: cfg.accounts,
-              remoteProviders: remoteProviders(cfg.compute),
-              codexBrokerPreflight: cfg.compute.sail?.codexBrokerHome
-                ? (attemptMs) => ({ accountId: brokerPreflight(sharedPaths.dataDir, CODEX_BROKER_ID, attemptMs).accountId! })
-                : undefined,
-              agyBrokerPreflight: cfg.compute.sail?.agyBrokerHome ? (attemptMs) => void brokerPreflight(sharedPaths.dataDir, AGY_BROKER_ID, attemptMs) : undefined,
-              transcriptsDir: paths.transcriptsDir,
-              accountState,
-              logger,
-            })
-          : new ClaudeSdkImplementer({
-              apiKey: first.anthropicApiKey!,
-              model: cfg.claudeModel,
-              transcriptsDir: paths.transcriptsDir,
-              denyReadPaths: [paths.dataDir, ...(pemPath ? [pemPath] : [])],
-            });
+      const implementer = new SubscriptionImplementer({
+        chains: cfg.chains,
+        accounts: cfg.accounts,
+        remoteProviders: remoteProviders(cfg.compute),
+        codexBrokerPreflight: cfg.compute.sail?.codexBrokerHome
+          ? (attemptMs) => ({ accountId: brokerPreflight(sharedPaths.dataDir, CODEX_BROKER_ID, attemptMs).accountId! })
+          : undefined,
+        agyBrokerPreflight: cfg.compute.sail?.agyBrokerHome ? (attemptMs) => void brokerPreflight(sharedPaths.dataDir, AGY_BROKER_ID, attemptMs) : undefined,
+        transcriptsDir: paths.transcriptsDir,
+        accountState,
+        logger,
+      });
       const rec = new Reconciler({
         config: cfg,
         ledger: rootLedger.forRepo(repoSlug),
@@ -264,36 +232,32 @@ program
         scoutCompute,
         remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
         previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [cfg.ui.port] }),
-        // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
-        correctionDrafts:
-          cfg.authMode === "subscription"
-            ? {
-                invoker: defaultScoutCliInvoker,
-                cwd: ARCHANGEL_ROOT,
-                skills: listAllSkills(),
-                evaluate: async (patchFile, heldout) => {
-                  const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
-                  try {
-                    return await runEval({
-                      ledger: rootLedger,
-                      sources: evalSources(rootLedger, sharedPaths.dataDir),
-                      suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
-                      baseline: baseline.prompts,
-                      candidate,
-                      heldout,
-                    });
-                  } finally {
-                    candidate.cleanup();
-                  }
-                },
-                openPr: (draft, body, ctx) => {
-                  const client = appClients.get(ARCHANGEL_REPO);
-                  if (!client) throw new Error(`${ARCHANGEL_REPO} is not a watched project, so there is no App client to open the draft PR with`);
-                  return openDraftPr(client, draft, body, ctx);
-                },
-                prStatus: (url) => ghPrStatus(execRunner, url),
-              }
-            : undefined,
+        correctionDrafts: {
+          invoker: defaultScoutCliInvoker,
+          cwd: ARCHANGEL_ROOT,
+          skills: listAllSkills(),
+          evaluate: async (patchFile, heldout) => {
+            const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+            try {
+              return await runEval({
+                ledger: rootLedger,
+                sources: evalSources(rootLedger, sharedPaths.dataDir),
+                suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
+                baseline: baseline.prompts,
+                candidate,
+                heldout,
+              });
+            } finally {
+              candidate.cleanup();
+            }
+          },
+          openPr: (draft, body, ctx) => {
+            const client = appClients.get(ARCHANGEL_REPO);
+            if (!client) throw new Error(`${ARCHANGEL_REPO} is not a watched project, so there is no App client to open the draft PR with`);
+            return openDraftPr(client, draft, body, ctx);
+          },
+          prStatus: (url) => ghPrStatus(execRunner, url),
+        },
       });
       const swept = rec.startupSweep();
       if (swept.length > 0) logger.info("daemon/stale_working_recovered", `Recovered Threads left working by the last run: ${swept.join(", ")}`, { repo: repoSlug, data: { issues: swept } });
@@ -452,7 +416,6 @@ pitchCmd
         if (opts.build) {
           if (!opts.slice) throw new Error("--build needs --slice <n>");
           if (opts.chain) throw new Error("--build cannot be combined with --chain");
-          if (cfg.authMode !== "subscription") throw new Error("--build runs the subscription implementer; set authMode: subscription");
           const url = await selfBuild(execRunner, ledger, {
             repo,
             issue: Number(issueArg),
@@ -601,23 +564,6 @@ program
       console.log(`\nDoctor verdict: ${report.ok ? "READY" : "FAILED"}`);
     }
     if (!report.ok) process.exit(1);
-  });
-
-program
-  .command("studio")
-  .description("Launch read-only Mastra Studio on 127.0.0.1 pointed strictly at mastra.db")
-  .option("-c, --config <path>", "Path to archangel.yaml")
-  .option("--data-dir <dir>", "Archangel data directory")
-  .option("--port <n>", "Loopback port", "4111")
-  .action(async (opts: { config?: string; dataDir?: string; port: string }) => {
-    const dataDir = resolveDataDir(opts);
-    const paths = resolvePaths({ dataDir });
-    const code = await launchStudio({
-      mastraDbPath: paths.mastraDbPath,
-      ledgerDbPath: paths.ledgerDbPath,
-      port: Number(opts.port),
-    });
-    process.exit(code);
   });
 
 program
@@ -966,7 +912,6 @@ evalCmd
   .option("--json", "Output JSON")
   .action(async (opts: { candidate: string; config?: string; dataDir?: string; repo?: string; heldout?: boolean; maxCases?: string; json?: boolean }) => {
     const host = resolveHostSettings(opts);
-    if (host.authMode !== "subscription") throw new Error("eval uses the subscription reviewer CLIs; set authMode: subscription");
     const dataDir = host.dataDir;
     const root = resolvePaths({ dataDir });
     if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
@@ -999,7 +944,6 @@ evalCmd
   .option("-c, --config <path>", "Path to archangel.yaml")
   .action(async (opts: { config?: string }) => {
     const host = resolveHostSettings(opts);
-    if (host.authMode !== "subscription") throw new Error("eval propose uses the subscription CLIs; set authMode: subscription");
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), ARCHANGEL_REPO);
     const dataDir = host.dataDir;
     const root = resolvePaths({ dataDir });
@@ -1063,7 +1007,6 @@ evalCmd
     if (!(WRITER_ROLES as readonly string[]).includes(opts.role)) throw new Error(`--role must be one of ${WRITER_ROLES.join(", ")}`);
     const role = opts.role as WriterRole;
     const host = resolveHostSettings(opts);
-    if (host.authMode !== "subscription") throw new Error("bench-tiers uses the subscription CLIs; set authMode: subscription");
     const root = resolvePaths({ dataDir: host.dataDir });
     if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
     const maxCases = opts.maxCases === undefined ? undefined : Number(opts.maxCases);
@@ -1737,7 +1680,7 @@ scoutCmd
         github,
         broker,
         workflow,
-        reviewers: makeReviewerSuite(cfg, paths.mastraDbPath, ledger),
+        reviewers: makeReviewerSuite(cfg, ledger),
         notifier: new TelegramNotifier({ botToken: cfg.telegramBotToken, chatId: cfg.telegramChatId }),
         mainSha,
         filterName: name,

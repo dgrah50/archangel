@@ -26,7 +26,7 @@ export interface PocBuildDeps {
   compute: ComputeProvider;
   local?: ComputeProvider;
   implementer: Implementer;
-  cfg: Pick<ArchangelConfig, "maxDailyUsd" | "implementMaxTurns" | "implementTimeoutMs" | "setupTimeoutMs" | "githubOwner" | "githubRepo">;
+  cfg: Pick<ArchangelConfig, "maxDailyUsd" | "implementTimeoutMs" | "setupTimeoutMs" | "githubOwner" | "githubRepo">;
   gate: GatePolicy;
   /** The repo's web preview block; with it, a finished build installs its dependencies and keeps the workspace. */
   preview?: { policy: WebPreview; sandbox: ComputeProvider; workspaceDir: (issueNumber: number) => string } | null;
@@ -100,9 +100,7 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
         workspaces: compute.remote ? { local: localHandle, remote: configured } : { local: configured },
         prompt: buildImplementPrompt({ issueNumber, title: brief.title, body: brief.body, repoName: `${cfg.githubOwner}/${cfg.githubRepo}`, gate: deps.gate, workClass: "feature", repoInstructions: await loadRepoInstructions(broker, mainSha) }),
         abortController: abort,
-        maxTurns: cfg.implementMaxTurns,
         timeoutMs: cfg.implementTimeoutMs,
-        maxBudgetUsd: reserved,
         role: "implement",
       });
     } catch (err) {

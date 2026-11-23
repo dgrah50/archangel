@@ -131,107 +131,83 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
     });
   }
 
-  // 3. Model authentication (subscription CLIs vs metered API keys)
-  if (first.authMode === "subscription") {
-    // Every account any role chain can use: implement, revise, rebase, scout, triage, review.
-    if (first.accounts.filter((a) => a.provider === "agy").length > 1) {
-      checks.push({
-        id: "agy_accounts",
-        name: "agy Accounts",
-        status: "warn",
-        detail: AGY_HOME_WARNING,
-        remediation: "Log each agy account in with its own HOME and confirm they are different Google accounts before relying on two of them.",
-      });
-    }
-    const rolesByAccount = new Map<string, { account: Account; roles: string[] }>();
-    for (const [role, chain] of [...Object.entries(first.chains), ["review", first.reviewerChain] as const]) {
-      for (const e of chain) {
-        for (const account of accountsFor(first.accounts, e)) {
-          const cur = rolesByAccount.get(account.id) ?? { account, roles: [] };
-          rolesByAccount.set(account.id, { account, roles: [...new Set([...cur.roles, role])] });
-        }
+  // 3. Model authentication (subscription CLIs)
+  // Every account any role chain can use: implement, revise, rebase, scout, triage, review.
+  if (first.accounts.filter((a) => a.provider === "agy").length > 1) {
+    checks.push({
+      id: "agy_accounts",
+      name: "agy Accounts",
+      status: "warn",
+      detail: AGY_HOME_WARNING,
+      remediation: "Log each agy account in with its own HOME and confirm they are different Google accounts before relying on two of them.",
+    });
+  }
+  const rolesByAccount = new Map<string, { account: Account; roles: string[] }>();
+  for (const [role, chain] of [...Object.entries(first.chains), ["review", first.reviewerChain] as const]) {
+    for (const e of chain) {
+      for (const account of accountsFor(first.accounts, e)) {
+        const cur = rolesByAccount.get(account.id) ?? { account, roles: [] };
+        rolesByAccount.set(account.id, { account, roles: [...new Set([...cur.roles, role])] });
       }
     }
-    const neededAccounts = [...rolesByAccount.values()];
-    const missingBins: string[] = [];
-    const notInstalled = new Set<string>();
-    const baseEnv = opts.env ?? process.env;
-    const verified: string[] = [];
-    for (const { account } of neededAccounts) {
-      const p = account.provider;
-      const label = account.id === p ? p : `${account.id} [${p}]`;
-      const env = { ...baseEnv, ...accountEnv(account) };
-      try {
-        if (p === "codex") {
-          const { stdout, stderr } = await execFileAsync("codex", ["login", "status"], { env });
-          const combined = `${stdout}\n${stderr}`.trim();
-          if (/not\s+logged\s+in/i.test(combined) || !/logged in/i.test(combined)) {
-            missingBins.push(`${label} (not logged in — run \`codex login\`${account.home ? ` with CODEX_HOME=${account.home}` : ""})`);
-          } else {
-            verified.push(`${label} (${combined})`);
-          }
+  }
+  const neededAccounts = [...rolesByAccount.values()];
+  const missingBins: string[] = [];
+  const notInstalled = new Set<string>();
+  const baseEnv = opts.env ?? process.env;
+  const verified: string[] = [];
+  for (const { account } of neededAccounts) {
+    const p = account.provider;
+    const label = account.id === p ? p : `${account.id} [${p}]`;
+    const env = { ...baseEnv, ...accountEnv(account) };
+    try {
+      if (p === "codex") {
+        const { stdout, stderr } = await execFileAsync("codex", ["login", "status"], { env });
+        const combined = `${stdout}\n${stderr}`.trim();
+        if (/not\s+logged\s+in/i.test(combined) || !/logged in/i.test(combined)) {
+          missingBins.push(`${label} (not logged in — run \`codex login\`${account.home ? ` with CODEX_HOME=${account.home}` : ""})`);
         } else {
-          const { stdout } = await execFileAsync(p, ["--version"], { env });
-          verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
+          verified.push(`${label} (${combined})`);
         }
-      } catch (_err) {
-        if (!notInstalled.has(p)) missingBins.push(`${p} (not found in PATH; install the ${p} CLI, then log in)`);
-        notInstalled.add(p);
+      } else {
+        const { stdout } = await execFileAsync(p, ["--version"], { env });
+        verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
       }
+    } catch (_err) {
+      if (!notInstalled.has(p)) missingBins.push(`${p} (not found in PATH; install the ${p} CLI, then log in)`);
+      notInstalled.add(p);
     }
-    if (missingBins.length > 0) {
-      checks.push({
-        id: "subscription_clis",
-        name: "Subscription CLI Providers",
-        status: "fail",
-        detail: `Unavailable: ${missingBins.join(", ")}`,
-        remediation: "Install/log in to each configured CLI provider in archangel.yaml or switch authMode: api",
-      });
-    } else {
-      checks.push({
-        id: "subscription_clis",
-        name: "Subscription CLI Providers",
-        status: "pass",
-        detail: `${verified.join(", ")} (${[...Object.entries(first.chains), ["review", first.reviewerChain] as const].map(([r, c]) => `${r}=${c.map((e) => e.provider).join("->")}`).join(", ")})`,
-      });
-    }
-    const gaps = findReviewerIndependenceGaps(first);
-    if (gaps.length > 0) {
-      checks.push({
-        id: "reviewer_independence",
-        name: "Independent Reviewers",
-        status: "warn",
-        detail: `Fewer than 2 reviewers independent of implementer vendor(s): ${gaps.join(", ")}`,
-        remediation: "Add reviewerChain providers from other vendors, or the thread escalates review_outage after implementing",
-      });
-    }
-    if (opts.smoke) {
-      for (const { account, roles } of neededAccounts) {
-        if (notInstalled.has(account.provider)) continue;
-        checks.push(await smokeAccount(account, roles, baseEnv));
-      }
-    }
+  }
+  if (missingBins.length > 0) {
+    checks.push({
+      id: "subscription_clis",
+      name: "Subscription CLI Providers",
+      status: "fail",
+      detail: `Unavailable: ${missingBins.join(", ")}`,
+      remediation: "Install and log in to each configured CLI provider in archangel.yaml",
+    });
   } else {
-    const missingKeys = [
-      !first.anthropicApiKey ? "ANTHROPIC_API_KEY" : null,
-      !first.openaiApiKey ? "OPENAI_API_KEY" : null,
-      !first.googleApiKey ? "GOOGLE_GENERATIVE_AI_API_KEY" : null,
-    ].filter(Boolean) as string[];
-    if (missingKeys.length > 0) {
-      checks.push({
-        id: "api_keys",
-        name: "Metered Model API Keys",
-        status: "fail",
-        detail: `Missing: ${missingKeys.join(", ")}`,
-        remediation: "Populate all three metered API keys in .env, or set authMode: subscription in archangel.yaml",
-      });
-    } else {
-      checks.push({
-        id: "api_keys",
-        name: "Metered Model API Keys",
-        status: "pass",
-        detail: "Anthropic, OpenAI, and Google API keys present",
-      });
+    checks.push({
+      id: "subscription_clis",
+      name: "Subscription CLI Providers",
+      status: "pass",
+      detail: `${verified.join(", ")} (${[...Object.entries(first.chains), ["review", first.reviewerChain] as const].map(([r, c]) => `${r}=${c.map((e) => e.provider).join("->")}`).join(", ")})`,
+    });
+  }
+  const gaps = findReviewerIndependenceGaps(first);
+  if (gaps.length > 0) {
+    checks.push({
+      id: "reviewer_independence",
+      name: "Independent Reviewers",
+      status: "warn",
+      detail: `Fewer than 2 reviewers independent of implementer vendor(s): ${gaps.join(", ")}`,
+      remediation: "Add reviewerChain providers from other vendors, or the thread escalates review_outage after implementing",
+    });
+  }
+  if (opts.smoke) {
+    for (const { account, roles } of neededAccounts) {
+      if (notInstalled.has(account.provider)) continue;
+      checks.push(await smokeAccount(account, roles, baseEnv));
     }
   }
 
@@ -245,33 +221,23 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
     });
   }
 
-  // 4. SQLite separation (ADR-0001)
-  if (paths.ledgerDbPath === paths.mastraDbPath) {
+  // 4. Data directory
+  try {
+    fs.mkdirSync(paths.dataDir, { recursive: true });
+    fs.accessSync(paths.dataDir, fs.constants.W_OK);
     checks.push({
       id: "sqlite_paths",
-      name: "SQLite DB Isolation",
-      status: "fail",
-      detail: `ledgerDbPath and mastraDbPath collide at ${paths.ledgerDbPath}`,
-      remediation: "Keep ledger.db and mastra.db in separate files to prevent SQLITE_BUSY",
+      name: "Data Directory",
+      status: "pass",
+      detail: `Writable ${paths.dataDir}`,
     });
-  } else {
-    try {
-      fs.mkdirSync(paths.dataDir, { recursive: true });
-      fs.accessSync(paths.dataDir, fs.constants.W_OK);
-      checks.push({
-        id: "sqlite_paths",
-        name: "SQLite DB Isolation",
-        status: "pass",
-        detail: `Separate DBs in writable ${paths.dataDir}`,
-      });
-    } catch (err) {
-      checks.push({
-        id: "sqlite_paths",
-        name: "SQLite DB Isolation",
-        status: "fail",
-        detail: `dataDir not writable: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
+  } catch (err) {
+    checks.push({
+      id: "sqlite_paths",
+      name: "Data Directory",
+      status: "fail",
+      detail: `dataDir not writable: ${err instanceof Error ? err.message : String(err)}`,
+    });
   }
 
   // 4b. Autonomy cap: steps taken since the owner was last heard from (read-only; no ledger is created).
@@ -619,7 +585,7 @@ function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolea
 
 /** Implementer vendors for which the reviewerChain cannot supply 2 independent reviewers. */
 export function findReviewerIndependenceGaps(
-  cfg: Pick<ArchangelConfig, "authMode" | "chains" | "reviewerChain">,
+  cfg: Pick<ArchangelConfig, "chains" | "reviewerChain">,
 ): string[] {
   const vendors = writerVendors(cfg.chains);
   return vendors.filter((v) => resolveRequiredReviewers(cfg, [v]).length < 2);

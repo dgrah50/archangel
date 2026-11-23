@@ -42,12 +42,7 @@
     "dev": "bun src/cli/index.ts"
   },
   "dependencies": {
-    "@ai-sdk/google": "^4.0.124",
-    "@ai-sdk/openai": "^4.0.122",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.330",
     "@getpaseo/client": "^0.16.2",
-    "@mastra/core": "^1.85.0",
-    "@mastra/libsql": "^1.31.1",
     "@sailresearch/sdk": "0.19.0",
     "commander": "^15.1.0",
     "esbuild": "^0.28.2",

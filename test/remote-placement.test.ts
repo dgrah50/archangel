@@ -53,9 +53,7 @@ describe("placing chain entries on local and remote providers", () => {
         },
         prompt: "p",
         abortController: new AbortController(),
-        maxTurns: 1,
         timeoutMs: 1000,
-        maxBudgetUsd: 1,
         role: "implement",
       });
       // On macOS a local agy account with its own home runs under sandbox-exec.
@@ -82,9 +80,7 @@ describe("placing chain entries on local and remote providers", () => {
         workspaces: { local: { compute: local.compute, workspace: async () => ({ id: "l", path: "/l" }) }, remote: { compute: brokered.compute, workspace: async () => ({ id: "r", path: "/r" }) } },
         prompt: "p",
         abortController: new AbortController(),
-        maxTurns: 1,
         timeoutMs: 1000,
-        maxBudgetUsd: 1,
         role: "implement",
       });
       expect(brokered.calls.some((c) => c.args.join(" ").includes("$ARCHANGEL_AGY_PLACEHOLDER"))).toBe(true);
@@ -97,7 +93,7 @@ describe("placing chain entries on local and remote providers", () => {
 
   it("keeps Attempts local unless a provider has a remote credential", () => {
     const sail = {};
-    const cfg = (extra: object) => ({ authMode: "subscription", compute: { provider: "sail", sail: { app: "arch", remoteClaudeAttempts: false, ...extra } } }) as never;
+    const cfg = (extra: object) => ({ compute: { provider: "sail", sail: { app: "arch", remoteClaudeAttempts: false, ...extra } } }) as never;
     expect(remoteAttemptProvider(cfg({}), sail)).toBeUndefined();
     expect(remoteAttemptProvider(cfg({ codexApiKeySecret: "K" }), sail)).toBe(sail);
   });

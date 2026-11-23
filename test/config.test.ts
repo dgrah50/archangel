@@ -39,7 +39,7 @@ describe("config security invariants", () => {
 
       // A copied .env.example has `KEY=` lines (unset, not ""), and a leading ~ in the key path expands.
       const tildeKey = `~/${path.relative(os.homedir(), pemPath)}`;
-      const blank = { ARCHANGEL_GITHUB_APP_ID: "99", ARCHANGEL_GITHUB_INSTALLATION_ID: "1234", ARCHANGEL_GITHUB_PRIVATE_KEY_PATH: tildeKey, ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" };
+      const blank = { ARCHANGEL_GITHUB_APP_ID: "99", ARCHANGEL_GITHUB_INSTALLATION_ID: "1234", ARCHANGEL_GITHUB_PRIVATE_KEY_PATH: tildeKey, ARCHANGEL_TELEGRAM_BOT_TOKEN: "", ARCHANGEL_TELEGRAM_CHAT_ID: "" };
       expect(loadProjectConfigs({ configPath: yamlPath, env: blank })[0]?.githubPrivateKeyPem).toContain("TEST");
       expect(() => loadProjectConfigs({ configPath: yamlPath, env: { ...blank, ARCHANGEL_GITHUB_APP_ID: "" } })).toThrow(/githubAppId/);
     } finally {

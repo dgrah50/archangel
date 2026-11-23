@@ -1935,9 +1935,7 @@ export class Reconciler {
         workspaces: { local, ...(remote ? { remote } : {}) },
         prompt,
         abortController: task.abortController,
-        maxTurns: this.cfg.implementMaxTurns,
         timeoutMs: this.cfg.implementTimeoutMs,
-        maxBudgetUsd: reservedUsd,
         preferVendors: kind === "implement" ? undefined : workingThread.implementerVendors,
         role: kind === "plan" ? "implement" : kind,
         })

@@ -154,7 +154,7 @@ export function createSailProvider(opts: { sail: SailConfig; broker: GitBroker; 
   });
 }
 
-/** Where remote Attempts (implement, revise, rebase) run: Sail only when some provider has a remote credential configured, and only with the subscription CLIs (the API-mode SDK runs on this machine). */
-export function remoteAttemptProvider<P>(cfg: { authMode: string; compute: ComputeConfig }, sail: P | undefined): P | undefined {
-  return cfg.authMode === "subscription" && remoteProviders(cfg.compute).size > 0 ? sail : undefined;
+/** Where remote Attempts (implement, revise, rebase) run: Sail only when some provider has a remote credential configured. */
+export function remoteAttemptProvider<P>(cfg: { compute: ComputeConfig }, sail: P | undefined): P | undefined {
+  return remoteProviders(cfg.compute).size > 0 ? sail : undefined;
 }

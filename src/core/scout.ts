@@ -768,9 +768,8 @@ async function pitchVeto(
       reviewRubric: PITCH_CRITIC_RUBRIC,
       repoInstructions: await loadRepoInstructions(opts.broker, opts.mainSha),
       excludeVendors: [author],
-      // Subscription suite: exclude + a one-vendor skip leaves exactly vendors[0]. The API suite only honours skipVendors,
-      // so there every API vendor except the chosen one is skipped (which also skips the author).
-      skipVendors: opts.config.authMode === "api" ? (["openai", "gemini"] as const).filter((v) => v !== vendors[0]) : vendors.slice(1),
+      // Exclude + a one-vendor skip leaves exactly vendors[0].
+      skipVendors: vendors.slice(1),
     });
   } catch (err) {
     return `critic unavailable: ${err instanceof Error ? err.message : String(err)}`;
