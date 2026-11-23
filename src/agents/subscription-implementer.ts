@@ -555,7 +555,8 @@ export class SubscriptionImplementer implements Implementer {
 
           durationMs += res.durationMs ?? 0;
           if (res.peakRssKb != null) peakRssKb = Math.max(peakRssKb ?? 0, res.peakRssKb);
-          const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
+          // The CLI cites files by their absolute path in its workspace; the summary is published, so they are shown relative to the repo.
+          const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile).replaceAll(`${placed.workspace.path}/`, "");
           const runOutputFile = `${runOutputBase}.${i}-${entry.provider}`;
           const stdoutPath = writeRunOutput(`${runOutputFile}.stdout`, res.stdout);
           const stderrPath = writeRunOutput(`${runOutputFile}.stderr`, res.stderr);

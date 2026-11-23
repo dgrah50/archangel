@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import os from "node:os";
 import { describe, expect, it } from "bun:test";
 import { GitHubAppClient } from "../src/github/client.js";
 import { RECAP_MARKER } from "../src/core/recap.js";
@@ -14,6 +15,7 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
     const privateKeyPem = generateTestRsaKey();
     let issueHits = 0;
     let patchedCommentId = null as number | null;
+    let patchedBody = "";
     let mergePayload: Record<string, unknown> | null = null;
 
     const server = http.createServer((req, res) => {
@@ -90,8 +92,11 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       }
       if (req.method === "PATCH" && url.pathname === "/repos/acme/app/issues/comments/501") {
         patchedCommentId = 501;
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ id: 501 }));
+        req.on("data", (c) => (patchedBody += c));
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ id: 501 }));
+        });
         return;
       }
 
@@ -148,8 +153,10 @@ describe("GitHubAppClient (JWT, pagination, ETag 304, check-run dedupe)", () => 
       expect(checks[0]?.conclusion).toBe("success");
 
       // Upsert recap patches existing comment 501
-      await gh.upsertRecapComment(5, `${RECAP_MARKER}\nnew recap`);
+      // ...and what is published never names this machine's home directory (model text cites absolute workspace paths).
+      await gh.upsertRecapComment(5, `${RECAP_MARKER}\nnew recap, see ${os.homedir()}/clones/issue-5/src/a.ts`);
       expect(patchedCommentId).toBe(501);
+      expect((JSON.parse(patchedBody) as { body: string }).body).toBe(`${RECAP_MARKER}\nnew recap, see ~/clones/issue-5/src/a.ts`);
 
       // Squash merge pins exact head SHA
       const merged = await gh.squashMergePr(5, "head555", "fix(#5)");
