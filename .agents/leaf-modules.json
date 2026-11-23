@@ -2,9 +2,16 @@
   "note": "Archangel source files the factory may change through its own PRs. Every other tracked file under src/ must be in gate.protectedPaths of .agents/archangel.json; test/protected-paths.test.ts enforces this, so a new src file is unprotected only if the owner lists it here.",
   "files": [
     "src/core/digest.ts",
+    "src/core/eval-reports.ts",
     "src/core/logger.ts",
     "src/core/recap.ts",
+    "src/core/regression-watch.ts",
     "src/core/status-text.ts",
-    "src/core/ui-state.ts"
+    "src/core/telemetry-scout.ts",
+    "src/core/ui-accounts.ts",
+    "src/core/ui-pitches.ts",
+    "src/core/ui-settings.ts",
+    "src/core/ui-state.ts",
+    "src/core/ui-thread.ts"
   ]
 }
