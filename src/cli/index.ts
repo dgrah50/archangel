@@ -1524,6 +1524,22 @@ function installAgent(a: { label: string; args: string[]; workDir: string; logDi
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
   fs.writeFileSync(plistPath, renderPlist(a), { encoding: "utf8", mode: 0o600 });
   bootoutAgent(a.label);
+  // bootout returns before launchd has stopped the job (the daemon has a 15 s shutdown deadline); bootstrapping a label that
+  // is still loaded fails with EIO 5 and leaves nothing running. Wait until it is really gone.
+  const target = `gui/${launchdUid()}/${a.label}`;
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      execFileSync("launchctl", ["print", target], { stdio: "ignore" });
+    } catch (_err) {
+      void _err;
+      break;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`${a.label} is still loaded 30 s after bootout; not bootstrapping over it. Run \`launchctl bootout ${target}\` by hand, then retry.`);
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
   execFileSync("launchctl", ["bootstrap", `gui/${launchdUid()}`, plistPath], { stdio: "inherit" });
   console.log(`Installed & loaded ${a.label} (${plistPath}).`);
 }
