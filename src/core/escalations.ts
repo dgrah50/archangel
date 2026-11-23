@@ -83,8 +83,9 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
   review_outage: {
     decisionClass: "credentials",
-    short: "recommends re-login, then retry",
-    recommendation: "Reviewer CLIs are unavailable. Run `archangel doctor --smoke`, re-login where needed, then retry.",
+    short: "recommends fixing the reviewer named, then retry",
+    recommendation:
+      "A reviewer could not run, and two independent reviewers are required (the reason says which and why). For a login problem, run `archangel doctor --smoke` and re-login. For a usage limit, wait for it to reset, or add another login for that provider under `accounts` in archangel.yaml. Then retry.",
   },
   merge_conflict: {
     decisionClass: "live_infrastructure",

@@ -4,7 +4,7 @@ import os from "node:os";
 import { tryParseJson } from "../core/json.js";
 import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type CliProvider, type ProviderEntry } from "../config.js";
-import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
+import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger, cooldownAfterLimit } from "../core/accounts.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 import { promptTemplateSha } from "./prompts.js";
 import { timeReview } from "../core/telemetry.js";
@@ -197,6 +197,17 @@ export async function defaultReviewerCliInvoker(input: {
   }
 }
 
+/** Every login of a reviewer's provider is cooling down after a usage limit (or at its daily cap). */
+class ReviewerAtLimit extends Error {
+  constructor(
+    provider: CliProvider,
+    /** When the first of them is usable again; null when none is cooling (all at their daily cap). */
+    readonly retryAt: number | null,
+  ) {
+    super(`no available ${provider} account: usage limit reached on every account${retryAt === null ? "" : `, the first usable again at ${new Date(retryAt).toISOString()}`}`);
+  }
+}
+
 export interface SubscriptionReviewerOptions {
   chain: ProviderEntry[];
   accounts?: Account[];
@@ -271,7 +282,8 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
       for (;;) {
         const account = selectAccount(accountsFor(this.accounts, item.entry), this.state, Date.now(), { exclude: tried });
         if (!account) {
-          throw new Error(`no available ${item.entry.provider} account: usage limit reached on every account (cooling down, at its daily cap, or already tried)`);
+          const ends = accountsFor(this.accounts, item.entry).flatMap((a) => this.state.cooldownUntil(a.id, Date.now()) ?? []);
+          throw new ReviewerAtLimit(item.entry.provider, ends.length > 0 ? Math.min(...ends) : null);
         }
         tried.add(account.id);
         let raw: unknown;
@@ -287,7 +299,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (isRateLimitOrQuotaError(msg)) {
-            this.state.recordCooldown(account.id, ACCOUNT_COOLDOWN_MS, msg.slice(0, 200));
+            this.state.recordCooldown(account.id, cooldownAfterLimit(msg), msg.slice(0, 200));
             if (++switches <= MAX_ACCOUNT_SWITCHES) continue;
           }
           throw err;
@@ -308,7 +320,12 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
 
     const settled = await Promise.allSettled(active.map((item, idx) => timeReview(item.vendor, runEntry(item, idx))));
     const results: VendorReviewResult[] = [];
-    const errors: Array<{ vendor: ReviewerVendor; error: string }> = [];
+    const errors: ReviewBatchOutcome["errors"] = [];
+    const failure = (vendor: ReviewerVendor, err: unknown) => ({
+      vendor,
+      error: err instanceof Error ? err.message : String(err),
+      ...(err instanceof ReviewerAtLimit && err.retryAt !== null ? { retryAt: err.retryAt } : {}),
+    });
 
     for (let i = 0; i < settled.length; i++) {
       const outcome = settled[i]!;
@@ -325,13 +342,10 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
             results.push(fallbackRes);
             continue;
           } catch (backupErr) {
-            errors.push({
-              vendor: backup.vendor,
-              error: backupErr instanceof Error ? backupErr.message : String(backupErr),
-            });
+            errors.push(failure(backup.vendor, backupErr));
           }
         }
-        errors.push({ vendor: item.vendor, error: msg });
+        errors.push(failure(item.vendor, outcome.reason));
       }
     }
 

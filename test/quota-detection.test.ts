@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { classifyCliFailure, isRateLimitOrQuotaError } from "../src/agents/subscription-implementer.js";
+import { ACCOUNT_COOLDOWN_MS, cooldownAfterLimit } from "../src/core/accounts.js";
 
 describe("isRateLimitOrQuotaError", () => {
   it("does not mistake ordinary tool or test output for a quota error", () => {
@@ -24,5 +25,11 @@ describe("isRateLimitOrQuotaError", () => {
     const turnFailed = (message: string) => ['{"type":"thread.started","thread_id":"t"}', '{"type":"turn.started"}', JSON.stringify({ type: "turn.failed", error: { message } })].join("\n");
     expect(classifyCliFailure({ stdout: turnFailed("The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."), stderr: "" })).toBe("model_unavailable");
     expect(classifyCliFailure({ stdout: turnFailed("You've hit your usage limit. Try again at 3:04 PM."), stderr: "" })).toBe("quota");
+  });
+
+  it("cools an account down for as long as the provider says, when it says", () => {
+    // agy's weekly limit, verbatim.
+    expect(cooldownAfterLimit("agy exited 3: error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 134h23m")).toBe((134 * 60 + 23) * 60_000);
+    expect(cooldownAfterLimit("HTTP 429: usage limit reached")).toBe(ACCOUNT_COOLDOWN_MS);
   });
 });
