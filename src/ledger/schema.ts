@@ -66,6 +66,7 @@ export const ATTEMPT_ERROR_CATEGORIES = [
   "auth",
   "context_overflow",
   "permission_denied",
+  "model_unavailable",
   "cli_missing",
   "setup_failed",
   "implementer_failed",
@@ -81,6 +82,8 @@ export class AttemptError extends Error {
   constructor(
     readonly category: AttemptErrorCategory,
     message: string,
+    /** The chain entry and login that failed, when the failure came from one. */
+    readonly runBy?: { provider: string; model: string | null; accountId?: string },
   ) {
     super(message);
     this.name = "AttemptError";
