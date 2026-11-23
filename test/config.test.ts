@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
-import { resolveDataDir } from "../src/cli/data-dir.js";
+import { resolveDataDir, resolveUiSettings } from "../src/cli/data-dir.js";
 import { HostYamlSchema, REPO_SLUG_RE, accountHomeProblems, loadProjectConfigs } from "../src/config.js";
 import { loadDotEnv, parseDotEnv } from "../src/env.js";
 import type { OnboardRunner } from "../src/core/onboard.js";
@@ -90,6 +90,21 @@ describe("resolveDataDir", () => {
       expect(resolveDataDir({ config: cfg }, {})).toBe(`${dir}/custom`);
       expect(resolveDataDir({}, { ARCHANGEL_CONFIG: cfg })).toBe(`${dir}/custom`);
       expect(resolveDataDir({}, { ARCHANGEL_DATA_DIR: "/env", ARCHANGEL_CONFIG: path.join(dir, "missing.yaml") })).toBe("/env");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("takes the dashboard's host and port from ui in the host config, a flag wins, and with no config the defaults apply", () => {
+    const dir = tmp();
+    try {
+      const cfg = path.join(dir, "archangel.yaml");
+      fs.writeFileSync(cfg, "ownerUserId: 1\nui:\n  port: 5555\nprojects:\n  - repo: a/b\n");
+      expect(resolveUiSettings({ config: cfg }, {})).toEqual({ host: "127.0.0.1", port: 5555 });
+      expect(resolveUiSettings({ config: cfg, port: "6000" }, {})).toEqual({ host: "127.0.0.1", port: 6000 });
+      const [project] = loadProjectConfigs({ configPath: cfg, env: { ARCHANGEL_GITHUB_APP_ID: "1", ARCHANGEL_GITHUB_PRIVATE_KEY_PEM: "pem", ARCHANGEL_GITHUB_INSTALLATION_ID: "2" } });
+      expect(project!.ui.port).toBe(5555);
+      expect(resolveUiSettings({}, { ARCHANGEL_CONFIG: path.join(dir, "missing.yaml") })).toEqual({ host: "127.0.0.1", port: 4477 });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

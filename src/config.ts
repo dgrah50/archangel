@@ -347,6 +347,16 @@ export const ProductionConfigSchema = z
   .strict();
 export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
 
+/** The dashboard (`archangel ui`): where it binds, and so the port a preview must never use. One value, read by `ui`, `start` and `daemon install`. */
+export const UiConfigSchema = z
+  .object({
+    host: z.string().min(1).default("127.0.0.1"),
+    port: z.number().int().min(1).max(65535).default(4477),
+  })
+  .strict()
+  .default({ host: "127.0.0.1", port: 4477 });
+export type UiConfig = z.infer<typeof UiConfigSchema>;
+
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
@@ -374,6 +384,7 @@ export const ConfigSchema = z.object({
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
   compute: ComputeConfigSchema,
+  ui: UiConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
@@ -483,6 +494,7 @@ export const HostYamlSchema = z.object({
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
   compute: ComputeConfigSchema,
+  ui: UiConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   factoryRetry: z.boolean().default(true),
@@ -658,6 +670,7 @@ export function loadProjectConfigs(opts: {
       maxDailyUsd: host.maxDailyUsd,
       dailyTimezone: host.dailyTimezone,
       compute: host.compute,
+      ui: host.ui,
       digestHour: host.digestHour,
       maxConcurrentThreads: proj.maxConcurrentThreads,
       maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
