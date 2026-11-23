@@ -612,10 +612,12 @@ export function loadProjectConfigs(opts: {
   configPath?: string;
   env?: NodeJS.ProcessEnv;
 } = {}): ArchangelConfig[] {
-  const resolvedConfig = resolveConfigPath(opts.configPath, opts.env ?? process.env);
-  // Secrets live in the `.env` beside the host config, wherever the command is run from (values already set win).
-  if (!opts.env) loadDotEnv(path.join(path.dirname(resolvedConfig), ".env"));
-  const env = withoutEmptyValues(opts.env ?? process.env);
+  const source = opts.env ?? process.env;
+  const resolvedConfig = resolveConfigPath(opts.configPath, source);
+  // Secrets live in the `.env` beside the host config, wherever the command is run from (values already set win). Only the
+  // process's own environment is filled in: a caller's private env object (tests, the dashboard's checks) is left as given.
+  if (source === process.env) loadDotEnv(path.join(path.dirname(resolvedConfig), ".env"));
+  const env = withoutEmptyValues(source);
 
   if (!fs.existsSync(resolvedConfig)) {
     throw new ConfigError(`Host config not found: ${resolvedConfig}`, "Copy archangel.example.yaml to archangel.yaml in the directory you run archangel from.");
