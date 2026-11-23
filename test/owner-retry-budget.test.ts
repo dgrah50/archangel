@@ -39,9 +39,9 @@ describe("owner retry after an exhausted budget", () => {
     const implementer: Implementer = {
       async run(input) {
         prompts.push(input.prompt);
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), `package demo\n\nfunc Val() int { return ${10 + prompts.length} }\n`);
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", `attempt ${prompts.length}`]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), `package demo\n\nfunc Val() int { return ${10 + prompts.length} }\n`);
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", `attempt ${prompts.length}`]);
         return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
       },
     };

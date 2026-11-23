@@ -86,7 +86,7 @@ function fixture() {
   attempt(1, NOW - 1 * DAY, "failed", `protected path modified: ${SECRET}/lock.json; no new test file added matching ${SECRET}`, "gate_or_policy");
   attempt(1, NOW - 2 * DAY, "failed", `changed files 9 exceeds limit 5 ${SECRET}`, "static_rejection");
   attempt(4, NOW - 8 * DAY, "failed", `reproduction test already passed on base (run 1/3) ${SECRET}`, "gate_or_policy");
-  attempt(4, NOW - 3 * DAY, "failed", `codex (exit 1): rate limit ${SECRET}`, "provider_unavailable");
+  attempt(4, NOW - 3 * DAY, "failed", `codex (exit 1): rate limit ${SECRET}`, "quota");
   attempt(4, NOW - 4 * DAY, "succeeded");
   attempt(3, NOW - 1 * DAY, "failed", `protected path modified: x`, "static_rejection"); // excluded
 

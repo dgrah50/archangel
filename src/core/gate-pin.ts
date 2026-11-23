@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import { REPO_SLUG_RE } from "../config.js";
 import path from "node:path";
-import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, exitedOne, pinnedSha, type OnboardRunner } from "./onboard.js";
+import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, exitedOne, pinnedSha, withBranch, type OnboardRunner } from "./onboard.js";
 import { readRepoFile } from "./workflow-propose.js";
 
 /** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
-export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/work-class.ts", "src/core/skills.ts", "src/core/spawn-group.ts", "src/core/fleet-scouts.ts", "src/config.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
+export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/work-class.ts", "src/core/skills.ts", "src/core/spawn-group.ts", "src/core/fleet-scouts.ts", "src/config.ts", "src/core/signal-rules.ts", "src/core/signal-kinds.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
 export const BUMP_BRANCH = "chore/archangel-gate-bump";
 
 const PIN_LINE = /^(\s*ARCHANGEL_GATE_SHA:)[ \t]*(\S*)[ \t]*$/m;
@@ -40,10 +40,12 @@ export async function assessPinDrift(
   runner: OnboardRunner,
   workflow: string,
   latest: string,
-  opts: { root?: string; template?: string } = {},
+  opts: { root?: string; template?: string; branch?: string } = {},
 ): Promise<PinDrift> {
   const root = opts.root ?? ARCHANGEL_ROOT;
-  const template = opts.template ?? canonicalTemplate(root);
+  const base = opts.template ?? canonicalTemplate(root);
+  // The template is written with the repo's own default branch, so that is what the workflow must be compared against.
+  const template = opts.branch ? withBranch(base, opts.branch) : base;
   const reasons: string[] = [];
   const pin = pinOf(workflow);
   if (!pin) {
@@ -99,7 +101,7 @@ export async function gateBump(
   for (const r of repos) if (!REPO_SLUG_RE.test(r)) throw new Error(`Expected owner/name, got '${r}'`);
   const head = await pinnedSha(runner, root, "bump the Gate pin");
   const latest = await latestGateCommit(runner, root);
-  const template = withPin(canonicalTemplate(root), head);
+  const pinned = withPin(canonicalTemplate(root), head);
   const out: Record<string, "bumped" | "would-bump" | "current" | "no-workflow" | "pr-open"> = {};
 
   for (const repo of repos) {
@@ -110,7 +112,7 @@ export async function gateBump(
       out[repo] = "no-workflow";
       continue;
     }
-    const drift = await assessPinDrift(runner, wf.content, latest, { root });
+    const drift = await assessPinDrift(runner, wf.content, latest, { root, branch });
     if (!drift.drifted) {
       log(`${repo}: Gate pin is current`);
       out[repo] = "current";
@@ -135,7 +137,7 @@ export async function gateBump(
     await runner.run("gh", [
       "api", "-X", "PUT", `repos/${repo}/contents/${GATE_WORKFLOW_PATH}`,
       "-f", `message=chore: pin Archangel Gate to ${head.slice(0, 10)}`,
-      "-f", `content=${Buffer.from(template).toString("base64")}`,
+      "-f", `content=${Buffer.from(withBranch(pinned, branch)).toString("base64")}`,
       "-f", `sha=${wf.blobSha}`,
       "-f", `branch=${BUMP_BRANCH}`,
     ]);

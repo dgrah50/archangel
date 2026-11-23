@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Implementer } from "../agents/implementer.js";
 import { buildImplementPrompt, buildRebasePrompt, buildRevisionPrompt, promptTemplateSha } from "../agents/prompts.js";
 import { GitBroker } from "../broker/git-broker.js";
+import { LocalProvider } from "../compute/local.js";
 import { ProviderEntrySchema, WRITER_ROLES, type GatePolicy, type ProviderEntry, type WriterRole } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
 import type { AttemptInput } from "./attempt-input.js";
@@ -207,7 +208,7 @@ async function runArm(c: BenchCase, chain: ProviderEntry[], opts: BenchOptions, 
     await broker.runRepoSetup(clone, c.baseSha, opts.setupTimeoutMs);
     const result = await opts.implementerFor(chain, role).run({
       issueNumber: c.issueNumber,
-      cloneDir: clone,
+      workspaces: { local: { compute: new LocalProvider(broker), workspace: async () => ({ id: clone, path: clone }) } },
       prompt: promptFor(c, policy.policy),
       abortController: new AbortController(),
       maxTurns: opts.implementMaxTurns ?? 60,

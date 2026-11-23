@@ -4,6 +4,8 @@ import { dedupeChecksByLatestId, type CheckStatus } from "../core/blockers.js";
 import { tryParseJson } from "../core/json.js";
 import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
 import { RECAP_MARKER } from "../core/recap.js";
+import { emit } from "../core/telemetry.js";
+import type { TelemetryTags } from "../core/telemetry-events.js";
 
 export interface GitHubIssue {
   number: number;
@@ -32,9 +34,6 @@ export interface GitHubPr {
   baseSha: string;
   labels: string[];
   changedFiles: string[];
-  /** Line totals of the diff; absent on snapshots that did not read them. */
-  additions?: number;
-  deletions?: number;
   mergeableState?: string;
   /** GitHub's verdict on merging into base: false = conflicts, null = still being computed, undefined = not reported. */
   mergeable?: boolean | null;
@@ -77,6 +76,18 @@ export interface GitHubClient {
   listRepoLabels?(): Promise<string[]>;
   findPrByHeadBranch(branch: string): Promise<GitHubPr | null>;
   createPr(input: { title: string; body: string; head: string; base: string }): Promise<GitHubPr>;
+  /** PRs merged into `baseBranch` after `sinceMs` (the 100 most recently updated closed PRs), oldest first. */
+  listMergedPrsSince(sinceMs: number, baseBranch: string): Promise<Array<{ number: number; mergedAt: number }>>;
+  /** Published, non-draft releases after `sinceMs`, oldest first. */
+  listReleasesSince(sinceMs: number): Promise<Array<{ tag: string; publishedAt: number }>>;
+  /** Public repository search (read-only, not scoped to this repo). `query` is host-built from owner topics and fixed templates. */
+  searchRepositories(query: string, sort: "updated" | "stars", limit: number): Promise<Array<{ fullName: string; url: string; pushedAt: string; description: string | null }>>;
+  /** The latest published release of a public repository, or null when it has none. */
+  getLatestRelease(fullName: string): Promise<{ tag: string; name: string | null; url: string; publishedAt: string; body: string | null } | null>;
+  /** Star count of a public repository (read-only). */
+  getRepoStars(fullName: string): Promise<number>;
+  /** Open Dependabot alerts created after `sinceMs`, oldest first. Needs the App's `vulnerability_alerts` read permission. */
+  listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>>;
   createIssue?(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue>;
   getPrLive(prNumber: number): Promise<GitHubPr>;
   getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>>;
@@ -84,6 +95,10 @@ export interface GitHubClient {
   /** Reproduction-test output the Gate emitted as an annotation on its check run for `headSha`, or null. */
   getGateProof(checkRunId: number, headSha: string): Promise<GateProof | null>;
   upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void>;
+  /** Creates or replaces the one comment that contains `marker`. */
+  upsertMarkedComment(issueOrPrNumber: number, marker: string, body: string): Promise<void>;
+  /** The only push that is not a factory branch: commits image files to the dedicated assets branch. Refuses any other ref or path. */
+  publishAssets(input: AssetsPush): Promise<{ commitSha: string }>;
   postComment(issueOrPrNumber: number, body: string): Promise<void>;
   addLabels(issueNumber: number, labels: string[]): Promise<void>;
   removeLabel(issueNumber: number, label: string): Promise<void>;
@@ -123,6 +138,43 @@ interface EtagEntry {
 
 const MAX_PAGES = 20;
 
+const ENDPOINT_CLASSES: Array<[RegExp, TelemetryTags<"github_call_ms">["endpoint"]]> = [
+  [/\/(issues|labels)(\/|\?|$)/, "issues"],
+  [/\/pulls(\/|\?|$)/, "pulls"],
+  [/\/(check-runs|commits)(\/|\?|$)/, "checks"],
+  [/\/git\//, "git"],
+  [/\/contents\//, "contents"],
+  [/\/(releases|dependabot)(\/|\?|$)/, "signals"],
+];
+function endpointClass(urlOrEndpoint: string): TelemetryTags<"github_call_ms">["endpoint"] {
+  return ENDPOINT_CLASSES.find(([re]) => re.test(urlOrEndpoint))?.[1] ?? "other";
+}
+function statusClass(status: number): TelemetryTags<"github_call_ms">["status"] {
+  return status === 429 ? "429" : status >= 500 ? "5xx" : status >= 400 ? "4xx" : "2xx";
+}
+
+/** The dedicated orphan branch for images embedded in PR descriptions and comments. It is not main and not a factory branch. */
+export const ASSETS_REF = "refs/heads/archangel/assets";
+const ASSET_PATH = /^(prs|pitches)\/\d{1,9}\/[0-9a-f]{64}\.png$/;
+const ASSET_MAX_FILES = 3;
+const ASSET_MAX_BYTES = 1024 * 1024;
+
+export interface AssetsPush {
+  ref: string;
+  files: Array<{ path: string; bytes: Buffer }>;
+  message: string;
+}
+
+/** What an assets push may touch; throws on anything else. Pure, so the narrowness is checked before any request is made. */
+export function assertAssetsPush(input: AssetsPush): void {
+  if (input.ref !== ASSETS_REF) throw new Error(`publishAssets only writes ${ASSETS_REF}, not ${input.ref}`);
+  if (input.files.length < 1 || input.files.length > ASSET_MAX_FILES) throw new Error(`publishAssets takes 1 to ${ASSET_MAX_FILES} files`);
+  for (const f of input.files) {
+    if (!ASSET_PATH.test(f.path)) throw new Error(`publishAssets only writes prs/<n>/<sha256>.png or pitches/<n>/<sha256>.png, not ${f.path}`);
+    if (f.bytes.length > ASSET_MAX_BYTES) throw new Error(`publishAssets file over ${ASSET_MAX_BYTES} bytes`);
+  }
+}
+
 export class GitHubAppClient implements GitHubClient {
   private readonly cfg: GitHubAppConfig;
   private readonly apiBase: string;
@@ -155,6 +207,7 @@ export class GitHubAppClient implements GitHubClient {
 
   async mintInstallationTokenWithMeta(): Promise<InstallationTokenMeta> {
     const jwt = this.signAppJwt();
+    const t0 = Date.now();
     const res = await fetch(
       `${this.apiBase}/app/installations/${this.cfg.installationId}/access_tokens`,
       {
@@ -168,6 +221,7 @@ export class GitHubAppClient implements GitHubClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       },
     );
+    emit("github_call_ms", Date.now() - t0, { endpoint: "auth", status: statusClass(res.status) }, `${this.cfg.owner}/${this.cfg.repo}`);
     if (!res.ok) {
       throw new GitHubHttpError(res.status, `GitHub App token mint failed (${res.status}): ${await res.text()}`);
     }
@@ -223,12 +277,22 @@ export class GitHubAppClient implements GitHubClient {
       }
     }
 
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const t0 = Date.now();
+    const repoSlug = `${this.cfg.owner}/${this.cfg.repo}`;
+    const endpoint = endpointClass(urlOrEndpoint);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      emit("github_call_ms", Date.now() - t0, { endpoint, status: "error" }, repoSlug);
+      throw err;
+    }
+    emit("github_call_ms", Date.now() - t0, { endpoint, status: statusClass(res.status) }, repoSlug);
 
     if (res.status === 304 && method === "GET" && opts.useEtag) {
       const cached = this.etagCache.get(url);
@@ -426,6 +490,75 @@ export class GitHubAppClient implements GitHubClient {
     return this.getPrLive(Number(created.number));
   }
 
+  async listMergedPrsSince(sinceMs: number, baseBranch: string): Promise<Array<{ number: number; mergedAt: number }>> {
+    const items = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&base=${encodeURIComponent(baseBranch)}`,
+    );
+    return items
+      .flatMap((p) => (typeof p.merged_at === "string" ? [{ number: Number(p.number), mergedAt: Date.parse(p.merged_at) }] : []))
+      .filter((p) => p.mergedAt > sinceMs)
+      .sort((a, b) => a.mergedAt - b.mergedAt);
+  }
+
+  async listReleasesSince(sinceMs: number): Promise<Array<{ tag: string; publishedAt: number }>> {
+    const items = await this.request<Array<Record<string, unknown>>>("GET", `/repos/${this.cfg.owner}/${this.cfg.repo}/releases?per_page=30`);
+    return items
+      .flatMap((r) => (r.draft !== true && typeof r.published_at === "string" ? [{ tag: String(r.tag_name), publishedAt: Date.parse(r.published_at) }] : []))
+      .filter((r) => r.publishedAt > sinceMs)
+      .sort((a, b) => a.publishedAt - b.publishedAt);
+  }
+
+  async searchRepositories(query: string, sort: "updated" | "stars", limit: number) {
+    const res = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      "GET",
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=${sort}&order=desc&per_page=${Math.min(Math.max(limit, 1), 10)}`,
+    );
+    return (res.items ?? []).map((r) => ({
+      fullName: String(r.full_name),
+      url: String(r.html_url),
+      pushedAt: String(r.pushed_at),
+      description: typeof r.description === "string" ? r.description : null,
+    }));
+  }
+
+  async getRepoStars(fullName: string): Promise<number> {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) throw new Error("not a repository full name");
+    const r = await this.request<Record<string, unknown>>("GET", `/repos/${fullName}`);
+    return typeof r.stargazers_count === "number" ? r.stargazers_count : 0;
+  }
+
+  async getLatestRelease(fullName: string) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) throw new Error("not a repository full name");
+    try {
+      const r = await this.request<Record<string, unknown>>("GET", `/repos/${fullName}/releases/latest`);
+      return {
+        tag: String(r.tag_name),
+        name: typeof r.name === "string" ? r.name : null,
+        url: String(r.html_url),
+        publishedAt: String(r.published_at),
+        body: typeof r.body === "string" ? r.body : null,
+      };
+    } catch (err) {
+      if (err instanceof GitHubHttpError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>> {
+    const items = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      `/repos/${this.cfg.owner}/${this.cfg.repo}/dependabot/alerts?state=open&sort=created&direction=desc&per_page=50`,
+    );
+    return items
+      .map((a) => {
+        const adv = (a.security_advisory ?? {}) as Record<string, unknown>;
+        return { number: Number(a.number), createdAt: Date.parse(String(a.created_at)), severity: String(adv.severity), ghsaId: String(adv.ghsa_id) };
+      })
+      .filter((a) => a.createdAt > sinceMs)
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
   async createIssue(input: {
     title: string;
     body: string;
@@ -446,7 +579,7 @@ export class GitHubAppClient implements GitHubClient {
         `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}`,
         { useEtag: false },
       ),
-      this.requestAllPages<{ filename: string; additions?: number; deletions?: number }>(
+      this.requestAllPages<{ filename: string }>(
         `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}/files?per_page=100`,
         { useEtag: false },
       ),
@@ -471,8 +604,6 @@ export class GitHubAppClient implements GitHubClient {
       baseSha: String(base.sha ?? ""),
       labels,
       changedFiles: files.map((f) => f.filename),
-      additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
-      deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
       mergeableState: pr.mergeable_state ? String(pr.mergeable_state) : undefined,
       mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : pr.mergeable === null ? null : undefined,
     };
@@ -514,7 +645,9 @@ export class GitHubAppClient implements GitHubClient {
 
     const parsed = runs.map((cr) => {
       const app = (cr.app ?? {}) as { slug?: string };
+      const out = (cr.output ?? {}) as { title?: string | null; summary?: string | null; text?: string | null };
       return {
+        output: [out.title, out.summary, out.text].filter((x): x is string => Boolean(x)).join("\n").slice(0, 6000),
         id: Number(cr.id),
         name: String(cr.name ?? ""),
         status: String(cr.status ?? "queued") as CheckStatus["status"],
@@ -533,11 +666,15 @@ export class GitHubAppClient implements GitHubClient {
   }
 
   async upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void> {
+    await this.upsertMarkedComment(issueOrPrNumber, RECAP_MARKER, body);
+  }
+
+  async upsertMarkedComment(issueOrPrNumber: number, marker: string, body: string): Promise<void> {
     const comments = await this.requestAllPages<{ id: number; body?: string }>(
       `/repos/${this.cfg.owner}/${this.cfg.repo}/issues/${issueOrPrNumber}/comments?per_page=100`,
       { useEtag: false },
     );
-    const existing = comments.find((c) => (c.body ?? "").includes(RECAP_MARKER));
+    const existing = comments.find((c) => (c.body ?? "").includes(marker));
     if (existing) {
       await this.request(
         "PATCH",
@@ -547,6 +684,34 @@ export class GitHubAppClient implements GitHubClient {
       return;
     }
     await this.postComment(issueOrPrNumber, body);
+  }
+
+  /**
+   * Adds the files to `archangel/assets` in one commit and returns its sha, for commit-pinned blob URLs. The branch is created as an
+   * orphan on first use, so it shares no history with main. Plain (non-force) ref updates: a concurrent writer makes this fail, not clobber.
+   */
+  async publishAssets(input: AssetsPush): Promise<{ commitSha: string }> {
+    assertAssetsPush(input);
+    const base = `/repos/${this.cfg.owner}/${this.cfg.repo}/git`;
+    const branch = ASSETS_REF.slice("refs/".length);
+    let parent: { sha: string; tree: string } | null = null;
+    try {
+      const ref = await this.request<{ object: { sha: string } }>("GET", `${base}/ref/${branch}`, { useEtag: false });
+      const commit = await this.request<{ tree: { sha: string } }>("GET", `${base}/commits/${ref.object.sha}`, { useEtag: false });
+      parent = { sha: ref.object.sha, tree: commit.tree.sha };
+    } catch (err) {
+      if (!(err instanceof GitHubHttpError && err.status === 404)) throw err;
+    }
+    const tree: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+    for (const f of input.files) {
+      const blob = await this.request<{ sha: string }>("POST", `${base}/blobs`, { body: { content: f.bytes.toString("base64"), encoding: "base64" } });
+      tree.push({ path: f.path, mode: "100644", type: "blob", sha: blob.sha });
+    }
+    const newTree = await this.request<{ sha: string }>("POST", `${base}/trees`, { body: { ...(parent ? { base_tree: parent.tree } : {}), tree } });
+    const commit = await this.request<{ sha: string }>("POST", `${base}/commits`, { body: { message: input.message, tree: newTree.sha, parents: parent ? [parent.sha] : [] } });
+    if (parent) await this.request("PATCH", `${base}/refs/${branch}`, { body: { sha: commit.sha, force: false } });
+    else await this.request("POST", `${base}/refs`, { body: { ref: ASSETS_REF, sha: commit.sha } });
+    return { commitSha: commit.sha };
   }
 
   /** Bodies of comments written by `ownerUserId` strictly after `sinceMs`, oldest first. */

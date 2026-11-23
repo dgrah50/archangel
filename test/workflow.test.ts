@@ -176,6 +176,15 @@ describe("workflow schema holes", () => {
 
   });
 
+  it("accepts a preview block only in its two exact shapes", () => {
+    const web = { kind: "web", install: ["npm", "ci"], start: ["npm", "start"], port: 3000, readyPath: "/" };
+    expect(resolve({ preview: web }).status).toBe("ok");
+    expect(resolve({ preview: { kind: "demo", commands: [["node", "cli.js", "--help"]] } }).status).toBe("ok");
+    for (const bad of [{ ...web, extra: 1 }, { ...web, port: 80 }, { ...web, start: "npm start" }, { ...web, readyPath: "//evil" }, { kind: "demo", commands: [] }, { kind: "shell", run: "x" }]) {
+      expect(resolve({ preview: bad }).status, JSON.stringify(bad)).toBe("invalid");
+    }
+  });
+
   it("rejects a Scout with an empty prompt and no skills, but accepts either one", () => {
     const scout = { name: "s", schedule: "manual" };
     expect(resolve({}, [scout], { s: "   " }).status).toBe("invalid");

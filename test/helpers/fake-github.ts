@@ -37,6 +37,12 @@ export class FakeGitHub implements GitHubClient {
       .filter((c) => c.createdAt > sinceMs)
       .map((c) => ({ id: c.id ?? 0, userId: c.userId, isBot: Boolean(c.isBot), body: c.body, createdAt: c.createdAt }));
   }
+  nextIssueNumber = 200;
+  async createIssue(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue> {
+    const issue = { number: this.nextIssueNumber++, title: input.title, body: input.body, labels: [...input.labels], state: "open" } as unknown as GitHubIssue;
+    this.issues.set(issue.number, issue);
+    return issue;
+  }
   async closeIssue(issueNumber: number): Promise<void> {
     const i = this.issues.get(issueNumber);
     if (i) i.state = "closed";
@@ -47,6 +53,28 @@ export class FakeGitHub implements GitHubClient {
     this.closedPrs.push(prNumber);
     const pr = this.prs.get(prNumber);
     if (pr) pr.state = "closed";
+  }
+  mergedPrs: Array<{ number: number; mergedAt: number }> = [];
+  releases: Array<{ tag: string; publishedAt: number }> = [];
+  alerts: Array<{ number: number; createdAt: number; severity: string; ghsaId: string }> = [];
+  async listMergedPrsSince(sinceMs: number) {
+    return this.mergedPrs.filter((p) => p.mergedAt > sinceMs);
+  }
+  async listReleasesSince(sinceMs: number) {
+    return this.releases.filter((r) => r.publishedAt > sinceMs);
+  }
+  searchResults: Array<{ fullName: string; url: string; pushedAt: string; description: string | null }> = [];
+  async searchRepositories() {
+    return this.searchResults;
+  }
+  async getRepoStars() {
+    return 0;
+  }
+  async getLatestRelease() {
+    return null;
+  }
+  async listDependabotAlertsSince(sinceMs: number) {
+    return this.alerts.filter((a) => a.createdAt > sinceMs);
   }
   async getInstallationToken(): Promise<string> {
     return "fake-install-token";
@@ -118,6 +146,7 @@ export class FakeGitHub implements GitHubClient {
     if (!pr) throw new Error(`PR #${prNumber} not found`);
     if (pr.state === "open") {
       pr.headSha = await this.getBranchTipSha(pr.headRef);
+      pr.baseSha = git(this.remoteBare, ["merge-base", await this.getBranchTipSha(pr.baseRef), pr.headSha]); // behind main until the head contains it
       pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", pr.baseSha, pr.headSha])
         .split("\n")
         .filter(Boolean);
@@ -138,6 +167,14 @@ export class FakeGitHub implements GitHubClient {
     const list = this.comments.get(issueOrPrNumber) ?? [];
     list.push(body);
     this.comments.set(issueOrPrNumber, list);
+  }
+  async upsertMarkedComment(issueOrPrNumber: number, _marker: string, body: string): Promise<void> {
+    await this.upsertRecapComment(issueOrPrNumber, body);
+  }
+  assetPushes: Array<{ ref: string; paths: string[] }> = [];
+  async publishAssets(input: { ref: string; files: Array<{ path: string }> }): Promise<{ commitSha: string }> {
+    this.assetPushes.push({ ref: input.ref, paths: input.files.map((f) => f.path) });
+    return { commitSha: "c".repeat(40) };
   }
   async postComment(issueOrPrNumber: number, body: string): Promise<void> {
     await this.upsertRecapComment(issueOrPrNumber, body);

@@ -1,9 +1,36 @@
+import { localAt } from "./helpers/local-workspaces.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
-import { SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
+import { AttemptError } from "../src/ledger/schema.js";
+import { pruneTranscripts, SubscriptionImplementer } from "../src/agents/subscription-implementer.js";
+
+describe("pruneTranscripts", () => {
+  it("removes only old transcript files directly in the dir", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-prune-test-"));
+    try {
+      const old = new Date(Date.now() - 40 * 86_400_000);
+      const write = (rel: string, aged: boolean) => {
+        const f = path.join(dir, rel);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, "x");
+        if (aged) fs.utimesSync(f, old, old);
+      };
+      for (const n of ["issue-1-1.jsonl", "issue-1-1.0-codex.stdout", "issue-1-1.0-codex.stderr"]) write(n, true);
+      write("issue-2-2.jsonl", false);
+      write("notes.txt", true);
+      write("sub/issue-3-3.jsonl", true);
+      expect(pruneTranscripts(dir, Date.now() - 30 * 86_400_000)).toBe(3);
+      expect(fs.readdirSync(dir).sort()).toEqual(["issue-2-2.jsonl", "notes.txt", "sub"]);
+      expect(fs.existsSync(path.join(dir, "sub/issue-3-3.jsonl"))).toBe(true);
+      expect(pruneTranscripts(path.join(dir, "missing"), Date.now())).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("subscription CLI failover (Continuity-style) & cross-vendor review independence", () => {
   it("fails over implementer from codex to agy on quota/rate-limit with Continuity context, and does NOT fail over on non-quota errors", async () => {
@@ -45,7 +72,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
 
       const res = await impl.run({
         issueNumber: 13,
-        cloneDir: repo,
+        workspaces: localAt(repo),
         prompt: "Fix SSH_CONNECTION",
         abortController: new AbortController(),
         maxTurns: 10,
@@ -66,7 +93,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       seenPrompts.length = 0;
       const res2 = await impl.run({
         issueNumber: 15,
-        cloneDir: repo,
+        workspaces: localAt(repo),
         prompt: "Fix next bug",
         abortController: new AbortController(),
         maxTurns: 10,
@@ -95,7 +122,7 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
       await expect(
         failFast.run({
           issueNumber: 14,
-          cloneDir: repo,
+          workspaces: localAt(repo),
           prompt: "Fix bug",
           abortController: new AbortController(),
           maxTurns: 10,
@@ -103,6 +130,40 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
           maxBudgetUsd: 5, role: "implement" as const,
         }),
       ).rejects.toThrow(/test failed/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("retries a network drop once on the same account, then fails; an exit-0 headless denial with no work is a failure", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sub-test-"));
+    const repo = path.join(tmp, "repo");
+    fs.mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "test@local"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "a.go"), "package a\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    try {
+      const chain = [{ provider: "codex" as const }];
+      const make = (invoker: ConstructorParameters<typeof SubscriptionImplementer>[0]["invoker"]) =>
+        new SubscriptionImplementer({ chains: { implement: chain, revise: chain, rebase: chain }, transcriptsDir: path.join(tmp, "t"), networkRetryWaitMs: 0, invoker });
+      const run = (impl: SubscriptionImplementer) =>
+        impl.run({ issueNumber: 1, workspaces: localAt(repo), prompt: "Fix", abortController: new AbortController(), maxTurns: 10, timeoutMs: 10_000, maxBudgetUsd: 5, role: "implement" as const });
+
+      let calls = 0;
+      const dropped = make(async () => {
+        calls++;
+        return { code: 1, stdout: "", stderr: "Error: read ECONNRESET", aborted: false };
+      });
+      await expect(run(dropped)).rejects.toMatchObject({ category: "provider_network" });
+      expect(calls).toBe(2);
+
+      const denied = make(async () => ({ code: 0, stdout: "{}", stderr: 'jetski: no output produced: a tool required the "command" permission, so it was auto-denied.', aborted: false }));
+      const err = await run(denied).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AttemptError);
+      expect((err as AttemptError).category).toBe("permission_denied");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

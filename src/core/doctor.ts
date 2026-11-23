@@ -4,7 +4,14 @@ import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 import { ConfigError, REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
+import { Secret } from "@sailresearch/sdk";
+import { CODEX_BROKER_ID, CODEX_BROKER_SECRET } from "../compute/codex-broker-adapter.js";
+import { readBrokerState } from "../compute/token-broker.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
+import { GitBroker } from "../broker/git-broker.js";
+import { LocalProvider } from "../compute/local.js";
+import { SandboxExecProvider } from "../compute/sandbox-exec.js";
+import { verifyRepoSetup } from "./verify-setup.js";
 import { execRunner } from "./onboard.js";
 import { loadWorkflow, workflowError } from "./workflow-load.js";
 import type { EffectiveWorkflow } from "./workflow.js";
@@ -38,9 +45,33 @@ export interface DoctorOptions {
   apiBaseUrl?: string;
   /** Per-provider version + login-status checks (never invokes a model). */
   smoke?: boolean;
+  /** Dry-run each project's `.agents/setup` from main in a throwaway clone, sandboxed where the machine can. */
+  verifySetup?: boolean;
 }
 
 export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
+  const report = await runChecks(opts);
+  if (!opts.verifySetup) return report;
+  if (report.checks.some((c) => c.id === "config" && c.status === "fail")) return report;
+  const projects = loadProjectConfigs({ configPath: opts.configPath, env: opts.env ?? process.env });
+  for (const cfg of projects) {
+    const paths = resolvePaths(cfg);
+    const name = `Setup dry-run (${cfg.githubOwner}/${cfg.githubRepo})`;
+    try {
+      if (!fs.existsSync(paths.brokerBareRepoPath)) throw new Error("no broker clone yet; start the daemon once so it fetches the repo");
+      const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
+      const sandbox = process.platform === "darwin" ? new SandboxExecProvider(new LocalProvider(broker)) : null;
+      const v = await verifyRepoSetup({ broker, defaultBranch: cfg.defaultBranch, timeoutMs: cfg.setupTimeoutMs, sandbox });
+      report.checks.push({ id: "verify_setup", name, status: v.ok ? "pass" : "fail", detail: v.detail, scope: "repo" });
+    } catch (err) {
+      report.checks.push({ id: "verify_setup", name, status: "fail", detail: err instanceof Error ? err.message : String(err), scope: "repo" });
+    }
+  }
+  report.ok = report.checks.every((c) => c.status !== "fail");
+  return report;
+}
+
+async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   const env = opts.env ?? process.env;
 
@@ -265,6 +296,24 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     });
   }
 
+  // 4b. The Sail token broker for a dedicated codex ChatGPT login: its state and the token lifetime it measured.
+  if (first.compute.provider === "sail" && first.compute.sail?.codexBrokerHome) {
+    const st = readBrokerState(paths.dataDir, CODEX_BROKER_ID);
+    checks.push({
+      id: "sail_broker",
+      name: "Sail token broker (codex)",
+      status: st?.status === "ok" && (st.expiresAt ?? 0) > Date.now() ? "pass" : "fail",
+      detail: !st
+        ? "the broker has not refreshed yet"
+        : st.status === "failed"
+          ? `failed: ${st.lastError ?? "unknown error"}`
+          : (st.expiresAt ?? 0) <= Date.now()
+            ? "the access token has expired and the broker has not refreshed it (is the daemon running?)"
+            : `ok; measured access-token lifetime ${st.lifetimeSeconds !== null ? `${(st.lifetimeSeconds / 3600).toFixed(1)}h` : "unknown"}, expires ${new Date(st.expiresAt ?? 0).toISOString()}`,
+      remediation: st?.status === "ok" && (st.expiresAt ?? 0) > Date.now() ? undefined : "Start the daemon; if it stays failed, log the dedicated account in again: CODEX_HOME=<codexBrokerHome> codex login",
+    });
+  }
+
   // 5. git >= 2.38 (for git merge-tree --write-tree)
   try {
     const { stdout } = await execFileAsync("git", ["--version"]);
@@ -328,6 +377,34 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   for (const c of checks) c.scope = "machine";
   if (opts.offline) {
     return { ok: checks.every((c) => c.status !== "fail"), checks };
+  }
+
+  // 8b. Every Sail secret a configured remote credential names must exist (the egress policy cannot inject a missing one).
+  const sail = first.compute.provider === "sail" ? first.compute.sail : undefined;
+  if (sail) {
+    const needed = [
+      ...(sail.remoteClaudeAttempts ? [{ provider: "claude", secret: sail.claudeTokenSecret }] : []),
+      ...(sail.codexApiKeySecret ? [{ provider: "codex", secret: sail.codexApiKeySecret }] : []),
+      ...(sail.codexBrokerHome ? [{ provider: "codex (broker)", secret: CODEX_BROKER_SECRET }] : []),
+      ...(sail.geminiApiKeySecret ? [{ provider: "agy", secret: sail.geminiApiKeySecret }] : []),
+    ];
+    if (needed.length > 0) {
+      try {
+        const have = new Set((await Secret.list()).map((x) => x.name));
+        for (const n of needed) {
+          const found = have.has(n.secret);
+          checks.push({
+            id: `sail_secret:${n.secret}`,
+            name: `Sail secret for ${n.provider}`,
+            status: found ? "pass" : "fail",
+            detail: found ? `${n.secret} exists` : `${n.secret} is not a Sail secret`,
+            remediation: found ? undefined : n.secret === CODEX_BROKER_SECRET ? "Start the daemon: the token broker creates it." : `Run \`sail secret set ${n.secret}\` and paste the key at the hidden prompt.`,
+          });
+        }
+      } catch (err) {
+        checks.push({ id: "sail_secrets", name: "Sail secrets", status: "fail", detail: `could not list Sail secrets: ${err instanceof Error ? err.message : String(err)}`, remediation: "Run `sail auth login`." });
+      }
+    }
   }
 
   // 9. Online GitHub App least-privilege permission audit + target repo checks (ADR-0004!)
@@ -397,7 +474,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
         if (wf !== null) {
           try {
             gateLatest ??= await latestGateCommit(execRunner);
-            const drift = await assessPinDrift(execRunner, wf, gateLatest);
+            const drift = await assessPinDrift(execRunner, wf, gateLatest, { branch: cfg.defaultBranch });
             checks.push({
               id: `gate_pin:${repoSlug}`,
               name: `Gate Pin (${repoSlug})`,

@@ -4,7 +4,9 @@ import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
-import { scanForSecrets } from "./scout.js";
+import { renderChaptersSection, type Chapter } from "./recap-chapters.js";
+import { scanForSecrets, withholdSecrets } from "./secrets.js";
+import { renderShotImages, type ShotLink } from "./pr-shots.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
 
 export const RECAP_MARKER = "<!-- archangel:recap -->";
@@ -21,11 +23,16 @@ export function renderRecapComment(input: {
   gateProofError?: string | null;
   /** What machine triage decided for this Thread (a `factory/triage` audit row); null/undefined when triage never ran. */
   triage?: TriageSummary | null;
+  /** Feature PRs only: the diff grouped by area, with optional machine captions. */
+  chapters?: Chapter[] | null;
+  /** Small screenshots of the PR head, already published by the host; rendered as a short section. */
+  shots?: ShotLink[];
   /** The owner-written issue body, for the Summary's Before line; omitted when it could not be read. */
   issueBody?: string | null;
-  /** The PR's changed files and line totals, for the Summary's What changed lines. */
-  diff?: { files: string[]; additions: number; deletions: number } | null;
+  /** Called with the pattern name when agent-authored text was withheld for matching the secret scan. */
+  onWithheld?: (pattern: string) => void;
 }): string {
+  const safe = (text: string): string => withholdSecrets(text, input.onWithheld);
   const { thread, reviews, blockers } = input;
   const pr = extractPrFromPhase(thread.phase);
   const headSha = pr?.headSha ?? ("headSha" in thread.phase ? thread.phase.headSha : null) ?? null;
@@ -62,10 +69,10 @@ export function renderRecapComment(input: {
     );
   }
   if (thread.phase.kind === "needs_you") {
-    const policy = describeEscalation(thread.phase.code, workClass);
+    const policy = describeEscalation(thread.phase.code, workClass, thread.phase.cause);
     lines.push(
       "",
-      `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${thread.phase.reason}`,
+      `> **Needs You — ${formatDecisionClass(policy.decisionClass)}** (\`${thread.phase.code}\`): ${safe(thread.phase.reason)}`,
       `> **Recommended:** ${policy.recommendation}`,
     );
   }
@@ -76,8 +83,11 @@ export function renderRecapComment(input: {
     else if (t.action === "escalate" && t.reason) body.push("", ...fencedText(t.reason));
     lines.push(...details("Machine triage (factory), not the owner", body));
   }
-  const summaryText = input.summary ?? thread.lastSummary;
-  if (summaryText) {
+  const chapterSection = renderChaptersSection(input.chapters ?? []);
+  if (chapterSection.length > 0) lines.push(...details("Chapters with captions", chapterSection.slice(1)));
+  const rawSummary = input.summary ?? thread.lastSummary;
+  if (rawSummary) {
+    const summaryText = safe(rawSummary);
     const assumptions = extractAssumptions(summaryText);
     lines.push(
       ...details("Latest Summary and Implementer Assumptions", [
@@ -128,7 +138,7 @@ export function renderRecapComment(input: {
       );
       for (const f of findings) {
         const loc = f.line ? `${f.file}:${f.line}` : f.file;
-        revLines.push(`  - [${f.severity}] \`${loc}\`: ${f.summary}`);
+        revLines.push(`  - [${f.severity}] \`${loc}\`: ${safe(f.summary)}`);
       }
     }
     lines.push(...details("Independent Reviews", revLines));
@@ -137,7 +147,7 @@ export function renderRecapComment(input: {
   lines.push(
     ...details(
       "Current Blockers",
-      blockers.length > 0 ? blockers.map((b) => `- \`${b.code}\`: ${b.message}`) : ["- None — eligible to land."],
+      blockers.length > 0 ? blockers.map((b) => `- \`${b.code}\`: ${safe(b.message)}`) : ["- None — eligible to land."],
     ),
   );
 
@@ -174,32 +184,21 @@ export function renderPrBody(issue: { number: number; title: string; body?: stri
   ].join("\n");
 }
 
-/** What changed, one line per area: the top-level folder of each file, at most 6 lines. */
-function areaLines(files: string[]): string[] {
-  const areas = new Map<string, number>();
-  for (const f of files) {
-    const parts = f.split("/");
-    const area = parts.length > 1 ? parts[0]! : "(repo root)";
-    areas.set(area, (areas.get(area) ?? 0) + 1);
-  }
-  const sorted = [...areas].sort((a, b) => b[1] - a[1]);
-  const shown = sorted.slice(0, 5).map(([a, n]) => `- \`${a}\`: ${n} file${n === 1 ? "" : "s"}`);
-  if (sorted.length > 5) {
-    const rest = sorted.slice(5).reduce((n, [, c]) => n + c, 0);
-    shown.push(`- ${sorted.length - 5} more areas: ${rest} files`);
-  }
+/** What changed, one line per chapter (at most 6), from the mechanical chapters of a feature PR. */
+function chapterLines(chapters: readonly Chapter[]): string[] {
+  const shown = chapters.slice(0, 6).map((c) => `- ${c.area === "(root)" ? "Repo root" : `\`${c.area}/\``} (${c.kind}): ${c.files.length} file${c.files.length === 1 ? "" : "s"}, +${c.added}/−${c.deleted}`);
+  if (chapters.length > 6) shown.push(`- ${chapters.length - 6} more areas`);
   return shown;
 }
 
 function renderSummary(input: Parameters<typeof renderRecapComment>[0], workClass: string): string[] {
   const { thread, reviews, blockers } = input;
   const out = ["#### Summary", beforeLine(thread.issueNumber, thread.title, input.issueBody)];
-  if (input.diff && input.diff.files.length > 0) {
-    out.push(
-      "",
-      `**What changed** (+${input.diff.additions}/−${input.diff.deletions}, ${input.diff.files.length} files)`,
-      ...areaLines(input.diff.files),
-    );
+  const chapters = input.chapters ?? [];
+  if (chapters.length > 0) {
+    const added = chapters.reduce((n, c) => n + c.added, 0);
+    const deleted = chapters.reduce((n, c) => n + c.deleted, 0);
+    out.push("", `**What changed** (+${added}/−${deleted})`, ...chapterLines(chapters));
   }
   const judge: string[] = [];
   const protectedHit = blockers.find((b) => b.code === "protected_paths_touched");
@@ -216,6 +215,7 @@ function renderSummary(input: Parameters<typeof renderRecapComment>[0], workClas
     facts.push(`${approved}/${reviews.length} reviews approve`);
   }
   facts.push(blockers.length === 0 ? "no blockers" : `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}`);
+  if (input.shots && input.shots.length > 0) out.push("", "**Screenshots** (taken by Archangel from a sandboxed run of this head)", renderShotImages(input.shots));
   out.push("", `**Verified:** ${facts.join(" · ")}`);
   return out;
 }

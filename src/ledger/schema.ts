@@ -61,7 +61,12 @@ export const ATTEMPT_ERROR_CATEGORIES = [
   "aborted",
   "no_change",
   "timeout",
-  "provider_unavailable",
+  "quota",
+  "provider_network",
+  "auth",
+  "context_overflow",
+  "permission_denied",
+  "cli_missing",
   "setup_failed",
   "implementer_failed",
   "static_rejection",
@@ -109,6 +114,8 @@ export interface AttemptRecord {
   model: string | null;
   /** Which configured account (login) ran it; null for rows from before accounts. */
   accountId: string | null;
+  /** Where the agent ran: "local" or "sail"; null for rows from before it was recorded. */
+  compute: string | null;
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;
   workflowSha256: string | null;
@@ -196,6 +203,31 @@ export interface AuditLogEntry {
   payloadJson: string;
 }
 
+export type SignalTaint = "owner" | "mechanical" | "untrusted";
+
+export interface ResearchRow {
+  id: number;
+  source: string;
+  template: number;
+  topic: string;
+  title: string;
+  url: string;
+  date: string;
+  snippet: string;
+  fetchedAt: number;
+}
+
+export interface SignalRecord {
+  id: number;
+  repo: string;
+  source: string;
+  kind: string;
+  dedupeKey: string;
+  taint: SignalTaint;
+  payload: unknown;
+  observedAt: number;
+}
+
 export const LEDGER_SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
@@ -245,6 +277,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   provider TEXT,
   model TEXT,
   account_id TEXT,
+  compute TEXT,
   prompt_sha256 TEXT,
   workflow_sha256 TEXT,
   duration_ms INTEGER,
@@ -411,6 +444,41 @@ CREATE TABLE IF NOT EXISTS pitches (
   PRIMARY KEY (repo, issue_number)
 );
 
+-- Host-validated images shown with a pitch. The re-encoded bytes live in <dataDir>/pitch-assets/<sha256>.<ext>, never in the Ledger.
+CREATE TABLE IF NOT EXISTS pitch_attachments (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('repo','capture')),
+  mime TEXT NOT NULL CHECK (mime IN ('image/png','image/jpeg','image/webp')),
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  bytes INTEGER NOT NULL,
+  caption TEXT NOT NULL,
+  -- repo: "<path>@<mainSha>"; capture: "<path>@<pocHeadSha>"
+  source TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, issue_number, sha256)
+);
+
+-- A pitch's proof of concept: a local ref in the Broker's bare repo, never pushed. Lifecycle: a PocState (core/poc-machine.ts),
+-- changed only through Ledger.stepPocState / reservePocBuild (compare-and-set on version). The preview URL is never stored.
+CREATE TABLE IF NOT EXISTS pitch_pocs (
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  ref TEXT NOT NULL CHECK (ref = 'refs/pitch-poc/' || issue_number),
+  builds INTEGER NOT NULL DEFAULT 0,
+  -- A not-L pitch was filed and a build waits for a free slot within the caps; cleared when any build is requested.
+  auto_queued INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  diff_stat TEXT,
+  state_json TEXT NOT NULL,
+  state TEXT GENERATED ALWAYS AS (json_extract(state_json, '$.kind')) STORED,
+  state_at INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (repo, issue_number)
+);
+
 CREATE TABLE IF NOT EXISTS scout_proposals (
   repo TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
@@ -457,4 +525,75 @@ CREATE TABLE IF NOT EXISTS bench_results (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (cache_key, case_id)
 );
+-- Signals (O8): durable, append-only facts adapters observed. dedupe_key makes ingestion idempotent; taint is fixed by the signal's kind.
+CREATE TABLE IF NOT EXISTS signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  taint TEXT NOT NULL CHECK (taint IN ('owner', 'mechanical', 'untrusted')),
+  payload_json TEXT NOT NULL,
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_repo_observed ON signals(repo, observed_at);
+CREATE TRIGGER IF NOT EXISTS signals_no_update BEFORE UPDATE ON signals BEGIN SELECT RAISE(ABORT, 'signals are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS signals_no_delete BEFORE DELETE ON signals BEGIN SELECT RAISE(ABORT, 'signals are append-only'); END;
+
+-- One row per (signal, rule version): the claim that makes an action happen once. A changed rule has a new rule_key, so it reconsiders.
+CREATE TABLE IF NOT EXISTS signal_actions (
+  signal_id INTEGER NOT NULL REFERENCES signals(id),
+  rule_key TEXT NOT NULL,
+  rule_name TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  detail TEXT,
+  actioned_at INTEGER NOT NULL,
+  PRIMARY KEY (signal_id, rule_key)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_actions_day ON signal_actions(day_key, rule_name);
+
+-- How far each adapter has read (a timestamp in ms) and when it last polled.
+CREATE TABLE IF NOT EXISTS signal_watermarks (
+  repo TEXT NOT NULL,
+  adapter TEXT NOT NULL,
+  watermark INTEGER NOT NULL,
+  polled_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, adapter)
+);
+
+-- Research (O1): public-internet results the host fetched. Closed shape; every field is sanitized and secret-scanned before it lands here.
+CREATE TABLE IF NOT EXISTS research_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,
+  template INTEGER NOT NULL,
+  topic TEXT NOT NULL,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  date TEXT NOT NULL,
+  snippet TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  UNIQUE (repo, url)
+);
+-- One row per outbound research request: the daily fetch cap counts these.
+CREATE TABLE IF NOT EXISTS research_fetches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_fetches_day ON research_fetches(repo, day_key);
+
+-- Telemetry: the factory's own measurements, local only. name and tags are closed enums (see core/telemetry-events.ts); never free text.
+CREATE TABLE IF NOT EXISTS telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  repo TEXT,
+  name TEXT NOT NULL,
+  value REAL NOT NULL,
+  tags_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_name_ts ON telemetry(name, ts);
+CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry(ts);
 `;

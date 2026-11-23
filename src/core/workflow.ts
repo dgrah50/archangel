@@ -80,6 +80,32 @@ export const ScoutSpec = z
   .strict();
 export type ScoutSpec = z.infer<typeof ScoutSpec>;
 
+/** One command as an argv: no shell, so no quoting or expansion. */
+const PreviewPath = z.string().max(100).regex(/^\/([\w.-]+\/)*[\w.-]*$/);
+const Argv = z.array(z.string().min(1).max(200).regex(/^[^\0\r\n]+$/)).min(1).max(20);
+
+/**
+ * How the owner says a PoC of this repo is shown. Absent means no preview. The sandboxed runner reads it.
+ * `web` starts a server on a port the host health-checks; `demo` lists commands whose output is recorded as a before/after transcript.
+ */
+export const Preview = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("web"),
+      install: Argv,
+      start: Argv,
+      port: z.number().int().min(1024).max(65535),
+      readyPath: PreviewPath,
+      /** Up to 2 more pages to screenshot after `readyPath`. */
+      shots: z.array(PreviewPath).max(2).default([]),
+      /** Owner policy: let the install's lifecycle scripts (`postinstall`, ...) run. They still run inside the sandbox. Default off. */
+      allowInstallScripts: z.boolean().default(false),
+    })
+    .strict(),
+  z.object({ kind: z.literal("demo"), commands: z.array(Argv).min(1).max(5) }).strict(),
+]);
+export type Preview = z.infer<typeof Preview>;
+
 export const Workflow = z
   .object({
     version: z.literal(1),
@@ -102,11 +128,19 @@ export const Workflow = z
     /** Must name `Gate` and at least one other CI check, or landing could never see main green. */
     requiredChecks: z.array(NonBlank),
     review: z.object({ rubric: z.string().max(4000).optional() }).strict().default({}),
-    landing: z.object({ bugfix: z.enum(["owner", "autonomous"]).default("owner") }).strict().default({ bugfix: "owner" }),
+    landing: z
+      .object({
+        bugfix: z.enum(["owner", "autonomous"]).default("owner"),
+        /** `race`: when main goes red, one bounded fix-forward Attempt runs beside the automatic revert (which stays the default and the winner); the owner decides. `off` can only tighten. */
+        fixForward: z.enum(["off", "race"]).default("off"),
+      })
+      .strict()
+      .default({ bugfix: "owner", fixForward: "off" }),
     /** `owner`: a feature waits, after a machine-written plan, for the owner's `plan:approved` label before it is implemented. Bugfixes and chores never plan. `off` can only loosen. */
     features: z.object({ planApproval: z.enum(["off", "owner"]).default("off") }).strict().default({ planApproval: "off" }),
     /** `once` lets the factory retry a Thread once instead of escalating (see KERNEL.factoryRetriesPerThread); `off` can only tighten. */
     escalations: z.object({ factoryRetry: z.enum(["off", "once"]).default("off") }).strict().default({ factoryRetry: "off" }),
+    preview: Preview.optional(),
     scouts: z.array(ScoutSpec).max(KERNEL.maxScouts).default([]),
     /** Fleet Scouts the host enables run here unless named in `optOut`. Unknown names are invalid, so a typo never silently keeps one running. */
     fleetScouts: z.object({ optOut: z.array(z.enum(FLEET_SCOUT_NAMES)).max(FLEET_SCOUT_NAMES.length) }).strict().default({ optOut: [] }),
@@ -218,6 +252,8 @@ export type EffectiveWorkflow =
       landingBugfix: Effective<"owner" | "autonomous">;
       factoryRetry: Effective<"off" | "once">;
       planApproval: "off" | "owner";
+      fixForward: "off" | "race";
+      preview: Preview | null;
       scouts: EffectiveScout[];
       /** Fleet Scouts this repo opted out of in its workflow file. */
       fleetOptOut: FleetScoutName[];
@@ -315,6 +351,8 @@ export function resolveWorkflow(host: HostWorkflowInput, repoIn: RepoWorkflowInp
     landingBugfix,
     factoryRetry,
     planApproval: wf.features.planApproval,
+    fixForward: wf.landing.fixForward,
+    preview: wf.preview ?? null,
     scouts,
     fleetOptOut,
     caps: {
@@ -373,6 +411,10 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
     add("landing.bugfix", next.landing.bugfix === "autonomous" ? "loosen" : "tighten");
   }
 
+  if (prev.landing.fixForward !== next.landing.fixForward) {
+    add("landing.fixForward", next.landing.fixForward === "race" ? "loosen" : "tighten");
+  }
+
   if (prev.escalations.factoryRetry !== next.escalations.factoryRetry) {
     add("escalations.factoryRetry", next.escalations.factoryRetry === "once" ? "loosen" : "tighten");
   }
@@ -380,6 +422,8 @@ export function classifyChange(prev: Workflow, next: Workflow): FieldChange[] {
   if (prev.features.planApproval !== next.features.planApproval) {
     add("features.planApproval", next.features.planApproval === "owner" ? "tighten" : "loosen");
   }
+
+  if (!eq(prev.preview, next.preview)) add("preview", "changed");
 
   const before = new Map(prev.scouts.map((s) => [s.name, s]));
   const after = new Map(next.scouts.map((s) => [s.name, s]));

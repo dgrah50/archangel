@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { SignalsConfigSchema } from "./core/signal-rules.js";
 import { FLEET_SCOUT_NAMES } from "./core/fleet-scouts.js";
 import type { ReviewerVendor } from "./ledger/schema.js";
 
@@ -200,6 +201,11 @@ export function providerToVendor(provider: CliProvider): ReviewerVendor {
   return "anthropic";
 }
 
+/** The id Paseo knows a CLI provider by. */
+export function providerToPaseo(provider: CliProvider): string {
+  return provider === "agy" ? "antigravity" : provider;
+}
+
 /** `owner/name` as GitHub allows it. No spaces or URL metacharacters (slugs are interpolated into REST paths), and the name is never `.` or `..`. */
 export const REPO_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
 
@@ -271,6 +277,73 @@ const TimeoutFields = {
   reviewerOutageMaxMs: z.number().int().min(60_000).default(6 * 60 * 60_000),
 };
 
+/** Where Scouts run: `local` (default) or a Sail Sailbox. Strict: an unknown key or provider is a config error, never a silent local run. */
+export const ComputeConfigSchema = z
+  .object({
+    provider: z.enum(["local", "sail"]).default("local"),
+    sail: z
+      .object({
+        app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, "lowercase letters, digits and hyphens"),
+        image: z.object({ arch: z.enum(["amd64", "arm64"]).default("amd64") }).strict().default({ arch: "amd64" }),
+        maxLifetimeSeconds: z.number().int().min(60).max(3600).default(600),
+        maxDailyComputeUsd: z.number().positive().default(2),
+        /** Name of the Sail secret holding the Claude token; the egress policy swaps it in on the wire (the box sees a placeholder in CLAUDE_CODE_OAUTH_TOKEN). It must exist before the first box. */
+        claudeTokenSecret: z.string().min(1).default("CLAUDE_CODE_OAUTH_TOKEN"),
+        /** Off by default: Claude-chain implement, revise and review Attempts stay on this machine. */
+        remoteClaudeAttempts: z.boolean().default(false),
+        /** Name of the Sail secret holding an OpenAI API key. Set: codex entries run on Sail with it (the box sees a placeholder in OPENAI_API_KEY); unset: codex runs on this machine with its own login. */
+        codexApiKeySecret: z.string().min(1).optional(),
+        /** Name of the Sail secret holding a Gemini API key. Set: agy entries run on Sail with it (the box sees a placeholder in GEMINI_API_KEY); unset: agy runs on this machine with its own login. */
+        geminiApiKeySecret: z.string().min(1).optional(),
+        /** A dedicated ChatGPT login (a CODEX_HOME with `cli_auth_credentials_store = "file"`, never your main account) that the daemon's token broker keeps fresh. Set: codex entries run on Sail with a broker-held access token; exclusive with codexApiKeySecret. */
+        codexBrokerHome: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((c) => !(c.sail?.codexApiKeySecret && c.sail.codexBrokerHome), { message: "compute.sail: codexApiKeySecret and codexBrokerHome are exclusive: codex has one remote credential", path: ["sail"] })
+  .refine((c) => c.provider !== "sail" || c.sail !== undefined, { message: "compute.provider 'sail' needs a compute.sail block", path: ["sail"] })
+  .default({ provider: "local" });
+export type ComputeConfig = z.infer<typeof ComputeConfigSchema>;
+
+export const RESEARCH_TOPIC_RE = /^[a-z0-9][a-z0-9 .+-]{0,39}$/;
+
+export const ResearchConfigSchema = z
+  .object({
+    /** Owner-written search terms: at most 5, each at most 40 characters of `[a-z0-9 .+-]`. Empty turns research off. */
+    topics: z.array(z.string().regex(RESEARCH_TOPIC_RE, "use lowercase letters, digits, space and . + -")).max(5).default([]),
+    /** Hard cap on outbound requests per repo per day (a release lookup counts as one). PROVISIONAL. */
+    maxFetchesPerDay: z.number().int().min(1).max(100).default(20),
+    /** Polite pause between requests. PROVISIONAL; arXiv asks for at least 3 seconds between calls. */
+    minIntervalMs: z.number().int().min(1000).max(60_000).default(3000),
+    /** O9: owner-curated public GitHub repos (`owner/name`, at most 10) the host shallow-clones read-only and the fleet-pr-miner reads as data. */
+    watchRepos: z.array(z.string().regex(REPO_SLUG_RE, "use owner/name")).max(10).default([]),
+  })
+  .strict();
+export type ResearchConfig = z.infer<typeof ResearchConfigSchema>;
+
+export const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Production errors (O4), host-fetched by polling. Absent means off. The token is read from the named env var, never from this file. */
+export const ProductionConfigSchema = z
+  .object({
+    sentry: z
+      .object({
+        org: z.string().regex(SLUG_RE),
+        project: z.string().regex(SLUG_RE),
+        /** The project (`owner/name`, listed under projects) whose Scouts see these numbers. */
+        repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+        /** Name of the env var (set in .env) holding a Sentry auth token with read scope. */
+        tokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+        /** Sentry region or self-hosted origin; https only. */
+        baseUrl: z.string().url().startsWith("https://").default("https://sentry.io"),
+      })
+      .strict(),
+  })
+  .strict();
+export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
+
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
   githubOwner: z.string().min(1),
@@ -297,6 +370,7 @@ export const ConfigSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  compute: ComputeConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
@@ -307,6 +381,12 @@ export const ConfigSchema = z.object({
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
+  /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
+  signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
+  /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
+  research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
+  /** Production errors (O4): a Sentry project polled for whitelisted counts. Off when absent. */
+  production: ProductionConfigSchema.optional(),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -399,6 +479,7 @@ export const HostYamlSchema = z.object({
   pollIntervalMs: z.number().int().min(5000).default(30_000),
   maxDailyUsd: z.number().positive().default(20),
   dailyTimezone: z.string().min(1).default("America/New_York"),
+  compute: ComputeConfigSchema,
   /** Local hour (0-23, in dailyTimezone) at or after which the once-a-day digest is sent. */
   digestHour: z.number().int().min(0).max(23).default(9),
   factoryRetry: z.boolean().default(true),
@@ -406,6 +487,12 @@ export const HostYamlSchema = z.object({
   fleetScouts: z.array(z.enum(FLEET_SCOUT_NAMES)).default([]),
   /** Absolute paths of owner-written notes (past review reports and the like) the fleet-pr-miner may read; each is secret-scanned and truncated. */
   fleetMinerSeeds: z.array(z.string().min(1)).max(5).default([]),
+  /** Signal layer (O8): adapters, owner-written trigger rules and their caps. Off by default. */
+  signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
+  /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
+  research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
+  /** Production errors (O4): a Sentry project polled for whitelisted counts. Off when absent. */
+  production: ProductionConfigSchema.optional(),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -427,6 +514,11 @@ export const HostYamlSchema = z.object({
     [...Object.entries(host.chains).map(([role, chain]) => [`chains.${role}`, chain] as [string, ProviderEntry[]]), ["reviewerChain", host.reviewerChain]],
     (p, message) => ctx.addIssue({ code: "custom", path: p, message }),
   );
+  host.signals.rules.forEach((r, i) => {
+    if (r.repo !== undefined && !host.projects.some((p) => p.repo.toLowerCase() === r.repo!.toLowerCase())) {
+      ctx.addIssue({ code: "custom", path: ["signals", "rules", i, "repo"], message: `rule '${r.name}': '${r.repo}' is not a project in this file` });
+    }
+  });
   // Two entries for one repo would run two Reconcilers over one Broker clone, clones dir and Ledger view.
   const seen = new Set<string>();
   host.projects.forEach((p, i) => {
@@ -532,6 +624,14 @@ export function loadProjectConfigs(opts: {
     throw new Error(`Invalid accounts in ${resolvedConfig}: ${homeProblems.map((p) => `${p.id}: ${p.problem}`).join("; ")}`);
   }
 
+  const sentry = host.production?.sentry;
+  if (sentry) {
+    if (!host.projects.some((p) => p.repo.toLowerCase() === sentry.repo.toLowerCase())) {
+      throw new ConfigError(`production.sentry.repo '${sentry.repo}' is not listed under projects in ${resolvedConfig}`, "Point production.sentry.repo at one of your projects.");
+    }
+    if (!env[sentry.tokenEnv]) throw new ConfigError(`production.sentry.tokenEnv: ${sentry.tokenEnv} is not set`, "Create a Sentry auth token with read scope and put it in .env under that name.");
+  }
+
   return host.projects.map((proj) => {
     const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
     return parseConfig(() => ConfigSchema.parse({
@@ -554,6 +654,7 @@ export function loadProjectConfigs(opts: {
       pollIntervalMs: host.pollIntervalMs,
       maxDailyUsd: host.maxDailyUsd,
       dailyTimezone: host.dailyTimezone,
+      compute: host.compute,
       digestHour: host.digestHour,
       maxConcurrentThreads: proj.maxConcurrentThreads,
       maxAutoMergesPerDay: proj.maxAutoMergesPerDay,
@@ -572,6 +673,9 @@ export function loadProjectConfigs(opts: {
       factoryRetry: host.factoryRetry,
       fleetScouts: host.fleetScouts,
       fleetMinerSeeds: host.fleetMinerSeeds,
+      signals: host.signals,
+      research: host.research,
+      production: host.production,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

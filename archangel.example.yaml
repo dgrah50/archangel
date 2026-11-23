@@ -12,6 +12,20 @@ maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to ne
 maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
 maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per thread
 
+# Where Scouts run. Default is this machine. Uncomment to run Scouts in Sail Sailboxes (needs `sail auth login`; nothing
+# from this machine's environment goes into a box). A provider runs on Sail only when it has a remote credential below; otherwise it runs here.
+# compute:
+#   provider: sail
+#   sail:
+#     app: archangel
+#     maxLifetimeSeconds: 600       # server-side kill for a leaked box
+#     maxDailyComputeUsd: 2         # new boxes are refused past this estimate (box-minutes at Sail's rates)
+#     claudeTokenSecret: CLAUDE_CODE_OAUTH_TOKEN   # the Sail secret (`sail secret set <name>`) the egress policy injects; the box sees only a placeholder
+#     remoteClaudeAttempts: false   # let claude entries run on Sail (off: they stay local)
+#     codexApiKeySecret: OPENAI_API_KEY_SAIL   # codex entries run on Sail with this OpenAI API key (`sail secret set <name>`); unset: codex stays local
+#     codexBrokerHome: ~/.archangel/accounts/codex-sail   # instead of codexApiKeySecret: a dedicated ChatGPT login the daemon's token broker keeps fresh (see README, Running providers on Sail)
+#     geminiApiKeySecret: GEMINI_API_KEY_SAIL  # agy entries run on Sail with this Gemini API key; unset: agy stays local
+
 # Execution timeouts (ms unless noted)
 implementMaxTurns: 40               # agent turn cap for one implement Attempt
 implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
@@ -70,6 +84,89 @@ reviewerChain:
 # below 20 merged PRs: its pitches say so. Optional owner notes it may read (absolute paths, secret-scanned, max 5):
 # fleetScouts: [fleet-pr-miner]
 # fleetMinerSeeds: [/Users/me/notes/review-report.md]
+
+# Signal layer (off by default): adapters record merged PRs, releases, Dependabot advisories and your schedules as durable
+# signals; the rules below (yours, host-wide) turn them into actions, each at most once, within the caps. Advisories are
+# untrusted: a rule on them may only start a pitch (run_pitch), and any other action fails config load. Filed issues carry
+# agent-proposed and never start work until you apply ready-for-agent. Run/pitch actions need scouts.enabled on the project.
+# signals:
+#   enabled: true
+#   maxActionsPerDay: 5
+#   schedules:
+#     - { name: weekly-review, every: weekly }
+#   rules:
+#     - name: advisory-pitch
+#       on: advisory
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+#       maxPerDay: 1
+#     - name: release-chore
+#       on: release
+#       repo: owner/my-repo
+#       do: { action: file_issue, class: chore, title: Check the release for follow-ups }
+#     - name: weekly-sweep
+#       on: schedule
+#       schedule: weekly-review
+#       do: { action: run_scout, scout: self-audit }
+#     # Local telemetry (never sent anywhere) is compared hourly: the last 24h against the 7 days before. A regression, error
+#     # spike, repeated 429 or quota hit, slow ticks or repeated Gate timeouts becomes one mechanical telemetry_anomaly signal
+#     # per metric, repo and day. Mechanical signals may file an issue or run any Scout; the Scout reads the anomaly, not you.
+#     - name: telemetry-chore
+#       on: telemetry_anomaly
+#       do: { action: file_issue, class: chore, title: Investigate a telemetry anomaly }
+#       maxPerDay: 1
+#     # The regression watch groups outcomes by (workflow file, prompt) version. A version whose rework rate rose, or that has any
+#     # revert, appears in the daily digest with a revert hint and also becomes one mechanical policy_regression signal.
+#     - name: regression-chore
+#       on: policy_regression
+#       do: { action: file_issue, class: chore, title: Investigate a policy regression }
+#       maxPerDay: 1
+#     # or hand it to the meta-Scout for deeper analysis:
+#     # - name: telemetry-deep-dive
+#     #   on: telemetry_anomaly
+#     #   do: { action: run_pitch, scout: fleet-pr-miner }
+
+# External research (off while topics is empty). Once a day, and only when a signals rule listens for `research`, the host
+# crosses each topic with fixed query templates (GitHub repository search, GitHub latest releases, arXiv) and stores
+# sanitized title/url/date/snippet rows. No model ever writes a query. Results are untrusted: a rule on `research` may only
+# run_pitch, and the pitch prompts show them as a fenced DATA block that a pitch cites by number. Topics: at most 5, each
+# at most 40 characters of a-z 0-9 space . + -. maxFetchesPerDay and minIntervalMs are provisional.
+# research:
+#   topics: [json query cli, jsonpath performance]
+#   maxFetchesPerDay: 20
+#   minIntervalMs: 3000
+#   # O9: up to 10 public repos (owner/name). The host keeps shallow read-only clones under dataDir/watched, refreshed weekly, and
+#   # shows the fleet-pr-miner only SHAs, file paths, layout, stars and latest release tag. A pattern from them (or from research)
+#   # is pitched only if a cited file in our own repo contains a cited symbol; otherwise the pitch is dropped.
+#   watchRepos: [owner/name]
+# signals:
+#   rules:
+#     - name: research-pitch
+#       on: research
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+
+# Production errors (O4, off while absent). Once an hour, and only when a signals rule listens for `prod_errors` or `prod_error_spike`,
+# the host polls Sentry's REST API (never a webhook) and stores only numbers: error counts per opaque group id (top 10), new-issue and
+# regression counts. No message, stack trace, user or URL is stored. The signals are untrusted: a rule on them may only run_pitch, and
+# pitch prompts see the numbers as a fenced DATA block. Create a Sentry auth token with read scope (project:read, event:read), put it in
+# .env under tokenEnv, and list `repo` under projects. The spike threshold (50 events a day in one group) is provisional.
+# production:
+#   sentry:
+#     org: my-org
+#     project: my-project
+#     repo: owner/name
+#     tokenEnv: SENTRY_AUTH_TOKEN
+# signals:
+#   enabled: true
+#   rules:
+#     - name: prod-spike-pitch
+#       on: prod_error_spike
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+
+# Prompt proposer (O7): `archangel eval propose` drafts one reviewer prompt or rubric change from dev-set failure counts, scores it on
+# the held-out set and opens an agent-draft PR (owner merges) only if it beats the baseline. Bounded to 1 run per week by the command
+# itself, so a weekly schedule is safe, e.g. a launchd or cron entry (Mondays 09:00):
+#   0 9 * * 1  cd ~/Projects/archangel-deploy && bun src/cli/index.ts eval propose -c archangel.yaml
+# Needs authMode: subscription and Archangel's own repo (dgrah50/archangel) listed under projects.
 
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767

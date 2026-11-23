@@ -67,7 +67,7 @@ describe("the daemon never merges a machine draft", () => {
         config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false }),
         ledger, github,
         broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),
-        implementer: { async run(input) { fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n"); git(input.cloneDir, ["add", "-A"]); git(input.cloneDir, ["commit", "-m", "fix"]); return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false }; } },
+        implementer: { async run(input) { fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n"); git((await input.workspaces.local.workspace()).path, ["add", "-A"]); git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]); return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false }; } },
         reviewers: { async reviewAll() { return { results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0 }, { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0 }], errors: [] }; } },
         notifier: { async notifyNeedsYou() {}, async sendDigest() {} },
       });
