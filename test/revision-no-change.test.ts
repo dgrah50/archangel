@@ -19,7 +19,7 @@ const red = [
 ];
 
 /** An implementer that fixes the code on its first run, then returns the same commit on the revision, saying `revisionSummary`. */
-async function run(revisionSummary: string) {
+async function run(revisionSummary: string, gateReported = true) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-norev-"));
   try {
     const seed = path.join(root, "seed");
@@ -60,6 +60,7 @@ async function run(revisionSummary: string) {
     await rec.tick(Date.now(), { waitForAttempts: true }); // implement -> PR
     const head = (ledger.getThread(4)!.phase as { headSha: string }).headSha;
     github.checks.set(head, red);
+    if (gateReported) github.gateProofs.set(head, {});
     await rec.tick(Date.now(), { waitForAttempts: true }); // red Gate -> revision -> identical SHA
     const phase = ledger.getThread(4)!.phase;
     ledger.close();
@@ -73,6 +74,11 @@ describe("a revision that changes nothing", () => {
   it("is revision_no_change, not review_vetoed, when no existing test is implicated", async () => {
     const phase = await run("I could not work out what to change.");
     expect(phase).toMatchObject({ kind: "needs_you", code: "revision_no_change" });
+  });
+
+  it("is never started by a Gate check that failed without a Gate report: that is infrastructure, so it escalates", async () => {
+    const phase = await run("unused", false);
+    expect(phase).toMatchObject({ kind: "needs_you", code: "gate_timeout" });
   });
 
   it("is an existing_test_conflict naming the test when the feedback points at a test file that exists on base (archangel#115)", async () => {

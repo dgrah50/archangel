@@ -65,6 +65,7 @@ describe("owner retry after an exhausted budget", () => {
       await reconciler.tick(Date.now(), { waitForAttempts: true }); // implement -> PR
       const phase = ledger.getThread(4)!.phase as { headSha: string };
       github.checks.set(phase.headSha, red);
+      github.gateProofs.set(phase.headSha, {});
       await reconciler.tick(Date.now(), { waitForAttempts: true }); // red Gate, no revision budget -> needs_you
       expect(ledger.getThread(4)?.phase).toMatchObject({ kind: "needs_you", code: "gate_failed" });
       await reconciler.tick(Date.now(), { waitForAttempts: true }); // outbox adds needs-you label
