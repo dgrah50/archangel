@@ -549,7 +549,6 @@ export class Reconciler {
           now,
         });
       } catch (err) {
-        this.ledger.appendAudit("scout/error", null, "archangel", { error: err instanceof Error ? err.message : String(err) }, now);
         this.recordFault("scout", err, now);
       }
     }

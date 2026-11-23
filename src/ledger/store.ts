@@ -1985,7 +1985,8 @@ export class Ledger {
 
   /**
    * Atomically checks daily cap (and once-per-day dedupe for scheduled runs) and reserves
-   * a `scout/run` audit slot in a single SQLite transaction (Opus M5).
+   * a `scout/run` audit slot in a single SQLite transaction (Opus M5). A run that failed
+   * (`failScoutRun`) gives its slot back to the cap, but still counts as this Scout's run for the day.
    */
   tryReserveScoutRun(
     scoutName: string,
@@ -1998,22 +1999,24 @@ export class Ledger {
     const tx = this.db.transaction(() => {
       const rows = this.db
         .prepare(
-          `SELECT actor, payload_json FROM audit_log
-           WHERE repo = ? AND topic = 'scout/run' AND ts >= ?`,
+          `SELECT topic, actor, payload_json FROM audit_log
+           WHERE repo = ? AND topic IN ('scout/run', 'scout/run_failed') AND ts >= ?`,
         )
-        .all(repo, now - 36 * 3600_000) as Array<{ actor: string; payload_json: string }>;
+        .all(repo, now - 36 * 3600_000) as Array<{ topic: string; actor: string; payload_json: string }>;
 
       let todayCount = 0;
       let ranThisScoutToday = false;
       for (const r of rows) {
+        const failed = r.topic === "scout/run_failed";
         const raw = tryParseJson(r.payload_json);
         if (!raw.ok || typeof raw.value !== "object" || raw.value === null) {
-          todayCount++;
+          // Unreadable rows fail closed: a run counts, a refund does not.
+          if (!failed) todayCount++;
           continue;
         }
         const p = raw.value as { dayKey?: string };
         if (p.dayKey === dayKey) {
-          todayCount++;
+          todayCount += failed ? -1 : 1;
           if (r.actor === scoutName) ranThisScoutToday = true;
         }
       }
@@ -2029,6 +2032,11 @@ export class Ledger {
       return true;
     });
     return tx();
+  }
+
+  /** The run reserved at `now` did not finish: its slot goes back to the daily cap and the Scout is due again (a weekly Scout the next day). */
+  failScoutRun(scoutName: string, error: string, now: number, repo = this.repo): void {
+    this.appendAudit("scout/run_failed", null, scoutName, { dayKey: formatDayKey(now, this.timeZone), error: error.slice(0, 300) }, now, repo);
   }
 
 
@@ -2412,9 +2420,15 @@ export class Ledger {
     return firstPromoted === -1 ? rows.length : firstPromoted;
   }
 
-  /** When this Scout last started a run, or null. */
+  /** When this Scout last started a run that did not fail, or null. A failed run is the `scout/run_failed` row written at the same instant. */
   lastScoutRunAt(scoutName: string, repo = this.repo): number | null {
-    const row = this.db.prepare(`SELECT MAX(ts) AS ts FROM audit_log WHERE repo = ? AND topic = 'scout/run' AND actor = ?`).get(repo, scoutName) as { ts: number | null };
+    const row = this.db
+      .prepare(
+        `SELECT MAX(r.ts) AS ts FROM audit_log r
+          WHERE r.repo = ? AND r.topic = 'scout/run' AND r.actor = ?
+            AND NOT EXISTS (SELECT 1 FROM audit_log f WHERE f.repo = r.repo AND f.topic = 'scout/run_failed' AND f.actor = r.actor AND f.ts = r.ts)`,
+      )
+      .get(repo, scoutName) as { ts: number | null };
     return row.ts;
   }
 
@@ -2446,15 +2460,6 @@ export class Ledger {
   /** The IANA timezone this Ledger's "today" is measured in. */
   get dayTimeZone(): string {
     return this.timeZone;
-  }
-
-  /** Did this Scout start a run at or after `sinceMs`? (weekly schedule) */
-  scoutRanSince(scoutName: string, sinceMs: number, repo = this.repo): boolean {
-    return Boolean(
-      this.db
-        .prepare(`SELECT 1 FROM audit_log WHERE repo = ? AND topic = 'scout/run' AND actor = ? AND ts >= ? LIMIT 1`)
-        .get(repo, scoutName, sinceMs),
-    );
   }
 
 

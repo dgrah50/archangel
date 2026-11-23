@@ -1,5 +1,5 @@
 import { execInGroup, LocalProvider } from "../compute/local.js";
-import type { ComputeProvider, ExecResult, ExecSpec } from "../compute/provider.js";
+import type { ComputeProvider, ExecResult, ExecSpec, Workspace } from "../compute/provider.js";
 import { scanForSecrets } from "./secrets.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -338,6 +338,14 @@ export function scoutNextDueAt(schedule: ScoutWorkflow["schedule"], lastRunAt: n
   return lastRunAt === null ? now : Math.max(now, lastRunAt + SCOUT_WEEKLY_MS);
 }
 
+/** One line per finished run, so "the Scout ran and found nothing" is visible without reading the audit log. */
+function logOutcome(opts: { logger?: Logger; ledger: Ledger }, r: ScoutRunSummary): void {
+  if (r.status !== "ran" && r.status !== "partial_error" && r.status !== "failed_output") return;
+  const filed = r.filedIssues.length > 0 ? `filed ${r.filedIssues.map((n) => `#${n}`).join(", ")}` : "filed nothing";
+  const extra = [r.skippedDuplicates > 0 ? `${r.skippedDuplicates} duplicate` : "", r.blockedSecrets > 0 ? `${r.blockedSecrets} blocked by the secret scan` : ""].filter(Boolean);
+  opts.logger?.info("scout/done", `Scout '${r.scoutName}' ${r.status === "ran" ? "" : `(${r.status}) `}${filed}${extra.length > 0 ? ` (${extra.join(", ")})` : ""}`, { repo: opts.ledger.repo });
+}
+
 export async function runScoutsForProject(opts: {
   config: ArchangelConfig;
   ledger: Ledger;
@@ -362,7 +370,7 @@ export async function runScoutsForProject(opts: {
     if (opts.filterName && w.name !== opts.filterName) return false;
     if (opts.onlyScheduled) {
       if (w.schedule === "manual") return false;
-      if (w.schedule === "weekly" && opts.ledger.scoutRanSince(w.name, now - SCOUT_WEEKLY_MS)) return false;
+      if (w.schedule === "weekly" && scoutNextDueAt(w.schedule, opts.ledger.lastScoutRunAt(w.name), now)! > now) return false;
     }
     return true;
   });
@@ -398,7 +406,10 @@ export async function runScoutsForProject(opts: {
 
   for (const wf of selected) {
     if (wf.kind === "pitch") {
-      results.push(await runPitchScout({ ...opts, compute, now, wf, providerChoice, invoker, includeMetricsFrom: workflows }));
+      // `opts.compute`, not the local default above: only a real remote provider makes the Scout run in a box.
+      const res = await runPitchScout({ ...opts, now, wf, providerChoice, invoker, includeMetricsFrom: workflows });
+      logOutcome(opts, res);
+      results.push(res);
       continue;
     }
     if (openTrackedCount >= opts.config.scouts.maxOpenProposals) {
@@ -434,15 +445,17 @@ export async function runScoutsForProject(opts: {
       wf.maxProposals,
       opts.config.scouts.maxOpenProposals - openTrackedCount,
     );
-    const cloneId = 900_000 + Math.floor(Math.random() * 90_000);
-    const workspace = await compute.prepare({ issueNumber: cloneId, startSha: opts.mainSha });
-    const cloneDir = workspace.path;
     let filedIssues: number[] = [];
     let autoPromoteFailed = false;
     let blockedSecrets = 0;
     let skippedDuplicates = 0;
 
+    const cloneId = 900_000 + Math.floor(Math.random() * 90_000);
+    let workspace: Workspace | undefined;
     try {
+      workspace = await compute.prepare({ issueNumber: cloneId, startSha: opts.mainSha });
+      const ws = workspace;
+      const cloneDir = ws.path;
       opts.logger?.info("scout/start", `Running scout '${wf.name}' via ${providerChoice.provider}`, {
         repo: opts.ledger.repo,
       });
@@ -451,7 +464,7 @@ export async function runScoutsForProject(opts: {
         model: providerChoice.model,
         account: providerChoice.account,
         cloneDir,
-        exec: opts.compute ? (spec) => compute.exec(workspace, spec) : undefined,
+        exec: opts.compute ? (spec) => compute.exec(ws, spec) : undefined,
         prompt: buildScoutPrompt(
           wf,
           wf.includeMetrics
@@ -532,17 +545,16 @@ export async function runScoutsForProject(opts: {
         filedIssues.push(created.number);
         openTrackedCount++;
       }
+    } catch (err) {
+      opts.ledger.failScoutRun(wf.name, err instanceof Error ? err.message : String(err), now);
+      throw err;
     } finally {
-      compute.destroy(workspace);
+      if (workspace) compute.destroy(workspace);
     }
 
-    results.push({
-      scoutName: wf.name,
-      status: autoPromoteFailed ? "partial_error" : "ran",
-      filedIssues,
-      blockedSecrets,
-      skippedDuplicates,
-    });
+    const res: ScoutRunSummary = { scoutName: wf.name, status: autoPromoteFailed ? "partial_error" : "ran", filedIssues, blockedSecrets, skippedDuplicates };
+    logOutcome(opts, res);
+    results.push(res);
   }
 
   // A Scout held back by its daily cap or open-proposal limit did not run: on every tick that is most of them, and not an event.
@@ -568,6 +580,7 @@ async function runPitchScout(opts: {
   includeMetricsFrom: ScoutWorkflow[];
   reviewers: ReviewerSuite;
   notifier: Notifier;
+  onlyScheduled?: boolean;
 }): Promise<ScoutRunSummary> {
   const { wf, ledger, now } = opts;
   const summary: ScoutRunSummary = { scoutName: wf.name, status: "ran", filedIssues: [], blockedSecrets: 0, skippedDuplicates: 0 };
@@ -591,32 +604,38 @@ async function runPitchScout(opts: {
     return { ...summary, status: "paused" };
   }
   if (ledger.countOpenPitches() >= PITCH_MAX_OPEN) return { ...summary, status: "skipped_open_limit" };
-  if (!ledger.tryReserveScoutRun(wf.name, opts.config.scouts.maxRunsPerDay, false, now)) return { ...summary, status: "skipped_cap" };
+  if (!ledger.tryReserveScoutRun(wf.name, opts.config.scouts.maxRunsPerDay, Boolean(opts.onlyScheduled), now)) return { ...summary, status: "skipped_cap" };
 
-  const recent = ledger.recentPitchTitles(PITCH_DECLINE_WINDOW_DAYS, now);
-  const metricsGiven = wf.includeMetrics ? new Set<string>(METRIC_KEYS) : new Set<string>();
-  // The fleet miner reads fleet-wide Ledger data and this repo's merged history; its loop guard excludes every metrics-fed Scout's Threads.
-  const miner = wf.name === FLEET_MINER_NAME;
-  const excludeScouts = opts.includeMetricsFrom.filter((w) => w.includeMetrics).map((w) => w.name);
-  const commits = miner ? await opts.broker.listRecentCommits(opts.mainSha, FLEET_MINER_WINDOW_DAYS, 40) : [];
-  const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
-  const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
-  const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
-  const research = citableResearch(ledger, now);
-  const dataDir = resolvePaths(opts.config).dataDir;
-  const watched = miner ? await loadWatchedSummaries({ dataDir, repos: opts.config.research.watchRepos, github: opts.github, now }) : { summaries: [], failed: 0 };
-  const graduation = miner ? await graduationBlock(opts, ledger) : undefined;
+  const notFiled = (topic: "pitch/dropped" | "pitch/vetoed", reason: string, title: string) => {
+    ledger.appendAudit(topic, null, wf.name, { reason, title: title.slice(0, 60) }, now);
+    opts.logger?.info(topic, `Pitch '${title.slice(0, 60)}' from '${wf.name}' was not filed: ${reason}`, { repo: ledger.repo });
+  };
+  let workspace: Workspace | undefined;
   const compute = opts.compute ?? new LocalProvider(opts.broker);
-  const workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
-  const cloneDir = workspace.path;
   try {
+    const recent = ledger.recentPitchTitles(PITCH_DECLINE_WINDOW_DAYS, now);
+    const metricsGiven = wf.includeMetrics ? new Set<string>(METRIC_KEYS) : new Set<string>();
+    // The fleet miner reads fleet-wide Ledger data and this repo's merged history; its loop guard excludes every metrics-fed Scout's Threads.
+    const miner = wf.name === FLEET_MINER_NAME;
+    const excludeScouts = opts.includeMetricsFrom.filter((w) => w.includeMetrics).map((w) => w.name);
+    const commits = miner ? await opts.broker.listRecentCommits(opts.mainSha, FLEET_MINER_WINDOW_DAYS, 40) : [];
+    const minerBlock = miner ? buildFleetMinerBlock({ ledger, commits, seeds: readSeeds(opts.config.fleetMinerSeeds, scanForSecrets), now }) : undefined;
+    const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
+    const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
+    const research = citableResearch(ledger, now);
+    const dataDir = resolvePaths(opts.config).dataDir;
+    const watched = miner ? await loadWatchedSummaries({ dataDir, repos: opts.config.research.watchRepos, github: opts.github, now }) : { summaries: [], failed: 0 };
+    const graduation = miner ? await graduationBlock(opts, ledger) : undefined;
+    workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
+    const ws = workspace;
+    const cloneDir = ws.path;
     opts.logger?.info("scout/start", `Running pitch scout '${wf.name}' via ${opts.providerChoice.provider}`, { repo: ledger.repo });
     const raw = await opts.invoker({
       provider: opts.providerChoice.provider,
       model: opts.providerChoice.model,
       account: opts.providerChoice.account,
       cloneDir,
-      exec: opts.compute ? (spec) => compute.exec(workspace, spec) : undefined,
+      exec: opts.compute ? (spec) => compute.exec(ws, spec) : undefined,
       prompt: buildPitchPrompt({
         name: wf.name,
         skills: wf.skills,
@@ -645,7 +664,9 @@ async function runPitchScout(opts: {
     });
     const parsed = PitchOutputSchema.safeParse(raw);
     if (!parsed.success) {
-      ledger.appendAudit("pitch/invalid_output", null, wf.name, { error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400) }, now);
+      const error = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400);
+      ledger.appendAudit("pitch/invalid_output", null, wf.name, { error }, now);
+      ledger.failScoutRun(wf.name, `invalid output: ${error}`, now);
       return { ...summary, status: "failed_output" };
     }
     const fps = new Set(recent.map((r) => r.titleFp));
@@ -673,17 +694,17 @@ async function runPitchScout(opts: {
       if (reason) {
         if (reason.startsWith("secret scan")) summary.blockedSecrets++;
         if (reason.startsWith("duplicates")) summary.skippedDuplicates++;
-        ledger.appendAudit("pitch/dropped", null, wf.name, { reason: reason.slice(0, 200), title: pitch.title.slice(0, 60) }, now);
+        notFiled("pitch/dropped", reason.slice(0, 200), pitch.title);
         continue;
       }
       if (miner && !pitch.evidence.some((e) => (e.note.match(/\b[0-9a-f]{10}\b/g) ?? []).some((sha) => minedShas.has(sha)))) {
-        ledger.appendAudit("pitch/dropped", null, wf.name, { reason: "cites no mined commit", title: pitch.title.slice(0, 60) }, now);
+        notFiled("pitch/dropped", "cites no mined commit", pitch.title);
         continue;
       }
       const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source, research)}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {
-        ledger.appendAudit("pitch/vetoed", null, wf.name, { reason: veto.slice(0, 300), title: pitch.title.slice(0, 60) }, now);
+        notFiled("pitch/vetoed", veto.slice(0, 300), pitch.title);
         continue;
       }
       const created = await opts.github.createIssue!({ title: pitch.title, body, labels: [opts.config.labels.agentPitch] });
@@ -704,8 +725,11 @@ async function runPitchScout(opts: {
       }
       summary.filedIssues.push(created.number);
     }
+  } catch (err) {
+    ledger.failScoutRun(wf.name, err instanceof Error ? err.message : String(err), now);
+    throw err;
   } finally {
-    compute.destroy(workspace);
+    if (workspace) compute.destroy(workspace);
   }
   return summary;
 }
@@ -747,7 +771,6 @@ async function pitchVeto(
   },
 ): Promise<string | null> {
   const author = providerToVendor(opts.providerChoice.provider);
-  // In api mode resolveRequiredReviewers returns the two API vendors whatever the author is; drop the author itself.
   const vendors = resolveRequiredReviewers(opts.config, [author]).filter((v) => v !== author);
   if (vendors.length === 0) return "no reviewer from another vendor is available to critique it";
   const touchedFiles: Record<string, string> = {};
