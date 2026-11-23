@@ -83,4 +83,30 @@ describe("SailProvider", () => {
     const ws2 = await b.provider.prepare({ issueNumber: 1, startSha: "a".repeat(40) });
     await expect(b.provider.collect(ws2)).rejects.toThrow("cap");
   });
+
+  it("collect reports an Attempt with no new commits as empty, and the Broker validates it as an unchanged start", async () => {
+    let start = "";
+    const empty = fakeClient({}, (s) => (s.includes("rev-list --count") ? `EMPTY ${start}\n` : ""));
+    const { provider, dir } = setup(empty.client);
+    const work = path.join(dir, "work");
+    execFileSync("git", ["init", "-q", work]);
+    const git = (...a: string[]) => execFileSync("git", ["-C", work, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+    fs.writeFileSync(path.join(work, "a.txt"), "a");
+    git("add", "-A");
+    git("commit", "-q", "-m", "start");
+    start = git("rev-parse", "HEAD");
+    execFileSync("git", ["-C", work, "push", "-q", path.join(dir, "broker.git"), "HEAD:refs/heads/main"]);
+
+    const ws = await provider.prepare({ issueNumber: 1, startSha: start });
+    const collected = await provider.collect(ws);
+    expect(collected).toEqual({ kind: "empty", startSha: start });
+
+    fs.mkdirSync(path.join(dir, "clones"));
+    const broker = new GitBroker({ bareRepoPath: path.join(dir, "broker.git"), clonesDir: path.join(dir, "clones") });
+    const gate = { maxNonTestLines: 100, maxTotalLines: 100, maxFiles: 10, extraProtectedPaths: [], testFileGlobs: [], testDataGlobs: [] } as never;
+    const v = await broker.fetchAndValidateCollected(collected, 1, start, gate);
+    expect(v.headSha).toBe(start);
+    expect(v.changedFiles).toEqual([]);
+    expect(await broker.isAlreadyOnMain(start, start)).toBe(true);
+  });
 });

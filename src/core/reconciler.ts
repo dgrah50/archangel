@@ -2111,6 +2111,31 @@ export class Reconciler {
         return;
       }
 
+      // A rebase that left the head unchanged: either main already holds the branch's change, or the rebase did nothing.
+      if (kind === "rebase" && validation.headSha === fromSha) {
+        const alreadyOnMain = await this.broker.isAlreadyOnMain(mainSha, fromSha);
+        this.ledger.finishAttempt(attemptId, {
+          status: "failed",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorCategory: "no_change",
+          errorMessage: "Rebase attempt produced no new changes (identical SHA)",
+        });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            alreadyOnMain
+              ? { t: "attempt_failed", code: "already_fixed", reason: "The branch's change is already on main; the rebase left nothing to push." }
+              : { t: "attempt_failed", code: "revision_no_change", reason: "Rebase attempt produced no new changes (identical SHA)." },
+            { auditTopic: "thread/needs_you" },
+          );
+        }
+        return;
+      }
+
       const liveIssue = await this.github.getIssue(issue.number);
       if (deriveControl(liveIssue.labels, this.cfg.labels) !== "run") {
         this.ledger.finishAttempt(attemptId, {
