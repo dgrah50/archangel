@@ -280,7 +280,7 @@ export class Reconciler {
   }
 
   /**
-   * After the Gate and the reviews pass, previews the PR head in the sandbox and puts 1 to 2 small screenshots in the Recap. Once per
+   * After the Gate and the reviews pass (at shadow-ready, or just before an autonomous merge), previews the PR head in the sandbox and puts 1 to 2 small screenshots in the Recap. Once per
    * head sha (an attempt that fails is recorded as empty, never retried), one at a time, in the background. Only repos whose policy
    * declares a web `preview`, and only when the host gave the reconciler a sandboxing provider.
    */
@@ -2839,6 +2839,12 @@ export class Reconciler {
 
     // One merge per tick: the merge below moved main, so any other ready PR is stale until it is rebased and its checks rerun.
     if (this.mergedThisTick) return;
+
+    // Screenshots run in the background and never gate the merge; the Recap is edited when they land, even after the merge.
+    this.startPrShots(thread, pr, async () => {
+      const t = this.ledger.getThread(thread.issueNumber);
+      if (t) await this.postRecapSafe(t, pr, []);
+    });
 
     // All blockers empty -> squash merge pinned strictly to approved head SHA (B7 + Opus S10 recovery!).
     let squashSha: string;

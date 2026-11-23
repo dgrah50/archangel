@@ -10,6 +10,8 @@ import { ConfigSchema, type ArchangelConfig } from "../src/config.js";
 import type { CheckStatus } from "../src/core/blockers.js";
 import type { Notifier } from "../src/core/notifier.js";
 import { Reconciler } from "../src/core/reconciler.js";
+import { getPrShots } from "../src/core/pr-shots.js";
+import type { ComputeProvider } from "../src/compute/provider.js";
 import { scoutContentHash } from "../src/core/scout.js";
 import type { GitHubClient, GitHubIssue, GitHubPr } from "../src/github/client.js";
 import { handoffThreadToPaseo, resumeThreadFromPaseo, type PaseoRunner } from "../src/handoff/paseo.js";
@@ -35,7 +37,7 @@ function makeTestConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConf
   });
 }
 
-function setupRepo(): { root: string; remoteBare: string } {
+function setupRepo(workflowExtra: Record<string, unknown> = {}): { root: string; remoteBare: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-e2e-"));
   const seed = path.join(root, "seed");
   const remoteBare = path.join(root, "remote.git");
@@ -46,7 +48,7 @@ function setupRepo(): { root: string; remoteBare: string } {
   fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
   fs.writeFileSync(path.join(seed, "app.go"), "package demo\n\nfunc Val() int { return 1 }\n");
   fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
-  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson(["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"]));
+  fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson(["Gate", "Test (ubuntu-latest)", "Test (macos-latest)"], workflowExtra));
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-m", "initial"]);
   git(root, ["clone", "--bare", seed, remoteBare]);
@@ -197,6 +199,72 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       expect(ledger.getThread(2)?.phase).toMatchObject({ kind: "done", outcome: "owner_merged" });
       expect(ledger.getAutoMergeCountToday()).toBe(0);
     } finally {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it("an autonomous landing on a web-preview repo captures screenshots in the background, and a failed capture does not stop the merge", async () => {
+    const { root, remoteBare } = setupRepo({ preview: { kind: "web", install: ["npm", "ci"], start: ["npm", "start"], port: 3000, readyPath: "/" } });
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    const github = new FakeGitHub(remoteBare);
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
+    const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
+    const implementer: Implementer = {
+      async run(input) {
+        const dir = (await input.workspaces.local.workspace()).path;
+        fs.writeFileSync(path.join(dir, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n");
+        git(dir, ["add", "-A"]);
+        git(dir, ["commit", "-m", "fix Val 99"]);
+        return { summary: "Fixed Val to 99.", costUsd: 0.5, transcriptPath: null, aborted: false };
+      },
+    };
+    const reviewers: ReviewerSuite = {
+      async reviewAll() {
+        return {
+          results: [
+            { vendor: "openai", verdict: "approve", findings: [], costUsd: 0.02 },
+            { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0.02 },
+          ],
+          errors: [],
+        };
+      },
+    };
+    const installs: string[] = [];
+    const previewCompute = {
+      async install() {
+        installs.push("install");
+        throw new Error("sandbox install failed");
+      },
+    } as unknown as ComputeProvider;
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: makeTestConfig({ shadowMode: false }), ledger, github, broker, implementer, reviewers, notifier, previewCompute });
+
+    try {
+      github.issues.set(5, {
+        number: 5,
+        title: "Val returns 1 instead of 99",
+        body: "Expected Val() == 99",
+        state: "open",
+        authorId: 999,
+        authorLogin: "dgrah50",
+        authorAssociation: "OWNER",
+        labels: ["ready-for-agent"],
+        updatedAt: new Date().toISOString(),
+      });
+      github.labelActors.set("5:ready-for-agent", 999);
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      const p5 = ledger.getThread(5)!.phase;
+      const headSha = p5.kind === "awaiting_gate" ? p5.headSha : "";
+      github.checks.set(await github.getBranchTipSha("main"), allGreenChecks());
+      github.checks.set(headSha, allGreenChecks());
+
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(5)?.phase).toMatchObject({ kind: "done", outcome: "merged" });
+      for (let i = 0; i < 100 && installs.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(installs).toEqual(["install"]);
+      expect(getPrShots(ledger, [...github.prs.keys()][0]!, headSha)).toEqual([]);
+    } finally {
+      await reconciler.waitForActiveTasks();
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
