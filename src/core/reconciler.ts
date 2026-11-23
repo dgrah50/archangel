@@ -1011,6 +1011,7 @@ export class Reconciler {
       // An owner answering a held-back escalation ends triage for this Thread.
       ...(hold ? { factoryTriage: "pending" as const } : (ev.t === "owner_retry" || ev.t === "owner_abandon") && thread.factoryTriage === "pending" ? { factoryTriage: "done" as const } : {}),
       ...extra,
+      auditTopic: extra.auditTopic ?? (stepped.next.kind === "needs_you" ? "thread/needs_you" : undefined),
     });
     if (updated && updated.phase.kind !== thread.phase.kind) {
       const detail =
@@ -1040,6 +1041,11 @@ export class Reconciler {
       );
     }
     return updated;
+  }
+
+  /** Parks the Thread in Needs you for the owner, with the reason they will read. */
+  private escalate(thread: ThreadRecord, code: EscalationCode, reason: string, now: number): ThreadRecord | null {
+    return this.applyMachineEvent(thread, { t: "escalate", code, reason }, { now });
   }
 
   /** A merge by the configured owner is the owner being heard (it resets the autonomy count); anyone else, a bot or the App is not. */
@@ -1509,15 +1515,7 @@ export class Reconciler {
         running.abortCause = "control";
         running.abortController.abort(new Error("Issue body modified mid-attempt"));
       }
-      this.applyMachineEvent(
-        thread,
-        {
-          t: "escalate",
-          code: "body_changed",
-          reason: "Issue body changed after intake snapshot (body hash mismatch); remove needs-you label or run `archangel retry` after reviewing.",
-        },
-        { auditTopic: "thread/needs_you", now },
-      );
+      this.escalate(thread, "body_changed", "Issue body changed after intake snapshot (body hash mismatch); remove needs-you label or run `archangel retry` after reviewing.", now);
       return;
     }
 
@@ -1565,7 +1563,7 @@ export class Reconciler {
           if (unmet === null && !pred) return;
           if (unmet !== null) {
             // Consume the dependency only once the escalation has landed: a lost CAS retries next tick instead of starting the slice unblocked.
-            const escalated = this.applyMachineEvent(thread, { t: "escalate", code: "dependency_unmet", reason: unmet }, { auditTopic: "thread/needs_you", now });
+            const escalated = this.escalate(thread, "dependency_unmet", unmet, now);
             if (escalated) this.ledger.clearThreadDependency(thread.issueNumber); // a retry after the Needs You runs the slice on its own
             return;
           }
@@ -1573,11 +1571,7 @@ export class Reconciler {
         }
         if (this.needsPlan(thread)) {
           if (this.ledger.countThreadPlans(thread.issueNumber) >= budget(PLAN_ROUNDS_PER_THREAD, thread)) {
-            this.applyMachineEvent(
-              thread,
-              { t: "escalate", code: "plan_unresolved", reason: `The factory wrote ${budget(PLAN_ROUNDS_PER_THREAD, thread)} plans and none was approved.` },
-              { auditTopic: "thread/needs_you", now },
-            );
+            this.escalate(thread, "plan_unresolved", `The factory wrote ${budget(PLAN_ROUNDS_PER_THREAD, thread)} plans and none was approved.`, now);
             return;
           }
           await this.spawnAttempt(thread, issue, "plan", mainSha, [], [], now);
@@ -1635,7 +1629,7 @@ export class Reconciler {
     if (thread.phase.kind !== "awaiting_plan") return;
     const plan = this.ledger.latestThreadPlan(thread.issueNumber);
     if (!plan || plan.version !== thread.phase.planVersion) {
-      this.applyMachineEvent(thread, { t: "escalate", code: "plan_unresolved", reason: `The Ledger has no plan v${thread.phase.planVersion} for this Thread.` }, { auditTopic: "thread/needs_you", now });
+      this.escalate(thread, "plan_unresolved", `The Ledger has no plan v${thread.phase.planVersion} for this Thread.`, now);
       return;
     }
     const label = this.cfg.labels.planApproved;
@@ -1726,15 +1720,7 @@ export class Reconciler {
       return false;
     }
     if (!factoryRetry && thread.implementCount >= budget(this.cfg.maxImplementAttemptsPerThread, thread)) {
-      this.applyMachineEvent(
-        thread,
-        {
-          t: "escalate",
-          code: "max_attempts",
-          reason: `Used all ${budget(this.cfg.maxImplementAttemptsPerThread, thread)} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} per owner answer).`,
-        },
-        { auditTopic: "thread/needs_you", now },
-      );
+      this.escalate(thread, "max_attempts", `Used all ${budget(this.cfg.maxImplementAttemptsPerThread, thread)} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} per owner answer).`, now);
       return false;
     }
 
@@ -1880,7 +1866,7 @@ export class Reconciler {
     ): void => {
       this.ledger.finishAttempt(attemptId, { status: "failed", costUsd: actualCostUsd, reservedUsd, transcriptPath, ...finish });
       const latest = this.ledger.getThread(workingThread.issueNumber);
-      if (latest && latest.version === workingThread.version) this.applyMachineEvent(latest, ev, { auditTopic: "thread/needs_you", ...extra });
+      if (latest && latest.version === workingThread.version) this.applyMachineEvent(latest, ev, extra);
     };
 
     try {
@@ -2106,8 +2092,7 @@ export class Reconciler {
               t: "attempt_failed",
               code: "already_fixed",
               reason: "Mechanical Gate: already-fixed (repro test already passes on main)",
-            },
-            { auditTopic: "thread/needs_you" },
+            }
           );
           return;
         }
@@ -2146,8 +2131,7 @@ export class Reconciler {
             t: "attempt_failed",
             code: "gate_failed",
             reason: `Local mechanical Gate failed: ${rep.violations.join("; ")}`,
-          },
-          { auditTopic: "thread/needs_you" },
+          }
         );
         return;
       }
@@ -2295,8 +2279,7 @@ export class Reconciler {
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `${kind[0]!.toUpperCase()}${kind.slice(1)} attempt failed: ${msg}`, cause },
-          { auditTopic: "thread/needs_you" },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `${kind[0]!.toUpperCase()}${kind.slice(1)} attempt failed: ${msg}`, cause }
         );
       }
     } finally {
@@ -2351,24 +2334,12 @@ export class Reconciler {
 
       case "timeout":
         if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, undefined, now)) return;
-        this.applyMachineEvent(
-          thread,
-          { t: "escalate", code: "gate_timeout", reason: verdict.detail },
-          { auditTopic: "thread/needs_you", now },
-        );
+        this.escalate(thread, "gate_timeout", verdict.detail, now);
         return;
 
       case "untrusted":
         if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, undefined, now)) return;
-        this.applyMachineEvent(
-          thread,
-          {
-            t: "escalate",
-            code: "gate_untrusted",
-            reason: `Untrusted check source: ${verdict.names.join(", ")}`,
-          },
-          { auditTopic: "thread/needs_you", now },
-        );
+        this.escalate(thread, "gate_untrusted", `Untrusted check source: ${verdict.names.join(", ")}`, now);
         return;
 
       case "failed": {
@@ -2378,15 +2349,7 @@ export class Reconciler {
         const gateProof = gateCheck ? await this.github.getGateProof(gateCheck.id, pr.headSha) : null;
         if (gateCheck && !gateProof) {
           if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, gateCheck.id, now)) return;
-          this.applyMachineEvent(
-            thread,
-            {
-              t: "escalate",
-              code: "gate_timeout",
-              reason: `The Gate check failed without a Gate report (infrastructure failure, not a code failure). Check the workflow run, then re-run CI.`,
-            },
-            { auditTopic: "thread/needs_you", now },
-          );
+          this.escalate(thread, "gate_timeout", `The Gate check failed without a Gate report (infrastructure failure, not a code failure). Check the workflow run, then re-run CI.`, now);
           return;
         }
         // What the agent needs to fix is the failure text (the failing test), not just the check name. Untrusted data; the tail is kept.
@@ -2405,15 +2368,7 @@ export class Reconciler {
           if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
           await this.spawnAttempt(thread, issue, "revise", mainSha, failMsgs, [], now);
         } else {
-          this.applyMachineEvent(
-            thread,
-            {
-              t: "escalate",
-              code: "gate_failed",
-              reason: `Required checks failed (${thread.mode} mode): ${failMsgs.join(", ")}`,
-            },
-            { auditTopic: "thread/needs_you", now },
-          );
+          this.escalate(thread, "gate_failed", `Required checks failed (${thread.mode} mode): ${failMsgs.join(", ")}`, now);
         }
         return;
       }
@@ -2444,15 +2399,7 @@ export class Reconciler {
     const excludeVendors = thread.implementerVendors;
     const requiredVendors = resolveRequiredReviewers(this.cfg, excludeVendors);
     if (requiredVendors.length < 2) {
-      this.applyMachineEvent(
-        thread,
-        {
-          t: "escalate",
-          code: "review_outage",
-          reason: `Insufficient independent reviewers (${requiredVendors.length}/2 available; implementer vendors=${excludeVendors.join(",") || "unknown"})`,
-        },
-        { auditTopic: "thread/needs_you", now },
-      );
+      this.escalate(thread, "review_outage", `Insufficient independent reviewers (${requiredVendors.length}/2 available; implementer vendors=${excludeVendors.join(",") || "unknown"})`, now);
       return;
     }
     const haveVendors = new Set(existing.map((r) => r.vendor));
@@ -2556,15 +2503,7 @@ export class Reconciler {
         if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
         await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
       } else {
-        this.applyMachineEvent(
-          thread,
-          {
-            t: "escalate",
-            code: "review_vetoed",
-            reason: `Independent reviewer vetoed ${headSha.slice(0, 8)} (${vetoes.map((v) => v.vendor).join(", ")}).`,
-          },
-          { auditTopic: "thread/needs_you", now },
-        );
+        this.escalate(thread, "review_vetoed", `Independent reviewer vetoed ${headSha.slice(0, 8)} (${vetoes.map((v) => v.vendor).join(", ")}).`, now);
       }
       return;
     }
@@ -2589,17 +2528,7 @@ export class Reconciler {
     const outageSince = thread.phase.outageSince ?? now;
     const knownLong = retryAt !== undefined && retryAt - now >= this.cfg.reviewerOutageMaxMs;
     if (knownLong || now - outageSince >= this.cfg.reviewerOutageMaxMs) {
-      this.applyMachineEvent(
-        thread,
-        {
-          t: "escalate",
-          code: "review_outage",
-          reason: knownLong
-            ? `A required reviewer is at its usage limit until ${new Date(retryAt).toISOString()}, longer than the ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h the factory waits: ${errMsg}`
-            : `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
-        },
-        { auditTopic: "thread/needs_you", now },
-      );
+      this.escalate(thread, "review_outage", knownLong ? `A required reviewer is at its usage limit until ${new Date(retryAt).toISOString()}, longer than the ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h the factory waits: ${errMsg}` : `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`, now);
       return;
     }
     if (thread.phase.outageSince === null) {
@@ -2704,15 +2633,7 @@ export class Reconciler {
       return;
     }
     if (await this.retryConflictFromMain(thread, pr, issue, mainSha, now)) return;
-    this.applyMachineEvent(
-      thread,
-      {
-        t: "escalate",
-        code: "merge_conflict",
-        reason: "Branch is behind main or conflicted after max rebase attempts.",
-      },
-      { auditTopic: "thread/needs_you", now },
-    );
+    this.escalate(thread, "merge_conflict", "Branch is behind main or conflicted after max rebase attempts.", now);
   }
 
   /**
