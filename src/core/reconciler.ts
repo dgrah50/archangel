@@ -30,6 +30,7 @@ import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } fr
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
 import { renderRecapComment } from "./recap.js";
+import { attachCaptions, buildChapters, buildChaptersPrompt, parseDiffStat, CHAPTER_CAPTIONS_JSON_SCHEMA, CHAPTERS_TIMEOUT_MS, type Chapter } from "./recap-chapters.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { POC_STALE_BUILD_MS, runPocBuild } from "./pitch-poc.js";
@@ -3026,6 +3027,48 @@ export class Reconciler {
     this.ledger.appendAudit("fix_forward/ready", thread.issueNumber, "archangel", { prNumber: pr.number, headSha: pr.headSha }, now);
   }
 
+  /**
+   * The feature PR's chapters for its current head: grouped mechanically from the diff, then at most one read-only model run for one-line
+   * captions (never retried; its absence leaves the chapters bare). Recorded once per head. Null when the diff could not be read.
+   */
+  private async chaptersFor(thread: ThreadRecord, pr: GitHubPr): Promise<Chapter[] | null> {
+    const recorded = this.ledger.latestChapters(thread.issueNumber);
+    if (recorded?.headSha === pr.headSha) return recorded.chapters;
+    let workspace: Workspace | null = null;
+    try {
+      const { diffText } = await this.broker.getDiffAndTouchedFiles(pr.baseSha, pr.headSha);
+      let chapters = buildChapters(parseDiffStat(diffText), {
+        isProtected: (p) => isProtectedPath(p, this.effectiveGate.extraProtectedPaths),
+        isTest: (p) => isTestFile(p, this.effectiveGate),
+      });
+      const choice = pickTriageProvider(this.cfg.chains.triage, { code: "attempt_failed", vetoers: [], implementerVendors: thread.implementerVendors });
+      if (choice && chapters.length > 0) {
+        try {
+          workspace = await this.compute.prepare({ issueNumber: thread.issueNumber, startSha: pr.headSha });
+          const raw = await this.triageInvoker({
+            provider: choice.provider,
+            model: choice.model,
+            cloneDir: workspace.path,
+            prompt: buildChaptersPrompt({ title: thread.title, chapters, diffText }),
+            maxProposals: 0,
+            timeoutMs: CHAPTERS_TIMEOUT_MS,
+            outputSchema: CHAPTER_CAPTIONS_JSON_SCHEMA,
+          });
+          chapters = attachCaptions(chapters, raw, scanForSecrets);
+        } catch (err) {
+          this.logger.warn("recap/chapter_captions_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+        }
+      }
+      this.ledger.recordChapters(thread.issueNumber, pr.headSha, chapters);
+      return chapters;
+    } catch (err) {
+      this.logger.warn("recap/chapters_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+      return null;
+    } finally {
+      if (workspace) this.compute.destroy(workspace);
+    }
+  }
+
   private async postRecapSafe(
     thread: ThreadRecord,
     pr: GitHubPr,
@@ -3034,6 +3077,7 @@ export class Reconciler {
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const triage = this.ledger.latestTriage(thread.issueNumber);
+    const chapters = workClassOfBranch(thread.branchName) === "feature" ? await this.chaptersFor(thread, pr) : null;
     let gateProof: GateProof | null = null;
     let gateProofError: string | null = null;
     try {
@@ -3059,6 +3103,7 @@ export class Reconciler {
           gateProof,
           gateProofError,
           triage,
+          chapters,
           shots: getPrShots(this.ledger, pr.number, pr.headSha) ?? [],
           onWithheld: (pattern) => this.logger.warn("recap/secret_withheld", pattern, { repo: this.ledger.repo, issue: thread.issueNumber }),
         }),
