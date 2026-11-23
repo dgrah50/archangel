@@ -184,7 +184,13 @@ function plainLine(text: string, max: number): string {
   return (t.length > max ? `${t.slice(0, max - 1)}…` : t).replace(/[\\`<>|[\]]/g, "\\$&");
 }
 
-const SECTION_START = /^\s*(?:#{1,6}\s*)?[*_]*(expected(?:\s+behaviou?r)?|repro(?:duction|\s+steps)?|steps\s+to\s+reproduce)[*_]*\s*:?/i;
+const EXPECTED_KEYWORD = "expected(?:\\s+(?:behaviou?r|results?|output))?";
+const REPRO_KEYWORD = "(?:repro(?:duction)?(?:\\s+steps)?|reproduc(?:e|ing))";
+const SECTION_KEYWORD = `(?:${EXPECTED_KEYWORD}|${REPRO_KEYWORD}|steps\\s+to\\s+reproduce)`;
+const SECTION_START = new RegExp(
+  `^\\s*(?:#{1,6}\\s*[*_]*${SECTION_KEYWORD}(?![A-Za-z0-9])[*_]*|[*_]*${SECTION_KEYWORD}(?![A-Za-z0-9])[*_]*\\s*:)`,
+  "i",
+);
 
 /** The issue body's paragraphs before any Expected/Repro section, without code fences. */
 function problemParagraphs(body: string): string[] {
@@ -223,7 +229,7 @@ export function beforeLine(issueNumber: number, title: string, body?: string | n
 /** The issue's own "Expected:" line, or null when the issue has none. */
 export function expectedLine(issueNumber: number, body?: string | null): string | null {
   const lines = (body ?? "").split("\n");
-  const at = lines.findIndex((l) => /^\s*(?:#{1,6}\s*)?[*_]*expected(?:\s+behaviou?r)?[*_]*\s*:/i.test(l));
+  const at = lines.findIndex((l) => new RegExp(`^\\s*(?:#{1,6}\\s*)?[*_]*${EXPECTED_KEYWORD}[*_]*\\s*:`, "i").test(l));
   if (at === -1) return null;
   const text = [lines[at]!.replace(/^[^:]*:[*_]*/, ""), ...lines.slice(at + 1)].join("\n").split(/\n\s*\n|\n\s*#/)[0]!.replace(/\s+/g, " ").trim();
   const first = plainLine(text.split(/(?<=[.!?])\s+/)[0] ?? "", 200);
