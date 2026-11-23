@@ -137,6 +137,26 @@ const DETERMINISTIC_REBASE_CAP = 8;
 /** The conventional-commit type a PR title and its squash commit carry, by work class. */
 const PR_TITLE_PREFIX: Record<WorkClass, string> = { bugfix: "fix", feature: "feat", chore: "chore" };
 
+/**
+ * Puts a conflict with main in front of the agent as files to edit: the workspace becomes main with the branch's whole change
+ * applied on top (`git merge --squash`), and the files both sides changed carry git's conflict markers. The agent only edits
+ * files, and the Broker commits the tree it leaves, as for any Attempt. Asking the agent to run `git rebase` cannot work: codex's
+ * sandbox keeps `.git` read-only, so the rebase never started and the Attempt came back with the same head.
+ */
+async function stageConflict(compute: ComputeProvider, ws: Workspace, branchSha: string, mainSha: string): Promise<void> {
+  const git = async (args: string[], okCodes: number[]): Promise<void> => {
+    const res = await compute.exec(ws, {
+      cmd: "git",
+      args,
+      env: { PATH: compute.remote ? "/usr/local/bin:/usr/bin:/bin" : (process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      timeoutMs: 60_000,
+    });
+    if (res.code === null || !okCodes.includes(res.code)) throw new Error(`git ${args[0]} exited ${res.code} while staging the conflict: ${res.stderr.trim().slice(-300)}`);
+  };
+  await git(["reset", "-q", "--hard", mainSha], [0]);
+  await git(["merge", "--squash", "--no-commit", branchSha], [0, 1]); // 1: conflicts, which is the point
+}
+
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
   private readonly ledger: Ledger;
@@ -1836,6 +1856,7 @@ export class Reconciler {
     // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
     const handleFor = (compute: ComputeProvider) =>
       new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha, baseSha: mainSha }, async (ws) => {
+        if (kind === "rebase") await stageConflict(compute, ws, fromSha, mainSha);
         // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
         try {
           await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
@@ -2148,14 +2169,12 @@ export class Reconciler {
         return;
       }
 
-      // A rebase that left the head unchanged: either main already holds the branch's change, or the rebase did nothing.
-      if (kind === "rebase" && validation.headSha === fromSha) {
-        const alreadyOnMain = await this.broker.isAlreadyOnMain(mainSha, fromSha);
+      // The workspace started as main with the branch's change applied and conflict markers in the files both changed (see
+      // stageConflict). Markers still in the result mean the conflict was not resolved.
+      if (kind === "rebase" && /^\+(?:<{7}|>{7})(?: |$)/m.test((await this.broker.getDiffAndTouchedFiles(mainSha, validation.headSha)).diffText)) {
         fail(
-          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "Rebase attempt produced no new changes (identical SHA)" },
-          alreadyOnMain
-            ? { t: "attempt_failed", code: "already_fixed", reason: "The branch's change is already on main; the rebase left nothing to push." }
-            : { t: "attempt_failed", code: "revision_no_change", reason: "Rebase attempt produced no new changes (identical SHA)." },
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "The rebase Attempt left conflict markers in the files" },
+          { t: "attempt_failed", code: "merge_conflict", reason: "The branch conflicts with main and the rebase Attempt left the conflict markers unresolved." },
         );
         return;
       }

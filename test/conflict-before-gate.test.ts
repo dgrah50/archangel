@@ -41,12 +41,21 @@ async function harness(mainChange: "unrelated" | "same-line") {
   const github = new FakeGitHub(remoteBare);
   const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
   const rebaseKinds: string[] = [];
+  /** What app.go held when a rebase Attempt started. */
+  const conflictSeen: string[] = [];
   const implementer: Implementer = {
     async run(input) {
-      if (/rebase/i.test(input.prompt)) rebaseKinds.push("rebase");
-      fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
-      git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
-      git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]);
+      const dir = (await input.workspaces.local.workspace()).path;
+      if (/rebase/i.test(input.prompt)) {
+        // Like codex in its sandbox, this implementer cannot write `.git`: it only edits the file.
+        rebaseKinds.push("rebase");
+        conflictSeen.push(fs.readFileSync(path.join(dir, "app.go"), "utf8"));
+        fs.writeFileSync(path.join(dir, "app.go"), "package demo\n\nfunc Val() int { return 9 }\n");
+        return { summary: "Resolved.", costUsd: 0, transcriptPath: null, aborted: false };
+      }
+      fs.writeFileSync(path.join(dir, "app.go"), "package demo\n\nfunc Val() int { return 7 }\n");
+      git(dir, ["add", "-A"]);
+      git(dir, ["commit", "-m", "fix"]);
       return { summary: "Done.", costUsd: 0, transcriptPath: null, aborted: false };
     },
   };
@@ -75,7 +84,7 @@ async function harness(mainChange: "unrelated" | "same-line") {
   git(seed, ["push", remoteBare, "HEAD:main"]);
 
   return {
-    ledger, github, reconciler, t0, rebaseKinds,
+    ledger, github, reconciler, t0, rebaseKinds, conflictSeen, remoteBare,
     cleanup: () => {
       ledger.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -96,6 +105,26 @@ describe("a PR that conflicts with base is rebased before the Gate timers apply"
       expect(t.phase.headSha).not.toBe(before.phase.headSha);
       expect(t.phase.since).toBe(h.t0 + 10 * MIN);
       expect(t.rebaseCount).toBe(1);
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe("a PR whose change conflicts with main", () => {
+  it("reaches the implementer as a file with conflict markers to edit, and its resolution is committed on top of main without the implementer running git", async () => {
+    const h = await harness("same-line");
+    try {
+      h.github.prs.get(100)!.mergeable = false;
+      await h.reconciler.tick(h.t0 + 10 * MIN, { waitForAttempts: true });
+      expect(h.conflictSeen).toHaveLength(1);
+      expect(h.conflictSeen[0]).toContain("<<<<<<<");
+      expect(h.conflictSeen[0]).toContain("return 2"); // main's side
+      expect(h.conflictSeen[0]).toContain("return 7"); // the branch's side
+      const t = h.ledger.getThread(1)!;
+      if (t.phase.kind !== "awaiting_gate") throw new Error(`expected awaiting_gate, got ${t.phase.kind}`);
+      expect(git(h.remoteBare, ["show", `${t.phase.headSha}:app.go`])).toContain("return 9");
+      expect(git(h.remoteBare, ["rev-parse", `${t.phase.headSha}^`])).toBe(git(h.remoteBare, ["rev-parse", "main"]));
     } finally {
       h.cleanup();
     }
