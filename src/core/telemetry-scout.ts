@@ -83,10 +83,10 @@ function judge(c: Check, window: Row[], base: Row[]): Anomaly | null {
     const pick = (rows: Row[]) => (g === undefined ? rows : rows.filter((r) => r.tags.account === g));
     const w = pick(window);
     const b = pick(base);
-    if (w.length === 0 || w.length < c.minWindow || b.length < c.minBase) continue;
     const obs = c.read(w);
     const old = b.length === 0 ? { value: 0, n: 0 } : c.read(b);
     if (!obs || !old) continue;
+    if (obs.n < c.minWindow || (c.minBase > 0 && old.n < c.minBase)) continue;
     const baseline = isCount(c) ? old.value / 7 : old.value;
     const ratio = obs.value / Math.max(baseline, c.floor);
     if (obs.value >= c.minObserved && ratio >= c.minRatio && (!worst || ratio > worst.ratio)) {
