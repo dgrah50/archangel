@@ -92,17 +92,27 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
   expect(reviewRuns).toBe(3);
 }, 60_000);
 
-it("a PR is reviewed again when the rebase changed a file it touches, even though the rebase was clean", async () => {
+it("after a clean rebase a PR keeps its reviews when main changed the same file elsewhere, and is reviewed again when the change landed next to its own", async () => {
   const lines = Array.from({ length: 30 }, (_, i) => `var L${i} = ${i}`);
-  // Both PRs edit shared.go, far apart: the second rebases cleanly, but its file is no longer the one its reviewers saw.
-  const { merges, reviewRuns } = await landAll(
-    [1, 2],
-    (n, dir) => {
-      const at = n === 1 ? 0 : 29;
-      fs.writeFileSync(path.join(dir, "shared.go"), ["package demo", "", ...lines.map((l, i) => (i === at ? `${l} + ${n}` : l))].join("\n") + "\n");
-    },
-    { "shared.go": ["package demo", "", ...lines].join("\n") + "\n" },
-  );
-  expect(merges).toHaveLength(2);
-  expect(reviewRuns).toBe(3);
-}, 60_000);
+  const seed = { "shared.go": ["package demo", "", ...lines].join("\n") + "\n" };
+  // Both PRs edit shared.go; the second rebases cleanly onto the first either way.
+  const twoEditsAt = (first: number, second: number) =>
+    landAll(
+      [1, 2],
+      (n, dir) => {
+        const at = n === 1 ? first : second;
+        fs.writeFileSync(path.join(dir, "shared.go"), ["package demo", "", ...lines.map((l, i) => (i === at ? `${l} + ${n}` : l))].join("\n") + "\n");
+      },
+      seed,
+    );
+
+  // Far apart: the second PR's hunk, context included, is what its reviewers saw. Only line numbers and blob ids moved.
+  const far = await twoEditsAt(0, 29);
+  expect(far.merges).toHaveLength(2);
+  expect(far.reviewRuns).toBe(2);
+
+  // Two lines apart: the first PR's line is now inside the second PR's context, so the reviewers see it again.
+  const near = await twoEditsAt(10, 12);
+  expect(near.merges).toHaveLength(2);
+  expect(near.reviewRuns).toBe(3);
+}, 120_000);
