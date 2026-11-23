@@ -195,6 +195,12 @@ export function tailOutput(text: string): string {
   return tail.length > PROOF_MAX_CHARS ? tail.slice(-PROOF_MAX_CHARS) : tail;
 }
 
+/** Last 8 lines of command output on one line, for a violation message (the failure is at the end, not the start). */
+function failureTail(text: string): string {
+  const tail = text.trim().split("\n").slice(-8).join(" | ");
+  return tail.length > 1500 ? tail.slice(-1500) : tail;
+}
+
 export interface GateRunOptions {
   repoDir: string;
   baseRef: string;
@@ -523,7 +529,7 @@ async function runRepoPreCommit(
       hooksRun.push(hook.id);
       const res = await runLocalPreCommitHook(worktreeDir, hook, matched, timeoutMs, env);
       if (!res.ok) {
-        const snippet = res.output.split("\n").slice(0, 8).join(" | ");
+        const snippet = failureTail(res.output);
         violations.push(`pre-commit hook '${hook.id}' failed: ${snippet}`);
       }
     }
@@ -551,7 +557,7 @@ async function runRepoPreCommit(
         );
       } else {
         const out = `${e.stdout ?? ""}\n${e.stderr ?? ""}`.trim() || e.message || String(err);
-        violations.push(`pre-commit remote hooks failed: ${out.split("\n").slice(0, 8).join(" | ")}`);
+        violations.push(`pre-commit remote hooks failed: ${failureTail(out)}`);
       }
     } finally {
       fs.rmSync(remoteConfigPath, { force: true });
@@ -653,7 +659,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         await extractCommitTree(opts.repoDir, headSha, revDir, env);
         const res = await runShellCmd(revDir, policy.testCmd, timeoutMs, env);
         if (!res.ok) {
-          report.violations.push(`revert testCmd failed: ${res.output.split("\n").slice(0, 6).join(" | ")}`);
+          report.violations.push(`revert testCmd failed: ${failureTail(res.output)}`);
           return report;
         }
       }
@@ -766,10 +772,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         const pristineRes = await runShellCmd(baseDir, baseCmd, timeoutMs, pristineEnv);
         if (!pristineRes.ok) {
           report.violations.push(
-            `pristine base testCmd failed — cannot prove new test caused failure: ${pristineRes.output
-              .split("\n")
-              .slice(0, 6)
-              .join(" | ")}`,
+            `pristine base testCmd failed — cannot prove new test caused failure: ${failureTail(pristineRes.output)}`,
           );
           return report;
         }
@@ -785,10 +788,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
           const buildRes = await runShellCmd(baseDir, policy.testBuildCmd, timeoutMs, testEnv);
           if (!buildRes.ok) {
             report.violations.push(
-              `base build failed (new test must compile against base APIs): ${buildRes.output
-                .split("\n")
-                .slice(0, 6)
-                .join(" | ")}`,
+              `base build failed (new test must compile against base APIs): ${failureTail(buildRes.output)}`,
             );
             return report;
           }
@@ -849,10 +849,7 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
         report.proof = { ...report.proof, head_output: tailOutput(headTestRes.output) };
         if (!headTestRes.ok) {
           report.violations.push(
-            `head testCmd failed (run ${i}/${headRuns}): ${headTestRes.output
-              .split("\n")
-              .slice(0, 8)
-              .join(" | ")}`,
+            `head testCmd failed (run ${i}/${headRuns}): ${failureTail(headTestRes.output)}`,
           );
           return report;
         }
