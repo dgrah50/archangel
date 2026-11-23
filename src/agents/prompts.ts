@@ -3,7 +3,11 @@ import type { GatePolicy } from "../config.js";
 import type { ReviewFinding } from "../ledger/schema.js";
 import type { WorkClass } from "../core/work-class.js";
 
-function formatGateRules(gate?: Partial<GatePolicy>, workClass: WorkClass = "bugfix"): string[] {
+/**
+ * `branchTestFiles` are the test files this branch itself added in an earlier Attempt. A revision edits those: told again to add a
+ * brand-new test file and never touch an existing one, an implementer adds one more file per revision until the file cap trips.
+ */
+function formatGateRules(gate?: Partial<GatePolicy>, workClass: WorkClass = "bugfix", branchTestFiles: readonly string[] = []): string[] {
   const maxNonTest = gate?.maxNonTestLines ?? 150;
   const maxTotal = gate?.maxTotalLines ?? 300;
   const maxFiles = gate?.maxFiles ?? 5;
@@ -15,11 +19,16 @@ function formatGateRules(gate?: Partial<GatePolicy>, workClass: WorkClass = "bug
     ? `\`${gate.testCmd}\``
     : "the repository's full test suite";
 
+  const own = branchTestFiles.map((f) => `\`${f}\``).join(", ");
   return [
-    workClass !== "bugfix"
-      ? `1. A new test file (matching ${testGlobs}) is optional: add one only if it locks down behaviour someone relies on (see the repository instructions).`
-      : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
-    "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
+    own
+      ? `1. This branch already added the test file(s) ${own}. Put every new or changed test case there. Do NOT add another test file.`
+      : workClass !== "bugfix"
+        ? `1. A new test file (matching ${testGlobs}) is optional: add one only if it locks down behaviour someone relies on (see the repository instructions).`
+        : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
+    own
+      ? "2. NEVER modify, rename, or delete a test file that exists on the base branch. The test file(s) named in rule 1 are this branch's own and are yours to edit."
+      : "2. NEVER modify, rename, or delete ANY pre-existing test file (all new reproduction tests/helpers must go into your new test file).",
     `3. Keep changes tightly scoped: <= ${maxNonTest} non-test changed lines, <= ${maxTotal} total changed lines, <= ${maxFiles} files, zero binary files.`,
     "4. NEVER touch protected paths (`.github/**`, `.pre-commit-config.yaml`, `.agents/**`, `LICENSE*`, `CLAUDE.md`, `AGENTS.md`, dependency lockfiles, or repo-protected paths in `.agents/archangel.json`).",
     `5. Satisfy all repo pre-commit hooks in \`.pre-commit-config.yaml\` (if present) and run ${testCmd} until green.`,
@@ -155,6 +164,8 @@ export function buildRevisionPrompt(input: {
   approvedPlan?: string | null;
   repoInstructions?: string | null;
   workClass?: WorkClass;
+  /** Test files the branch being revised added itself (new relative to its base). */
+  branchTestFiles?: readonly string[];
 }): string {
   const parts: string[] = [
     `Revision Attempt for Issue #${input.issueNumber}: ${input.title}`,
@@ -192,7 +203,7 @@ export function buildRevisionPrompt(input: {
 
   parts.push(
     "Address every item above while preserving all Mechanical Gate rules:",
-    ...formatGateRules(input.gate, input.workClass),
+    ...formatGateRules(input.gate, input.workClass, input.branchTestFiles),
     "",
     ...CODE_QUALITY_RULES,
     "",
