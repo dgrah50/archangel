@@ -568,6 +568,40 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       h.cleanup();
     }
   });
+
+  it("a shutdown stops the review round the tick is waiting on, and that is not a reviewer outage", async () => {
+    const implementer: Implementer = {
+      async run(input) {
+        const dir = (await input.workspaces.local.workspace()).path;
+        fs.writeFileSync(path.join(dir, "app.go"), "package demo\n\nfunc Val() int { return 2 }\n");
+        git(dir, ["add", "-A"]);
+        git(dir, ["commit", "-m", "fix"]);
+        return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
+      },
+    };
+    // A reviewer that never answers until it is told to stop; the daemon's shutdown arrives while the tick waits on it.
+    const reviewers: ReviewerSuite = {
+      reviewAll(req) {
+        return new Promise((resolve) => {
+          req.signal!.addEventListener("abort", () => resolve({ results: [], errors: [{ vendor: "openai", error: "stopped" }, { vendor: "gemini", error: "stopped" }] }));
+          setTimeout(() => h.reconciler.abortAllActive(), 10);
+        });
+      },
+    };
+    const h = world(implementer, reviewers);
+    try {
+      const { github, ledger, reconciler } = h;
+      github.checks.set(await github.getBranchTipSha("main"), allGreenChecks());
+      github.issues.set(14, { number: 14, title: "Val", body: "Val() should be 2", state: "open", authorId: 999, authorLogin: "dgrah50", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString() });
+      github.labelActors.set("14:ready-for-agent", 999);
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      github.checks.set((ledger.getThread(14)!.phase as { headSha: string }).headSha, allGreenChecks());
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      expect(ledger.getThread(14)?.phase).toMatchObject({ kind: "reviewing", outageSince: null });
+    } finally {
+      h.cleanup();
+    }
+  });
 });
 
 describe("Work classes (owner-labelled features)", () => {
