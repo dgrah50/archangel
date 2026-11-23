@@ -81,7 +81,7 @@ Use the text styles in `src/theme/motion.ts`; do not set font sizes inline.
 
 ## Pages
 
-- **Overview**: title with counts as badges; three cards (landed per day, Threads at each station with cost per fix, spend with verdict agreement); the Accounts card; then every Thread on one line, in folding groups ordered by what it is waiting for.
+- **Overview**: title with counts as badges; three cards (landed per day, Threads at each station with cost per fix, spend with verdict agreement); the Accounts card (one line per login: status, a bar for its tightest limit window, every window as "5 h 22% · week 13%", when the tightest resets, how old the reading is; the same words sit under the account in Settings); then every Thread on one line, in folding groups ordered by what it is waiting for.
 - **Needs you**: the queue on the left, oldest first; the selected decision on the right as cards (recommendation, recap, blockers), then the actions.
 - **Threads**: Threads grouped by need on the left; the selected Thread on the right: phase stepper, timeline, Gate proof.
 - **Pipeline**: one repo's line as rows in a card; the repo switcher top right.
