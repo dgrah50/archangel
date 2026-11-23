@@ -193,6 +193,36 @@ describe("outcome metrics", () => {
     }
   });
 
+  it("shipping: counts settled Threads, first-pass, Attempts and owner interventions per (repo, issue)", () => {
+    const ledger = new Ledger(":memory:", { repo: "a/b" });
+    try {
+      seedOutcome(ledger, 1, { outcome: "merged", attempts: 1 }); // first pass
+      seedOutcome(ledger, 2, { outcome: "owner_merged", attempts: 3 });
+      ledger.appendAudit("escalation/raised", 2, "archangel", { code: "gate_failed" }, 1000);
+      ledger.appendAudit("thread/owner_retry", 2, "owner", { code: "gate_failed" }, 1000);
+      seedOutcome(ledger, 3, { outcome: "pr_closed", attempts: 2 });
+      seedOutcome(ledger, 5, { outcome: null, attempts: 1 }); // still working: not settled
+      ledger.upsertThread({ issueNumber: 4, title: "i4", bodySha256: "s4", now: 1000, phase: { kind: "needs_you", code: "gate_failed", reason: "r", resumeTo: { kind: "queued" } } });
+      // Same issue number in another repo: its two Attempts must not leak into a/b#1.
+      seedOutcome(ledger, 1, { outcome: "merged", attempts: 2, repo: "c/d" });
+      expect(ledger.computeMetrics({ now: 5000 }).shipping).toEqual({
+        settled: 5,
+        shipped: 3,
+        shippedByFactory: 2,
+        closedUnshipped: 1,
+        waitingOnOwner: 1,
+        shipRate: 0.6,
+        firstPass: 1,
+        firstPassRate: 0.333,
+        attemptsToShip: { p50: 2, p95: 3, max: 3 },
+        escalationsPerShipped: 0.33,
+        ownerRetriesPerShipped: 0.33,
+        timeToShipSec: { p50: 0, p95: 0 },
+      });
+    } finally {
+      ledger.close();
+    }
+  });
 });
 
 describe("failure clusters", () => {
