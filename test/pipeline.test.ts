@@ -44,7 +44,7 @@ describe("Ledger.computeStageMetrics", () => {
     expect(m.gate.escalations).toEqual({ gate_failed: 1 });
     expect(m.review).toEqual({ byVendor: { openai: { approve: 1, veto: 0 }, gemini: { approve: 0, veto: 1 } }, outages: 1 });
     expect(m.landing).toMatchObject({ autoMerged: 1, ownerMerged: 1 });
-    expect(m.needsYou.byDecisionClass).toEqual({ live_infrastructure: 1 });
+    expect(m.needsYou.byDecisionClass).toEqual({ product_decision: 1 });
     expect(m.byWorkflowSha.wf1).toEqual({ threads: 3, merged: 2, reverted: 0 });
     expect(m.byWorkflowSha.wf2).toEqual({ threads: 1, merged: 1, reverted: 1 });
     expect(m.byWorkflowSha.none).toEqual({ threads: 1, merged: 0, reverted: 0 });

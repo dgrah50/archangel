@@ -24,7 +24,9 @@ export interface EscalationPolicy {
 }
 
 /**
- * Exhaustive by construction: adding an EscalationCode without a class fails typecheck.
+ * Exhaustive by construction: adding an EscalationCode without a class fails typecheck. The class names what the owner is asked
+ * to decide: `live_infrastructure` is for CI or a provider being down, never for the factory's own code not passing (a failed
+ * Gate or an unchanged revision is a product decision, a reviewer veto is the owner's signoff, a spent rebase budget is spending).
  */
 export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   body_changed: {
@@ -46,7 +48,7 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
       "The fix needs protected paths or exceeds diff bounds. Narrow the issue, or take it over with `archangel handoff`.",
   },
   gate_failed: {
-    decisionClass: "live_infrastructure",
+    decisionClass: "product_decision",
     short: "recommends reading the Gate output, then retry",
     recommendation:
       "Read the Gate output on the PR. Comment guidance and retry, or close the PR; do not merge without a passing Gate.",
@@ -64,13 +66,13 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
       "A required check (named in the reason) was not reported by GitHub Actions, the only source Archangel accepts. If it is a third-party check (a scanner, a deploy preview), remove it from `requiredChecks` in .agents/archangel.json with a PR you merge; if it should be your own workflow's check, verify the repo's Gate workflow. Then retry.",
   },
   review_vetoed: {
-    decisionClass: "live_infrastructure",
+    decisionClass: "owner_signoff",
     short: "recommends reading the findings first",
     recommendation:
       "Read the reviewer findings in the Recap. Comment guidance and retry, merge yourself if the veto is wrong, or close the PR.",
   },
   revision_no_change: {
-    decisionClass: "live_infrastructure",
+    decisionClass: "product_decision",
     short: "recommends commenting new guidance, then retry",
     recommendation:
       "The revision came back byte-identical to the previous head: the implementer could not meet the feedback within the rules. Read its summary and the findings, then comment what it should do differently and retry, or close the PR.",
@@ -88,7 +90,7 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
       "A reviewer could not run, and two independent reviewers are required (the reason says which and why). For a login problem, run `archangel doctor --smoke` and re-login. For a usage limit, wait for it to reset, or add another login for that provider under `accounts` in archangel.yaml. Then retry.",
   },
   merge_conflict: {
-    decisionClass: "live_infrastructure",
+    decisionClass: "spending",
     short: "recommends retry on a fresh Attempt",
     recommendation:
       "The branch conflicts with main and the automatic rebase failed. Retry for a fresh Attempt, or resolve it with `archangel handoff`.",
