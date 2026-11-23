@@ -4,7 +4,9 @@ import { isMeasured } from "../../src/core/pitch.js";
 import { diagramRows } from "../../src/core/pitch-diagram.js";
 import type { PitchAttachment, PitchRow, PitchScoutInfo, PitchesState } from "../../src/core/ui-pitches.js";
 import { Notice, type Feed } from "./AppView";
-import { CopyCommand, LinkButton, Page, PageHeadline, Ref, Section } from "./page";
+import { Badge } from "./arc/badge/badge";
+import { Skeleton } from "./arc/skeleton/skeleton";
+import { CopyCommand, LinkButton, MasterDetail, Page, PageHeadline, PickRow, Ref, Section } from "./page";
 
 // Pitch text is model-written and untrusted: it is only ever rendered as React text children. The page never promotes or declines:
 // promoting is a command to copy, declining is a link to the issue on GitHub.
@@ -39,7 +41,14 @@ const outcome = (s: PitchesState["decided"][number]["state"]) =>
 export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesState>; now: number; onRetry: () => void }) {
   const [picked, setPicked] = useState<string | null>(null);
   if (pitches.data === null) {
-    if (pitches.error === null) return <Text p="6" color="fg.muted">Loading...</Text>;
+    if (pitches.error === null) {
+      return (
+        <Page>
+          <PageHeadline title="Pitches" />
+          <Skeleton label="Loading pitches" lines={4} />
+        </Page>
+      );
+    }
     return (
       <Page>
         <Notice tone="red" title="Pitches could not be loaded">
@@ -55,64 +64,62 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
   const n = d.open.length;
   const current = d.open.find((p) => keyOf(p) === picked) ?? d.open[0] ?? null;
   return (
-    <Page>
-      <PageHeadline title="Pitches">{n === 0 ? "none open" : `${n} ${n === 1 ? "needs" : "need"} a yes or a no`}</PageHeadline>
-      <Flex direction={{ base: "column", lg: "row" }} gap="10" flex="1" align="stretch">
-        <Flex direction="column" w={{ lg: "300px" }} flexShrink={0} gap="6">
-          {n > 0 ? (
-            <Section>
-              {d.open.map((p) => (
-                <Box
-                  as="button"
-                  key={keyOf(p)}
-                  textAlign="start"
-                  cursor="pointer"
-                  onClick={() => setPicked(keyOf(p))}
-                  pb="3"
-                  borderBottomWidth="1px"
-                  borderBottomColor="border"
-                  aria-pressed={current !== null && keyOf(current) === keyOf(p)}
-                  css={{ "&[aria-pressed=false] h3": { color: "var(--chakra-colors-fg-muted)" } }}
-                >
-                  <Flex justify="space-between" gap="2">
-                    <Text textStyle="meta" color="fg">
-                      {TYPE(p.pitch.type)} <Text as="span" color="fg.subtle">· Size {p.pitch.size}</Text>
-                    </Text>
-                    <Text textStyle="meta" color="fg.subtle">
-                      {expires(p, now)}
+    <Page px="0" pb="0">
+      <Box px={{ base: "6", md: "56px" }}>
+        <PageHeadline title="Pitches">{n === 0 ? "none open" : `${n} ${n === 1 ? "needs" : "need"} a yes or a no`}</PageHeadline>
+      </Box>
+      <MasterDetail
+        list={
+          <>
+            {n > 0 ? (
+              <Flex as="ul" listStyleType="none" direction="column" gap="1" aria-label="Open pitches">
+                {d.open.map((p) => (
+                  <li key={keyOf(p)}>
+                    <PickRow selected={current !== null && keyOf(current) === keyOf(p)} onClick={() => setPicked(keyOf(p))} py="2.5" align="stretch" direction="column" gap="1">
+                      <Flex justify="space-between" align="center" gap="2">
+                        <Flex gap="1.5">
+                          <Badge size="sm">{TYPE(p.pitch.type)}</Badge>
+                          <Badge size="sm" outline>Size {p.pitch.size}</Badge>
+                        </Flex>
+                        <Text textStyle="meta" color="fg.subtle">
+                          {expires(p, now)}
+                        </Text>
+                      </Flex>
+                      <Text as="h3" textStyle="label" color="fg">
+                        {p.pitch.title}
+                      </Text>
+                      <Flex gap="2" color="fg.muted" align="baseline">
+                        <Ref repo={p.repo} num={p.issueNumber} />
+                        {p.attachments.length > 0 ? <Text textStyle="meta" color="fg.subtle">has pictures</Text> : null}
+                      </Flex>
+                    </PickRow>
+                  </li>
+                ))}
+              </Flex>
+            ) : null}
+            {d.decided.length > 0 ? (
+              <Flex direction="column" gap="2" px="3" pt="5">
+                <Text textStyle="meta" color="fg.subtle">Decided recently</Text>
+                {d.decided.map((p) => (
+                  <Flex key={keyOf(p)} justify="space-between" gap="3" textStyle="body13" color="fg.muted">
+                    <Text truncate>{p.title}</Text>
+                    <Text flexShrink={0} color="fg">
+                      {outcome(p.state)}
                     </Text>
                   </Flex>
-                  <Text as="h3" textStyle="rowTitle" color="fg" mt="1">
-                    {p.pitch.title}
-                  </Text>
-                  <Flex mt="1" gap="2" color="fg.muted" align="baseline">
-                    <Ref repo={p.repo} num={p.issueNumber} />
-                    {p.attachments.length > 0 ? <Text textStyle="meta" color="fg.subtle">has pictures</Text> : null}
-                  </Flex>
-                </Box>
-              ))}
-            </Section>
-          ) : null}
-          {d.decided.length > 0 ? (
-            <Section title="Decided recently">
-              {d.decided.map((p) => (
-                <Flex key={keyOf(p)} justify="space-between" gap="3" textStyle="body13" color="fg.muted">
-                  <Text truncate>{p.title}</Text>
-                  <Text flexShrink={0} color="fg">
-                    {outcome(p.state)}
-                  </Text>
-                </Flex>
-              ))}
-            </Section>
-          ) : null}
-          <Box flex="1" />
-          <Text textStyle="meta" color="fg.subtle">
-            {d.pitchScouts.map((i) => scoutLine(i, d.pitchScouts.length > 1, now, d.pauseAfterUnpromoted)).join(" ")}{" "}
-            At most {d.maxOpen} pitches stay open. The pitch Scout pauses after {d.pauseAfterUnpromoted} in a row go unpromoted.
-          </Text>
-        </Flex>
+                ))}
+              </Flex>
+            ) : null}
+            <Box flex="1" />
+            <Text textStyle="meta" color="fg.subtle" px="3" pt="6">
+              {d.pitchScouts.map((i) => scoutLine(i, d.pitchScouts.length > 1, now, d.pauseAfterUnpromoted)).join(" ")}{" "}
+              At most {d.maxOpen} pitches stay open. The pitch Scout pauses after {d.pauseAfterUnpromoted} in a row go unpromoted.
+            </Text>
+          </>
+        }
+      >
         {current ? <Detail row={current} d={d} now={now} /> : null}
-      </Flex>
+      </MasterDetail>
     </Page>
   );
 }
@@ -182,7 +189,7 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
               <Checkbox.Label>
                 <Text textStyle="label" color="fg">
                   {i + 1} · {s.title}
-                  {promoted ? <Text as="span" color="fg.subtle"> (already promoted)</Text> : null}
+                  {promoted ? <> <Badge size="sm" tone="success" dot>already promoted</Badge></> : null}
                 </Text>
                 <Text textStyle="meta" color="fg.muted">Done when: {s.acceptance}</Text>
               </Checkbox.Label>
@@ -215,7 +222,7 @@ function Detail({ row, d, now }: { row: PitchRow; d: PitchesState; now: number }
 }
 
 const CHANGE_WORD = { add: "added", remove: "removed", modify: "changed", same: "unchanged" } as const;
-const CHANGE_COLOR = { add: "green.fg", remove: "red.fg", modify: "fg", same: "fg.subtle" } as const;
+const CHANGE_BADGE = { add: { tone: "success" }, remove: { tone: "neutral", outline: true }, modify: { tone: "neutral" }, same: { tone: "neutral", outline: true } } as const;
 
 /** The model's nodes and edges, drawn here as an indented tree of React text. Nothing from the pitch is ever markup. */
 function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"]["changeDiagram"]> }) {
@@ -225,7 +232,9 @@ function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"
       <Box borderLeftWidth="1px" borderLeftColor="border" pl="3">
         {diagramRows(diagram).map((r, i) => (
           <Flex key={i} gap="3" align="baseline">
-            <Text textStyle="meta" color={CHANGE_COLOR[r.change]} w="76px" flexShrink={0}>{CHANGE_WORD[r.change]}</Text>
+            <Box w="84px" flexShrink={0}>
+              <Badge size="sm" {...CHANGE_BADGE[r.change]}>{CHANGE_WORD[r.change]}</Badge>
+            </Box>
             <Text textStyle="body13" color={r.change === "same" ? "fg.muted" : "fg"} pl={`${r.depth * 20}px`}>
               {r.label}
               {r.repeat ? <Text as="span" color="fg.subtle"> (shown above)</Text> : null}
@@ -247,7 +256,7 @@ function Estimates({ items }: { items: PitchRow["pitch"]["estimates"] }) {
           <Flex gap="3" align="baseline" wrap="wrap">
             <Text textStyle="body13" color="fg" fontWeight="medium">{e.metric}</Text>
             <Text textStyle="body13" color="fg">{e.before === null ? "" : `${e.before} -> `}{e.after} {e.unit}</Text>
-            <Text textStyle="meta" color={isMeasured(e) ? "fg.muted" : "fg.subtle"}>{isMeasured(e) ? "Measured" : "Estimate, not measured"}</Text>
+            <Badge size="sm" tone={isMeasured(e) ? "success" : "neutral"}>{isMeasured(e) ? "Measured" : "Estimate, not measured"}</Badge>
           </Flex>
           <Text textStyle="meta" color="fg.muted">Method: {e.method}{isMeasured(e) ? <> Evidence: <Text as="span" textStyle="ref">{e.source}</Text></> : null}</Text>
         </Box>

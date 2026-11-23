@@ -2356,7 +2356,8 @@ export class Reconciler {
         // A completed Gate always writes a proof annotation for this head, pass or fail. A failed Gate check without one
         // crashed or never ran: infrastructure, not a code failure, so never a revision.
         const gateCheck = verdict.failed.some((f) => f.name === "Gate") ? checks.find((c) => c.name === "Gate") : undefined;
-        if (gateCheck && !(await this.github.getGateProof(gateCheck.id, pr.headSha))) {
+        const gateProof = gateCheck ? await this.github.getGateProof(gateCheck.id, pr.headSha) : null;
+        if (gateCheck && !gateProof) {
           if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, gateCheck.id, now)) return;
           this.applyMachineEvent(
             thread,
@@ -2369,7 +2370,11 @@ export class Reconciler {
           );
           return;
         }
-        const failMsgs = verdict.failed.map((f) => `${f.name}: ${f.conclusion}`);
+        // What the agent needs to fix is the failure text (the failing test), not just the check name. Untrusted data; the tail is kept.
+        const failMsgs = verdict.failed.map((f) => {
+          const detail = (f.name === "Gate" ? gateProof?.head_output : checks.find((c) => c.name === f.name)?.output)?.trim();
+          return `${f.name}: ${f.conclusion}${detail ? `\n${detail.slice(-1_200)}` : ""}`;
+        });
         if (
           thread.mode === "autonomous" &&
           issue &&

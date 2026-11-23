@@ -12,7 +12,7 @@ How the dashboard should look and how it is put together. The Rules are the owne
 
 - **Every element on the Overview is actionable or informative at a glance.** If the owner cannot tell what a number means or what they would do about it, cut it (a vague "autonomous steps 22/25" was cut for this reason). Keep the money: spend per PR and spend today.
 - **Dense, not busy.** One clear reading order. When a page feels overloaded, strip content before restyling it; reach for a chart over a wall of numbers.
-- **Page headers are a plain title with the counts beside it in grey** ("Threads 17"). No tagline sentences, no highlighted words inside headlines, no explanatory sub-sentence under the title. A sentence that states a rule needed at the moment of acting goes next to the control it governs.
+- **Page headers are a plain title with the counts beside it in grey** ("Threads 17"). No tagline sentences, no highlighted words inside headlines, no explanatory sub-sentence under the title. A sentence that states a rule needed at the moment of acting goes next to the control it governs. A page's control (repo switcher, tabs, buttons) goes in `PageHeadline`'s `right`, so the title sits at the same height on every page. A page that is shown inside another (Settings, Per repo) has only the outer title.
 - **Overview shows its counts as badges beside the title** because there they are the data: need you, stuck, running, landed today, or "nothing needs you". They are counts, never a sentence.
 - **Accent colour marks one thing once.** If the nav badge already flags it, the row and the heading do not repeat it in amber text or fills. A status dot is not an accent: it is how a row says what state it is in.
 - **No AI-slop tells:** gradient or highlighted text, decorative emoji, clever copy in place of labels, cards nested in cards, uniform rounded boxes for everything.
@@ -23,7 +23,7 @@ How the dashboard should look and how it is put together. The Rules are the owne
 Three layers, in the order to reach for them:
 
 1. **Arc components** in `src/arc/`. Real components from https://uiarc.dev (free tier, MIT), copied from its registry. They read Arc's CSS variables, which `src/theme/arc-bridge.ts` aliases to the Chakra theme, so they follow light and dark and the theme's tokens with no extra stylesheet. `src/arc/SOURCE.md` lists what is copied and every local edit.
-2. **Page primitives** in `src/page.tsx`: `Page`, `PageHeadline`, `Section`, `RowList`, `Row`, `Dot`, `CopyCommand`, `LinkButton`, `Ref`, `Ticked`.
+2. **Page primitives** in `src/page.tsx`: `Page`, `PageHeadline`, `Section`, `RowList`, `Row`, `MasterDetail`, `PickRow`, `Group`, `Line`, `Dot`, `Issues`, `CopyCommand`, `LinkButton`, `Ref`, `Ticked`. `src/thread-lines.tsx` holds the Thread list shared by the Overview and Threads (`ThreadLine`, `PrBadge`, the running group).
 3. **Chakra with the Arc theme** for everything else (buttons, inputs, selects, switches, checkboxes). Its recipes are a port of Arc, so these already match.
 
 Before hand-building a control, check that list of Arc components first. A hand-built chart, meter, tab strip, copy button, timeline, stepper, alert or empty state is a regression.
@@ -35,7 +35,8 @@ Before hand-building a control, check that list of Arc components first. A hand-
 | `bar-chart` | Overview: fixes landed per day |
 | `sparkline` | Overview: cost per merged fix |
 | `usage-meter` | Overview: today's metered spend against the daily cap |
-| `badge` | Overview: the counts beside the title, account status |
+| `badge` | Overview: the counts beside the title, account status. Every state word: check results (Passed, Failing, Warning), setup tags (Needs you, Next step), PR links, decision class, pitch type and size, Gate passed, eval verdicts |
+| `skeleton` | Every main loading state (pages, the open Thread, recap, reports) |
 | `segmented-control` | The repo and scope switchers on Threads, Pipeline and Settings |
 | `copy-button` | Every command to copy (`CopyCommand`), transcript paths |
 | `timeline` | A Thread's audit events |
@@ -56,8 +57,10 @@ Before hand-building a control, check that list of Arc components first. A hand-
 - **One card style.** Panel fill, a hairline border, the surface radius, no shadow: `Section` in `page.tsx`, or `bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface"`.
 - **Cards never nest.** A section inside a card is `<Section inner>`: a hairline above it, no second box.
 - **Rows inside a card** are separated by hairlines (`RowList`), not by their own boxes.
-- **Group bands** (the Overview's "Needs you", "Running" …) are a filled strip that folds, not a card.
-- Master and detail pages (Threads, Needs you) keep the list on the bare surface and put the detail's blocks in cards.
+- **Group bands** (the Overview's "Needs you", "Running" …) are a filled strip that folds, not a card (`Group`). The Threads page uses the same bands, names, order and dots; Queued and Landed fold there.
+- **Selectable lists** (Needs you, Pitches, Threads, Setup steps) are one pattern: rows on the bare surface (`PickRow`, or `Line` for one-line Threads), a 10px radius, a lighter fill on hover, a hairline outline and a filled background on the selected row. No dividers between rows, no amber on the selected row. Needs you, Threads and Pitches put the list left and the detail right in `MasterDetail`, edge to edge under the title.
+- Master and detail pages keep the list on the bare surface and put the detail's blocks in cards.
+- **State words are badges** (`Badge`), not coloured text: green only for passed or healthy, amber (`warning`) only when the owner has to act, grey for everything else.
 
 ## Colour
 
@@ -83,11 +86,11 @@ Use the text styles in `src/theme/motion.ts`; do not set font sizes inline.
 
 - **Overview**: title with counts as badges; three cards (landed per day, Threads at each station with cost per fix, spend with verdict agreement); the Accounts card (one line per login: status, a bar for its tightest limit window, every window as "5 h 22% · week 13%", when the tightest resets, how old the reading is; the same words sit under the account in Settings); then every Thread on one line, in folding groups ordered by what it is waiting for.
 - **Needs you**: the queue on the left, oldest first; the selected decision on the right as cards (recommendation, recap, blockers), then the actions.
-- **Threads**: Threads grouped by need on the left; the selected Thread on the right: phase stepper, timeline, Gate proof.
+- **Threads**: Threads grouped like the Overview on the left (a row is the title and its ref); the selected Thread on the right: phase stepper, timeline, Gate proof.
 - **Pipeline**: one repo's line as rows in a card; the repo switcher top right.
 - **Pitches**: open pitches on the left; the selected pitch as one card with inner sections.
 - **Settings**: one card of blocks (Models, Accounts, Limits, Repos, Alerts); the unsaved-changes card on the right.
-- **Setup and health**: steps on the left, the selected step's checks on the right; Faults, Telemetry and Evals as cards below.
+- **Setup and health**: steps (selectable list) on the left, the selected step's checks on the right; Faults, Telemetry and Evals as cards below.
 
 ## Behaviour that shapes the design
 
