@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { describe, expect, it } from "bun:test";
 import { renderPrBody, renderRecapComment } from "../src/core/recap.js";
+import { buildChapters, parseDiffStat } from "../src/core/recap-chapters.js";
 import { PROOF_MAX_CHARS, PROOF_MAX_LINES, runGateForActions, tailOutput, type GateReport } from "../src/gate/gate.js";
 import { GitHubAppClient } from "../src/github/client.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
@@ -140,6 +141,34 @@ describe("Recap and PR body are scannable", () => {
     expect(out).toContain("owner-written");
     expect(out).toContain("Machine triage (factory), not the owner");
     expect(out).toContain("not written by Archangel");
-    expect(renderPrBody({ number: 7, title: "t", body: "b" }).startsWith("### Summary")).toBe(true);
+    expect(renderPrBody({ number: 7, title: "t", body: "b" }, []).startsWith("### Summary")).toBe(true);
+  });
+
+  it("state the real problem, the expected behaviour and what changed, in a bugfix Summary", () => {
+    const issueBody = "Store.Add keeps whitespace variants as separate entries. Two problems follow:\n\n- blanks\n- padding\n\nExpected: trimmed queries dedupe. Blank queries are dropped.\n\nRepro:\n1. add ' a'";
+    const chapters = buildChapters(
+      parseDiffStat(
+        [
+          "diff --git a/internal/store.go b/internal/store.go",
+          "@@ -1 +1,2 @@",
+          "-old",
+          "+new",
+          "+more",
+          "diff --git a/internal/store_regression_test.go b/internal/store_regression_test.go",
+          "new file mode 100644",
+          "@@ -0,0 +1 @@",
+          "+t",
+        ].join("\n"),
+      ),
+      { isProtected: () => false, isTest: (p) => p.endsWith("_test.go") },
+    );
+    const out = renderRecapComment({ thread: { ...thread, branchName: "archangel/issue-1" }, reviews: [], blockers: [], issueBody, chapters });
+    expect(out).toContain("Store.Add keeps whitespace variants as separate entries.");
+    expect(out).not.toContain("Two problems follow");
+    expect(out).not.toContain("add ' a'");
+    expect(out).toContain("**Expected** (issue #");
+    expect(out).toContain("trimmed queries dedupe.");
+    expect(out).toContain("**Now:** changes `internal/store.go` (+2/−1); new test `internal/store_regression_test.go`");
+    expect(renderPrBody({ number: 1, title: "t", body: issueBody }, chapters)).toContain("**Now:** changes `internal/store.go`");
   });
 });
