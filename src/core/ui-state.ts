@@ -48,6 +48,8 @@ export interface UiState {
   groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
   outcomes: ReturnType<Ledger["computeMetrics"]>["outcomes"];
+  /** How often Threads ship and what it took, all repos, all time. */
+  shipping: ReturnType<Ledger["computeMetrics"]>["shipping"];
   /** Owner corrections over the last 30 days, all repos (closed categories only). */
   corrections: CorrectionCounts;
   autonomySteps: Record<string, number>;
@@ -226,6 +228,7 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
   const known = new Set(threads.map((t) => `${t.repo}#${t.issueNumber}`));
   const pitches = ledger.listOpenPitches();
   const spendDaily = ledger.dailySpend(14, now);
+  const metrics = ledger.computeMetrics({ now });
   return {
     generatedAt: now,
     answeredToday: {
@@ -242,7 +245,8 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
     needsYou,
     groups: groupByNeed(threads, now),
     stages,
-    outcomes: ledger.computeMetrics({ now }).outcomes,
+    outcomes: metrics.outcomes,
+    shipping: metrics.shipping,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
     faults: schemaGap(() => ledger.listHealthFaults(now)),

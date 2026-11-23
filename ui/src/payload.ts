@@ -21,6 +21,7 @@ export function isUiState(v: unknown): v is UiState {
     obj(v.groups) &&
     NEED_GROUPS_UI.every((g) => Array.isArray((v.groups as Record<string, unknown>)[g])) &&
     obj(v.outcomes) &&
+    obj(v.shipping) &&
     obj(v.autonomySteps) &&
     obj(v.pitches) &&
     obj(v.spend) &&

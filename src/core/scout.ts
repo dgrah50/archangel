@@ -550,8 +550,9 @@ export async function runScoutsForProject(opts: {
     });
   }
 
+  // A Scout held back by its daily cap or open-proposal limit did not run: on every tick that is most of them, and not an event.
   for (const r of results) {
-    emit("scout_run", 1, { outcome: r.status === "skipped_cap" || r.status === "skipped_open_limit" ? "skipped" : r.status }, opts.ledger.repo);
+    if (r.status !== "skipped_cap" && r.status !== "skipped_open_limit") emit("scout_run", 1, { outcome: r.status }, opts.ledger.repo);
   }
   return results;
 }

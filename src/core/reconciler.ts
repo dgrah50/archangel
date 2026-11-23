@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
+import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned, isInfrastructureFailure } from "./escalations.js";
 import { REPO_POLICY_PATH, resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -975,10 +975,23 @@ export class Reconciler {
             ? ` (${updated.phase.outcome})`
             : "";
       const lvl = updated.phase.kind === "needs_you" ? "warn" : "info";
+      const next = updated.phase;
       this.logger[lvl](
-        extra.auditTopic ?? `phase/${updated.phase.kind}`,
-        `${thread.phase.kind} -> ${updated.phase.kind}${detail}`,
-        { repo: this.ledger.repo, issue: thread.issueNumber },
+        extra.auditTopic ?? `phase/${next.kind}`,
+        `${thread.phase.kind} -> ${next.kind}${detail}`,
+        {
+          repo: this.ledger.repo,
+          issue: thread.issueNumber,
+          data: {
+            from: thread.phase.kind,
+            to: next.kind,
+            event: ev.t,
+            ...(next.kind === "needs_you" ? { code: next.code, ...(next.cause ? { cause: next.cause } : {}) } : {}),
+            ...(next.kind === "done" ? { outcome: next.outcome } : {}),
+            ...(next.kind === "working" ? { attempt: next.attempt, attemptId: next.attemptId } : {}),
+            ...("prNumber" in next && next.prNumber ? { pr: next.prNumber } : {}),
+          },
+        },
       );
     }
     return updated;
@@ -1678,7 +1691,7 @@ export class Reconciler {
         {
           t: "escalate",
           code: "max_attempts",
-          reason: `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants}).`,
+          reason: `Used all ${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} to start with, plus one per owner retry).`,
         },
         { auditTopic: "thread/needs_you", now },
       );
@@ -1862,6 +1875,7 @@ export class Reconciler {
 
       const result: ImplementResult = await this.implementer
         .run({
+        repo: this.ledger.repo,
         issueNumber: issue.number,
         workspaces: { local, ...(remote ? { remote } : {}) },
         prompt,
@@ -2236,6 +2250,8 @@ export class Reconciler {
       });
       if (err instanceof AttemptError && err.runBy) this.ledger.recordAttemptProvenance(attemptId, { provider: err.runBy.provider, model: err.runBy.model, accountId: err.runBy.accountId ?? null });
       const cause = err instanceof AttemptError ? err.category : undefined;
+      // The Thread still parks in Needs you (nothing retries by itself), but a run that never reached the issue is not one of its Attempts.
+      if (isInfrastructureFailure(cause)) this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
@@ -2324,7 +2340,8 @@ export class Reconciler {
         // A completed Gate always writes a proof annotation for this head, pass or fail. A failed Gate check without one
         // crashed or never ran: infrastructure, not a code failure, so never a revision.
         const gateCheck = verdict.failed.some((f) => f.name === "Gate") ? checks.find((c) => c.name === "Gate") : undefined;
-        if (gateCheck && !(await this.github.getGateProof(gateCheck.id, pr.headSha))) {
+        const gateProof = gateCheck ? await this.github.getGateProof(gateCheck.id, pr.headSha) : null;
+        if (gateCheck && !gateProof) {
           if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, gateCheck.id, now)) return;
           this.applyMachineEvent(
             thread,
@@ -2337,7 +2354,11 @@ export class Reconciler {
           );
           return;
         }
-        const failMsgs = verdict.failed.map((f) => `${f.name}: ${f.conclusion}`);
+        // What the agent needs to fix is the failure text (the failing test), not just the check name. Untrusted data; the tail is kept.
+        const failMsgs = verdict.failed.map((f) => {
+          const detail = (f.name === "Gate" ? gateProof?.head_output : checks.find((c) => c.name === f.name)?.output)?.trim();
+          return `${f.name}: ${f.conclusion}${detail ? `\n${detail.slice(-1_200)}` : ""}`;
+        });
         if (
           thread.mode === "autonomous" &&
           issue &&
