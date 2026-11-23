@@ -165,9 +165,10 @@ async function ownerBuild(runner: OnboardRunner, input: OwnerBuildDeps, task: Ow
       try {
         tests = await compute.exec(ws, { cmd: "sh", args: ["-c", gate.testCmd], env: { PATH: process.env.PATH, HOME: home, CI: "1" }, timeoutMs: input.cfg.implementTimeoutMs });
       } finally {
-        // A test run can leave background writers (Go's build cache) in its HOME: retry, and never lose a finished build to a leftover temp dir.
+        // A test run can leave read-only trees in its HOME (Go's module cache is 0555): make them writable first, and never lose a finished build to a leftover temp dir.
         try {
-          fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+          await compute.exec(ws, { cmd: "chmod", args: ["-R", "u+w", home], env: { PATH: process.env.PATH }, timeoutMs: 60_000 });
+          fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
         } catch (err) {
           input.log(`Left ${home} behind (${err instanceof Error ? err.message : String(err)}); remove it by hand.`);
         }
