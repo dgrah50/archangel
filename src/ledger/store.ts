@@ -2967,7 +2967,32 @@ export class Ledger {
       total: number;
       byPhase: Record<string, number>;
       escalationsByCode: Record<string, number>;
-      avgLeadTimeSec: number | null;
+    };
+    shipping: {
+      /** Threads that ended (done) or are parked on the owner (needs_you). In-flight Threads are not counted yet. */
+      settled: number;
+      /** done with outcome merged or owner_merged. */
+      shipped: number;
+      /** done with outcome merged (the factory merged it itself). */
+      shippedByFactory: number;
+      /** done with any other outcome (pr_closed, abandoned, reverted). */
+      closedUnshipped: number;
+      /** phase needs_you. */
+      waitingOnOwner: number;
+      /** shipped / settled; null when nothing has settled. */
+      shipRate: number | null;
+      /** Shipped Threads that took exactly one Attempt and were never escalated. */
+      firstPass: number;
+      /** firstPass / shipped; null when nothing shipped. */
+      firstPassRate: number | null;
+      /** Attempts (any kind, any status) per shipped Thread; null when nothing shipped. */
+      attemptsToShip: { p50: number; p95: number; max: number } | null;
+      /** `escalation/raised` audit rows on shipped Threads, per shipped Thread. */
+      escalationsPerShipped: number | null;
+      /** `thread/owner_retry` audit rows on shipped Threads, per shipped Thread. */
+      ownerRetriesPerShipped: number | null;
+      /** createdAt to updatedAt of shipped Threads, in seconds. */
+      timeToShipSec: { p50: number; p95: number } | null;
     };
     attempts: {
       total: number;
@@ -3011,15 +3036,11 @@ export class Ledger {
 
     const byPhase: Record<string, number> = {};
     const escalationsByCode: Record<string, number> = {};
-    const leadTimesSec: number[] = [];
 
     for (const t of threads) {
       byPhase[t.phase.kind] = (byPhase[t.phase.kind] ?? 0) + 1;
       if (t.phase.kind === "needs_you") {
         escalationsByCode[t.phase.code] = (escalationsByCode[t.phase.code] ?? 0) + 1;
-      }
-      if (t.phase.kind === "shadow_ready" || (t.phase.kind === "done" && (t.phase.outcome === "merged" || t.phase.outcome === "owner_merged"))) {
-        leadTimesSec.push(Math.max(0, (t.updatedAt - t.createdAt) / 1000));
       }
     }
 
@@ -3081,6 +3102,48 @@ export class Ledger {
       return Number(arr[idx]!.toFixed(1));
     };
 
+    const attemptsByThread = new Map<string, number>();
+    for (const r of this.db.prepare(`SELECT repo, issue_number, COUNT(*) AS n FROM attempts GROUP BY repo, issue_number`).all() as Array<{ repo: string; issue_number: number; n: number }>) {
+      attemptsByThread.set(`${r.repo}#${r.issue_number}`, r.n);
+    }
+    const auditByThread = new Map<string, number>();
+    for (const r of this.db
+      .prepare(`SELECT repo, issue_number, topic, COUNT(*) AS n FROM audit_log WHERE topic IN ('escalation/raised', 'thread/owner_retry') GROUP BY repo, issue_number, topic`)
+      .all() as Array<{ repo: string; issue_number: number | null; topic: string; n: number }>) {
+      auditByThread.set(`${r.topic}|${r.repo}#${r.issue_number}`, r.n);
+    }
+    let shipped = 0;
+    let shippedByFactory = 0;
+    let closedUnshipped = 0;
+    let waitingOnOwner = 0;
+    let firstPass = 0;
+    let escalations = 0;
+    let ownerRetries = 0;
+    const attemptsToShip: number[] = [];
+    const timeToShipSec: number[] = [];
+    for (const t of threads) {
+      if (t.phase.kind === "needs_you") waitingOnOwner++;
+      if (t.phase.kind !== "done") continue;
+      if (t.phase.outcome !== "merged" && t.phase.outcome !== "owner_merged") {
+        closedUnshipped++;
+        continue;
+      }
+      shipped++;
+      if (t.phase.outcome === "merged") shippedByFactory++;
+      const key = `${t.repo}#${t.issueNumber}`;
+      const attemptCount = attemptsByThread.get(key) ?? 0;
+      const escalated = auditByThread.get(`escalation/raised|${key}`) ?? 0;
+      escalations += escalated;
+      ownerRetries += auditByThread.get(`thread/owner_retry|${key}`) ?? 0;
+      if (attemptCount === 1 && escalated === 0) firstPass++;
+      attemptsToShip.push(attemptCount);
+      timeToShipSec.push(Math.max(0, (t.updatedAt - t.createdAt) / 1000));
+    }
+    attemptsToShip.sort((x, y) => x - y);
+    timeToShipSec.sort((x, y) => x - y);
+    const settled = shipped + closedUnshipped + waitingOnOwner;
+    const perShipped = (n: number) => (shipped > 0 ? Number((n / shipped).toFixed(2)) : null);
+
     const revParams: SQLQueryBindings[] = [since];
     const revWhere =
       (repoFilter ? "WHERE created_at >= ? AND repo = ?" : "WHERE created_at >= ?") + notExcluded("issue_number");
@@ -3117,10 +3180,20 @@ export class Ledger {
         total: threads.length,
         byPhase,
         escalationsByCode,
-        avgLeadTimeSec:
-          leadTimesSec.length > 0
-            ? Number((leadTimesSec.reduce((a, b) => a + b, 0) / leadTimesSec.length).toFixed(1))
-            : null,
+      },
+      shipping: {
+        settled,
+        shipped,
+        shippedByFactory,
+        closedUnshipped,
+        waitingOnOwner,
+        shipRate: settled > 0 ? Number((shipped / settled).toFixed(3)) : null,
+        firstPass,
+        firstPassRate: shipped > 0 ? Number((firstPass / shipped).toFixed(3)) : null,
+        attemptsToShip: shipped > 0 ? { p50: percentile(attemptsToShip, 0.5)!, p95: percentile(attemptsToShip, 0.95)!, max: attemptsToShip[shipped - 1]! } : null,
+        escalationsPerShipped: perShipped(escalations),
+        ownerRetriesPerShipped: perShipped(ownerRetries),
+        timeToShipSec: shipped > 0 ? { p50: percentile(timeToShipSec, 0.5)!, p95: percentile(timeToShipSec, 0.95)! } : null,
       },
       attempts: {
         total: attemptRows.length,
