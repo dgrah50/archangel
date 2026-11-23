@@ -92,6 +92,7 @@
       "src/core/telemetry-scout.ts",
       "src/core/ui-gh.ts",
       "src/core/ui-accounts.ts",
+      "src/core/account-usage.ts",
       "src/core/plan.ts",
       "src/core/signals.ts",
       "src/core/signal-kinds.ts",

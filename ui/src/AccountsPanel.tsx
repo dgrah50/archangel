@@ -12,6 +12,15 @@ export const back = (ms: number) => {
 };
 const ROLE_WORD: Record<string, string> = { implement: "building", revise: "revising", rebase: "rebasing", review: "reviewing" };
 
+/** The most used window is the one that will stop the account first. */
+export const tightest = (u: NonNullable<AccountRow["usage"]>) => u.windows.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a));
+/** Every window as "5 h 22%", and when the tightest one resets (when the CLI says). */
+export const usageWords = (u: NonNullable<AccountRow["usage"]>) => u.windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
+export const resetWords = (u: NonNullable<AccountRow["usage"]>, now: number) => {
+  const at = tightest(u).resetsAt;
+  return at === null ? "" : `resets in ${back(at - now)}`;
+};
+
 export function Account({ a }: { a: AccountRow }) {
   const cooling = a.cooldownUntil !== null && a.cooldownUntil > Date.now();
   return (
@@ -27,6 +36,12 @@ export function Account({ a }: { a: AccountRow }) {
           {a.vendor} via {a.provider}, {a.home ?? "CLI default home"}
           {a.lastSwitch ? `. Last switched away ${when(a.lastSwitch.at)}: ${a.lastSwitch.reason}` : ""}
         </Text>
+        {a.usage ? (
+          <Text textStyle="meta" color="fg.subtle">
+            Used: {usageWords(a.usage)}
+            {resetWords(a.usage, Date.now()) ? `, ${resetWords(a.usage, Date.now())}` : ""}
+          </Text>
+        ) : null}
       </Flex>
       <Text textStyle="body13" color="fg.muted" flexShrink={0}>
         {a.maxAttemptsPerDay === null ? `${a.attemptsToday} ${a.attemptsToday === 1 ? "attempt" : "attempts"} today, no cap` : `${a.attemptsToday} of ${a.maxAttemptsPerDay} today`}

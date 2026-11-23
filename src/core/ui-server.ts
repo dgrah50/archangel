@@ -11,6 +11,7 @@ import { makeDoctorHandler, type DoctorRunner, type DoctorScope } from "./ui-doc
 import { buildHostStatus } from "./host-facts.js";
 import { listReports } from "./eval-reports.js";
 import { buildAccountsState } from "./ui-accounts.js";
+import { createAccountUsage, type UsageRunner } from "./account-usage.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildPitchesState } from "./ui-pitches.js";
 import { assetPath, type ImageMime } from "./pitch-ingest.js";
@@ -85,9 +86,10 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  */
 export async function startUiServer(
   ledgerOrGetter: Ledger | (() => Ledger),
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void; ledgerMissing?: () => boolean },
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void; ledgerMissing?: () => boolean; usageRunner?: UsageRunner },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
+  const accountUsage = createAccountUsage(opts.usageRunner);
   const currentLedger = typeof ledgerOrGetter === "function" ? ledgerOrGetter : () => ledgerOrGetter;
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
   if (!fs.existsSync(path.join(uiDir, "index.html"))) {
@@ -202,7 +204,7 @@ export async function startUiServer(
         // Cooldowns and homes (paths only) of this machine's logins: token required, never served remotely.
         if (opts.allowRemote) return sendJson(res, 403, { error: "accounts are disabled in remote mode" });
         if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
-        return sendJson(res, 200, buildAccountsState(ledger, opts.configPath));
+        return sendJson(res, 200, buildAccountsState(ledger, opts.configPath, accountUsage));
       }
       if (pathname === "/api/pitches") {
         // Stored pitch text (model-written) for the local page: token required, never served remotely.

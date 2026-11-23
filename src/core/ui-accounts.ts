@@ -1,5 +1,6 @@
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountsFor, expandHome, providerToVendor, type CliProvider } from "../config.js";
+import { DEFAULT_ACCOUNTS, accountsFor, expandHome, providerToVendor, type Account, type CliProvider } from "../config.js";
+import type { AccountUsage } from "./account-usage.js";
 import type { Ledger } from "../ledger/store.js";
 import { readCodexUsage } from "./accounts.js";
 import { AGY_HOME_WARNING } from "./doctor.js";
@@ -13,8 +14,8 @@ export interface AccountRow {
   home: string | null;
   cooldownUntil: number | null;
   attemptsToday: number;
-  /** How much of its rate-limit window the account had used at its last model call (Codex only, read from its session log; no token or auth file is opened). Null when there is no reading. */
-  usage: { usedPercent: number; observedAt: number } | null;
+  /** Its rate-limit windows (share used, reset time). Codex: from its session log at its last model call. Claude and agy: from the CLI's own `/usage`, cached for minutes. No token or auth file is opened. Null when there is no reading. */
+  usage: AccountUsage | null;
   maxAttemptsPerDay: number | null;
   lastUsedAt: number | null;
   /** The most recent limit error that moved work off this account (kept after the cooldown ends). */
@@ -26,8 +27,8 @@ export type AccountsState =
   | { state: "ok"; generatedAt: number; implicit: boolean; accounts: AccountRow[]; warnings: string[] }
   | { state: "missing" | "invalid" | "unreadable"; generatedAt: number; error: string };
 
-/** Read only: the config on disk, the Ledger's cooldown and attempt rows, and the Codex usage reading. No token or auth file in an account home is opened. */
-export function buildAccountsState(ledger: Ledger, configPath: string | undefined, now = Date.now()): AccountsState {
+/** The config on disk, the Ledger's cooldown and attempt rows, and the usage readings. No token or auth file in an account home is opened. */
+export function buildAccountsState(ledger: Ledger, configPath: string | undefined, cliUsage: (account: Account, now: number) => AccountUsage | null, now = Date.now()): AccountsState {
   const { host } = buildSettingsState(ledger, configPath, now);
   if (host.state !== "ok") return { state: host.state, generatedAt: now, error: host.error };
   const c = host.config;
@@ -36,7 +37,9 @@ export function buildAccountsState(ledger: Ledger, configPath: string | undefine
   const chains: Array<[string, typeof c.reviewerChain]> = [...Object.entries(c.chains), ["review", c.reviewerChain]];
   const accounts = c.accounts.map((a): AccountRow => {
     const sw = switches.get(a.id);
-    const reading = a.provider === "codex" ? readCodexUsage(a.home) : null;
+    const reading = a.provider === "codex" ? readCodexUsage(a.home) : cliUsage(a, now);
+    // A window that has reset since the reading was taken no longer says anything.
+    const windows = reading?.windows.filter((w) => w.resetsAt === null || w.resetsAt > now) ?? [];
     return {
       id: a.id,
       provider: a.provider,
@@ -44,7 +47,7 @@ export function buildAccountsState(ledger: Ledger, configPath: string | undefine
       home: a.home ? path.resolve(expandHome(a.home)) : null,
       cooldownUntil: state.cooldownUntil(a.id, now),
       attemptsToday: state.attemptsToday(a.id, now),
-      usage: reading ? { usedPercent: reading.usedPercent, observedAt: reading.observedAt } : null,
+      usage: reading && windows.length > 0 ? { windows, observedAt: reading.observedAt } : null,
       maxAttemptsPerDay: a.maxAttemptsPerDay ?? null,
       lastUsedAt: state.lastUsedAt(a.id),
       lastSwitch: sw ? { at: sw.at, reason: sw.reason } : null,
