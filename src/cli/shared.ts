@@ -10,6 +10,7 @@ export function makeReviewerSuite(cfg: ArchangelConfig, ledger: Ledger): Reviewe
     accounts: cfg.accounts,
     accountState: ledger.accountState(cfg.accounts),
     defaultExcludeVendors: primaryWriterVendors(cfg.chains),
+    timeoutMs: cfg.reviewTimeoutMs,
   });
 }
 

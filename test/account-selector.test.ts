@@ -139,6 +139,7 @@ describe("reviewer independence stays by vendor with several accounts", () => {
       chain: [{ provider: "claude" }, { provider: "codex" }, { provider: "agy" }],
       accounts,
       defaultExcludeVendors: [],
+      timeoutMs: 60_000,
       invoker: async (i) => {
         ran.push(`${i.provider}:${i.account!.id}`);
         return { verdict: "approve", findings: [] };
