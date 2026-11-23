@@ -105,6 +105,7 @@ describe("placing chain entries on local and remote providers", () => {
     const doc = sailPolicyDoc({ claudeTokenSecret: "C", codexApiKeySecret: "O", geminiApiKeySecret: "G" });
     expect(doc.allowlist).toEqual(["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "registry.npmjs.org"]);
     expect(sailPolicyDoc({ claudeTokenSecret: "C", codexBrokerHome: "/h" }).allowlist).toEqual(["api.anthropic.com", "chatgpt.com", "registry.npmjs.org"]);
+    expect(sailPolicyDoc({ claudeTokenSecret: "C", image: { egressHosts: ["proxy.golang.org"] } }).allowlist).toEqual(["api.anthropic.com", "registry.npmjs.org", "proxy.golang.org"]);
     const agy = sailPolicyDoc({ claudeTokenSecret: "C", agyBrokerHome: "/h" });
     expect(agy.allowlist).toEqual(["api.anthropic.com", "daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com", "registry.npmjs.org"]);
     expect(agy.allowlist).not.toContain("oauth2.googleapis.com");
