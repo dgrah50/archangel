@@ -44,6 +44,7 @@ import { LocalProvider } from "../compute/local.js";
 import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
 import { createSailProvider, remoteAttemptProvider, remoteProviders } from "../compute/sail-sdk.js";
 import { Secret } from "@sailresearch/sdk";
+import { AGY_BROKER_ID, agyBrokerAdapter } from "../compute/agy-broker-adapter.js";
 import { CODEX_BROKER_ID, codexBrokerAdapter } from "../compute/codex-broker-adapter.js";
 import { TokenBroker, brokerPreflight } from "../compute/token-broker.js";
 import type { SailProvider } from "../compute/sail.js";
@@ -197,7 +198,10 @@ program
     const sailProviders: SailProvider[] = [];
     // One broker per dedicated login: it alone refreshes that login and puts only the access token in a Sail secret.
     const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
-    const brokers = [...brokerHomes].map((home) => new TokenBroker(codexBrokerAdapter(home), sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => console.error(`[archangel] ${m}`)));
+    const agyBrokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.agyBrokerHome ? [resolveUserPath(cfg.compute.sail.agyBrokerHome)] : [])));
+    const brokers = [...[...brokerHomes].map((home) => codexBrokerAdapter(home)), ...[...agyBrokerHomes].map((home) => agyBrokerAdapter(home))].map(
+      (adapter) => new TokenBroker(adapter, sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => console.error(`[archangel] ${m}`)),
+    );
     await Promise.all(brokers.map((b) => b.start()));
     const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
     let lastTranscriptPrune = 0;
@@ -235,6 +239,7 @@ program
               codexBrokerPreflight: cfg.compute.sail?.codexBrokerHome
                 ? (attemptMs) => ({ accountId: brokerPreflight(sharedPaths.dataDir, CODEX_BROKER_ID, attemptMs).accountId! })
                 : undefined,
+              agyBrokerPreflight: cfg.compute.sail?.agyBrokerHome ? (attemptMs) => void brokerPreflight(sharedPaths.dataDir, AGY_BROKER_ID, attemptMs) : undefined,
               transcriptsDir: paths.transcriptsDir,
               accountState,
               logger,

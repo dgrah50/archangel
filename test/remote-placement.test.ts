@@ -65,6 +65,29 @@ describe("placing chain entries on local and remote providers", () => {
       for (const c of remote.calls) {
         expect(Object.keys(c.env).filter((k) => /CLAUDE_CONFIG_DIR|CODEX_HOME|TOKEN|HOME|KEY/.test(k))).toEqual([]);
       }
+
+      // A brokered agy login: the box gets a synthetic login with only the placeholder, and still no host env.
+      const brokered = fakeCompute(true, () => ({}));
+      const agyChain = [{ provider: "agy" as const }];
+      const agyImpl = new SubscriptionImplementer({
+        chains: { implement: agyChain, revise: agyChain, rebase: agyChain },
+        accounts: [{ id: "agy", provider: "agy", home: "/host/agy-home" }],
+        remoteProviders: new Set(["agy"]),
+        agyBrokerPreflight: () => undefined,
+        transcriptsDir: dir,
+      });
+      await agyImpl.run({
+        issueNumber: 2,
+        workspaces: { local: { compute: local.compute, workspace: async () => ({ id: "l", path: "/l" }) }, remote: { compute: brokered.compute, workspace: async () => ({ id: "r", path: "/r" }) } },
+        prompt: "p",
+        abortController: new AbortController(),
+        maxTurns: 1,
+        timeoutMs: 1000,
+        maxBudgetUsd: 1,
+        role: "implement",
+      });
+      expect(brokered.calls.some((c) => c.args.join(" ").includes("$ARCHANGEL_AGY_PLACEHOLDER"))).toBe(true);
+      for (const c of brokered.calls) expect(Object.keys(c.env).filter((k) => /CLAUDE_CONFIG_DIR|CODEX_HOME|TOKEN|HOME|KEY/.test(k))).toEqual([]);
     } finally {
       delete process.env.OPENAI_API_KEY;
       fs.rmSync(dir, { recursive: true, force: true });
@@ -82,6 +105,9 @@ describe("placing chain entries on local and remote providers", () => {
     const doc = sailPolicyDoc({ claudeTokenSecret: "C", codexApiKeySecret: "O", geminiApiKeySecret: "G" });
     expect(doc.allowlist).toEqual(["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "registry.npmjs.org"]);
     expect(sailPolicyDoc({ claudeTokenSecret: "C", codexBrokerHome: "/h" }).allowlist).toEqual(["api.anthropic.com", "chatgpt.com", "registry.npmjs.org"]);
+    const agy = sailPolicyDoc({ claudeTokenSecret: "C", agyBrokerHome: "/h" });
+    expect(agy.allowlist).toEqual(["api.anthropic.com", "daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com", "registry.npmjs.org"]);
+    expect(agy.allowlist).not.toContain("oauth2.googleapis.com");
     expect(doc.rules["generativelanguage.googleapis.com"]![0]!.request.replace.headers).toEqual({ "x-goog-api-key": "G" });
   });
 });

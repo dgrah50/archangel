@@ -208,7 +208,9 @@ A provider runs on a Sail box only when it has a remote credential in `compute.s
 | codex | dedicated ChatGPT login (broker) | `codexBrokerHome: ~/.archangel/accounts/codex-sail` | see below; exclusive with `codexApiKeySecret` |
 | agy | Gemini API key | `geminiApiKeySecret: GEMINI_API_KEY_SAIL` | create a Google AI Studio API key (put a billing limit on the project), `sail secret set GEMINI_API_KEY_SAIL` |
 
-agy with a Google subscription login is not supported on Sail: its login lives in a keyring and Google's terms ban this use. Use the Gemini API key.
+| agy | dedicated Google login (broker) | `agyBrokerHome: ~/.archangel/accounts/agy-sail` | see "agy Google login broker" below; exclusive with `geminiApiKeySecret` |
+
+The Gemini API key is the route Google recommends for third-party use. The broker route uses a Google subscription login, which Google's Antigravity terms bar for third-party tools; you accept that risk, so use a dedicated Google account that you can afford to lose.
 
 Set the secrets at the hidden prompt, never as an argument, and add the config:
 
@@ -239,6 +241,18 @@ Two things are not proven until you run them on the real account:
 
 1. Start the daemon, then run `archangel doctor`. The `Sail token broker (codex)` check prints the measured access-token lifetime. Refreshes are scheduled from it, so a short lifetime is fine, but note it.
 2. Let one codex Attempt run on a throwaway issue. It must reach `chatgpt.com` and answer; a `401` in its transcript means the placeholder was not swapped on the wire for the login file (not env). Then remove `codexBrokerHome` from the config and use `codexApiKeySecret` instead.
+
+### agy Google login broker
+
+Create a dedicated Google account (never your main one). Give it a HOME of its own so agy finds no keychain and keeps its login in a file, and log in there:
+
+```sh
+mkdir -p ~/.archangel/accounts/agy-sail
+HOME=~/.archangel/accounts/agy-sail agy    # choose "Google OAuth", open the URL, paste the code
+ls ~/.archangel/accounts/agy-sail/.gemini/antigravity-cli/antigravity-oauth-token
+```
+
+If macOS shows a "Keychain Not Found" dialog, dismiss it; agy then falls back to the file. Then set `agyBrokerHome: ~/.archangel/accounts/agy-sail` and start the daemon. The broker forces agy to refresh that login (`agy models` with only that HOME), writes only the access token to the Sail secret `ARCHANGEL_AGY_ACCESS`, and repeats at about half its life. The box gets a synthetic login file holding a placeholder and no route to `oauth2.googleapis.com`, so it can never refresh. Run `archangel doctor` and read the `Sail token broker (agy)` check, then let one agy Attempt run on a throwaway issue; the Cloud Code hosts an Attempt needs beyond `daily-cloudcode-pa.googleapis.com` are not yet proven on a real account.
 
 ## Configuration examples
 

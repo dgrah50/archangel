@@ -1,3 +1,4 @@
+import { AGY_PLACEHOLDER_ENV, AGY_TOKEN_FILE } from "../compute/agy-broker-adapter.js";
 import { CODEX_PLACEHOLDER_ENV } from "../compute/codex-broker-adapter.js";
 import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
@@ -127,6 +128,8 @@ export type CliInvoker = (input: {
   outputFile: string;
   /** Remote codex on a broker-held ChatGPT login: the synthetic login the box gets is for this account. Absent means codex uses the API-key placeholder. */
   brokerAccountId?: string;
+  /** Remote agy on a broker-held Google login: the box gets a synthetic login file instead of API-key settings. */
+  agyBrokered?: boolean;
 }) => Promise<CliExecResult>;
 
 export interface SubscriptionImplementerOptions {
@@ -137,6 +140,8 @@ export interface SubscriptionImplementerOptions {
   remoteProviders?: ReadonlySet<CliProvider>;
   /** Set when remote codex runs on a broker-held ChatGPT login. Called before the box is prepared with the longest the Attempt may run; it throws to refuse the Attempt, else returns the (non-secret) account id. */
   codexBrokerPreflight?: (attemptMs: number) => { accountId: string };
+  /** Set when remote agy runs on a broker-held Google login. Same contract as codexBrokerPreflight: throws to refuse the Attempt. */
+  agyBrokerPreflight?: (attemptMs: number) => void;
   transcriptsDir: string;
   invoker?: CliInvoker;
   /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
@@ -163,6 +168,13 @@ function syntheticCodexLogin(accountId: string): string {
 
 /** agy only runs on an API key when its settings say so. The key itself is the placeholder GEMINI_API_KEY the egress policy provides. */
 const AGY_REMOTE_SETTINGS = '{"modelProvider":"gemini"}';
+
+/**
+ * The login a box's agy gets for a brokered Google account: agy keeps its login in this file when no keyring is usable (a box has no
+ * D-Bus). The access token is only the placeholder (the egress policy swaps in the real one on the Cloud Code hosts), the refresh token is
+ * a dummy and the expiry is far off, so agy neither refreshes nor can (oauth2.googleapis.com is unreachable).
+ */
+const SYNTHETIC_AGY_LOGIN = `mkdir -p "$HOME/${path.posix.dirname(AGY_TOKEN_FILE)}" && printf '%s' '{"token":{"access_token":"'"$${AGY_PLACEHOLDER_ENV}"'","token_type":"Bearer","refresh_token":"not-a-refresh-token","expiry":"2099-01-01T00:00:00Z","expires_in":3599},"auth_method":"consumer","id_token_email":"broker@archangel.invalid"}' > "$HOME/${AGY_TOKEN_FILE}" && chmod 600 "$HOME/${AGY_TOKEN_FILE}"`;
 
 function remoteEnv(): NodeJS.ProcessEnv {
   return {
@@ -208,6 +220,7 @@ async function defaultCliInvoker(input: {
   goCacheDir: string;
   outputFile: string;
   brokerAccountId?: string;
+  agyBrokered?: boolean;
 }): Promise<CliExecResult> {
   // A remote box gets no host env at all: its only login is the placeholder CLAUDE_CODE_OAUTH_TOKEN the egress policy provides.
   const env: NodeJS.ProcessEnv = input.compute.remote ? remoteEnv() : localEnv(input);
@@ -272,7 +285,10 @@ async function defaultCliInvoker(input: {
       const login = input.brokerAccountId ? syntheticCodexLogin(input.brokerAccountId) : 'export CODEX_API_KEY="$OPENAI_API_KEY"';
       [bin, args] = ["bash", ["-c", `${login} && exec "$@"`, "bash", bin, ...args]];
     }
-    if (input.provider === "agy") [bin, args] = ["bash", ["-c", `mkdir -p "$HOME/.gemini/antigravity-cli" && printf %s '${AGY_REMOTE_SETTINGS}' > "$HOME/.gemini/antigravity-cli/settings.json" && exec "$@"`, "bash", bin, ...args]];
+    if (input.provider === "agy") {
+      const login = input.agyBrokered ? SYNTHETIC_AGY_LOGIN : `mkdir -p "$HOME/.gemini/antigravity-cli" && printf %s '${AGY_REMOTE_SETTINGS}' > "$HOME/.gemini/antigravity-cli/settings.json"`;
+      [bin, args] = ["bash", ["-c", `${login} && exec "$@"`, "bash", bin, ...args]];
+    }
   }
 
   const { abortController, provider, timeoutMs } = input;
@@ -405,6 +421,7 @@ export class SubscriptionImplementer implements Implementer {
   private readonly accounts: Account[];
   private readonly remoteProviders: ReadonlySet<CliProvider>;
   private readonly codexBrokerPreflight: SubscriptionImplementerOptions["codexBrokerPreflight"];
+  private readonly agyBrokerPreflight: SubscriptionImplementerOptions["agyBrokerPreflight"];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly state: AccountLedger;
@@ -420,12 +437,21 @@ export class SubscriptionImplementer implements Implementer {
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.remoteProviders = opts.remoteProviders ?? new Set();
     this.codexBrokerPreflight = opts.codexBrokerPreflight;
+    this.agyBrokerPreflight = opts.agyBrokerPreflight;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.cooldownDurationMs = opts.cooldownDurationMs ?? ACCOUNT_COOLDOWN_MS;
     this.networkRetryWaitMs = opts.networkRetryWaitMs ?? NETWORK_RETRY_WAIT_MS;
     this.logger = opts.logger ?? NOOP_LOGGER;
+  }
+
+  private agyBrokerCheck(attemptMs: number): void {
+    try {
+      this.agyBrokerPreflight!(attemptMs);
+    } catch (err) {
+      throw new AttemptError("auth", err instanceof Error ? err.message : String(err));
+    }
   }
 
   private async brokerAccount(attemptMs: number): Promise<string> {
@@ -497,6 +523,8 @@ export class SubscriptionImplementer implements Implementer {
           const handle = input.workspaces[ranOn]!;
           // A brokered login is checked before any box exists: a failed or soon-to-expire token refuses the Attempt, never falls back.
           const brokerAccountId = ranOn === "remote" && entry.provider === "codex" && this.codexBrokerPreflight ? await this.brokerAccount(input.timeoutMs) : undefined;
+          const agyBrokered = ranOn === "remote" && entry.provider === "agy" && this.agyBrokerPreflight !== undefined;
+          if (agyBrokered) this.agyBrokerCheck(input.timeoutMs);
           const placed = { compute: handle.compute, workspace: await handle.workspace() };
           const prompt = i === 0 ? input.prompt : `${await captureWorkspaceContinuityContext(placed)}\n\n${input.prompt}`;
           const headBefore = await headSha(placed);
@@ -511,6 +539,7 @@ export class SubscriptionImplementer implements Implementer {
             goCacheDir,
             outputFile,
             brokerAccountId,
+            agyBrokered,
           }).catch((err: unknown) => {
             if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`);
             throw err;
