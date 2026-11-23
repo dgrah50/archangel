@@ -28,7 +28,7 @@ import { captureAttemptInput } from "./attempt-input.js";
 import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } from "./plan.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
-import { renderRecapComment } from "./recap.js";
+import { renderPrBody, renderRecapComment } from "./recap.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scanForSecrets, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
@@ -1932,7 +1932,7 @@ export class Reconciler {
 
       const pr = await this.github.createPr({
         title: `fix(#${issue.number}): ${issue.title}`,
-        body: `Closes #${issue.number}\n\nAutomated fix by Archangel.`,
+        body: renderPrBody({ number: issue.number, title: issue.title, body: issue.body }),
         head: workingThread.branchName,
         base: this.cfg.defaultBranch,
       });
@@ -2760,10 +2760,18 @@ export class Reconciler {
         issue: thread.issueNumber,
       });
     }
+    let issueBody: string | null = null;
+    try {
+      issueBody = (await this.github.getIssue(thread.issueNumber)).body;
+    } catch (err) {
+      this.logger.warn("recap/issue_unavailable", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo, issue: thread.issueNumber });
+    }
     try {
       await this.github.upsertRecapComment(
         pr.number,
         renderRecapComment({
+          issueBody,
+          diff: pr.changedFiles ? { files: pr.changedFiles, additions: pr.additions ?? 0, deletions: pr.deletions ?? 0 } : null,
           thread,
           reviews,
           blockers,

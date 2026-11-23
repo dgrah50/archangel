@@ -32,6 +32,9 @@ export interface GitHubPr {
   baseSha: string;
   labels: string[];
   changedFiles: string[];
+  /** Line totals of the diff; absent on snapshots that did not read them. */
+  additions?: number;
+  deletions?: number;
   mergeableState?: string;
   /** GitHub's verdict on merging into base: false = conflicts, null = still being computed, undefined = not reported. */
   mergeable?: boolean | null;
@@ -443,7 +446,7 @@ export class GitHubAppClient implements GitHubClient {
         `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}`,
         { useEtag: false },
       ),
-      this.requestAllPages<{ filename: string }>(
+      this.requestAllPages<{ filename: string; additions?: number; deletions?: number }>(
         `/repos/${this.cfg.owner}/${this.cfg.repo}/pulls/${prNumber}/files?per_page=100`,
         { useEtag: false },
       ),
@@ -468,6 +471,8 @@ export class GitHubAppClient implements GitHubClient {
       baseSha: String(base.sha ?? ""),
       labels,
       changedFiles: files.map((f) => f.filename),
+      additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
+      deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
       mergeableState: pr.mergeable_state ? String(pr.mergeable_state) : undefined,
       mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : pr.mergeable === null ? null : undefined,
     };
