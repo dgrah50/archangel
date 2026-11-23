@@ -113,8 +113,13 @@ export const estimateLine = (e: PitchEstimate): string =>
 /** Kernel: at most one pitch per run. An empty array is a good, valid answer. */
 export const PitchOutputSchema = z.object({ pitches: z.array(Pitch).max(1) }).strict();
 
+/**
+ * The schema a pitch Scout's CLI must answer in. Without zod's `$schema` dialect line: the claude CLI tries to resolve that URL
+ * as a schema reference and rejects the whole schema ("no schema with key or ref"), which failed every pitch run on claude.
+ */
 export function pitchJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(PitchOutputSchema) as Record<string, unknown>;
+  const { $schema: _dialect, ...schema } = z.toJSONSchema(PitchOutputSchema) as Record<string, unknown>;
+  return schema;
 }
 
 const escapeCaption = (c: string): string => c.replace(/[\[\]()<>`\\\r\n]+/g, " ").trim();

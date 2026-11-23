@@ -94,6 +94,8 @@ async function fixture(spec: Record<string, unknown> & { name: string } = SPEC) 
       invoker: async (i) => {
         called = true;
         prompts.push(i.prompt);
+        // The claude CLI rejects a schema that carries a `$schema` dialect line, which failed every pitch run.
+        expect(Object.keys(i.outputSchema ?? {})).not.toContain("$schema");
         return answer;
       },
     }).then((res) => ({ res, called }));
