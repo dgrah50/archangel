@@ -13,7 +13,8 @@ import { goWorkflowJson } from "./helpers/workflow.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-it("three ready PRs land one at a time, oldest first, each rebased onto the new main and merged only on its own current head's checks", async () => {
+/** Lands `issues` ready PRs through one Reconciler; `write` is each implementer run's edit (given the run's number and its clone). */
+async function landAll(issues: number[], write: (run: number, dir: string) => void, seedFiles: Record<string, string> = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-batch-"));
   const seed = path.join(root, "seed");
   fs.mkdirSync(path.join(seed, ".agents"), { recursive: true });
@@ -22,12 +23,14 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
   git(seed, ["config", "user.email", "t@t"]);
   fs.writeFileSync(path.join(seed, "go.mod"), "module example.com/demo\n\ngo 1.26.0\n");
   fs.writeFileSync(path.join(seed, ".agents", "archangel.json"), goWorkflowJson(["Gate", "Test"]));
+  for (const [file, text] of Object.entries(seedFiles)) fs.writeFileSync(path.join(seed, file), text);
   git(seed, ["add", "-A"]);
   git(seed, ["commit", "-qm", "i"]);
   git(root, ["clone", "-q", "--bare", seed, path.join(root, "remote.git")]);
   const github = new FakeGitHub(path.join(root, "remote.git"));
   const ledger = new Ledger(":memory:", { repo: "acme/app" });
   let n = 0;
+  let reviewRuns = 0;
   const rec = new Reconciler({
     triageInvoker: noCli,
     config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, maxAutoMergesPerDay: 10, maxConcurrentThreads: 3 }),
@@ -37,17 +40,17 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
     implementer: {
       async run(input) {
         const dir = (await input.workspaces.local.workspace()).path;
-        fs.writeFileSync(path.join(dir, `f${++n}.go`), `package demo\n\nvar V${n} = ${n}\n`);
+        write(++n, dir);
         git(dir, ["add", "-A"]);
         git(dir, ["commit", "-m", "fix"]);
         return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
       },
     },
-    reviewers: { async reviewAll() { return { results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0 }, { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0 }], errors: [] }; } },
+    reviewers: { async reviewAll() { reviewRuns++; return { results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0 }, { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0 }], errors: [] }; } },
     notifier: { async notifyNeedsYou() {}, async sendDigest() {} },
   });
   try {
-    for (const i of [1, 2, 3]) {
+    for (const i of issues) {
       github.issues.set(i, { number: i, title: `Bug ${i}`, body: "b", state: "open", authorId: 999, authorLogin: "o", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString() });
       github.labelActors.set(`${i}:ready-for-agent`, 999);
     }
@@ -58,7 +61,7 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
       merges.push({ pr, sha, greenOnThatSha: green });
       return real(pr, sha, title);
     });
-    const done = () => [1, 2, 3].every((i) => ledger.getThread(i)?.phase.kind === "done");
+    const done = () => issues.every((i) => ledger.getThread(i)?.phase.kind === "done");
     for (let t = 0; t < 30 && !done(); t++) {
       // CI finishes between ticks: every head that exists now (and the main tip) goes green. A head pushed during a tick has no checks yet.
       const ok = (id: number, name: string) => ({ id, name, status: "completed" as const, conclusion: "success", appSlug: "github-actions" });
@@ -72,11 +75,33 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
       expect(merges.length - before).toBeLessThanOrEqual(1); // never two merges on one main tip
     }
     expect(done()).toBe(true);
-    expect(merges.map((m) => m.pr)).toEqual([...merges.map((m) => m.pr)].sort((a, b) => a - b));
-    expect(merges).toHaveLength(3);
-    expect(merges.every((m) => m.greenOnThatSha)).toBe(true);
+    return { merges, reviewRuns };
   } finally {
     ledger.close();
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+}
+
+it("three ready PRs land one at a time, oldest first, each rebased onto the new main, merged only on its own current head's checks, and reviewed once", async () => {
+  const { merges, reviewRuns } = await landAll([1, 2, 3], (n, dir) => fs.writeFileSync(path.join(dir, `f${n}.go`), `package demo\n\nvar V${n} = ${n}\n`));
+  expect(merges.map((m) => m.pr)).toEqual([...merges.map((m) => m.pr)].sort((a, b) => a - b));
+  expect(merges).toHaveLength(3);
+  expect(merges.every((m) => m.greenOnThatSha)).toBe(true);
+  // Each rebase leaves the PR's own diff untouched (the PRs change different files), so its verdicts carry to the new head.
+  expect(reviewRuns).toBe(3);
+}, 60_000);
+
+it("a PR is reviewed again when the rebase changed a file it touches, even though the rebase was clean", async () => {
+  const lines = Array.from({ length: 30 }, (_, i) => `var L${i} = ${i}`);
+  // Both PRs edit shared.go, far apart: the second rebases cleanly, but its file is no longer the one its reviewers saw.
+  const { merges, reviewRuns } = await landAll(
+    [1, 2],
+    (n, dir) => {
+      const at = n === 1 ? 0 : 29;
+      fs.writeFileSync(path.join(dir, "shared.go"), ["package demo", "", ...lines.map((l, i) => (i === at ? `${l} + ${n}` : l))].join("\n") + "\n");
+    },
+    { "shared.go": ["package demo", "", ...lines].join("\n") + "\n" },
+  );
+  expect(merges).toHaveLength(2);
+  expect(reviewRuns).toBe(3);
 }, 60_000);

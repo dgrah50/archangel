@@ -2661,6 +2661,7 @@ export class Reconciler {
             `Rebased ${thread.branchName} onto ${mainSha.slice(0, 8)} -> ${rebased.headSha.slice(0, 8)} (0 LLM tokens)`,
             { repo: this.ledger.repo, issue: thread.issueNumber },
           );
+          await this.carryReviewsOver(thread, pr.headSha, rebased.headSha, mainSha, now);
         }
         return;
       }
@@ -2680,6 +2681,36 @@ export class Reconciler {
       },
       { auditTopic: "thread/needs_you", now },
     );
+  }
+
+  /**
+   * A reviewer is shown the PR's diff and the full text of the files it touches, nothing else. When a clean rebase leaves that
+   * diff byte-identical (its blob ids included, so main moved only in files this PR does not touch), a second review would be
+   * given exactly the same input: the verdicts on the old head are recorded for the new one. The Gate still runs on the new head.
+   */
+  private async carryReviewsOver(thread: ThreadRecord, oldSha: string, newSha: string, mainSha: string, now: number): Promise<void> {
+    const reviews = this.ledger.getReviewsForSha(thread.issueNumber, oldSha);
+    if (reviews.length === 0) return;
+    const [before, after] = await Promise.all([this.broker.getDiffAndTouchedFiles(mainSha, oldSha), this.broker.getDiffAndTouchedFiles(mainSha, newSha)]);
+    if (before.diffText !== after.diffText) return;
+    for (const r of reviews) {
+      this.ledger.recordReview({
+        issueNumber: thread.issueNumber,
+        headSha: newSha,
+        vendor: r.vendor,
+        verdict: r.verdict,
+        findings: JSON.parse(r.findingsJson) as ReviewFinding[],
+        costUsd: 0,
+        provider: r.provider,
+        model: r.model,
+        accountId: r.accountId,
+        promptSha256: r.promptSha256,
+        rubricSha256: r.rubricSha256,
+        workflowSha256: r.workflowSha256,
+        now,
+      });
+    }
+    this.ledger.appendAudit("review/carried_over", thread.issueNumber, "archangel", { fromSha: oldSha, toSha: newSha, vendors: reviews.map((r) => r.vendor) }, now);
   }
 
   /**
