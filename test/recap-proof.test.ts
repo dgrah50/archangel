@@ -183,5 +183,7 @@ describe("Recap and PR body are scannable", () => {
     expect(out).toContain("trimmed queries dedupe.");
     expect(out).toContain("**Now:** changes `internal/store.go` (+2/−1); new test `internal/store_regression_test.go`");
     expect(renderPrBody({ number: 1, title: "t", body: issueBody }, chapters)).toContain("**Now:** changes `internal/store.go`");
+    // Code in the owner's words keeps its brackets (escaped so it cannot become markup), instead of reading as different code.
+    expect(renderPrBody({ number: 2, title: "chunk([1, 2, 3], 2) drops [3]", body: "" }, chapters)).toContain("chunk(\\[1, 2, 3\\], 2) drops \\[3\\]");
   });
 });

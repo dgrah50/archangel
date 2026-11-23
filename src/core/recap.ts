@@ -159,11 +159,11 @@ function details(title: string, body: string[]): string[] {
   return ["", "<details>", `<summary>${title}</summary>`, "", ...body, "", "</details>"];
 }
 
-/** One line of owner-written text, plain: no markup, no newlines, secret-scanned, capped. */
+/** One line of owner-written text, shown literally: markup characters are escaped, never dropped (so `f([1], 2)` stays readable); no newlines, secret-scanned, capped. */
 function plainLine(text: string, max: number): string {
-  const t = text.replace(/\s+/g, " ").replace(/[`<>|\[\]]/g, "").trim();
+  const t = text.replace(/\s+/g, " ").trim();
   if (scanForSecrets(t) !== null) return "_withheld: matched the secret scan_";
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  return (t.length > max ? `${t.slice(0, max - 1)}…` : t).replace(/[\\`<>|[\]]/g, "\\$&");
 }
 
 const SECTION_START = /^\s*(?:#{1,6}\s*)?[*_]*(expected(?:\s+behaviou?r)?|repro(?:duction|\s+steps)?|steps\s+to\s+reproduce)[*_]*\s*:?/i;
