@@ -67,6 +67,10 @@ export const ARCHANGEL_ROOT = path.resolve(path.dirname(fileURLToPath(import.met
 export const GATE_WORKFLOW_PATH = ".github/workflows/archangel-gate.yml";
 export const POLICY_PATH = ".agents/archangel.json";
 export const SCOUT_PATH = ".agents/scouts/bug-hunt.md";
+export const SETUP_PATH = ".agents/setup";
+export const PRE_COMMIT_PATH = ".pre-commit-config.yaml";
+/** The Gate fails closed without a pre-commit config on the default branch, so a repo with no hooks still needs an empty one. */
+const EMPTY_PRE_COMMIT = "# Hooks the Archangel Gate runs on every factory PR, read from the default branch. None yet.\nrepos: []\n";
 export const ONBOARD_BRANCH = "chore/archangel-onboard";
 
 export interface PlannedFile {
@@ -109,15 +113,19 @@ export function withBranch(workflow: string, branch: string): string {
 }
 
 /**
- * Distinct names of the checks that succeeded on the latest merged PR into the default branch: the CI that actually runs on
- * pull requests, read-only. (The branch tip also carries push-only and scheduled workflows that never gate a PR.)
+ * The checks that succeeded on the latest merged PR into the default branch: the CI that actually runs on pull requests,
+ * read-only. (The branch tip also carries push-only and scheduled workflows that never gate a PR.) Only a GitHub Actions check
+ * can be required: the daemon treats a required check reported by any other app as untrusted and parks the Thread. The rest
+ * (a scanner, a deploy preview, a commit status) are returned apart so the owner is told they were left out.
  */
-async function ciCheckNames(runner: OnboardRunner, repo: string, branch: string): Promise<string[]> {
+async function ciChecks(runner: OnboardRunner, repo: string, branch: string): Promise<{ actions: string[]; other: string[] }> {
   const out = await runner.run("gh", [
     "pr", "list", "--repo", repo, "--base", branch, "--state", "merged", "--limit", "1", "--json", "statusCheckRollup",
-    "-q", '.[0].statusCheckRollup[]? | select((.conclusion // .state) == "SUCCESS") | (.name // .context)',
+    "-q", '[.[0].statusCheckRollup[]? | select((.conclusion // .state) == "SUCCESS") | {name: (.name // .context), actions: ((.workflowName // "") != "")}]',
   ]);
-  return [...new Set(out.split("\n").map((l) => l.trim()).filter(Boolean))].filter((n) => n !== "Gate").sort();
+  const rows = (out.trim() === "" ? [] : JSON.parse(out)) as Array<{ name: string; actions: boolean }>;
+  const names = (actions: boolean) => [...new Set(rows.filter((r) => r.actions === actions).map((r) => r.name))].filter((n) => n !== "Gate").sort();
+  return { actions: names(true), other: names(false) };
 }
 
 /** The package manager is whatever lockfile the repo commits; no lockfile means no answer. */
@@ -127,6 +135,15 @@ function nodeTestCmd(have: Set<string>): string | null {
   if (have.has("yarn.lock")) return "yarn test";
   if (have.has("package-lock.json")) return "npm test";
   return null;
+}
+
+/**
+ * The `.agents/setup` script that installs a Node repo's dependencies in each Attempt's workspace: the same install the Gate
+ * workflow runs in CI. Null for the package managers the Gate workflow does not install with.
+ */
+function nodeSetupScript(have: Set<string>): string | null {
+  const install = have.has("bun.lock") ? "bun install --frozen-lockfile" : have.has("package-lock.json") ? "npm ci --prefer-offline --no-audit" : null;
+  return install ? `#!/bin/sh\nset -eu\n${install}\n` : null;
 }
 
 function guessTestGlobs(paths: string[]): string[] {
@@ -189,10 +206,16 @@ async function starterPolicy(
     const protectedPaths = ["package.json", "package-lock.json", "bun.lock", "bun.lockb", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json"].filter((f) => have.has(f));
     base = { version: 1, gate: { testFileGlobs: globs, testCmd, protectedPaths } };
   }
-  const checks = await ciCheckNames(runner, repo, defaultBranch);
-  if (checks.length === 0) return skip(`no successful CI checks found on the latest merged PR into ${defaultBranch}, so the required checks are unknown`);
-  notes.push(`requiredChecks in ${POLICY_PATH} are every check that passed on the latest merged PR into ${defaultBranch}: remove any that should not block a merge.`);
-  return { ...base, requiredChecks: ["Gate", ...checks] };
+  const checks = await ciChecks(runner, repo, defaultBranch);
+  notes.push(
+    checks.actions.length === 0
+      ? `No GitHub Actions check has passed on a merged PR into ${defaultBranch} yet, so requiredChecks in ${POLICY_PATH} is only "Gate" (which runs your test command). Add your CI's check names once they run on pull requests.`
+      : `requiredChecks in ${POLICY_PATH} are the GitHub Actions checks that passed on the latest merged PR into ${defaultBranch}: remove any that should not block a merge.`,
+  );
+  if (checks.other.length > 0) {
+    notes.push(`Left out of requiredChecks: ${checks.other.join(", ")} (not reported by GitHub Actions; Archangel only accepts required checks from GitHub Actions).`);
+  }
+  return { ...base, requiredChecks: ["Gate", ...checks.actions] };
 }
 
 /**
@@ -243,6 +266,14 @@ export async function buildPlan(
   if (!have.has(POLICY_PATH)) {
     const policy = await starterPolicy(runner, repo, defaultBranch, tree, have, stack, root, notes);
     if (policy) files.push({ path: POLICY_PATH, content: withBugHuntScout(policy, stack) });
+  }
+
+  if (!have.has(".pre-commit-config.yml")) consider(PRE_COMMIT_PATH, () => EMPTY_PRE_COMMIT);
+
+  if (stack === "node") {
+    const setup = nodeSetupScript(have);
+    if (setup) consider(SETUP_PATH, () => setup);
+    else if (!have.has(SETUP_PATH)) notes.push(`No ${SETUP_PATH} written: only bun.lock and package-lock.json installs are known. Without it an Attempt's workspace has no dependencies installed; write the install command there by hand.`);
   }
 
   // The Scout prompt only works together with its entry in the workflow file, so it is planned with a new one.
