@@ -626,10 +626,12 @@ export function findReviewerIndependenceGaps(
 export function describeLanding(repoSlug: string, wf: EffectiveWorkflow): DoctorCheck {
   const base = { id: `landing:${repoSlug}`, name: `Bugfix Landing (${repoSlug})` };
   if (wf.status !== "ok") {
+    // A halted repo takes no work at all: that is not READY.
     return {
       ...base,
-      status: "warn",
+      status: "fail",
       detail: `workflow ${wf.status}: ${workflowError(wf)}; the repo is halted until .agents/archangel.json is valid`,
+      remediation: `Fix .agents/archangel.json on the default branch with a PR you merge${wf.status === "missing" ? ` (\`archangel onboard ${repoSlug}\` writes a starter)` : ""}.`,
     };
   }
   const l = wf.landingBugfix;

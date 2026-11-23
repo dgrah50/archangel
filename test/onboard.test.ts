@@ -60,17 +60,20 @@ describe("buildPlan", () => {
     expect(noLock.notes.join()).toContain("test command are unknown");
   });
 
-  it("a new repo gets a usable policy: only GitHub Actions checks are required, and Gate alone when no CI has run yet", async () => {
+  it("a new repo gets a policy the daemon accepts: only GitHub Actions checks are required, and none is written until a CI check is known", async () => {
     const pkg = { scripts: { test: "vitest" } };
     const tree = ["package.json", "bun.lock", "a.test.ts"];
     const policy = (plan: Awaited<ReturnType<typeof buildPlan>>) => JSON.parse(plan.files.find((f) => f.path === ".agents/archangel.json")!.content);
     // A required check from another app is untrusted by the daemon and would park every Thread.
     const mixed = await buildPlan(fake({ tree, pkg, otherChecks: ["GitGuardian Security Checks"] }).runner, "o/r");
     expect(policy(mixed)).toMatchObject({ requiredChecks: ["Gate", "Test"], gate: { testCmd: "bun run test" } });
+    expect(Workflow.safeParse(policy(mixed)).success).toBe(true);
     expect(mixed.notes.join()).toContain("Left out of requiredChecks: GitGuardian Security Checks");
     expect(mixed.files.find((f) => f.path === ".agents/setup")!.content).toContain("bun install --frozen-lockfile");
+    // A policy requiring only the Gate is invalid and halts the repo, so none is written; the note says how to get one.
     const noCi = await buildPlan(fake({ tree, pkg, checks: [] }).runner, "o/r");
-    expect(policy(noCi).requiredChecks).toEqual(["Gate"]);
+    expect(noCi.files.map((f) => f.path)).not.toContain(".agents/archangel.json");
+    expect(noCi.notes.join()).toContain("run `archangel onboard o/r` again");
   });
 });
 

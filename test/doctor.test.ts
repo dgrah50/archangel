@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { runDoctor } from "../src/core/doctor.js";
+import { goWorkflowJson } from "./helpers/workflow.js";
 
 function makeKey(): string {
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -50,7 +51,7 @@ describe("archangel doctor (Neon P3)", () => {
       }
       if (hasRepoPolicy && url.pathname.includes("/contents/.agents/archangel.json")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ name: "archangel.json", sha: "s2", encoding: "base64", content: Buffer.from("{}").toString("base64") }));
+        res.end(JSON.stringify({ name: "archangel.json", sha: "s2", encoding: "base64", content: Buffer.from(goWorkflowJson()).toString("base64") }));
         return;
       }
       // Both verification files are needed: the Gate fails closed without a pre-commit config.

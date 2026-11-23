@@ -207,11 +207,16 @@ async function starterPolicy(
     base = { version: 1, gate: { testFileGlobs: globs, testCmd, protectedPaths } };
   }
   const checks = await ciChecks(runner, repo, defaultBranch);
-  notes.push(
-    checks.actions.length === 0
-      ? `No GitHub Actions check has passed on a merged PR into ${defaultBranch} yet, so requiredChecks in ${POLICY_PATH} is only "Gate" (which runs your test command). Add your CI's check names once they run on pull requests.`
-      : `requiredChecks in ${POLICY_PATH} are the GitHub Actions checks that passed on the latest merged PR into ${defaultBranch}: remove any that should not block a merge.`,
-  );
+  if (checks.actions.length === 0) {
+    // The policy must require one CI check besides the Gate (landing watches it on the default branch after a merge), and none is known yet.
+    notes.push(
+      `No ${POLICY_PATH} written yet: it must require one CI check besides the Gate, and no GitHub Actions check has passed on a merged PR into ${defaultBranch}. ` +
+        `Merge this onboarding PR, then run \`archangel onboard ${repo}\` again: it writes the policy from the checks that passed on it. ` +
+        `If the repo has no CI workflow, first add one that runs the tests on pull requests and on pushes to ${defaultBranch}.`,
+    );
+    return null;
+  }
+  notes.push(`requiredChecks in ${POLICY_PATH} are the GitHub Actions checks that passed on the latest merged PR into ${defaultBranch}: remove any that should not block a merge.`);
   if (checks.other.length > 0) {
     notes.push(`Left out of requiredChecks: ${checks.other.join(", ")} (not reported by GitHub Actions; Archangel only accepts required checks from GitHub Actions).`);
   }
