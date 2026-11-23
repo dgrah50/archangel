@@ -130,7 +130,7 @@ interface CodexWindowRaw {
 function codexWindow(w: CodexWindowRaw | null | undefined): UsageWindow | null {
   if (!w || typeof w.used_percent !== "number") return null;
   const minutes = typeof w.window_minutes === "number" ? w.window_minutes : null;
-  const label = minutes === 300 ? "5 h" : minutes === 10_080 ? "week" : minutes === null ? "limit" : `${minutes} min`;
+  const label = minutes === null ? "limit" : minutes === 10_080 ? "week" : minutes % 1440 === 0 ? `${minutes / 1440} d` : minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
   return { label, usedPercent: w.used_percent, resetsAt: typeof w.resets_at === "number" ? w.resets_at * 1000 : null };
 }
 

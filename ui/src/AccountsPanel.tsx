@@ -14,8 +14,13 @@ const ROLE_WORD: Record<string, string> = { implement: "building", revise: "revi
 
 /** The most used window is the one that will stop the account first. */
 export const tightest = (u: NonNullable<AccountRow["usage"]>) => u.windows.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a));
-/** Every window as "5 h 22%", and when the tightest one resets (when the CLI says). */
-export const usageWords = (u: NonNullable<AccountRow["usage"]>) => u.windows.map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ");
+/** Windows as "5 h 22%", most used first. With `max`, only that many and how many more there are (a CLI can report one pair per model group). */
+export const usageWords = (u: NonNullable<AccountRow["usage"]>, max = Infinity) => {
+  const sorted = [...u.windows].sort((a, b) => b.usedPercent - a.usedPercent);
+  const more = sorted.length - Math.min(sorted.length, max);
+  return sorted.slice(0, max).map((w) => `${w.label} ${Math.round(w.usedPercent)}%`).join(" · ") + (more > 0 ? ` · ${more} more` : "");
+};
+/** When the tightest window resets (when the CLI says). */
 export const resetWords = (u: NonNullable<AccountRow["usage"]>, now: number) => {
   const at = tightest(u).resetsAt;
   return at === null ? "" : `resets in ${back(at - now)}`;
