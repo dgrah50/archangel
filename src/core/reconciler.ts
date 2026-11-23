@@ -134,6 +134,8 @@ const REVIEW_RESERVATION_USD = 0.25;
  */
 /** Provisional: most clean (0-token) rebases one Thread may take while ready PRs land ahead of it one by one. */
 const DETERMINISTIC_REBASE_CAP = 8;
+/** The conventional-commit type a PR title and its squash commit carry, by work class. */
+const PR_TITLE_PREFIX: Record<WorkClass, string> = { bugfix: "fix", feature: "feat", chore: "chore" };
 
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
@@ -2019,6 +2021,28 @@ export class Reconciler {
 
       await this.pinEval(workingThread.issueNumber, validation.headSha);
 
+      // Nothing changed against main: not a policy failure. The implementer's own account of why is what the owner needs, so it is kept.
+      if (validation.changedFiles.length === 0) {
+        this.ledger.finishAttempt(attemptId, {
+          status: "failed",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorCategory: "no_change",
+          errorMessage: "The Attempt changed nothing against main",
+        });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
+            { auditTopic: "thread/needs_you", lastSummary: result.summary },
+          );
+        }
+        return;
+      }
+
       if (validation.protectedViolations.length > 0) {
         this.ledger.finishAttempt(attemptId, {
           status: "failed",
@@ -2198,7 +2222,7 @@ export class Reconciler {
 
       const { diffText: prDiff } = await this.broker.getDiffAndTouchedFiles(mainSha, validation.headSha);
       const pr = await this.github.createPr({
-        title: `fix(#${issue.number}): ${issue.title}`,
+        title: `${PR_TITLE_PREFIX[workClassOfBranch(workingThread.branchName)]}(#${issue.number}): ${issue.title}`,
         body: renderPrBody({ number: issue.number, title: issue.title, body: issue.body }, this.chaptersOfDiff(prDiff)),
         head: workingThread.branchName,
         base: this.cfg.defaultBranch,
@@ -2920,7 +2944,7 @@ export class Reconciler {
       const mergedRes = await this.github.squashMergePr(
         pr.number,
         pr.headSha,
-        `fix(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
+        `${PR_TITLE_PREFIX[workClassOfBranch(thread.branchName)]}(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
       );
       squashSha = mergedRes.squashSha;
     } catch (err) {
