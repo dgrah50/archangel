@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,13 +6,12 @@ import { SubscriptionImplementer } from "../src/agents/subscription-implementer.
 import { AgentSandboxProvider, buildAgentProfile } from "../src/compute/agent-sandbox.js";
 import { execInGroup } from "../src/compute/local.js";
 import type { ComputeProvider, ExecSpec } from "../src/compute/provider.js";
+import { canSandbox } from "./helpers/can-sandbox.js";
 
 const never = async (): Promise<never> => {
   throw new Error("not used");
 };
 const inner = (exec: ComputeProvider["exec"]): ComputeProvider => ({ prepare: never, exec, collect: never, destroy: () => undefined, expose: never, install: never, list: async () => [] });
-/** macOS cannot nest sandboxes: inside one (a sandboxed agent running this suite) there is nothing to test. */
-const canSandbox = process.platform === "darwin" && spawnSync("sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"]).status === 0;
 
 test("a sandboxed run reaches its workspace, temp dir and own login, and nothing else on the machine", async () => {
   // Whatever the PATH or an owner's extra path says, the profile never opens the home directory or anything above it.

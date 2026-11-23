@@ -7,20 +7,27 @@ export interface PeakRssPoll {
 
 function sampleGroupRssKb(pgid: number): Promise<number | null> {
   return new Promise((resolve) => {
-    execFile("ps", ["-axo", "pgid=,rss="], (err, out) => {
-      if (err) return resolve(null);
-      let sum = 0;
-      let seen = false;
-      for (const line of out.split("\n")) {
-        const [g, r] = line.trim().split(/\s+/);
-        if (Number(g) === pgid) {
-          sum += Number(r) || 0;
-          seen = true;
-        }
-      }
-      resolve(seen ? sum : null);
-    });
+    // No sample is not a failure: where `ps` cannot even be started (a sandbox, a minimal container) the spawn throws instead of calling back.
+    const noSample = () => resolve(null);
+    try {
+      execFile("ps", ["-axo", "pgid=,rss="], (err, out) => (err ? noSample() : resolve(sumFor(out, pgid)))).on("error", noSample);
+    } catch (_err) {
+      noSample();
+    }
   });
+}
+
+function sumFor(out: string, pgid: number): number | null {
+  let sum = 0;
+  let seen = false;
+  for (const line of out.split("\n")) {
+    const [g, r] = line.trim().split(/\s+/);
+    if (Number(g) === pgid) {
+      sum += Number(r) || 0;
+      seen = true;
+    }
+  }
+  return seen ? sum : null;
 }
 
 /** Sums `ps` RSS over one process group now and every `intervalMs`, keeping the max. The timer is unref'd and cleared by `stop`. */

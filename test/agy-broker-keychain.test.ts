@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { canSandbox } from "./helpers/can-sandbox.js";
 import { AGY_NO_KEYCHAIN_PROFILE, AGY_TOKEN_FILE, agyBrokerAdapter } from "../src/compute/agy-broker-adapter.js";
 
 // The refresh must never reach macOS's keychain services: that is what pops "Keychain Not Found" every ~30 minutes.
@@ -10,7 +11,7 @@ test("agy broker refresh profile denies the keychain services and is a valid Sea
   for (const svc of ["com.apple.SecurityServer", "com.apple.securityd"]) expect(AGY_NO_KEYCHAIN_PROFILE).toContain(svc);
   expect(AGY_NO_KEYCHAIN_PROFILE).toContain("(deny mach-lookup");
   expect(AGY_NO_KEYCHAIN_PROFILE).toContain("/Library/Keychains");
-  if (process.platform !== "darwin") return;
+  if (!canSandbox) return;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kc-test-"));
   try {
     const profile = path.join(dir, "p.sb");
