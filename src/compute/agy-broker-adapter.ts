@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { tryParseJson } from "../core/json.js";
 import type { BrokerAdapter } from "./token-broker.js";
@@ -14,10 +15,23 @@ export const AGY_TOKEN_FILE = ".gemini/antigravity-cli/antigravity-oauth-token";
 const REFRESH_TIMEOUT_MS = 90_000;
 
 /**
+ * Seatbelt profile that makes agy's keychain attempt fail silently. With no keychain in the profile HOME, macOS shows a
+ * "Keychain Not Found" dialog when agy asks securityd; denying the Security services (and the keychain dirs) turns that into
+ * a plain error, and agy falls back to its token file. Everything else is allowed: agy needs its own binary, the network and HOME.
+ */
+export const AGY_NO_KEYCHAIN_PROFILE = [
+  "(version 1)",
+  "(allow default)",
+  '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.security.agent") (global-name "com.apple.security.authhost") (global-name "com.apple.securityd.xpc"))',
+  '(deny file-read* file-write* (regex #"/Library/Keychains(/|$)"))',
+  "",
+].join("\n");
+
+/**
  * Lets agy itself refresh the dedicated Google account and then reads the fresh access token from that profile's token file. The
  * profile is a HOME of its own (never the owner's): there agy finds no keychain and keeps its login in a file. agy only refreshes an
  * expired token, so the file's expiry is set in the past first and a cheap authenticated command (`agy models`) is run; agy then
- * refreshes through Google and rewrites the file. Google does not rotate the refresh token, so this does not fight a box or the owner.
+ * refreshes through Google and rewrites the file. It runs under a sandbox-exec profile denying the keychain services so macOS shows no dialog. Google does not rotate the refresh token, so this does not fight a box or the owner.
  */
 export function agyBrokerAdapter(home: string): BrokerAdapter {
   return {
@@ -56,16 +70,23 @@ function writeLogin(home: string, login: Login): void {
 /** Only this profile's HOME is passed; nothing else from this machine's env reaches agy but PATH. The command's own exit code is not the signal: the token file is. */
 function runAgy(home: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("agy", ["models"], { env: { PATH: process.env.PATH, HOME: home }, stdio: ["ignore", "ignore", "ignore"] });
+    if (process.platform !== "darwin") throw new Error("the agy broker refresh needs macOS sandbox-exec");
+    const profile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "archangel-agy-")), "keychain-deny.sb");
+    fs.writeFileSync(profile, AGY_NO_KEYCHAIN_PROFILE);
+    const child = spawn("sandbox-exec", ["-f", profile, "agy", "models"], { env: { PATH: process.env.PATH, HOME: home }, stdio: ["ignore", "ignore", "ignore"] });
+    const cleanup = () => fs.rmSync(path.dirname(profile), { recursive: true, force: true });
     const timer = setTimeout(() => {
+      cleanup();
       child.kill();
       reject(new Error("agy did not finish refreshing in time"));
     }, REFRESH_TIMEOUT_MS);
     child.on("error", (e) => {
+      cleanup();
       clearTimeout(timer);
       reject(e);
     });
     child.on("exit", () => {
+      cleanup();
       clearTimeout(timer);
       resolve();
     });
