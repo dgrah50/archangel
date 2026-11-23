@@ -116,6 +116,19 @@ describe("runGateForActions", () => {
     expect(await emit(MERGE_COMMIT.toUpperCase())).toEqual([]);
   });
 
+  it("emits a proof for a failed run that stays whole JSON under GitHub's 4,096-character annotation cap (gijq#8)", async () => {
+    const noisy = (c: string) => Array.from({ length: 40 }, (_, i) => `    --- FAIL: ${c}${i} "quoted" \\ café`).join("\n").slice(-3000);
+    const report = { passed: false, proof: { base_output: noisy("a"), head_output: noisy("b") } } as unknown as GateReport;
+    const log: string[] = [];
+    await runGateForActions({} as never, (l) => log.push(l), async () => report, "tok", PR_HEAD);
+    const notice = log.find((l) => l.startsWith("::notice title=archangel-gate-proof::"))!;
+    const message = decodeURIComponent(notice.replace("::notice title=archangel-gate-proof::", ""));
+    expect(message.length).toBeLessThan(4096);
+    const body = JSON.parse(message);
+    expect(body.head_sha).toBe(PR_HEAD);
+    expect(body.head_output.endsWith("b39 \"quoted\" \\ café")).toBe(true);
+  });
+
 });
 
 describe("Recap and PR body are scannable", () => {
