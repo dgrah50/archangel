@@ -184,8 +184,11 @@ export async function defaultReviewerCliInvoker(input: {
   }
 
   try {
-    const res = await execInGroup(tmpDir, { cmd: bin, args, env, stdin: stdinPrompt ?? undefined, timeoutMs: input.timeoutMs, killGraceMs: KILL_GRACE_MS, signal: input.signal });
+    let timedOut = false;
+    const res = await execInGroup(tmpDir, { cmd: bin, args, env, stdin: stdinPrompt ?? undefined, timeoutMs: input.timeoutMs, onTimeout: () => (timedOut = true), killGraceMs: KILL_GRACE_MS, signal: input.signal });
     if (input.signal?.aborted) throw new Error(`${input.provider} review stopped: the daemon is shutting down`);
+    // Said plainly: a CLI killed at the limit otherwise reports only its own "interrupted".
+    if (timedOut) throw new Error(`${input.provider} review timed out after ${Math.round(input.timeoutMs / 1000)} s (reviewTimeoutMs)`);
     if (res.code !== 0) throw new Error(`${input.provider} exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-600)}`);
     if (input.provider === "codex" && fs.existsSync(outFile)) {
       const raw = fs.readFileSync(outFile, "utf8").trim();
@@ -215,7 +218,8 @@ export interface SubscriptionReviewerOptions {
   accountState?: AccountLedger;
   /** Vendors excluded when a request names none: the first provider of each writing role's chain. */
   defaultExcludeVendors: ReviewerVendor[];
-  timeoutMs?: number;
+  /** `reviewTimeoutMs` from the host config. */
+  timeoutMs: number;
   invoker?: ReviewerCliInvoker;
   /** Prompt templates; defaults to the current ones (eval passes a candidate's). */
   prompts?: ReviewPromptBuilders;
@@ -244,7 +248,7 @@ export class SubscriptionReviewerSuite implements ReviewerSuite {
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.defaultExcludeVendors = opts.defaultExcludeVendors;
-    this.timeoutMs = opts.timeoutMs ?? 180_000;
+    this.timeoutMs = opts.timeoutMs;
     this.invoker = opts.invoker ?? defaultReviewerCliInvoker;
   }
 
