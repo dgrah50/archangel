@@ -7,7 +7,7 @@ import { tryParseJson } from "./json.js";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { GitBroker } from "../broker/git-broker.js";
+import { GitBroker, isProtectedPath } from "../broker/git-broker.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { NO_ACCOUNT_STATE, selectAccount, type AccountState } from "./accounts.js";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, resolveRequiredReviewers, resolvePaths, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
@@ -580,6 +580,7 @@ async function runPitchScout(opts: {
   includeMetricsFrom: ScoutWorkflow[];
   reviewers: ReviewerSuite;
   notifier: Notifier;
+  workflow: OkWorkflow;
   onlyScheduled?: boolean;
 }): Promise<ScoutRunSummary> {
   const { wf, ledger, now } = opts;
@@ -701,7 +702,13 @@ async function runPitchScout(opts: {
         notFiled("pitch/dropped", "cites no mined commit", pitch.title);
         continue;
       }
-      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source, research)}`;
+      // A build that must edit a protected path can only fail its bounds, so the daemon neither builds a PoC nor can take the slices: say so on the pitch.
+      const protectedFiles = [...new Set(pitch.evidence.flatMap((e) => (e.file !== null && isProtectedPath(e.file, opts.workflow.gate.extraProtectedPaths) ? [e.file] : [])))];
+      const ownerBuildNote =
+        protectedFiles.length > 0
+          ? `\n\n_This pitch touches paths the factory may not edit (${protectedFiles.map((f) => `\`${f}\``).join(", ")}), so the daemon cannot build it. Build a slice yourself with \`archangel pitch promote ${ledger.repo} <this issue> --slice 1 --build\`: it opens a PR for you to merge._`
+          : "";
+      const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source, research)}${ownerBuildNote}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {
         notFiled("pitch/vetoed", veto.slice(0, 300), pitch.title);
@@ -716,7 +723,7 @@ async function runPitchScout(opts: {
         titleFp: normalizeTitleFp(pitch.title),
         contentSha256: scoutContentHash(created.title, created.body),
         pitchJson: JSON.stringify(pitch),
-        autoPocBuild: pitch.size !== "L",
+        autoPocBuild: pitch.size !== "L" && protectedFiles.length === 0,
         now,
       });
       for (const f of pitch.figures) {
