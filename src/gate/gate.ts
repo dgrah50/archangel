@@ -164,7 +164,7 @@ export async function runGateForActions(
   } finally {
     log(`::${token}::`);
   }
-  if (report.proof && proofHeadSha !== undefined && /^[0-9a-f]{40}$/.test(proofHeadSha)) {
+  if (proofHeadSha !== undefined && /^[0-9a-f]{40}$/.test(proofHeadSha)) {
     const message = JSON.stringify({ head_sha: proofHeadSha, ...report.proof })
       .replace(/%/g, "%25")
       .replace(/\r/g, "%0D")
@@ -242,6 +242,7 @@ function makeIsolatedEnv(runTempDir: string): NodeJS.ProcessEnv {
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     GOCACHE: freshGoCache,
+    GOFLAGS: "-modcacherw",
     ...(fs.existsSync(defaultGoModCache) ? { GOMODCACHE: defaultGoModCache } : {}),
     ...(process.env.CI ? { CI: process.env.CI } : {}),
     ...(process.env.PLAYWRIGHT_BROWSERS_PATH
@@ -867,6 +868,27 @@ export async function runGate(opts: GateRunOptions): Promise<GateReport> {
     report.passed = report.violations.length === 0;
     return report;
   } finally {
-    fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    removeTempTree(tmpRoot);
+  }
+}
+
+function makeWritable(dir: string): void {
+  fs.chmodSync(dir, 0o700);
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) makeWritable(path.join(dir, entry.name));
+  }
+}
+
+/** Go writes its module cache read-only; make the tree writable before removing it. A cleanup failure never changes a computed verdict. */
+export function removeTempTree(dir: string): void {
+  try {
+    if (fs.existsSync(dir)) makeWritable(dir);
+  } catch (err) {
+    console.error(`archangel-gate: could not make ${dir} writable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } catch (err) {
+    console.error(`archangel-gate: could not remove ${dir}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

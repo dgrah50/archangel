@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { GatePolicySchema } from "../src/config.js";
-import { runGate } from "../src/gate/gate.js";
+import { removeTempTree, runGate } from "../src/gate/gate.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -471,4 +471,17 @@ describe("Gate red-on-base proof", () => {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 60_000);
+});
+
+describe("removeTempTree", () => {
+  it("removes a read-only tree like Go's module cache", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-gate-ro-"));
+    const mod = path.join(dir, "home", "go", "pkg", "mod", ".github");
+    fs.mkdirSync(mod, { recursive: true });
+    fs.writeFileSync(path.join(mod, "ci.yml"), "x");
+    fs.chmodSync(path.join(mod, "ci.yml"), 0o444);
+    for (const d of [mod, path.join(dir, "home", "go", "pkg", "mod"), path.join(dir, "home", "go", "pkg"), path.join(dir, "home", "go"), path.join(dir, "home")]) fs.chmodSync(d, 0o555);
+    removeTempTree(dir);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
 });

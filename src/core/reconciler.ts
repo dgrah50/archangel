@@ -2292,6 +2292,21 @@ export class Reconciler {
         return;
 
       case "failed": {
+        // A completed Gate always writes a proof annotation for this head, pass or fail. A failed Gate check without one
+        // crashed or never ran: infrastructure, not a code failure, so never a revision.
+        const gateCheck = verdict.failed.some((f) => f.name === "Gate") ? checks.find((c) => c.name === "Gate") : undefined;
+        if (gateCheck && !(await this.github.getGateProof(gateCheck.id, pr.headSha))) {
+          this.applyMachineEvent(
+            thread,
+            {
+              t: "escalate",
+              code: "gate_timeout",
+              reason: `The Gate check failed without a Gate report (infrastructure failure, not a code failure). Check the workflow run, then re-run CI.`,
+            },
+            { auditTopic: "thread/needs_you", now },
+          );
+          return;
+        }
         const failMsgs = verdict.failed.map((f) => `${f.name}: ${f.conclusion}`);
         if (
           thread.mode === "autonomous" &&
