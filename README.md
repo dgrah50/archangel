@@ -25,7 +25,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/hero-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/hero-light.jpg">
-    <img alt="Archangel Overview dashboard showing pending decisions, pitches, live station line map, and outcome metrics" src="assets/readme/hero-light.jpg" width="100%">
+    <img alt="Archangel Overview dashboard showing fixes landed per day, Threads at each station, spend against the daily cap, usage for every account, and the Threads that need the owner" src="assets/readme/hero-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -95,13 +95,13 @@ Bugs can land end-to-end autonomously once you disable shadow mode. Features, ch
 
 ### 1. Live Thread inspection and mechanical Gate proof
 
-Every issue becomes a Thread with a live phase rail showing time spent in each stage, a newest-first Ledger audit timeline, full attempt provenance (provider, model, duration, transcript path), and a mechanical Gate proof checklist.
+Every issue becomes a Thread with a phase stepper showing time spent in each stage, a newest-first Ledger audit timeline, full attempt provenance (provider, model, duration, transcript path), and a mechanical Gate proof checklist.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/threads-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/threads-light.jpg">
-    <img alt="Threads page showing grouped Threads on the left and phase rail with per-phase durations, Ledger timeline, and Gate proof on the right" src="assets/readme/threads-light.jpg" width="100%">
+    <img alt="Threads page showing grouped Threads on the left and the phase stepper with per-phase durations, Ledger timeline, and Gate proof on the right" src="assets/readme/threads-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -117,7 +117,7 @@ When a Thread hits a conflict with an existing test, a reviewer veto, or a produ
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/needs-you-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/needs-you-light.jpg">
-    <img alt="Needs You queue showing oldest-first escalations, per-Thread recommendation, latest Recap with Gate and Diff rows, blockers, and Answered today" src="assets/readme/needs-you-light.jpg" width="100%">
+    <img alt="Needs You queue showing oldest-first escalations, the factory's recommendation, latest Recap with Gate and Diff rows, blockers, and the command to copy" src="assets/readme/needs-you-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -144,13 +144,13 @@ Every repository's rules live in `.agents/archangel.json` on `main`. The **Pipel
 
 ### 4. Subscription chains, multi-account failover, and host guardrails
 
-Configure separate provider chains for `implement`, `revise`, `rebase`, `scout`, `triage`, and `reviewerChain` in **Settings** (form or raw YAML). Add multiple logins per CLI under `accounts:` in `archangel.yaml` without ever handing tokens to Archangel.
+Configure separate provider chains for `implement`, `revise`, `rebase`, `scout`, `triage`, and `reviewerChain` in **Settings** (form or raw YAML). Add, edit and remove logins per CLI in **Settings** (or under `accounts:` in `archangel.yaml`) without ever handing tokens to Archangel. The **Overview** shows each account's state and usage.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/settings-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/settings-light.jpg">
-    <img alt="Settings page showing provider chains, live green vendor independence checks, and multi-account cooldown tracking" src="assets/readme/settings-light.jpg" width="100%">
+    <img alt="Settings page showing provider chains, live green vendor independence checks, and the accounts list with each account's cooldown, home folder and daily cap" src="assets/readme/settings-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -166,7 +166,7 @@ Read-only Bug Scouts inspect `main` using bundled or repo-specific skills (`gene
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/pitches-dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="assets/readme/pitches-light.jpg">
-    <img alt="Pitches page showing open Scout pitches, evidence, options considered, slice selection, copyable promote command, and next pitch Scout schedule" src="assets/readme/pitches-light.jpg" width="100%">
+    <img alt="Pitches page showing open Scout pitches, the try-it command, evidence, options considered, slice selection, and the next pitch Scout schedule" src="assets/readme/pitches-light.jpg" width="100%">
   </picture>
 </p>
 
@@ -182,9 +182,9 @@ Start `archangel ui` (loopback `127.0.0.1:4477` by default) to monitor and confi
 
 | Page | What it shows |
 | --- | --- |
-| **Overview** | Waiting decisions and pitches, autonomy-cap warnings, live station line map, daily spend, cost per merged fix, and owner agreement rate. |
+| **Overview** | Fixes landed per day, Threads at each station, daily spend, cost per merged fix, owner agreement rate, usage for every account, autonomy-cap warnings, and every Thread grouped by what it is waiting for. |
 | **Needs you** | Oldest-first escalation queue with per-Thread recommendation, latest Recap (including Gate and Diff rows), blockers, Answered today log, and copyable `/archangel retry` commands. |
-| **Threads** | Two-pane Thread browser grouped by urgency with per-phase durations on the phase rail, Ledger audit timeline, and mechanical Gate proof. |
+| **Threads** | Two-pane Thread browser grouped by urgency with per-phase durations on the phase stepper, Ledger audit timeline, and mechanical Gate proof. |
 | **Pipeline** | Per-repo stage rules (Intake, Build, Gate, Review, Landing, Scouts), fleet Scout status, skills picker, and PR-only draft panel. |
 | **Pitches** | Read-only Scout pitch viewer with evidence, options considered, slice checkboxes, copyable promote commands, recently decided pitches, and next pitch Scout schedule. |
 | **Settings** | Machine settings (`Models`, `Accounts`, `Limits`, `Repos`, `Alerts`), Per-repo, Built-in kernel invariants, and Raw YAML tabs. |
