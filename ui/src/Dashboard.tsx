@@ -7,7 +7,6 @@ import { back, resetWords, tightest, useAccounts, usageWords } from "./AccountsP
 import { recommendationShort } from "./common";
 import { Badge } from "./arc/badge/badge";
 import { BarChart } from "./arc/bar-chart/bar-chart";
-import { Sparkline } from "./arc/sparkline/sparkline";
 import { UsageMeter } from "./arc/usage-meter/usage-meter";
 import { CopyCommand, Dot, Group, Line, Page, PageHeadline, type Tone } from "./page";
 import { cap, gap, gh, phaseWord, runningOf, ThreadLine } from "./thread-lines";
@@ -242,20 +241,22 @@ function LinePanel({ state: s }: { state: UiState }) {
         </Flex>
       ))}
       <Box borderTopWidth="1px" borderColor="border" mt="4" pt="4" flex="1">
-        <CostTrend state={s} />
+        <Shipping state={s} />
       </Box>
     </Panel>
   );
 }
 
-/** Per day: that day's metered spend over the fixes that landed that day. */
-function CostTrend({ state: s }: { state: UiState }) {
-  const cost = s.outcomes.costUsdPerFix;
-  const days = s.daily.map((d, i) => ({ day: d.day, v: d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null })).filter((d): d is { day: string; v: number } => d.v !== null);
-  return days.length > 1 ? (
-    <Sparkline data={days.map((d) => d.v)} labels={days.map((d) => dayLabel(d.day, { day: "numeric", month: "short" }))} label="Cost per merged fix" value={cost === null ? undefined : usd(cost)} formatValue={(n) => usd(n)} width={420} height={56} area />
-  ) : (
-    <Stat label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} />
+/** How often a Thread ships and what it takes, all time: the same figures as `archangel metrics`. */
+function Shipping({ state: s }: { state: UiState }) {
+  const sh = s.shipping;
+  const pct = (r: number | null) => (r === null ? "n/a" : `${Math.round(r * 100)}%`);
+  return (
+    <Flex direction="column" gap="2">
+      <Stat label="Shipped" value={pct(sh.shipRate)} note={sh.settled > 0 ? `${sh.shipped} of ${sh.settled} settled` : undefined} />
+      <Stat label="First pass" value={pct(sh.firstPassRate)} note={sh.shipped > 0 ? "one Attempt, no escalation" : undefined} />
+      <Stat label="Time to ship" value={sh.timeToShipSec === null ? "n/a" : gap(sh.timeToShipSec.p50 * 1000)} note={sh.timeToShipSec === null ? undefined : "median"} />
+    </Flex>
   );
 }
 

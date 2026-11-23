@@ -33,7 +33,6 @@ Before hand-building a control, check that list of Arc components first. A hand-
 | Component | Where |
 | --- | --- |
 | `bar-chart` | Overview: fixes landed per day |
-| `sparkline` | Overview: cost per merged fix |
 | `usage-meter` | Overview: today's metered spend against the daily cap |
 | `badge` | Overview: the counts beside the title, account status. Every state word: check results (Passed, Failing, Warning), setup tags (Needs you, Next step), PR links, decision class, pitch type and size, Gate passed, eval verdicts |
 | `skeleton` | Every main loading state (pages, the open Thread, recap, reports) |
@@ -84,7 +83,7 @@ Use the text styles in `src/theme/motion.ts`; do not set font sizes inline.
 
 ## Pages
 
-- **Overview**: title with counts as badges; three cards (landed per day, Threads at each station with cost per fix, spend with verdict agreement); the Accounts card (one line per login: status, a bar for its tightest limit window, every window as "5 h 22% · week 13%", when the tightest resets, how old the reading is; the same words sit under the account in Settings); then every Thread on one line, in folding groups ordered by what it is waiting for.
+- **Overview**: title with counts as badges; three cards (landed per day, Threads at each station with how often Threads ship, spend with verdict agreement); the Accounts card (one line per login: status, a bar for its tightest limit window, every window as "5 h 22% · week 13%", when the tightest resets, how old the reading is; the same words sit under the account in Settings); then every Thread on one line, in folding groups ordered by what it is waiting for.
 - **Needs you**: the queue on the left, oldest first; the selected decision on the right as cards (recommendation, recap, blockers), then the actions.
 - **Threads**: Threads grouped like the Overview on the left (a row is the title and its ref); the selected Thread on the right: phase stepper, timeline, Gate proof.
 - **Pipeline**: one repo's line as rows in a card; the repo switcher top right.
