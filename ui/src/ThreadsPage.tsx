@@ -33,7 +33,8 @@ export function ThreadsPage({ state, item, thread, now, onRetry }: { state: UiSt
     { label: "Ready for you to merge", tone: "ring", items: pick("Ready for owner") },
     { label: "Running", tone: "ink", items: running },
     { label: "Queued", tone: "hollow", items: pick("Queued"), folded: true },
-    { label: "Landed in the last 7 days", tone: "passed", items: pick("Done in last 7 days"), folded: true },
+    { label: "Landed in the last 7 days", tone: "passed", items: pick("Landed in last 7 days"), folded: true },
+    { label: "Closed without landing", tone: "hollow", items: pick("Closed in last 7 days"), folded: true },
   ];
   const none = groups.every((g) => g.items.length === 0);
   return (

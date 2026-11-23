@@ -19,6 +19,8 @@ export interface ThreadDetail {
   issueNumber: number;
   title: string;
   phase: string;
+  /** How a finished Thread ended (merged, owner_merged, pr_closed, reverted, abandoned); null while it is open. */
+  outcome: string | null;
   prNumber: number | null;
   events: TimelineEvent[];
   /** Latest Gate result recorded in the Ledger audit (`gate/*` rows): one passed check, or one failed check per violation. Empty when none. */
@@ -159,6 +161,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     issueNumber,
     title: thread.title,
     phase: phase.kind,
+    outcome: phase.kind === "done" ? phase.outcome : null,
     prNumber: "prNumber" in phase && typeof phase.prNumber === "number" ? phase.prNumber : null,
     recap: {
       headSha: headSha === null ? null : headSha.slice(0, 8),
