@@ -42,6 +42,15 @@ if [ -f "$CODEX_HOME/logged_out" ]; then echo "Not logged in"; else echo "Logged
 echo "agy 1.0.0"`,
   );
 
+  // Stands in for macOS's sandbox-exec (`-p <profile> cmd args`), so the run does not depend on being able to start a real sandbox.
+  writeExecutable(
+    binDir,
+    "sandbox-exec",
+    `echo "sandboxed:$3" >> "${dir}/invocations.log"
+shift 2
+exec "$@"`,
+  );
+
   return binDir;
 }
 
@@ -103,5 +112,7 @@ describe("archangel doctor --smoke (real subprocesses, per-account env isolation
         `agy:${dir}/agy-a`,
       ]),
     );
+    // An agy account with its own home has no keychain there: on macOS it only ever starts under the keychain-deny profile.
+    expect(logLines.includes("sandboxed:agy")).toBe(process.platform === "darwin");
   });
 });

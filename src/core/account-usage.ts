@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
+import { cliCommand } from "../compute/agy-broker-adapter.js";
 import { accountEnv, expandHome, type Account } from "../config.js";
 
 /** One rate-limit window of an account: how much of it is used, and when it resets (null when the CLI does not say). */
@@ -14,21 +15,20 @@ export interface AccountUsage {
   observedAt: number;
 }
 
-/** Runs `<cli> -p /usage` as that account and returns its stdout. Injected so tests never start a real CLI. */
-export type UsageRunner = (cli: "claude" | "agy", env: NodeJS.ProcessEnv) => Promise<string>;
+/**
+ * Runs the account's `/usage` command and returns its stdout. Injected so tests never start a real CLI. `/usage` is a local slash
+ * command of the CLI itself: no model call, no tokens spent. The CLI reads its own login (CLAUDE_CONFIG_DIR / HOME of the account)
+ * and prints the numbers; Archangel only reads that output.
+ */
+export type UsageRunner = (cmd: string, args: string[], env: NodeJS.ProcessEnv) => Promise<string>;
 
 const RUN_TIMEOUT_MS = 30_000;
 /** One `/usage` run per account per interval, however often the dashboard polls. */
 export const USAGE_REFRESH_MS = 5 * 60_000;
 
-/**
- * `/usage` is a local slash command of the CLI itself: no model call, no tokens spent. The CLI reads its own login
- * (CLAUDE_CONFIG_DIR / HOME of the account) and prints the numbers; Archangel only reads that output.
- */
-export const runUsageCli: UsageRunner = (cli, env) =>
+export const runUsageCli: UsageRunner = (cmd, args, env) =>
   new Promise((resolve, reject) => {
-    const args = cli === "agy" ? ["--print-timeout", "20s", "-p", "/usage"] : ["-p", "/usage"];
-    execFile(cli, args, { env, cwd: os.tmpdir(), timeout: RUN_TIMEOUT_MS, maxBuffer: 1_000_000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    execFile(cmd, args, { env, cwd: os.tmpdir(), timeout: RUN_TIMEOUT_MS, maxBuffer: 1_000_000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
   });
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
@@ -112,7 +112,10 @@ export function createAccountUsage(run: UsageRunner = runUsageCli) {
     if (entry && (entry.running || now - entry.at < USAGE_REFRESH_MS)) return entry.usage;
     const next = { at: now, usage: entry?.usage ?? null, running: true };
     cache.set(key, next);
-    run(cli, { ...process.env, ...accountEnv(account) })
+    const { cmd, args } = cliCommand(account, cli === "agy" ? ["--print-timeout", "20s", "-p", "/usage"] : ["-p", "/usage"]);
+    // What the CLI needs to find its login, and nothing else of this process's env (which holds the GitHub App key).
+    const env = { PATH: process.env.PATH, HOME: os.homedir(), USER: process.env.USER, LOGNAME: process.env.LOGNAME, LANG: process.env.LANG ?? "en_US.UTF-8", ...accountEnv(account) };
+    run(cmd, args, env)
       .then((out) => (cli === "claude" ? parseClaudeUsage(out, Date.now()) : parseAgyUsage(out, Date.now())))
       .catch(() => null)
       .then((usage) => cache.set(key, { at: Date.now(), usage, running: false }));

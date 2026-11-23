@@ -6,19 +6,20 @@ import path from "node:path";
 import { canSandbox } from "./helpers/can-sandbox.js";
 import { AGY_NO_KEYCHAIN_PROFILE, AGY_TOKEN_FILE, agyBrokerAdapter } from "../src/compute/agy-broker-adapter.js";
 
-// The refresh must never reach macOS's keychain services: that is what pops "Keychain Not Found" every ~30 minutes.
-test("agy broker refresh profile denies the keychain services and is a valid Seatbelt profile", () => {
-  for (const svc of ["com.apple.SecurityServer", "com.apple.securityd"]) expect(AGY_NO_KEYCHAIN_PROFILE).toContain(svc);
-  expect(AGY_NO_KEYCHAIN_PROFILE).toContain("(deny mach-lookup");
-  expect(AGY_NO_KEYCHAIN_PROFILE).toContain("/Library/Keychains");
-  if (!canSandbox) return;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kc-test-"));
+// What raised "Keychain Not Found" at every refresh: agy stores the fresh token through /usr/bin/security, which in a HOME with no
+// keychain asks authd for a login keychain. Under the profile that write must be refused outright, with nobody asked.
+test.skipIf(!canSandbox)("under the agy keychain-deny profile a keychain write in a HOME with no keychain is refused without a dialog", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kc-test-"));
   try {
-    const profile = path.join(dir, "p.sb");
-    fs.writeFileSync(profile, AGY_NO_KEYCHAIN_PROFILE);
-    expect(spawnSync("sandbox-exec", ["-f", profile, "/usr/bin/true"]).status).toBe(0);
+    const res = spawnSync("sandbox-exec", ["-p", AGY_NO_KEYCHAIN_PROFILE, "/usr/bin/security", "add-generic-password", "-a", "archangel-test", "-s", "archangel-test", "-w", "x"], {
+      env: { PATH: "/usr/bin:/bin", HOME: home },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    // Denied by the sandbox; a dialog would instead block until answered (the timeout) and end as "canceled".
+    expect(res.stderr).toContain("authorization was denied");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
