@@ -61,11 +61,6 @@ export interface ScoutWorkflow {
   prompt: string;
 }
 
-export interface ScoutFinding {
-  title: string;
-  body: string;
-}
-
 const ScoutOutputSchema = z.object({
   findings: z.array(
     z.object({

@@ -176,7 +176,6 @@ export function promptHashFor(prompts: ReviewPromptBuilders, rubric: string | un
   return crypto.createHash("sha256").update(`${prompts.contract(blank)}\n=====\n${prompts.adversarial(blank)}`, "utf8").digest("hex");
 }
 
-export type Arm = "baseline" | "candidate";
 interface Verdicts {
   /** case id -> approve/veto; absent when the reviewers errored for that case. */
   byCase: Map<string, "approve" | "veto">;

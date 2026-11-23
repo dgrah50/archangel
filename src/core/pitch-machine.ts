@@ -14,7 +14,6 @@ export const PitchStateSchema = z.discriminatedUnion("kind", [
 export type PitchState = z.infer<typeof PitchStateSchema>;
 export type PitchStateKind = PitchState["kind"];
 
-export const PITCH_STATE_KINDS = ["open", "partially_promoted", "promoted", "declined", "expired"] as const satisfies readonly PitchStateKind[];
 
 export type PitchEvent =
   | { t: "slices_promoted"; slices: number[]; total: number }

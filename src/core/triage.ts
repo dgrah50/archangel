@@ -84,7 +84,6 @@ export const TriageOutputSchema = z
       ctx.addIssue({ code: "custom", message: "escalate needs a reason" });
     }
   });
-export type TriageOutput = z.infer<typeof TriageOutputSchema>;
 
 /** The JSON schema handed to the CLI (the same shape as TriageOutputSchema). */
 export const TRIAGE_JSON_SCHEMA: Record<string, unknown> = {

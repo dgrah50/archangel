@@ -96,12 +96,9 @@ export function accountEnv(account: Account | undefined): NodeJS.ProcessEnv {
   return { HOME: home };
 }
 
-/** The account an entry runs on: the first account of its provider that the entry allows. (A selector over these comes next.) */
+/** The accounts an entry may run on: those of its provider that the entry allows. */
 export function accountsFor(accounts: Account[], entry: ProviderEntry): Account[] {
   return accounts.filter((a) => a.provider === entry.provider && (!entry.accounts || entry.accounts.includes(a.id)));
-}
-export function firstAccount(accounts: Account[], entry: ProviderEntry): Account | undefined {
-  return accountsFor(accounts, entry)[0];
 }
 
 /** Filesystem checks for configured homes: each must exist, be a directory, and hold a login (non-empty). */
@@ -193,7 +190,6 @@ export function writerVendors(chains: Pick<Chains, WriterRole>): ReviewerVendor[
 }
 
 export const AuthModeSchema = z.enum(["subscription", "api"]);
-export type AuthMode = z.infer<typeof AuthModeSchema>;
 
 export function providerToVendor(provider: CliProvider): ReviewerVendor {
   if (provider === "codex") return "openai";
@@ -255,7 +251,6 @@ export const ScoutsConfigSchema = z.object({
   maxAutoPromotionsPerDay: z.number().int().min(0).max(5).default(1),
 });
 
-export type ScoutsConfig = z.infer<typeof ScoutsConfigSchema>;
 
 /** Per-thread attempt/step limits: host-level defaults, overridable per project. */
 const AttemptLimitFields = {
@@ -354,7 +349,6 @@ export const ProductionConfigSchema = z
       .strict(),
   })
   .strict();
-export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
 
 /** The dashboard (`archangel ui`): where it binds, and so the port a preview must never use. One value, read by `ui`, `start` and `daemon install`. */
 export const UiConfigSchema = z
@@ -364,7 +358,6 @@ export const UiConfigSchema = z
   })
   .strict()
   .default({ host: "127.0.0.1", port: 4477 });
-export type UiConfig = z.infer<typeof UiConfigSchema>;
 
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
