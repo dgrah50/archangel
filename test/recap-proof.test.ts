@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { describe, expect, it } from "bun:test";
-import { renderRecapComment } from "../src/core/recap.js";
+import { renderPrBody, renderRecapComment } from "../src/core/recap.js";
 import { PROOF_MAX_CHARS, PROOF_MAX_LINES, runGateForActions, tailOutput, type GateReport } from "../src/gate/gate.js";
 import { GitHubAppClient } from "../src/github/client.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
@@ -115,4 +115,31 @@ describe("runGateForActions", () => {
     expect(await emit(MERGE_COMMIT.toUpperCase())).toEqual([]);
   });
 
+});
+
+describe("Recap and PR body are scannable", () => {
+  it("open with a short Summary, keep proof and reviews collapsed, and keep the trust labels", () => {
+    const out = renderRecapComment({
+      thread,
+      reviews: [{ vendor: "codex", headSha: "abcdef1234567890", verdict: "approve", findingsJson: "[]" } as never],
+      blockers: [],
+      issueBody: "Login fails on empty password.\n\nMore detail.",
+      chapters: [
+        { area: "src", kind: "code", purpose: "p", files: [{ path: "src/a.ts", added: 9, deleted: 3 }], added: 9, deleted: 3 },
+        { area: "test", kind: "test", purpose: "p", files: [{ path: "test/a.test.ts", added: 3, deleted: 0 }], added: 3, deleted: 0 },
+      ],
+      gateProof: { base_output: "red", head_output: "green" },
+      triage: { vendor: "codex", action: "escalate", cause: "x", steps: [], reason: "why" },
+    });
+    const body = out.split("\n").slice(out.split("\n").indexOf("#### Summary"));
+    const summary = body.slice(0, body.findIndex((l) => l === "<details>"));
+    expect(summary.filter((l) => l.trim()).length).toBeLessThanOrEqual(12);
+    for (const title of ["Gate proof and reproduction output", "Independent Reviews"]) {
+      expect(out).toMatch(new RegExp(`<details>\\n<summary>${title}</summary>`));
+    }
+    expect(out).toContain("owner-written");
+    expect(out).toContain("Machine triage (factory), not the owner");
+    expect(out).toContain("not written by Archangel");
+    expect(renderPrBody({ number: 7, title: "t", body: "b" }).startsWith("### Summary")).toBe(true);
+  });
 });

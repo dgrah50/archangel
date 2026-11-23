@@ -25,3 +25,11 @@ When you touch an area, delete tests there that break these rules. Cutting a use
 A PR that changes how the dashboard looks (anything under `ui/`) shows before and after screenshots of every page it touches in its description, and is not merged without them. Shoot both from the same seeded data at the same viewport: before from the base commit, after from the PR head. Lay them out as a table, one row per page.
 
 Images never go on main. Push them to the `pr-screenshots` branch under `<head-branch-name>/` and link them as `https://github.com/dgrah50/archangel/blob/pr-screenshots/<head-branch-name>/<file>?raw=true`.
+
+## PR descriptions
+
+Write for a reviewer who will skim. Same shape as the factory's Recap:
+
+- **Summary first**, at most about 12 lines: Before / Now, what changed per area (one line each), decisions with their trade-offs where they apply, and how it was verified (facts, such as "new test red on base, green on head").
+- **Details below**, in collapsed `<details>` sections with clear titles.
+- Leave out: "CI passes", QA steps, how the work came to be, and internal IDs. Use plain words.
