@@ -163,6 +163,9 @@ export class FakeGitHub implements GitHubClient {
   async getGateProof(_checkRunId: number, headSha: string): Promise<GateProof | null> {
     return this.gateProofs.get(headSha) ?? null;
   }
+  async getGateViolations(_jobId: number): Promise<string[]> {
+    return [];
+  }
   async upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void> {
     const list = this.comments.get(issueOrPrNumber) ?? [];
     list.push(body);

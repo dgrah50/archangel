@@ -95,6 +95,8 @@ export interface GitHubClient {
   rerunCheckRun(checkRunId: number): Promise<void>;
   /** Reproduction-test output the Gate emitted as an annotation on its check run for `headSha`, or null. */
   getGateProof(checkRunId: number, headSha: string): Promise<GateProof | null>;
+  /** The violations the Gate printed in its job log (the check run id is the job id), or [] when none can be read. */
+  getGateViolations(jobId: number): Promise<string[]>;
   upsertRecapComment(issueOrPrNumber: number, body: string): Promise<void>;
   /** Creates or replaces the one comment that contains `marker`. */
   upsertMarkedComment(issueOrPrNumber: number, marker: string, body: string): Promise<void>;
@@ -643,6 +645,16 @@ export class GitHubAppClient implements GitHubClient {
     return out;
   }
 
+  async getGateViolations(jobId: number): Promise<string[]> {
+    const token = await this.getInstallationToken();
+    const res = await fetch(`${this.apiBase}/repos/${this.cfg.owner}/${this.cfg.repo}/actions/jobs/${jobId}/logs`, {
+      headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "archangel-factory/0.1" },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!res.ok) return [];
+    return violationsFromGateLog(await res.text());
+  }
+
   async getCheckRunsForRef(ref: string): Promise<Array<CheckStatus & { id: number }>> {
     const runs = await this.requestAllPages<Record<string, unknown>>(
       `/repos/${this.cfg.owner}/${this.cfg.repo}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`,
@@ -881,6 +893,21 @@ function mapIssue(it: Record<string, unknown>): GitHubIssue {
     labels,
     updatedAt: String(it.updated_at ?? ""),
   };
+}
+
+/** The `violations` of the pretty-printed Gate report in a job log (lines carry a timestamp prefix), or [] when absent or malformed. */
+export function violationsFromGateLog(log: string): string[] {
+  const lines = log.split("\n").map((l) => l.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, "").replace(/\r$/, ""));
+  const at = lines.findIndex((l) => l.startsWith('  "violations"'));
+  if (at < 0) return [];
+  let start = at;
+  while (start >= 0 && lines[start] !== "{") start--;
+  const end = lines.indexOf("}", at);
+  if (start < 0 || end < 0) return [];
+  const res = tryParseJson(lines.slice(start, end + 1).join("\n"));
+  if (!res.ok || typeof res.value !== "object" || res.value === null) return [];
+  const v = (res.value as { violations?: unknown }).violations;
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
 export function parseNextLink(linkHeader: string | null): string | null {
