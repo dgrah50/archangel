@@ -317,6 +317,8 @@ export const ResearchConfigSchema = z
     maxFetchesPerDay: z.number().int().min(1).max(100).default(20),
     /** Polite pause between requests. PROVISIONAL; arXiv asks for at least 3 seconds between calls. */
     minIntervalMs: z.number().int().min(1000).max(60_000).default(3000),
+    /** O9: owner-curated public GitHub repos (`owner/name`, at most 10) the host shallow-clones read-only and the fleet-pr-miner reads as data. */
+    watchRepos: z.array(z.string().regex(REPO_SLUG_RE, "use owner/name")).max(10).default([]),
   })
   .strict();
 export type ResearchConfig = z.infer<typeof ResearchConfigSchema>;

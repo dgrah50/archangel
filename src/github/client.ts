@@ -84,6 +84,8 @@ export interface GitHubClient {
   searchRepositories(query: string, sort: "updated" | "stars", limit: number): Promise<Array<{ fullName: string; url: string; pushedAt: string; description: string | null }>>;
   /** The latest published release of a public repository, or null when it has none. */
   getLatestRelease(fullName: string): Promise<{ tag: string; name: string | null; url: string; publishedAt: string; body: string | null } | null>;
+  /** Star count of a public repository (read-only). */
+  getRepoStars(fullName: string): Promise<number>;
   /** Open Dependabot alerts created after `sinceMs`, oldest first. Needs the App's `vulnerability_alerts` read permission. */
   listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>>;
   createIssue?(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue>;
@@ -518,6 +520,12 @@ export class GitHubAppClient implements GitHubClient {
       pushedAt: String(r.pushed_at),
       description: typeof r.description === "string" ? r.description : null,
     }));
+  }
+
+  async getRepoStars(fullName: string): Promise<number> {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) throw new Error("not a repository full name");
+    const r = await this.request<Record<string, unknown>>("GET", `/repos/${fullName}`);
+    return typeof r.stargazers_count === "number" ? r.stargazers_count : 0;
   }
 
   async getLatestRelease(fullName: string) {

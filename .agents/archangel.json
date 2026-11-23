@@ -46,6 +46,8 @@
       "src/core/fleet-scouts.ts",
       "src/core/fleet-miner.ts",
       "src/core/research.ts",
+      "src/core/watched-repos.ts",
+      "src/core/graduation.ts",
       "src/core/ui-server.ts",
       "src/core/ui-pitches.ts",
       "ui/**",
