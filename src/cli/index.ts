@@ -1566,8 +1566,11 @@ daemonCmd
     const portBusy = await isPortInUse(ui.host, ui.port);
 
     // Never write secrets into the plist; Archangel loads `.env` (chmod 600) at runtime.
-    installAgent({ label: LAUNCHD_LABEL, args: [process.execPath, entryTs, "start", "--config", configPath], workDir, logDir, logName: "daemon" });
-    installAgent({ label: UI_LAUNCHD_LABEL, args: [process.execPath, entryTs, "ui", "--config", configPath], workDir, logDir, logName: "ui" });
+    // `bun` as found on PATH (a stable symlink such as /opt/homebrew/bin/bun), not this process's own binary: that is a versioned
+    // path which the next `brew upgrade bun` deletes, leaving both agents unable to start.
+    const bun = Bun.which("bun") ?? process.execPath;
+    installAgent({ label: LAUNCHD_LABEL, args: [bun, entryTs, "start", "--config", configPath], workDir, logDir, logName: "daemon" });
+    installAgent({ label: UI_LAUNCHD_LABEL, args: [bun, entryTs, "ui", "--config", configPath], workDir, logDir, logName: "ui" });
     console.log(`Daemon logs: ${path.join(logDir, "daemon.log")} and ${path.join(logDir, "daemon.err.log")}`);
     console.log(`Dashboard: http://${ui.host.includes(":") ? `[${ui.host}]` : ui.host}:${ui.port}  (logs: ${path.join(logDir, "ui.log")} and ${path.join(logDir, "ui.err.log")})`);
     if (portBusy) {
