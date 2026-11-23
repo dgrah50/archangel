@@ -99,7 +99,8 @@
       "src/core/pitch-poc.ts",
       "src/core/pitch-preview.ts",
       "src/core/pr-shots.ts",
-      "src/core/pitch-diagram.ts"
+      "src/core/pitch-diagram.ts",
+      "src/core/recap-chapters.ts"
     ],
     "testDataGlobs": [
       "test/helpers/**"
