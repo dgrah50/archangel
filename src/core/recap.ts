@@ -27,7 +27,7 @@ export function renderRecapComment(input: {
   chapters?: Chapter[] | null;
   /** Small screenshots of the PR head, already published by the host; rendered as a short section. */
   shots?: ShotLink[];
-  /** The owner-written issue body, for the Summary's Before line; omitted when it could not be read. */
+  /** The issue body, for the Summary's Before line; omitted when it could not be read. */
   issueBody?: string | null;
   /** Called with the pattern name when agent-authored text was withheld for matching the secret scan. */
   onWithheld?: (pattern: string) => void;
@@ -177,7 +177,7 @@ function details(title: string, body: string[]): string[] {
   return ["", "<details>", `<summary>${title}</summary>`, "", ...body, "", "</details>"];
 }
 
-/** One line of owner-written text, shown literally: markup characters are escaped, never dropped (so `f([1], 2)` stays readable); no newlines, secret-scanned, capped. */
+/** One line of issue text, shown literally: markup characters are escaped, never dropped (so `f([1], 2)` stays readable); no newlines, secret-scanned, capped. */
 function plainLine(text: string, max: number): string {
   const t = text.replace(/\s+/g, " ").trim();
   if (scanForSecrets(t) !== null) return "_withheld: matched the secret scan_";
@@ -213,21 +213,21 @@ function problemSentences(body: string): string {
   return out.join(" ");
 }
 
-/** The "Before" line from the issue the owner wrote, shared by the PR body and the Recap. */
+/** The "Before" line, quoted from the issue and shared by the PR body and the Recap. The issue may be the owner's or a Scout proposal, so the label names the source, not an author. */
 export function beforeLine(issueNumber: number, title: string, body?: string | null): string {
   const problem = problemSentences(body ?? "");
   const detail = problem ? ` — ${plainLine(problem, 320)}` : "";
-  return `**Before** (issue #${issueNumber}, owner-written): ${plainLine(title, 120)}${detail}`;
+  return `**Before** (quoted from issue #${issueNumber}): ${plainLine(title, 120)}${detail}`;
 }
 
-/** The owner's own "Expected:" line from the issue, or null when the issue has none. */
+/** The issue's own "Expected:" line, or null when the issue has none. */
 export function expectedLine(issueNumber: number, body?: string | null): string | null {
   const lines = (body ?? "").split("\n");
   const at = lines.findIndex((l) => /^\s*(?:#{1,6}\s*)?[*_]*expected(?:\s+behaviou?r)?[*_]*\s*:/i.test(l));
   if (at === -1) return null;
   const text = [lines[at]!.replace(/^[^:]*:[*_]*/, ""), ...lines.slice(at + 1)].join("\n").split(/\n\s*\n|\n\s*#/)[0]!.replace(/\s+/g, " ").trim();
   const first = plainLine(text.split(/(?<=[.!?])\s+/)[0] ?? "", 200);
-  return first ? `**Expected** (issue #${issueNumber}, owner-written): ${first}` : null;
+  return first ? `**Expected** (quoted from issue #${issueNumber}): ${first}` : null;
 }
 
 /** The PR body: the Summary the Recap later extends, then the closing keyword. */
