@@ -22,7 +22,7 @@ function formatGateRules(gate?: Partial<GatePolicy>, workClass: WorkClass = "bug
   const own = branchTestFiles.map((f) => `\`${f}\``).join(", ");
   return [
     own
-      ? `1. This branch already added the test file(s) ${own}. Put every new or changed test case there. Do NOT add another test file.`
+      ? `1. This branch already added the test file(s) ${own}. Put every new or changed test case there. Do NOT add another test file. These files are your own work, not protected: where they contradict each other or the issue's expected behaviour, fix the wrong expectation, and you may merge them into one file and delete the redundant ones.`
       : workClass !== "bugfix"
         ? `1. A new test file (matching ${testGlobs}) is optional: add one only if it locks down behaviour someone relies on (see the repository instructions).`
         : `1. Add at least one BRAND-NEW test file (matching ${testGlobs}) that reproduces the bug on the base code BEFORE your fix, using ONLY APIs that already exist on base.`,
