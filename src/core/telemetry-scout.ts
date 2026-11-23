@@ -54,7 +54,7 @@ interface Check {
   read(rows: Row[]): Reading | null;
 }
 
-const share = (rows: Row[], hit: (r: Row) => boolean): Reading => ({ value: rows.filter(hit).length / rows.length, n: rows.length });
+const share = (rows: Row[], hit: (r: Row) => boolean): Reading => ({ value: rows.length === 0 ? 0 : rows.filter(hit).length / rows.length, n: rows.length });
 const count = (rows: Row[]): Reading => ({ value: rows.length, n: rows.length });
 const p = (q: number) => (rows: Row[]): Reading => ({ value: pctl(rows.map((r) => r.value), q), n: rows.length });
 const only = (tag: string, v: string) => (rows: Row[]) => rows.filter((r) => r.tags[tag] === v);
@@ -83,10 +83,11 @@ function judge(c: Check, window: Row[], base: Row[]): Anomaly | null {
     const pick = (rows: Row[]) => (g === undefined ? rows : rows.filter((r) => r.tags.account === g));
     const w = pick(window);
     const b = pick(base);
-    if (w.length === 0 || w.length < c.minWindow || b.length < c.minBase) continue;
+    if (w.length === 0) continue;
     const obs = c.read(w);
     const old = b.length === 0 ? { value: 0, n: 0 } : c.read(b);
     if (!obs || !old) continue;
+    if (obs.n === 0 || obs.n < c.minWindow || (c.minBase > 0 && old.n < c.minBase)) continue;
     const baseline = isCount(c) ? old.value / 7 : old.value;
     const ratio = obs.value / Math.max(baseline, c.floor);
     if (obs.value >= c.minObserved && ratio >= c.minRatio && (!worst || ratio > worst.ratio)) {
