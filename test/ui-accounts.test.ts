@@ -6,14 +6,18 @@ import { expect, it } from "bun:test";
 import { startUiServer } from "../src/core/ui-server.js";
 import { Ledger } from "../src/ledger/store.js";
 
-it("GET /api/accounts needs the token, is 403 in remote mode, and never reads inside an account home", async () => {
+it("GET /api/accounts needs the token, is 403 in remote mode, and never returns a token from an account home", async () => {
   const tmp = (p: string) => fs.mkdtempSync(path.join(os.tmpdir(), p));
   const home = tmp("arc-acct-home-");
   fs.writeFileSync(path.join(home, "auth-token.json"), '{"token":"SECRET-TOKEN-VALUE"}');
+  const codexHome = tmp("arc-acct-codex-");
+  fs.mkdirSync(path.join(codexHome, "sessions"));
+  fs.writeFileSync(path.join(codexHome, "auth.json"), '{"token":"SECRET-TOKEN-VALUE"}');
+  fs.writeFileSync(path.join(codexHome, "sessions", "rollout-1.jsonl"), '{"rate_limits":{"primary":{"used_percent":41}}}\n');
   const ui = tmp("arc-acct-ui-");
   fs.writeFileSync(path.join(ui, "index.html"), "<html><head></head></html>");
   const configPath = path.join(tmp("arc-acct-cfg-"), "archangel.yaml");
-  fs.writeFileSync(configPath, `ownerUserId: 42\naccounts:\n  - {id: claude-a, provider: claude, home: ${home}, maxAttemptsPerDay: 5}\n  - {id: codex, provider: codex}\n  - {id: agy, provider: agy}\nprojects:\n  - repo: a/b\n`);
+  fs.writeFileSync(configPath, `ownerUserId: 42\naccounts:\n  - {id: claude-a, provider: claude, home: ${home}, maxAttemptsPerDay: 5}\n  - {id: codex, provider: codex, home: ${codexHome}}\n  - {id: agy, provider: agy}\nprojects:\n  - repo: a/b\n`);
   const ledger = new Ledger(":memory:");
   ledger.setAccountCooldown("claude-a", 60_000, "usage limit reached");
   const boot = async (allowRemote: boolean) => {
@@ -33,6 +37,8 @@ it("GET /api/accounts needs the token, is 403 in remote mode, and never reads in
     expect(claude.home).toBe(path.resolve(home));
     expect(claude.cooldownUntil).not.toBeNull();
     expect(claude.lastSwitch?.reason).toBe("usage limit reached");
+    // The Codex usage reading comes from its session log; the auth file next to it is never read.
+    expect((JSON.parse(text) as { accounts: Array<{ id: string; usage: { usedPercent: number } | null }> }).accounts.find((a) => a.id === "codex")!.usage?.usedPercent).toBe(41);
     expect(text).not.toContain("SECRET-TOKEN-VALUE");
     expect(text).not.toContain("auth-token");
     expect(remote.token).toBeUndefined();

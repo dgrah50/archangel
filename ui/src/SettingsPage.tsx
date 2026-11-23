@@ -1,8 +1,8 @@
 import { Box, Button, Flex, Input, Link, NativeSelect, Switch, Text } from "@chakra-ui/react";
 import { useState, type ReactNode } from "react";
-import { AccountsPanel } from "./AccountsPanel";
+import { Account, AccountsPanel, useAccounts } from "./AccountsPanel";
 import { HostDraftBlock, HostErrorNotice, Problem, RawFile, SavedBlock, useHostDraft, type HostDraft } from "./HostConfigEditor";
-import { PROVIDERS, VENDOR, WRITER_CHAINS, addChainEntry, checkIndependence, editField, moveChainEntry, readForm, removeChainEntry, setChainEntry, type ChainEntry, type HostForm, type Provider } from "./host-edit";
+import { PROVIDERS, VENDOR, WRITER_CHAINS, addAccount, addChainEntry, removeAccount, setAccountField, checkIndependence, editField, moveChainEntry, readForm, removeChainEntry, setChainEntry, type ChainEntry, type HostForm, type Provider } from "./host-edit";
 import SegmentedControl from "./arc/segmented-control/segmented-control";
 import { CopyCommand, Page, PageHeadline } from "./page";
 import { PrStatusCard, PreviewView, StaleNotice, isStale } from "./WorkflowEditor";
@@ -321,6 +321,56 @@ function Alerts({ s, f, b, onOp }: { s: SettingsState; f: HostForm; b: HostForm;
   );
 }
 
+/** The accounts in archangel.yaml: each one's live state from the Ledger, with its home and daily cap to edit, plus add and remove. Like every edit here it waits for preview and save. */
+function AccountsEditor({ f, b, onOp }: { f: HostForm; b: HostForm; onOp: (op: Op) => void }) {
+  const live = useAccounts();
+  const [id, setId] = useState("");
+  const [provider, setProvider] = useState<Provider>("claude");
+  const slug = /^[a-z0-9][a-z0-9-]{0,30}$/.test(id) && !f.accounts.some((a) => a.id === id);
+  const field = { h: "36px", borderRadius: "10px", textStyle: "label" } as const;
+  // Anything but a clean read (no token, load failure, unreadable config) is the panel's to explain.
+  if (!live.data || live.data.state !== "ok" || live.error) return <AccountsPanel />;
+  const rows = live.data.accounts;
+  return (
+    <Flex direction="column" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+      {live.data.warnings.map((w) => <Text key={w} role="alert" textStyle="body13" py="2.5">{w}</Text>)}
+      {f.accounts.map((a, i) => {
+        const was = b.accounts.find((x) => x.id === a.id);
+        const row = rows.find((x) => x.id === a.id);
+        return (
+          <Flex key={a.id} direction="column" pb="3">
+            {row ? <Account a={row} /> : (
+              <Flex gap="4" align="baseline" py="2.5">
+                <Text textStyle="command" fontSize="13px" w="120px" flexShrink={0} color="unsent">{a.id}</Text>
+                <Text textStyle="body13" color="fg.muted">New {a.provider} account, not saved yet. Log in with that CLI before the daemon uses it.</Text>
+              </Flex>
+            )}
+            <Flex gap="3" align="center">
+              <Input key={`home-${a.id}-${a.home ?? ""}`} {...field} flex="1" minW="0" placeholder="Home folder (CLI default)" aria-label={`${a.id} home folder`} defaultValue={a.home ?? ""} {...(was && (was.home ?? "") !== (a.home ?? "") ? unsentOutline : {})} onBlur={(e) => { const v = e.target.value.trim(); if (v !== (a.home ?? "")) onOp((t) => setAccountField(t, i, "home", v === "" ? undefined : v)); }} />
+              <Input key={`cap-${a.id}-${a.maxAttemptsPerDay ?? ""}`} {...field} w="140px" flexShrink={0} type="number" min={1} placeholder="Daily cap (none)" aria-label={`${a.id} attempts a day`} defaultValue={a.maxAttemptsPerDay ?? ""} {...(was && was.maxAttemptsPerDay !== a.maxAttemptsPerDay ? unsentOutline : {})} onBlur={(e) => { const n = e.target.value === "" ? undefined : Number(e.target.value); if (n !== a.maxAttemptsPerDay && (n === undefined || (Number.isInteger(n) && n >= 1))) onOp((t) => setAccountField(t, i, "maxAttemptsPerDay", n)); }} />
+              <Button size="sm" variant="outline" borderRadius="10px" h="36px" flexShrink={0} aria-label={`Remove ${a.id}`} disabled={f.accounts.length <= 1} onClick={() => onOp((t) => removeAccount(t, i))}>Remove</Button>
+            </Flex>
+          </Flex>
+        );
+      })}
+      <Flex direction="column" gap="2" py="3">
+        <Text textStyle="meta" color="fg.subtle">One account is one login of a CLI. A second login of the same CLI needs its own home folder. The login itself happens in that CLI, never here.</Text>
+        <Flex gap="3" align="center">
+          <Input {...field} flex="1" minW="0" placeholder="New account name" aria-label="New account name" value={id} onChange={(e) => setId(e.target.value)} />
+          <NativeSelect.Root size="sm" w="140px" flexShrink={0}>
+            <NativeSelect.Field h="36px" borderRadius="10px" aria-label="New account CLI" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
+              {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+          <Button size="sm" borderRadius="10px" h="36px" flexShrink={0} disabled={!slug} onClick={() => { onOp((t) => addAccount(t, { id, provider })); setId(""); }}>Add account</Button>
+        </Flex>
+        {id !== "" && !slug ? <Text textStyle="meta" color="owner">Use a new name in lowercase letters, digits and dashes.</Text> : null}
+      </Flex>
+    </Flex>
+  );
+}
+
 function Owner({ f, b, onOp }: { f: HostForm; b: HostForm; onOp: (op: Op) => void }) {
   return (
     <Flex gap="4" align="flex-end" wrap="wrap" pt="3" borderTopWidth="1px" borderTopColor="border">
@@ -395,8 +445,8 @@ function Machine({ s, draft, wf, flips, onFlip }: { s: SettingsState; draft: Hos
   return (
     <Flex direction="column" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5">
       <Models f={f} b={b} onOp={draft.change} />
-      <Block title="Accounts" applies="Read live from the Ledger">
-        <AccountsPanel />
+      <Block title="Accounts" applies="Live state from the Ledger; edits apply after the daemon restarts">
+        <AccountsEditor f={f} b={b} onOp={draft.change} />
         <Owner f={f} b={b} onOp={draft.change} />
       </Block>
       <Limits f={f} b={b} onOp={draft.change} />

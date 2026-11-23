@@ -1,6 +1,7 @@
 import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountsFor, expandHome, providerToVendor, type CliProvider } from "../config.js";
 import type { Ledger } from "../ledger/store.js";
+import { readCodexUsage } from "./accounts.js";
 import { AGY_HOME_WARNING } from "./doctor.js";
 import { buildSettingsState } from "./ui-settings.js";
 
@@ -12,6 +13,8 @@ export interface AccountRow {
   home: string | null;
   cooldownUntil: number | null;
   attemptsToday: number;
+  /** How much of its rate-limit window the account had used at its last model call (Codex only, read from its session log; no token or auth file is opened). Null when there is no reading. */
+  usage: { usedPercent: number; observedAt: number } | null;
   maxAttemptsPerDay: number | null;
   lastUsedAt: number | null;
   /** The most recent limit error that moved work off this account (kept after the cooldown ends). */
@@ -23,7 +26,7 @@ export type AccountsState =
   | { state: "ok"; generatedAt: number; implicit: boolean; accounts: AccountRow[]; warnings: string[] }
   | { state: "missing" | "invalid" | "unreadable"; generatedAt: number; error: string };
 
-/** Pure read: the config on disk plus the Ledger's cooldown and attempt rows. No account home is opened and no usage reading is taken. */
+/** Read only: the config on disk, the Ledger's cooldown and attempt rows, and the Codex usage reading. No token or auth file in an account home is opened. */
 export function buildAccountsState(ledger: Ledger, configPath: string | undefined, now = Date.now()): AccountsState {
   const { host } = buildSettingsState(ledger, configPath, now);
   if (host.state !== "ok") return { state: host.state, generatedAt: now, error: host.error };
@@ -33,6 +36,7 @@ export function buildAccountsState(ledger: Ledger, configPath: string | undefine
   const chains: Array<[string, typeof c.reviewerChain]> = [...Object.entries(c.chains), ["review", c.reviewerChain]];
   const accounts = c.accounts.map((a): AccountRow => {
     const sw = switches.get(a.id);
+    const reading = a.provider === "codex" ? readCodexUsage(a.home) : null;
     return {
       id: a.id,
       provider: a.provider,
@@ -40,6 +44,7 @@ export function buildAccountsState(ledger: Ledger, configPath: string | undefine
       home: a.home ? path.resolve(expandHome(a.home)) : null,
       cooldownUntil: state.cooldownUntil(a.id, now),
       attemptsToday: state.attemptsToday(a.id, now),
+      usage: reading ? { usedPercent: reading.usedPercent, observedAt: reading.observedAt } : null,
       maxAttemptsPerDay: a.maxAttemptsPerDay ?? null,
       lastUsedAt: state.lastUsedAt(a.id),
       lastSwitch: sw ? { at: sw.at, reason: sw.reason } : null,
