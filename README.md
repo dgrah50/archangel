@@ -53,11 +53,13 @@ The App script creates a least-privilege GitHub App, saves its key, and waits fo
 
 ```bash
 bun src/cli/index.ts start             # run in the foreground
-bun src/cli/index.ts daemon install    # or install as a macOS launchd background service
+bun src/cli/index.ts daemon install    # or install as macOS launchd background services (daemon and dashboard; needs `bun run build` first)
 bun src/cli/index.ts daemon restart    # reload after editing archangel.yaml
 ```
 
-> There is one launchd label (`com.archangel.daemon`) per machine, so `daemon install` from a second checkout replaces the first.
+> There is one launchd label per service (`com.archangel.daemon`, `com.archangel.ui`) per machine, so `daemon install` from a second checkout replaces the first.
+
+After `daemon install` the dashboard is already running at `ui.host`:`ui.port` from `archangel.yaml` (default `http://127.0.0.1:4477`). `archangel ui` stays for looking at a Ledger without installing anything.
 
 The **Setup and health** page inside `archangel ui` tracks the 6 setup groups directly from your machine and GitHub, displays onboarding PR check status, and links to a prefilled smoke issue.
 
@@ -324,11 +326,11 @@ Repo policy (`.agents/archangel.json` on `main`):
 | --- | --- |
 | `archangel init` | Create `archangel.yaml`, `.env` (mode 0600) and an empty Ledger in the current directory. Never overwrites, safe to rerun. |
 | `archangel start [--once] [-c <path>]` | Run the reconciler daemon continuously, or execute one tick and exit. |
-| `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` background agent. |
+| `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` agents for the daemon and the dashboard. |
 | `archangel onboard <repo> [--dry-run]` | Create labels and open one onboarding PR with your `gh` CLI (never auto-merged). |
 | `archangel bump <repo> [pkgs...] [--patch\|--minor] [--yes]` | Bump dependencies in a throwaway clone with install scripts disabled, run `testCmd`, and open an owner-authored PR (never merged or run by the daemon). |
 | `archangel doctor [--offline] [--smoke] [--json]` | Verify host config, GitHub App permissions, repo files, Gate pin drift, and CLI logins. |
-| `archangel ui [--port <n>] [--host <host>] [--allow-remote]` | Serve the local 7-page dashboard (`http://127.0.0.1:4477`). Remote mode disables all write routes. |
+| `archangel ui [--port <n>] [--host <host>] [--allow-remote]` | Serve the local 7-page dashboard. Host and port default to `ui.host` / `ui.port` in `archangel.yaml` (else `http://127.0.0.1:4477`). Remote mode disables all write routes. |
 | `archangel status [--repo <owner/name>] [--json]` | Print active Threads, `Needs you` queue, daily spend, merges, and shadow agreement. |
 | `archangel metrics [--days <n>] [--repo <owner/name>] [--json]` | Print outcomes per merged fix, owner corrections, vendor agreement, and active cooldowns. |
 | `archangel events [--repo <owner/name>] [--topic <prefix>] [--issue <n>] [--limit <n>]` | Inspect the append-only SQLite audit log. |
