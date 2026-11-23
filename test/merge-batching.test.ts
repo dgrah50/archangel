@@ -30,7 +30,7 @@ it("three ready PRs land one at a time, oldest first, each rebased onto the new 
   let n = 0;
   const rec = new Reconciler({
     triageInvoker: noCli,
-    config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, maxAutoMergesPerDay: 10 }),
+    config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, maxAutoMergesPerDay: 10, maxConcurrentThreads: 3 }),
     ledger,
     github,
     broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),
