@@ -40,6 +40,7 @@ describe("owner retry after an exhausted budget", () => {
       async run(input) {
         prompts.push(input.prompt);
         fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), `package demo\n\nfunc Val() int { return ${10 + prompts.length} }\n`);
+        if (prompts.length === 1) fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "val_fix_test.go"), "package demo\n");
         git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
         git((await input.workspaces.local.workspace()).path, ["commit", "-m", `attempt ${prompts.length}`]);
         return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
@@ -78,6 +79,9 @@ describe("owner retry after an exhausted budget", () => {
 
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toContain("Return 12, not 11.");
+      // A revision edits the test file the branch already added; asked for a brand-new one each time, it adds files until the cap trips.
+      expect(prompts[1]).toContain("already added the test file(s) `val_fix_test.go`");
+      expect(prompts[1]).not.toContain("BRAND-NEW");
       expect(ledger.getThread(4)?.retryGrants).toBe(1);
       expect(ledger.getThread(4)?.phase.kind).toBe("awaiting_gate");
     } finally {
