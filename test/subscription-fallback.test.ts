@@ -170,3 +170,37 @@ describe("subscription CLI failover (Continuity-style) & cross-vendor review ind
   });
 
 });
+
+describe("inner CLI sandbox by placement", () => {
+  it("drops the writable-.git blockers in a box and keeps them locally", async () => {
+    const ran: Array<{ remote: boolean; cmd: string; args: string[] }> = [];
+    const run = async (remote: boolean, provider: "codex" | "agy") => {
+      const compute = {
+        remote,
+        exec: async (_ws: unknown, spec: { cmd: string; args: string[] }) => {
+          if (spec.cmd !== "git") ran.push({ remote, cmd: spec.cmd, args: spec.args });
+          return { code: 0, stdout: "", stderr: "", aborted: false };
+        },
+      };
+      const handle = { compute, workspace: async () => ({ id: "w", path: "/w" }) };
+      const impl = new SubscriptionImplementer({
+        chains: { implement: [{ provider }], revise: [{ provider }], rebase: [{ provider }] },
+        remoteProviders: new Set([provider]),
+        transcriptsDir: fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sub-test-")),
+      });
+      await impl
+        .run({ issueNumber: 1, workspaces: { local: handle, remote: handle } as never, prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role: "rebase" })
+        .catch(() => undefined);
+    };
+    await run(false, "codex");
+    await run(true, "codex");
+    await run(false, "agy");
+    await run(true, "agy");
+    const argsOf = (remote: boolean, cmd: string) => ran.find((r) => r.remote === remote && (r.cmd === cmd || r.args.includes(cmd)))!.args;
+    expect(argsOf(false, "codex")).toContain("workspace-write");
+    expect(argsOf(true, "codex")).toContain("danger-full-access");
+    expect(argsOf(true, "codex")).not.toContain("workspace-write");
+    expect(argsOf(false, "agy")).toContain("--sandbox");
+    expect(argsOf(true, "agy")).not.toContain("--sandbox");
+  });
+});

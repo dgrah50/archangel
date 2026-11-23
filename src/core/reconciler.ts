@@ -2551,8 +2551,8 @@ export class Reconciler {
    * The owner retried a Thread that escalated on CI infrastructure (`gate_timeout`, `gate_untrusted`): the old checks on this head
    * will never change, so get a new run instead of re-escalating on them. Behind main: rebase through the usual path (a new head,
    * so CI runs main's current workflow file and Gate pin; counted as a rebase, never a revision). Already current: re-request the
-   * failed Gate check once (same workflow file). Both restart the Gate clock, which ends the retry (the marker is the owner_retry
-   * audit row, newer than the clock only until then). Returns true when it acted; the Gate itself is never skipped.
+   * failed Gate check once (same workflow file). The retry is pending while the owner_retry audit row is newer than the
+   * thread/infra_retry_handled row written when this acts (never compared to the phase clock, which any transition restarts). Returns true when it acted; the Gate itself is never skipped.
    */
   private async freshCiAfterInfraRetry(
     thread: ThreadRecord,
@@ -2563,11 +2563,13 @@ export class Reconciler {
     now: number,
   ): Promise<boolean> {
     if (thread.phase.kind !== "awaiting_gate" || thread.mode !== "autonomous") return false;
-    const retry = this.ledger.listAudit({ repo: this.ledger.repo, topicPrefix: "thread/owner_retry", issueNumber: thread.issueNumber, limit: 1 })[0];
-    if (!retry || retry.ts < thread.phase.since) return false;
+    const retry = this.ledger.listAudit({ repo: this.ledger.repo, topicPrefix: "thread/owner_retry", issueNumber: thread.issueNumber, limit: 5 }).find((r) => r.topic === "thread/owner_retry");
+    const handled = this.ledger.listAudit({ repo: this.ledger.repo, topicPrefix: "thread/infra_retry_handled", issueNumber: thread.issueNumber, limit: 1 })[0];
+    if (!retry || (handled && handled.id > retry.id)) return false;
     const code = (JSON.parse(retry.payloadJson) as { code?: unknown }).code;
     if (code !== "gate_timeout" && code !== "gate_untrusted") return false;
     if (pr.baseSha !== mainSha) {
+      this.ledger.appendAudit("thread/infra_retry_handled", thread.issueNumber, "archangel", { via: "rebase" }, now);
       const clean = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
       await this.rebaseOntoMain(thread, pr, issue, mainSha, clean, [
         { code: "branch_behind_main", message: "Owner retry after a CI infrastructure failure: rerun CI on current main" },
@@ -2575,6 +2577,7 @@ export class Reconciler {
       return true;
     }
     if (failedGateCheckId === undefined) return false;
+    this.ledger.appendAudit("thread/infra_retry_handled", thread.issueNumber, "archangel", { via: "rerun" }, now);
     await this.github.rerunCheckRun(failedGateCheckId);
     this.applyMachineEvent(
       thread,
