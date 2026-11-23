@@ -724,7 +724,23 @@ program
       }
       console.log(`=== Archangel Metrics (${m.windowDays ? `last ${m.windowDays}d` : "all time"}${opts.repo ? `, ${opts.repo}` : ""}) ===`);
       console.log(`Threads:     ${m.threads.total} (${Object.entries(m.threads.byPhase).map(([k, v]) => `${k}=${v}`).join(", ") || "none"})`);
-      console.log(`Lead time:   ${m.threads.avgLeadTimeSec !== null ? `${m.threads.avgLeadTimeSec}s avg` : "n/a"}`);
+      const s = m.shipping;
+      const pct = (r: number | null) => (r === null ? "n/a" : `${Math.round(r * 100)}%`);
+      const span = (sec: number) => (sec < 7200 ? `${Math.round(sec / 60)}m` : `${Math.round(sec / 360) / 10}h`);
+      if (s.settled === 0) {
+        console.log("Shipping:    nothing has settled yet");
+      } else {
+        console.log(
+          `Shipping:    ${s.settled} settled: ${s.shipped} shipped (${pct(s.shipRate)}; ${s.shippedByFactory} by the factory, ${s.shipped - s.shippedByFactory} merged by you), ${s.closedUnshipped} closed unshipped, ${s.waitingOnOwner} waiting on you`,
+        );
+        if (s.attemptsToShip && s.timeToShipSec) {
+          console.log(`  First pass:  ${s.firstPass} of ${s.shipped} shipped with one Attempt and no escalation (${pct(s.firstPassRate)})`);
+          console.log(
+            `  To ship:     Attempts p50 ${s.attemptsToShip.p50}, p95 ${s.attemptsToShip.p95}, max ${s.attemptsToShip.max} | ${s.escalationsPerShipped} escalations, ${s.ownerRetriesPerShipped} owner retries per shipped Thread`,
+          );
+          console.log(`  Time:        p50 ${span(s.timeToShipSec.p50)}, p95 ${span(s.timeToShipSec.p95)} from intake to merge`);
+        }
+      }
       console.log(
         `Attempts:    ${m.attempts.total} total (${m.attempts.succeeded} ok, ${m.attempts.failed} fail, ${m.attempts.aborted} abort; ${Math.round(m.attempts.successRate * 100)}% success)`,
       );
@@ -766,7 +782,7 @@ program
       if (m.attempts.topErrors.length > 0) {
         console.log("Top attempt errors:");
         for (const e of m.attempts.topErrors) {
-          console.log(`  - (${e.count}x) ${e.error}`);
+          console.log(`  - (${e.count}x) ${e.error.replace(/\s+/g, " ").slice(0, 120)}`);
         }
       }
       if (m.activeCooldowns.length > 0) {
