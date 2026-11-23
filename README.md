@@ -49,7 +49,7 @@ bun src/cli/index.ts doctor --smoke && bun src/cli/index.ts ui
 
 The App script creates a least-privilege GitHub App, saves its key, and waits for you to install it. It then writes `ARCHANGEL_GITHUB_APP_ID`, `ARCHANGEL_GITHUB_INSTALLATION_ID`, and `ARCHANGEL_GITHUB_BOT_USER_ID` into `.env`. If the App has several installations, it asks which to use. Add your own settings from `.env.example` to the same file.
 
-`.env` and `archangel.yaml` are read from the working directory, so keep both in the checkout root and run `archangel` from there. Merge the onboarding pull request on GitHub, then start the daemon.
+`archangel.yaml` is read from the working directory (or `--config <path>`), and `.env` from beside it, so keep both in the same directory. Merge the onboarding pull request on GitHub, then start the daemon.
 
 ```bash
 bun src/cli/index.ts start             # run in the foreground

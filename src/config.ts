@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { loadDotEnv } from "./env.js";
 import { SignalsConfigSchema } from "./core/signal-rules.js";
 import { FLEET_SCOUT_NAMES } from "./core/fleet-scouts.js";
 import type { ReviewerVendor } from "./ledger/schema.js";
@@ -81,7 +82,7 @@ function parseConfig<T>(parse: () => T, file: string): T {
     if (!(err instanceof z.ZodError)) throw err;
     const envPaths = err.issues.map((i) => ENV_FIELDS[String(i.path[0])]).filter((v): v is string => v !== undefined);
     const remediation = envPaths.length > 0
-      ? `Set ${[...new Set(envPaths)].join(", ")} in .env (see .env.example).`
+      ? `Set ${[...new Set(envPaths)].join(", ")} in the .env beside ${path.basename(file)} (see .env.example).`
       : `Fix the listed fields in ${file}.`;
     throw new ConfigError(`Invalid config:\n${formatZodIssues(err)}`, remediation);
   }
@@ -609,8 +610,10 @@ export function loadProjectConfigs(opts: {
   configPath?: string;
   env?: NodeJS.ProcessEnv;
 } = {}): ArchangelConfig[] {
+  const resolvedConfig = resolveConfigPath(opts.configPath, opts.env ?? process.env);
+  // Secrets live in the `.env` beside the host config, wherever the command is run from (values already set win).
+  if (!opts.env) loadDotEnv(path.join(path.dirname(resolvedConfig), ".env"));
   const env = withoutEmptyValues(opts.env ?? process.env);
-  const resolvedConfig = resolveConfigPath(opts.configPath, env);
 
   if (!fs.existsSync(resolvedConfig)) {
     throw new ConfigError(`Host config not found: ${resolvedConfig}`, "Copy archangel.example.yaml to archangel.yaml in the directory you run archangel from.");
