@@ -8,7 +8,7 @@ import { Secret } from "@sailresearch/sdk";
 import { AGY_BROKER_ID, AGY_BROKER_SECRET } from "../compute/agy-broker-adapter.js";
 import { CODEX_BROKER_ID, CODEX_BROKER_SECRET } from "../compute/codex-broker-adapter.js";
 import { readBrokerState } from "../compute/token-broker.js";
-import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
+import { assessPinDrift, pinOf } from "./gate-pin.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { LocalProvider } from "../compute/local.js";
 import { SandboxExecProvider } from "../compute/sandbox-exec.js";
@@ -415,7 +415,6 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
   }
 
   // 9. Online GitHub App least-privilege permission audit + target repo checks (ADR-0004!)
-  let gateLatest: string | undefined;
   for (const cfg of projects) {
     const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
     const gh = new GitHubAppClient({
@@ -480,13 +479,17 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
         const wf = await gh.readFileAtRef(tip, ".github/workflows/archangel-gate.yml");
         if (wf !== null) {
           try {
-            gateLatest ??= await latestGateCommit(execRunner);
-            const drift = await assessPinDrift(execRunner, wf, gateLatest, { branch: cfg.defaultBranch });
+            const drift = await assessPinDrift(execRunner, wf, { branch: cfg.defaultBranch });
+            const pin = pinOf(wf)?.slice(0, 10);
             checks.push({
               id: `gate_pin:${repoSlug}`,
               name: `Gate Pin (${repoSlug})`,
               status: drift.drifted ? "warn" : "pass",
-              detail: drift.drifted ? drift.reasons.join("; ") : `pin is current (latest gate-relevant commit ${gateLatest.slice(0, 10)})`,
+              detail: drift.drifted
+                ? drift.reasons.join("; ")
+                : drift.newerBundle
+                  ? `pinned at ${pin}; a newer Gate bundle exists (re-pin only if you need a Gate fix)`
+                  : `pin ${pin} matches the current Gate bundle`,
               remediation: drift.drifted ? `archangel gate-bump --repo ${repoSlug}` : undefined,
             });
           } catch (err) {
