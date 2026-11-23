@@ -5,7 +5,7 @@ import { buildPlan, onboard, type OnboardRunner } from "../src/core/onboard.js";
 const SHA = "a".repeat(40);
 
 /** Scripted runner: answers by matching the joined command line; records everything it was asked. */
-function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain?: boolean; pkg?: object; openPr?: string; branch?: string; checks?: string[] }) {
+function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain?: boolean; pkg?: object; openPr?: string; branch?: string; checks?: string[]; otherChecks?: string[] }) {
   const calls: string[] = [];
   const runner: OnboardRunner = {
     async run(cmd, args) {
@@ -19,7 +19,9 @@ function fake(opts: { tree: string[]; labels?: string[]; dirty?: boolean; onMain
         return "";
       }
       if (line.startsWith("gh repo view")) return `${opts.branch ?? "main"}\n`;
-      if (line.startsWith("gh pr list") && line.includes("--state merged")) return (opts.checks ?? ["Gate", "Test"]).join("\n");
+      if (line.startsWith("gh pr list") && line.includes("--state merged")) {
+        return JSON.stringify([...(opts.checks ?? ["Gate", "Test"]).map((name) => ({ name, actions: true })), ...(opts.otherChecks ?? []).map((name) => ({ name, actions: false }))]);
+      }
       if (line.includes("/git/trees/")) return opts.tree.join("\n");
       if (line.startsWith("gh label list")) return (opts.labels ?? []).join("\n");
       if (line.includes("contents/package.json")) return JSON.stringify(opts.pkg ?? {});
@@ -38,7 +40,7 @@ describe("buildPlan", () => {
     const { runner } = fake({ tree: ["go.mod", "a_test.go"], labels: ["needs-you"], branch: "trunk", checks: ["lint", "build (ubuntu)", "lint"] });
     const plan = await buildPlan(runner, "o/r");
     expect(plan.stack).toBe("go");
-    expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".agents/archangel.json", ".agents/scouts/bug-hunt.md"]);
+    expect(plan.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".agents/archangel.json", ".pre-commit-config.yaml", ".agents/scouts/bug-hunt.md"]);
     expect(plan.files[0]!.content).toContain(`ARCHANGEL_GATE_SHA: ${SHA}`);
     expect(plan.files[0]!.content).toContain('branches: ["trunk"]');
     expect(plan.files[1]!.content).toContain("go test");
@@ -46,21 +48,29 @@ describe("buildPlan", () => {
     expect(wf).toMatchObject({ version: 1, requiredChecks: ["Gate", "build (ubuntu)", "lint"] });
     expect(wf.scouts).toEqual([{ name: "bug-hunt", schedule: "daily", maxProposals: 2, skills: ["general/bug-hunt", "general/input-validation", "go/*"] }]);
     expect(Workflow.safeParse(wf).success).toBe(true);
-    expect(plan.files[2]!.content.startsWith("---")).toBe(false); // body-only prompt, no frontmatter
+    expect(plan.files[3]!.content.startsWith("---")).toBe(false); // body-only prompt, no frontmatter
     expect(plan.labelsToCreate).not.toContain("needs-you");
     expect(plan.labelsToCreate).toContain("ready-for-agent");
   });
 
-  it("does not guess a test command or checks: no lockfile or no CI means no policy, said plainly", async () => {
+  it("does not guess a test command: no lockfile means no policy, said plainly", async () => {
     const pkg = { scripts: { test: "vitest" } };
     const noLock = await buildPlan(fake({ tree: ["package.json", "a.test.ts"], pkg }).runner, "o/r");
-    expect(noLock.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
+    expect(noLock.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml", ".pre-commit-config.yaml"]);
     expect(noLock.notes.join()).toContain("test command are unknown");
-    const noCi = await buildPlan(fake({ tree: ["package.json", "bun.lock", "a.test.ts"], pkg, checks: [] }).runner, "o/r");
-    expect(noCi.files.map((f) => f.path)).toEqual([".github/workflows/archangel-gate.yml"]);
-    expect(noCi.notes.join()).toContain("required checks are unknown");
-    const bun = await buildPlan(fake({ tree: ["package.json", "bun.lock", "a.test.ts"], pkg }).runner, "o/r");
-    expect(JSON.parse(bun.files[1]!.content).gate.testCmd).toBe("bun run test");
+  });
+
+  it("a new repo gets a usable policy: only GitHub Actions checks are required, and Gate alone when no CI has run yet", async () => {
+    const pkg = { scripts: { test: "vitest" } };
+    const tree = ["package.json", "bun.lock", "a.test.ts"];
+    const policy = (plan: Awaited<ReturnType<typeof buildPlan>>) => JSON.parse(plan.files.find((f) => f.path === ".agents/archangel.json")!.content);
+    // A required check from another app is untrusted by the daemon and would park every Thread.
+    const mixed = await buildPlan(fake({ tree, pkg, otherChecks: ["GitGuardian Security Checks"] }).runner, "o/r");
+    expect(policy(mixed)).toMatchObject({ requiredChecks: ["Gate", "Test"], gate: { testCmd: "bun run test" } });
+    expect(mixed.notes.join()).toContain("Left out of requiredChecks: GitGuardian Security Checks");
+    expect(mixed.files.find((f) => f.path === ".agents/setup")!.content).toContain("bun install --frozen-lockfile");
+    const noCi = await buildPlan(fake({ tree, pkg, checks: [] }).runner, "o/r");
+    expect(policy(noCi).requiredChecks).toEqual(["Gate"]);
   });
 });
 
@@ -70,7 +80,7 @@ describe("onboard", () => {
     await onboard(f.runner, "o/r", { log: () => {} });
     const m = f.mutating();
     expect(m.filter((c) => c.includes("label create"))).toHaveLength(10);
-    expect(m.filter((c) => c.includes("-X PUT"))).toHaveLength(3);
+    expect(m.filter((c) => c.includes("-X PUT"))).toHaveLength(4);
     expect(m.filter((c) => c.includes("pr create"))).toHaveLength(1);
     expect(f.calls.some((c) => c.startsWith("gh pr merge"))).toBe(false);
   });

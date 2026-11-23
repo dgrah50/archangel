@@ -65,7 +65,8 @@ export function runInit(cwd: string, opts: { ghUserId?: () => number | null } = 
 
 export const INIT_NEXT_STEPS = [
   "bun scripts/create-github-app.ts   # creates the App and fills in the App, installation and bot ids",
-  "archangel doctor",
+  "archangel onboard owner/name       # labels and the onboarding PR; then put the repo under projects in archangel.yaml",
+  "archangel doctor --smoke",
   "archangel ui",
   "archangel daemon install",
 ];

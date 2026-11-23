@@ -509,12 +509,12 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
       checks.push({
         id: `repo_verification:${repoSlug}`,
         name: `Repo Verification Config (${repoSlug})`,
-        status: !hasRepoPolicy ? "fail" : hasPreCommit ? "pass" : "warn",
+        status: hasRepoPolicy && hasPreCommit ? "pass" : "fail",
         detail: `.pre-commit-config.yaml=${hasPreCommit ? "present" : "missing"}, ${REPO_POLICY_PATH}=${hasRepoPolicy ? "present" : "missing"}`,
         remediation:
           hasPreCommit && hasRepoPolicy
             ? undefined
-            : "Commit .pre-commit-config.yaml and .agents/archangel.json to the default branch (see templates/go/ or this repo's .agents/archangel.json)",
+            : `The Gate fails every PR without both files on the default branch. Run \`archangel onboard ${repoSlug}\` and merge its PR (it adds whichever is missing; a repo with no hooks gets an empty .pre-commit-config.yaml).`,
       });
 
       const repoLabels = new Set(await gh.listRepoLabels());
@@ -534,11 +534,14 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
             : `Create missing labels in ${repoSlug}: ${missingLabels.join(", ")}`,
       });
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const notFound = /\(404\)/.test(detail);
       checks.push({
         id: `github_online:${repoSlug}`,
         name: `GitHub API (${repoSlug})`,
         status: "fail",
-        detail: err instanceof Error ? err.message : String(err),
+        detail: notFound ? `${repoSlug} was not found through the App installation` : detail,
+        ...(notFound ? { remediation: "Check `repo:` under projects in archangel.yaml (owner/name), and that the Archangel GitHub App is installed on that repo." } : {}),
       });
     }
   }

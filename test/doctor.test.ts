@@ -53,6 +53,12 @@ describe("archangel doctor (Neon P3)", () => {
         res.end(JSON.stringify({ name: "archangel.json", sha: "s2", encoding: "base64", content: Buffer.from("{}").toString("base64") }));
         return;
       }
+      // Both verification files are needed: the Gate fails closed without a pre-commit config.
+      if (hasRepoPolicy && url.pathname.includes("/contents/.pre-commit-config.yaml")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ name: ".pre-commit-config.yaml", sha: "s3", encoding: "base64", content: Buffer.from("repos: []\n").toString("base64") }));
+        return;
+      }
       if (url.pathname.endsWith("/labels")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(

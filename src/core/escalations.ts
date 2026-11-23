@@ -59,9 +59,9 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
   gate_untrusted: {
     decisionClass: "credentials",
-    short: "recommends verifying the Gate app before retry",
+    short: "recommends removing that check from requiredChecks",
     recommendation:
-      "A required check came from an unexpected app. Verify the repo's Gate workflow and app installation before retrying.",
+      "A required check (named in the reason) was not reported by GitHub Actions, the only source Archangel accepts. If it is a third-party check (a scanner, a deploy preview), remove it from `requiredChecks` in .agents/archangel.json with a PR you merge; if it should be your own workflow's check, verify the repo's Gate workflow. Then retry.",
   },
   review_vetoed: {
     decisionClass: "live_infrastructure",
