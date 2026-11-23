@@ -125,6 +125,21 @@ reviewerChain:
 #     #   on: telemetry_anomaly
 #     #   do: { action: run_pitch, scout: fleet-pr-miner }
 
+# External research (off while topics is empty). Once a day, and only when a signals rule listens for `research`, the host
+# crosses each topic with fixed query templates (GitHub repository search, GitHub latest releases, arXiv) and stores
+# sanitized title/url/date/snippet rows. No model ever writes a query. Results are untrusted: a rule on `research` may only
+# run_pitch, and the pitch prompts show them as a fenced DATA block that a pitch cites by number. Topics: at most 5, each
+# at most 40 characters of a-z 0-9 space . + -. maxFetchesPerDay and minIntervalMs are provisional.
+# research:
+#   topics: [json query cli, jsonpath performance]
+#   maxFetchesPerDay: 20
+#   minIntervalMs: 3000
+# signals:
+#   rules:
+#     - name: research-pitch
+#       on: research
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+
 # Prompt proposer (O7): `archangel eval propose` drafts one reviewer prompt or rubric change from dev-set failure counts, scores it on
 # the held-out set and opens an agent-draft PR (owner merges) only if it beats the baseline. Bounded to 1 run per week by the command
 # itself, so a weekly schedule is safe, e.g. a launchd or cron entry (Mondays 09:00):

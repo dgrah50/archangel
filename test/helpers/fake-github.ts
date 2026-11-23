@@ -63,6 +63,13 @@ export class FakeGitHub implements GitHubClient {
   async listReleasesSince(sinceMs: number) {
     return this.releases.filter((r) => r.publishedAt > sinceMs);
   }
+  searchResults: Array<{ fullName: string; url: string; pushedAt: string; description: string | null }> = [];
+  async searchRepositories() {
+    return this.searchResults;
+  }
+  async getLatestRelease() {
+    return null;
+  }
   async listDependabotAlertsSince(sinceMs: number) {
     return this.alerts.filter((a) => a.createdAt > sinceMs);
   }

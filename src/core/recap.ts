@@ -4,6 +4,7 @@ import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
+import { renderChaptersSection, type Chapter } from "./recap-chapters.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { renderShotImages, type ShotLink } from "./pr-shots.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
@@ -22,6 +23,8 @@ export function renderRecapComment(input: {
   gateProofError?: string | null;
   /** What machine triage decided for this Thread (a `factory/triage` audit row); null/undefined when triage never ran. */
   triage?: TriageSummary | null;
+  /** Feature PRs only: the diff grouped by area, with optional machine captions. */
+  chapters?: Chapter[] | null;
   /** Small screenshots of the PR head, already published by the host; rendered as a short section. */
   shots?: ShotLink[];
   /** Called with the pattern name when agent-authored text was withheld for matching the secret scan. */
@@ -78,6 +81,7 @@ export function renderRecapComment(input: {
     if (t.action === "guidance" && t.steps.length > 0) lines.push("", ...fencedText(t.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")));
     else if (t.action === "escalate" && t.reason) lines.push("", ...fencedText(t.reason));
   }
+  lines.push(...renderChaptersSection(input.chapters ?? []));
   const rawSummary = input.summary ?? thread.lastSummary;
   if (rawSummary) {
     const summaryText = safe(rawSummary);

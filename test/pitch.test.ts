@@ -25,7 +25,7 @@ const NOW = 200 * DAY;
 const SPEC = { name: "pitch", kind: "pitch", schedule: "weekly", maxProposals: 1 };
 const PROMPT = "Find one thing worth changing.";
 
-const evidence = (over: Record<string, unknown> = {}) => ({ file: "app.ts", symbol: null, metric: null, note: "app.ts has grown 3x in 90 days", ...over });
+const evidence = (over: Record<string, unknown> = {}) => ({ file: "app.ts", symbol: null, metric: null, research: null, note: "app.ts has grown 3x in 90 days", ...over });
 const pitch = (over: Record<string, unknown> = {}) => ({
   type: "removal",
   title: "Remove the unused legacy parser",
