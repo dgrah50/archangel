@@ -1,5 +1,6 @@
 import { GATE_PROOF_ANNOTATION_TITLE, type GateProof } from "../gate/gate.js";
 import crypto from "node:crypto";
+import os from "node:os";
 import { dedupeChecksByLatestId, type CheckStatus } from "../core/blockers.js";
 import { tryParseJson } from "../core/json.js";
 import { AGENT_DRAFT_PREFIX } from "../core/correction-draft.js";
@@ -175,6 +176,15 @@ export function assertAssetsPush(input: AssetsPush): void {
   }
 }
 
+/**
+ * Nothing sent to GitHub names this machine's home directory. Model text (an implementer's summary, a reviewer's finding, a
+ * Scout's proposal) often cites files by their absolute path in a local workspace, and every write goes through `request`.
+ */
+const HOME_IN_JSON = JSON.stringify(os.homedir()).slice(1, -1);
+function withoutHomeDir(json: string): string {
+  return HOME_IN_JSON.length > 1 ? json.replaceAll(HOME_IN_JSON, "~") : json;
+}
+
 export class GitHubAppClient implements GitHubClient {
   private readonly cfg: GitHubAppConfig;
   private readonly apiBase: string;
@@ -285,7 +295,7 @@ export class GitHubAppClient implements GitHubClient {
       res = await fetch(url, {
         method,
         headers,
-        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        body: opts.body !== undefined ? withoutHomeDir(JSON.stringify(opts.body)) : undefined,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
