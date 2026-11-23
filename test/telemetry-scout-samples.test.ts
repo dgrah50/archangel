@@ -16,7 +16,8 @@ it("does not flag attempt failures on fewer non-aborted attempts than minWindow"
 
 it("skips a baseline with too few non-aborted attempts", () => {
   const l = new Ledger(":memory:", { repo: "o/r" });
-  for (let i = 0; i < 5; i++) add(l, NOW - 2 * DAY - i * 60_000, "aborted");
+  for (let i = 0; i < 19; i++) add(l, NOW - 2 * DAY - i * 60_000, "aborted");
+  add(l, NOW - 2 * DAY - 19 * 60_000, "succeeded");
   for (let i = 0; i < 5; i++) add(l, NOW - 3_600_000 - i * 60_000, "failed");
   expect(detectAnomalies(l, NOW).map((a) => a.metric)).not.toContain("attempt_failures");
 });

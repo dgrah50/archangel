@@ -66,7 +66,10 @@ const CHECKS: Check[] = [
   { metric: "github_errors", event: "github_call_ms", minWindow: 30, minBase: 100, minRatio: 3, minObserved: 0.1, floor: 0.01, read: (rows) => share(rows, (r) => r.tags.status === "5xx" || r.tags.status === "error") },
   { metric: "github_429s", event: "github_call_ms", minWindow: 0, minBase: 0, minRatio: 2, minObserved: 3, floor: 1, read: (rows) => count(only("status", "429")(rows)) },
   { metric: "attempt_slowdown", event: "attempt_ms", minWindow: 5, minBase: 10, minRatio: 1.5, minObserved: 60_000, floor: 1, read: p(0.95) },
-  { metric: "attempt_failures", event: "attempt_ms", minWindow: 5, minBase: 10, minRatio: 2, minObserved: 0.5, floor: 0.05, read: (rows) => share(rows.filter((r) => r.tags.outcome !== "aborted"), (r) => r.tags.outcome === "failed") },
+  { metric: "attempt_failures", event: "attempt_ms", minWindow: 5, minBase: 10, minRatio: 2, minObserved: 0.5, floor: 0.05, read: (rows) => {
+    const attempts = rows.filter((r) => r.tags.outcome !== "aborted");
+    return { value: attempts.length === 0 ? 0 : attempts.filter((r) => r.tags.outcome === "failed").length / attempts.length, n: attempts.length };
+  } },
   { metric: "account_quota", event: "account_cooldown", hostWide: true, minWindow: 0, minBase: 0, minRatio: 2, minObserved: 3, floor: 1, read: (rows) => count(rows) },
   { metric: "gate_timeouts", event: "gate_ms", minWindow: 0, minBase: 0, minRatio: 2, minObserved: 3, floor: 1, read: (rows) => count(only("outcome", "timeout")(rows)) },
 ];
@@ -83,10 +86,11 @@ function judge(c: Check, window: Row[], base: Row[]): Anomaly | null {
     const pick = (rows: Row[]) => (g === undefined ? rows : rows.filter((r) => r.tags.account === g));
     const w = pick(window);
     const b = pick(base);
+    if (w.length === 0) continue;
     const obs = c.read(w);
     const old = b.length === 0 ? { value: 0, n: 0 } : c.read(b);
     if (!obs || !old) continue;
-    if (obs.n < c.minWindow || (c.minBase > 0 && old.n < c.minBase)) continue;
+    if (obs.n === 0 || old.n === 0 || obs.n < c.minWindow || (c.minBase > 0 && old.n < c.minBase)) continue;
     const baseline = isCount(c) ? old.value / 7 : old.value;
     const ratio = obs.value / Math.max(baseline, c.floor);
     if (obs.value >= c.minObserved && ratio >= c.minRatio && (!worst || ratio > worst.ratio)) {
