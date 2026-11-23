@@ -119,9 +119,17 @@ describe("an owner retry of a CI infrastructure escalation", () => {
       if (!retried.ok) throw new Error(retried.reject);
       h.ledger.transition(1, stuck.version, retried.next, {
         grantRetryBudget: true,
+        auditTopic: "thread/owner_retried",
         extraAudits: [{ topic: "thread/owner_retry", actor: "owner", payload: { via: "cli", code: "gate_timeout" } }],
         now: h.t0 + 6 * MIN,
       });
+      // a later transition into awaiting_gate (a phase_entered row, a newer phase clock) must not hide the pending retry
+      const entered = h.ledger.getThread(1)!;
+      if (entered.phase.kind !== "awaiting_gate") throw new Error("unreachable");
+      const { prNumber, headSha, baseSha } = entered.phase;
+      const moved = stepPhase(entered.phase, entered.mode, { t: "head_moved", pr: { prNumber, headSha, baseSha }, now: h.t0 + 6 * MIN + 1000 }, { issueNumber: 1, title: entered.title, needsYouLabel: "needs-you" });
+      if (!moved.ok) throw new Error(moved.reject);
+      h.ledger.transition(1, entered.version, moved.next, { now: h.t0 + 6 * MIN + 1000 });
 
       await h.reconciler.tick(h.t0 + 7 * MIN, { waitForAttempts: true });
       const after = h.ledger.getThread(1)!;
