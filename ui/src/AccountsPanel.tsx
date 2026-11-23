@@ -15,9 +15,9 @@ const ROLE_WORD: Record<string, string> = { implement: "building", revise: "revi
 function Account({ a }: { a: AccountRow }) {
   const cooling = a.cooldownUntil !== null && a.cooldownUntil > Date.now();
   return (
-    <Flex gap="4" align="baseline" py="2.5" wrap="wrap">
+    <Flex gap="4" align="baseline" py="2.5">
       <Text textStyle="command" fontSize="13px" w="120px" flexShrink={0}>{a.id}</Text>
-      <Flex direction="column" flex="1" minW="200px">
+      <Flex direction="column" flex="1" minW="0">
         {cooling ? (
           <Text textStyle="body13" color="owner">Hit its limit. Back in {back(a.cooldownUntil! - Date.now())}.</Text>
         ) : (

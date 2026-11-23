@@ -6,6 +6,7 @@ import { Notice, type Feed } from "./AppView";
 import { age } from "./common";
 import { Check as CheckIcon, Dot as DotIcon, Eye, GitMerge, Hammer, X } from "lucide-react";
 import { CopyButton } from "./arc/copy-button/copy-button";
+import { Stepper } from "./arc/stepper/stepper";
 import { Timeline } from "./arc/timeline/timeline";
 import { Dot, LinkButton, Ref } from "./page";
 import type { ItemRef } from "./route";
@@ -36,37 +37,25 @@ type PhaseDuration = ThreadDetail["phaseDurations"][number];
 
 const mins = (ms: number) => (ms < 60_000 ? "<1 m" : ms < 120 * 60_000 ? `${Math.floor(ms / 60_000)} m` : `${Math.floor(ms / 3_600_000)} h`);
 
-function Duration({ d }: { d: PhaseDuration }) {
-  const over = d.running && d.limitMs !== null && d.ms > d.limitMs;
-  const text = d.running ? (d.limitMs !== null ? `${mins(d.ms)} of ${Math.round(d.limitMs / 60_000)}` : `running ${mins(d.ms)}`) : mins(d.ms);
-  return (
-    <Text textStyle="meta" color={over ? "owner" : "fg.subtle"} whiteSpace="nowrap">
-      {text}
-    </Text>
-  );
-}
+const durationText = (d: PhaseDuration) => (d.running ? (d.limitMs !== null ? `${mins(d.ms)} of ${Math.round(d.limitMs / 60_000)}` : `running ${mins(d.ms)}`) : mins(d.ms));
 
+/** The Thread's place on the line. A phase that is off the line (needs you, done) is named beside the last station it reached. */
 function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDuration[] }) {
   const at = RAIL.findIndex((r) => r.kind === phase);
+  const reached = RAIL.reduce((n, r, i) => (durations.some((d) => d.kind === r.kind) ? i : n), 0);
   return (
-    <Flex align="flex-start" gap="3" wrap="wrap" aria-label="Phase">
-      {RAIL.map((r, i) => {
-        const d = durations.find((x) => x.kind === r.kind);
-        return (
-          <Flex key={r.kind} align="flex-start" gap="3" flex={i < RAIL.length - 1 ? "1" : undefined} minW="0">
-            <Box>
-              <Flex align="center" gap="1.5" textStyle="body13" color={i === at ? "fg" : i < at ? "fg.muted" : "fg.subtle"} fontWeight={i === at ? "500" : undefined} py="1" whiteSpace="nowrap">
-                {i < at ? <Check /> : i === at ? <Dot /> : null}
-                {r.label}
-              </Flex>
-              {d ? <Duration d={d} /> : null}
-            </Box>
-            {i < RAIL.length - 1 ? <Box flex="1" minW="3" mt="14px" borderTopWidth="1px" borderTopStyle={i < at ? "solid" : "dashed"} borderTopColor="border.emphasized" /> : null}
-          </Flex>
-        );
-      })}
+    <Flex direction="column" gap="2">
+      <Stepper
+        label="Phase"
+        current={at !== -1 ? at : phase === "done" ? RAIL.length : reached}
+        steps={RAIL.map((r) => {
+          const d = durations.find((x) => x.kind === r.kind);
+          const over = d !== undefined && d.running && d.limitMs !== null && d.ms > d.limitMs;
+          return { id: r.kind, label: r.label, description: d && !over ? durationText(d) : undefined, error: d && over ? `${durationText(d)}, over the limit` : undefined };
+        })}
+      />
       {at === -1 ? (
-        <Text textStyle="meta" color="fg.muted" alignSelf="center">
+        <Text textStyle="meta" color="fg.muted">
           Now: {phase.replace(/_/g, " ")}
         </Text>
       ) : null}
@@ -109,10 +98,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
         {thread.error === null ? (
           <Text color="fg.muted">Loading thread...</Text>
         ) : (
-          <Notice tone="red">
-            <Text fontWeight="medium">
-              {item.repo}#{item.issue} could not be loaded.
-            </Text>
+          <Notice tone="red" title={`${item.repo}#${item.issue} could not be loaded`}>
             <Text textStyle="sm">{thread.error}</Text>
             <Button size="sm" mt="2" onClick={onRetry}>
               Retry
@@ -151,8 +137,8 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
         ) : null}
       </Flex>
       {thread.error ? (
-        <Notice tone="red">
-          <Text textStyle="sm">Refresh failed ({thread.error}); showing the last loaded copy.</Text>
+        <Notice tone="red" title="Refresh failed, showing the last loaded copy">
+          {thread.error}
         </Notice>
       ) : null}
       <PhaseRail phase={d.phase} durations={d.phaseDurations} />
@@ -179,7 +165,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
               the diff grouped by area, read-only
             </Text>
           </Flex>
-          <Box borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+          <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
             {d.chapters.map((c) => (
               <Box key={`${c.kind}-${c.area}`} py="3">
                 <Flex gap="3" align="baseline" wrap="wrap">
@@ -232,11 +218,11 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
             </Text>
           </Flex>
           {events.length === 0 ? (
-            <Text color="fg.muted" borderTopWidth="1px" borderTopColor="fg" pt="3">
+            <Text color="fg.muted" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4">
               No recorded events yet.
             </Text>
           ) : (
-            <Box borderTopWidth="1px" borderTopColor="fg" pt="3">
+            <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4">
               <Timeline
                 label="Timeline"
                 now={now}
@@ -256,7 +242,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
               mechanical, models only veto
             </Text>
           </Flex>
-          <Box borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+          <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
             {d.gate.length === 0 ? (
               <Text textStyle="body13" color="fg.muted" pt="3">
                 No Gate result recorded yet.

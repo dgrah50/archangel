@@ -34,10 +34,10 @@ export function PageHeadline({ title, children }: { title: string; children?: Re
   );
 }
 
-/** A section: starts with a 1px ink rule. `title` is the optional grey lead-in sentence. */
-export function Section({ title, children, ...rest }: { title?: ReactNode; children: ReactNode } & FlexProps) {
+/** A section: a card at rest (panel fill, hairline border, surface radius). `title` is the optional grey lead-in sentence; `inner` marks a section inside a card, which gets a hairline instead of its own card. */
+export function Section({ title, inner, children, ...rest }: { title?: ReactNode; inner?: boolean; children: ReactNode } & FlexProps) {
   return (
-    <Flex as="section" direction="column" gap="3.5" borderTopWidth="1px" borderTopColor="fg" pt="3" {...rest}>
+    <Flex as="section" direction="column" gap="3.5" {...(inner ? { borderTopWidth: "1px", borderColor: "border", pt: "4" } : { bg: "bg.panel", borderWidth: "1px", borderColor: "border", rounded: "surface", p: "5" })} {...rest}>
       {title ? (
         <Text textStyle="meta" fontSize="12px" color="fg.subtle">
           {title}
@@ -48,10 +48,10 @@ export function Section({ title, children, ...rest }: { title?: ReactNode; child
   );
 }
 
-/** Rows of one section: an ink rule on top, light hairlines between rows and under the last. */
+/** Rows of one section: light hairlines above and between rows. */
 export function RowList({ children, ...rest }: { children: ReactNode } & FlexProps) {
   return (
-    <Flex direction="column" borderTopWidth="1px" borderTopColor="fg" borderBottomWidth="1px" borderBottomColor="border" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }} {...rest}>
+    <Flex direction="column" borderTopWidth="1px" borderTopColor="border" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }} {...rest}>
       {children}
     </Flex>
   );

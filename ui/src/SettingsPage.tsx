@@ -341,7 +341,7 @@ function Kernel({ s }: { s: SettingsState }) {
     ["Always protected paths", k.universalProtected.join(", ")],
   ];
   return (
-    <Flex direction="column" borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+    <Flex direction="column" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
       {rows.map(([k2, v]) => (
         <Flex key={k2} gap="6" py="3.5" direction={{ base: "column", md: "row" }}>
           <Text textStyle="label" fontSize="14px" w="14rem" flexShrink={0}>{k2}</Text>
@@ -393,7 +393,7 @@ function Machine({ s, draft, wf, flips, onFlip }: { s: SettingsState; draft: Hos
   if (!draft.read) return <Text textStyle="body13" color="fg.muted">Loading archangel.yaml...</Text>;
   if (!f || !b) return <Text role="alert" textStyle="body13" color="owner">The text on the Raw file tab does not parse as YAML, so the form cannot show it. Fix it there first.</Text>;
   return (
-    <Flex direction="column" borderTopWidth="1px" borderTopColor="fg">
+    <Flex direction="column" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5">
       <Models f={f} b={b} onOp={draft.change} />
       <Block title="Accounts" applies="Read live from the Ledger">
         <AccountsPanel />

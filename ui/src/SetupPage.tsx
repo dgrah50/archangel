@@ -13,6 +13,7 @@ import { FaultsSection, TelemetrySection, LadderList, ReadError, SmokeChecks, to
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
+import { Alert } from "./arc/alert/alert";
 import { CopyCommand, Dot, Page, PageHeadline, Section } from "./page";
 import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNoOnboardingPr, isNotProtected, protectionCommand, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
@@ -75,13 +76,9 @@ function Mark({ done }: { done: boolean }) {
 /** A problem in plain words: title, an amber tag, the explanation, and commands to copy. */
 function Problem({ title, tag, children }: { title: string; tag: string; children?: React.ReactNode }) {
   return (
-    <Flex direction="column" gap="2.5" pt="3" borderTopWidth="1px" borderTopColor="owner" role="alert">
-      <Flex gap="4" align="baseline">
-        <Text textStyle="label" fontWeight="600" color="fg" flex="1">{title}</Text>
-        <Text textStyle="meta" color="owner">{tag}</Text>
-      </Flex>
+    <Alert tone="warning" title={`${tag}: ${title}`}>
       {children}
-    </Flex>
+    </Alert>
   );
 }
 const Prose = ({ children }: { children: React.ReactNode }) => <Text textStyle="body13" color="fg.muted">{children}</Text>;
@@ -354,7 +351,7 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
         </ReadError>
       ))}
       <Flex gap="56px" direction={{ base: "column", lg: "row" }} flexShrink={0}>
-        <Flex as="ol" direction="column" flex={{ lg: "0 0 38%" }} minW="0" listStyleType="none" aria-label="Setup steps" borderTopWidth="1px" borderTopColor="fg" borderBottomWidth="1px" borderBottomColor="border" alignSelf="flex-start" w="full" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+        <Flex as="ol" direction="column" flex={{ lg: "0 0 38%" }} minW="0" listStyleType="none" aria-label="Setup steps" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" alignSelf="flex-start" w="full" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
           {groups.map((g) => (
             <li key={g.n}>
               <Flex as="button" w="full" textAlign="left" gap="3.5" align="center" py="3.5" cursor="pointer" aria-current={open === g.n ? "step" : undefined} onClick={() => setView(g.n)}>
