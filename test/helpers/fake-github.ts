@@ -146,6 +146,7 @@ export class FakeGitHub implements GitHubClient {
     if (!pr) throw new Error(`PR #${prNumber} not found`);
     if (pr.state === "open") {
       pr.headSha = await this.getBranchTipSha(pr.headRef);
+      pr.baseSha = git(this.remoteBare, ["merge-base", await this.getBranchTipSha(pr.baseRef), pr.headSha]); // behind main until the head contains it
       pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", pr.baseSha, pr.headSha])
         .split("\n")
         .filter(Boolean);
