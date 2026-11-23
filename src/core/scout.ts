@@ -22,6 +22,7 @@ import { FLEET_MINER_WINDOW_DAYS, buildFleetMinerBlock, provisionalLine, readSee
 import { formatRepoInstructions } from "../agents/prompts.js";
 import { loadRepoInstructions } from "./workflow-load.js";
 import { syncPitchDecisions } from "./pitch-expiry.js";
+import { buildProdErrorsBlock } from "./prod-errors.js";
 import { buildResearchBlock, citableResearch } from "./research.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
@@ -620,6 +621,7 @@ async function runPitchScout(opts: {
         prompt: wf.prompt,
         repoInstructions: await loadRepoInstructions(opts.broker, opts.mainSha),
         researchBlock: buildResearchBlock(research),
+        prodErrorsBlock: buildProdErrorsBlock(ledger, now),
         declined: recent.map((r) => ({ title: r.title, reason: r.declineReason })),
         metricsBlock: wf.includeMetrics
           ? [
