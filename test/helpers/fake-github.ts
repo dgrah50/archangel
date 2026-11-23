@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { GateProof } from "../../src/gate/gate.js";
 import type { CheckStatus } from "../../src/core/blockers.js";
-import type { GitHubClient, GitHubIssue, GitHubPr } from "../../src/github/client.js";
+import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr } from "../../src/github/client.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -146,8 +146,9 @@ export class FakeGitHub implements GitHubClient {
     if (!pr) throw new Error(`PR #${prNumber} not found`);
     if (pr.state === "open") {
       pr.headSha = await this.getBranchTipSha(pr.headRef);
-      pr.baseSha = git(this.remoteBare, ["merge-base", await this.getBranchTipSha(pr.baseRef), pr.headSha]); // behind main until the head contains it
-      pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", pr.baseSha, pr.headSha])
+      // As GitHub does: `base.sha` is the base branch's current tip, whether or not the head contains it.
+      pr.baseSha = await this.getBranchTipSha(pr.baseRef);
+      pr.changedFiles = git(this.remoteBare, ["diff", "--name-only", git(this.remoteBare, ["merge-base", pr.baseSha, pr.headSha]), pr.headSha])
         .split("\n")
         .filter(Boolean);
     }
@@ -190,6 +191,8 @@ export class FakeGitHub implements GitHubClient {
     const issue = this.issues.get(issueNumber);
     if (issue) issue.labels = issue.labels.filter((l) => l !== label);
   }
+  /** Models a ruleset that requires an up-to-date branch (as main's does on the owner's repos). */
+  requireUpToDate = false;
   async squashMergePr(
     prNumber: number,
     expectedHeadSha: string,
@@ -198,6 +201,10 @@ export class FakeGitHub implements GitHubClient {
     const pr = await this.getPrLive(prNumber);
     if (pr.headSha !== expectedHeadSha) {
       throw new Error(`Head SHA mismatch: expected ${expectedHeadSha}, got ${pr.headSha}`);
+    }
+    // A ruleset with "require branches to be up to date" refuses a head that does not contain the base tip.
+    if (this.requireUpToDate && git(this.remoteBare, ["merge-base", pr.baseSha, pr.headSha]) !== pr.baseSha) {
+      throw new GitHubHttpError(405, `GitHub PUT /pulls/${prNumber}/merge failed (405): Repository rule violations found`);
     }
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-merge-"));
     try {
