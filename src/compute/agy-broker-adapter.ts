@@ -28,6 +28,16 @@ export const AGY_NO_KEYCHAIN_PROFILE = [
 ].join("\n");
 
 /**
+ * The command that runs agy for an account. An account with its own home has no keychain there, so agy runs under the keychain-deny
+ * profile (inline, no temp file) and keeps its login in a file. The default home is the owner's real keychain and runs unchanged.
+ */
+export function agyCommand(account: { home?: string } | undefined, args: string[]): { cmd: string; args: string[] } {
+  if (!account?.home) return { cmd: "agy", args };
+  if (process.platform !== "darwin") throw new Error("an agy account with its own home needs macOS sandbox-exec to keep agy off the keychain");
+  return { cmd: "sandbox-exec", args: ["-p", AGY_NO_KEYCHAIN_PROFILE, "agy", ...args] };
+}
+
+/**
  * Lets agy itself refresh the dedicated Google account and then reads the fresh access token from that profile's token file. The
  * profile is a HOME of its own (never the owner's): there agy finds no keychain and keeps its login in a file. agy only refreshes an
  * expired token, so the file's expiry is set in the past first and a cheap authenticated command (`agy models`) is run; agy then
