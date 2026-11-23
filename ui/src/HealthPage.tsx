@@ -1,10 +1,13 @@
-import { Box, Button, Flex, Skeleton, Stack, Text } from "@chakra-ui/react";
+import { Box, Button, Flex, Text } from "@chakra-ui/react";
 import { useCallback, useEffect } from "react";
 import { useState } from "react";
 import type { DoctorPayload } from "../../src/core/ui-doctor.js";
 import type { DoctorCheck } from "../../src/core/doctor.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import { age } from "./common";
+import { Alert } from "./arc/alert/alert";
+import { Badge } from "./arc/badge/badge";
+import { Skeleton } from "./arc/skeleton/skeleton";
 import { CopyCommand, Row, RowList, Section } from "./page";
 
 export type Ladder = { state: "idle" } | { state: "running" } | { state: "error"; message: string } | { state: "done"; payload: DoctorPayload };
@@ -33,27 +36,36 @@ export function useLadder(scope: "machine" | "repo", smoke: boolean, auto: boole
   return [ladder, run];
 }
 
-/** A failed read: amber text and the reason, nothing assumed. */
+/** A failed read: an alert with the reason, nothing assumed. */
 export function ReadError({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
-    <Box role="alert" py="3">
-      <Text textStyle="label" color="owner">{title}</Text>
-      {children}
+    <Box mb="3">
+      <Alert tone="warning" title={title}>
+        {children}
+      </Alert>
     </Box>
+  );
+}
+
+/** A check's result as a badge: green passed, amber failing (the owner has to act), grey warning (works, but look). */
+function StatusBadge({ status }: { status: DoctorCheck["status"] }) {
+  return (
+    <Badge dot size="sm" tone={status === "pass" ? "success" : status === "warn" ? "neutral" : "warning"}>
+      {status === "pass" ? "Passed" : status === "warn" ? "Warning" : "Failing"}
+    </Badge>
   );
 }
 
 function CheckRow({ c }: { c: DoctorCheck }) {
   const cmd = c.remediation ? commandIn(c.remediation) : null;
-  const ok = c.status === "pass";
   return (
     <Flex gap="4" py="3" align="flex-start">
-      <Text textStyle="meta" fontWeight="500" w="52px" flexShrink={0} color={ok ? "passed" : "owner"}>
-        {ok ? "Passed" : c.status === "warn" ? "Warning" : "Failing"}
-      </Text>
+      <Box w="84px" flexShrink={0}>
+        <StatusBadge status={c.status} />
+      </Box>
       <Flex direction="column" gap="1" flex="1" minW="0">
         <Text textStyle="rowTitle" color="fg">{c.name}</Text>
-        <Text textStyle="meta" color="fg.muted">{c.detail}</Text>
+        <Text textStyle="meta" color="fg.muted" whiteSpace="pre-line">{c.detail}</Text>
         {c.remediation ? <Text textStyle="meta" color="fg.muted">{c.remediation}</Text> : null}
         {cmd ? <CopyCommand command={cmd} /> : null}
       </Flex>
@@ -65,13 +77,7 @@ function CheckRow({ c }: { c: DoctorCheck }) {
 export function LadderList({ ladder, label }: { ladder: Ladder; label: string }) {
   if (ladder.state === "idle") return <Text textStyle="meta" color="fg.muted">Not run yet.</Text>;
   if (ladder.state === "running") {
-    return (
-      <Stack gap="2" aria-busy="true">
-        <Skeleton height="3rem" />
-        <Skeleton height="3rem" />
-        <Text textStyle="meta" color="fg.muted">Running...</Text>
-      </Stack>
-    );
+    return <Skeleton label={`Running ${label.toLowerCase()} checks`} lines={3} />;
   }
   if (ladder.state === "error") {
     return (

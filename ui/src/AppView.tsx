@@ -11,6 +11,7 @@ import { SetupPage } from "./SetupPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
 import { Alert } from "./arc/alert/alert";
+import { Skeleton } from "./arc/skeleton/skeleton";
 import { Page, Ticked } from "./page";
 import { PitchesPage } from "./PitchesPage";
 import type { PitchesState } from "../../src/core/ui-pitches.js";
@@ -68,35 +69,32 @@ export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "re
   return out;
 }
 
-function PipelinePage({ workflows, settings, onRetry }: { workflows: Feed<WorkflowsState>; settings: SettingsState | null; onRetry: () => void }) {
+function PipelinePage({ workflows, settings, onRetry, embedded }: { workflows: Feed<WorkflowsState>; settings: SettingsState | null; onRetry: () => void; embedded?: boolean }) {
   if (workflows.data) {
     return (
       <>
         {workflows.error ? (
-          <Box pt="4" px={{ base: "6", md: "56px" }}>
+          <Box pt={embedded ? "0" : "4"} px={embedded ? "0" : { base: "6", md: "56px" }}>
             <Notice tone="red" title="Pipeline refresh failed, showing the last loaded copy">
               {workflows.error}
             </Notice>
           </Box>
         ) : null}
-        <Pipeline data={workflows.data} settings={settings} />
+        <Pipeline data={workflows.data} settings={settings} embedded={embedded} />
       </>
     );
   }
-  return (
-    <Page>
-      {workflows.error ? (
-        <Notice tone="red" title="Pipeline unavailable">
-          <Text textStyle="sm">{workflows.error}</Text>
-          <Button size="sm" mt="2" onClick={onRetry}>
-            Retry
-          </Button>
-        </Notice>
-      ) : (
-        <Text color="fg.muted">Loading pipeline...</Text>
-      )}
-    </Page>
+  const body = workflows.error ? (
+    <Notice tone="red" title="Pipeline unavailable">
+      <Text textStyle="sm">{workflows.error}</Text>
+      <Button size="sm" mt="2" onClick={onRetry}>
+        Retry
+      </Button>
+    </Notice>
+  ) : (
+    <Skeleton label="Loading pipeline" lines={5} />
   );
+  return embedded ? body : <Page>{body}</Page>;
 }
 
 export function AppView({
@@ -123,7 +121,13 @@ export function AppView({
   onRetry: () => void;
 }) {
   if (state.data === null) {
-    if (state.error === null) return <Text p="6" color="fg.muted">Loading...</Text>;
+    if (state.error === null) {
+      return (
+        <Box maxW="40rem" mx="auto" mt="10" p="5">
+          <Skeleton label="Loading the dashboard" lines={5} />
+        </Box>
+      );
+    }
     return (
       <Box maxW="40rem" mx="auto" mt="10" p="5">
         <Notice tone="red" title={state.code === SCHEMA_BEHIND ? "The Ledger schema is behind" : "Cannot load the dashboard"}>
@@ -151,7 +155,7 @@ export function AppView({
       {route.page === "threads" || route.page === "thread" ? <ThreadsPage state={state.data} item={route.page === "thread" ? route.item : null} thread={thread} now={now} onRetry={onRetry} /> : null}
       {route.page === "settings" ? (
         <SettingsPage scope={route.scope} settings={settings} workflows={workflows} onRetry={onRetry}>
-          <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} />
+          <PipelinePage workflows={workflows} settings={settings.data} onRetry={onRetry} embedded />
         </SettingsPage>
       ) : null}
       {route.page === "setup" ? <SetupPage repo={route.repo} state={state.data} settings={settings} workflows={workflows} evals={evals} now={now} onRetry={onRetry} /> : null}

@@ -4,13 +4,13 @@ import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 import type { AccountRow } from "../../src/core/ui-accounts.js";
 import { back, resetWords, tightest, useAccounts, usageWords } from "./AccountsPanel";
-import { age, recommendationShort } from "./common";
+import { recommendationShort } from "./common";
 import { Badge } from "./arc/badge/badge";
 import { BarChart } from "./arc/bar-chart/bar-chart";
 import { Sparkline } from "./arc/sparkline/sparkline";
 import { UsageMeter } from "./arc/usage-meter/usage-meter";
-import { CopyCommand, Dot, Page, PageHeadline, Ref } from "./page";
-import { threadHash } from "./route";
+import { CopyCommand, Dot, Group, Line, Page, PageHeadline, type Tone } from "./page";
+import { cap, gap, gh, phaseWord, runningOf, ThreadLine } from "./thread-lines";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
 // never as HTML, and links are only built for repo slugs shaped like owner/name.
@@ -18,17 +18,9 @@ import { threadHash } from "./route";
 /** The autonomy count is "near its cap" from this share of the cap. */
 const NEAR_CAP = 0.8;
 const RESTART_COMMAND = "archangel daemon restart";
-const SLUG = /^[\w.-]+\/[\w.-]+$/;
 
-const gap = (ms: number) => age(ms).replace(/(\d)([a-z])/, "$1 $2");
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const usd = (v: number, digits = 2) => `$${v.toFixed(digits)}`;
-const gh = (repo: string, kind: "issues" | "pull", num: number) => `https://github.com/${repo}/${kind}/${num}`;
-const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
-
-type Tone = "ink" | "owner" | "passed" | "hollow" | "ring";
-/** Phase names as the owner says them. */
-const PHASE: Record<string, string> = { working: "working", awaiting_gate: "at the Gate", reviewing: "in review", landing: "landing", shadow_ready: "passed review", awaiting_plan: "plan waiting for your approval" };
 
 /** Overview: the counts, three summary panels, then every Thread on one line, grouped by what it is waiting for. */
 export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus | null }) {
@@ -36,20 +28,22 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
   const landed = s.daily[s.daily.length - 1]?.merged ?? 0;
   const pitches = s.pitches.count;
   const waiting = s.needsYou.length + pitches;
-  const running = [...s.groups.Working, ...s.groups["Waiting on CI"], ...s.groups["In review"]].sort((a, b) => b.since - a.since);
-  const plain = (list: UiItem[], tone: Tone) => list.map((i) => <ThreadLine key={`${i.repo}#${i.issueNumber}`} i={i} now={now} tone={tone} meta={i.phase === "queued" ? "" : (PHASE[i.phase] ?? i.phase.replace(/_/g, " "))} />);
+  const running = runningOf(s.groups);
+  const plain = (list: UiItem[], tone: Tone) => list.map((i) => <ThreadLine key={`${i.repo}#${i.issueNumber}`} i={i} now={now} tone={tone} meta={phaseWord(i.phase)} pr />);
   const empty = waiting === 0 && Object.values(s.groups).every((l) => l.length === 0);
   return (
     <Page>
-      <Flex justify="space-between" align="baseline" columnGap="6" wrap="wrap">
-        <PageHeadline title="Overview" />
-        <Flex gap="2" pb="5" wrap="wrap">
-          <Count tone={waiting > 0 ? "owner" : "hollow"}>{waiting > 0 ? `${waiting} need you` : "nothing needs you"}</Count>
-          {s.groups.Stuck.length > 0 ? <Count tone="owner">{s.groups.Stuck.length} stuck</Count> : null}
-          <Count tone="ink">{running.length} running</Count>
-          <Count tone="passed">{landed} landed today</Count>
-        </Flex>
-      </Flex>
+      <PageHeadline
+        title="Overview"
+        right={
+          <Flex gap="2" wrap="wrap">
+            <Count tone={waiting > 0 ? "owner" : "hollow"}>{waiting > 0 ? `${waiting} need you` : "nothing needs you"}</Count>
+            {s.groups.Stuck.length > 0 ? <Count tone="owner">{s.groups.Stuck.length} stuck</Count> : null}
+            <Count tone="ink">{running.length} running</Count>
+            <Count tone="passed">{landed} landed today</Count>
+          </Flex>
+        }
+      />
       <Flex gap="4" direction={{ base: "column", lg: "row" }} flexShrink={0}>
         <LandedPanel state={s} />
         <LinePanel state={s} />
@@ -67,9 +61,9 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
               tone="owner"
               meta={`${cap(i.decisionClass)} · ${recommendationShort(i)}`}
               chip={
-                <Chip href={gh(i.repo, i.prNumber ? "pull" : "issues", i.prNumber ?? i.issueNumber)} solid={idx === 0}>
+                <AnswerLink href={gh(i.repo, i.prNumber ? "pull" : "issues", i.prNumber ?? i.issueNumber)} solid={idx === 0}>
                   Answer on GitHub
-                </Chip>
+                </AnswerLink>
               }
             />
           ))}
@@ -112,81 +106,8 @@ function Count({ tone, children }: { tone: Tone; children: ReactNode }) {
   );
 }
 
-/** A group of Threads under a filled header band; folds like the native disclosure it is. Absent when empty. */
-function Group({ label, n, tone, folded, children }: { label: string; n: number; tone: Tone; folded?: boolean; children: ReactNode }) {
-  if (n === 0) return null;
-  return (
-    <Box as="details" {...{ open: !folded }} css={{ "&[open] > summary > svg": { transform: "rotate(90deg)" } }}>
-      <Flex as="summary" align="center" gap="2.5" h="36px" px="3" rounded="10px" bg="bg.subtle" cursor="pointer" listStyleType="none" css={{ "&::-webkit-details-marker": { display: "none" } }}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style={{ flexShrink: 0, color: "var(--chakra-colors-fg-subtle)" }}>
-          <path d="M3.5 1.5L7 5L3.5 8.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <Dot tone={tone} />
-        <Text textStyle="label" color="fg">
-          {label}
-        </Text>
-        <Text textStyle="body13" color="fg.subtle">
-          {n}
-        </Text>
-      </Flex>
-      <Box py="1">{children}</Box>
-    </Box>
-  );
-}
-
-/** One line: status dot, title, grey context, an optional chip, and how long it has been there. The title links to `href`. */
-function Line({ tone, href, title, meta, chip, when }: { tone: Tone; href?: string; title: string; meta: ReactNode; chip?: ReactNode; when: string }) {
-  const text = (
-    <>
-      <Text as="span" textStyle="label" color="fg" truncate flexShrink={0} maxW="64%">
-        {title}
-      </Text>
-      <Text as="span" textStyle="meta" color="fg.muted" truncate minW="0">
-        {meta}
-      </Text>
-    </>
-  );
-  return (
-    <Flex align="center" gap="2.5" h="40px" ps="34px" pe="3" rounded="10px" _hover={{ bg: "bg.subtle" }}>
-      <Dot tone={tone} />
-      {href ? (
-        <Link href={href} display="flex" alignItems="baseline" gap="2.5" flex="1" minW="0" color="inherit" textDecoration="none" _hover={{ textDecoration: "none" }}>
-          {text}
-        </Link>
-      ) : (
-        <Flex align="baseline" gap="2.5" flex="1" minW="0">
-          {text}
-        </Flex>
-      )}
-      {chip}
-      <Text textStyle="meta" color="fg.subtle" w="40px" textAlign="end" flexShrink={0}>
-        {when}
-      </Text>
-    </Flex>
-  );
-}
-
-function ThreadLine({ i, now, tone, meta, chip }: { i: UiItem; now: number; tone: Tone; meta: string; chip?: ReactNode }) {
-  const ok = SLUG.test(i.repo);
-  return (
-    <Line
-      tone={tone}
-      href={ok ? threadHash({ repo: i.repo, issue: i.issueNumber }) : undefined}
-      title={i.title}
-      meta={
-        <>
-          <Ref repo={i.repo} num={i.issueNumber} />
-          {meta ? ` · ${meta}` : ""}
-        </>
-      }
-      chip={chip ?? (ok && i.prNumber ? <Chip href={gh(i.repo, "pull", i.prNumber)}>PR #{i.prNumber}</Chip> : undefined)}
-      when={gap(now - i.since)}
-    />
-  );
-}
-
-/** A pill that links out to GitHub. */
-function Chip({ href, solid, children }: { href: string; solid?: boolean; children: ReactNode }) {
+/** The next move for a decision: a pill that links out to GitHub. The first in the queue is solid. */
+function AnswerLink({ href, solid, children }: { href: string; solid?: boolean; children: ReactNode }) {
   return (
     <Link href={href} target="_blank" rel="noreferrer noopener" display="flex" alignItems="center" h="24px" px="2.5" rounded="full" flexShrink={0} textStyle="meta" fontSize="12px" textDecoration="none" _hover={{ textDecoration: "none", borderColor: "fg.subtle" }} {...(solid ? { bg: "fg", color: "bg", fontWeight: "500" } : { borderWidth: "1px", borderColor: "border", color: "fg.muted" })}>
       {children}

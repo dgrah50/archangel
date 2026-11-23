@@ -1,10 +1,12 @@
-import { Box, Button, Flex, Input, Link, NativeSelect, Switch, Text } from "@chakra-ui/react";
+import { Box, Button, Flex, Input, NativeSelect, Switch, Text } from "@chakra-ui/react";
 import { useState, type ReactNode } from "react";
 import { Account, AccountsPanel, useAccounts } from "./AccountsPanel";
 import { HostDraftBlock, HostErrorNotice, Problem, RawFile, SavedBlock, useHostDraft, type HostDraft } from "./HostConfigEditor";
 import { PROVIDERS, VENDOR, WRITER_CHAINS, addAccount, addChainEntry, removeAccount, setAccountField, checkIndependence, editField, moveChainEntry, readForm, removeChainEntry, setChainEntry, type ChainEntry, type HostForm, type Provider } from "./host-edit";
 import SegmentedControl from "./arc/segmented-control/segmented-control";
-import { CopyCommand, Page, PageHeadline } from "./page";
+import { Badge } from "./arc/badge/badge";
+import { Skeleton } from "./arc/skeleton/skeleton";
+import { CopyCommand, Issues, Page, PageHeadline } from "./page";
 import { PrStatusCard, PreviewView, StaleNotice, isStale } from "./WorkflowEditor";
 import { fromForm, propose, proposingEnabled, toForm, type PreviewResult } from "./workflow-draft";
 import type { SettingsState } from "../../src/core/ui-settings.js";
@@ -31,11 +33,7 @@ const SUB: Record<SettingsScope, string> = {
 };
 
 function Tabs({ scope }: { scope: SettingsScope }) {
-  return (
-    <Box alignSelf="flex-start" flexShrink={0}>
-      <SegmentedControl label="Settings scope" value={scope} onValueChange={(v) => (window.location.hash = SCOPES.find((x) => x.scope === v)!.hash)} options={SCOPES.map((x) => ({ value: x.scope, label: x.label }))} />
-    </Box>
-  );
+  return <SegmentedControl label="Settings scope" value={scope} onValueChange={(v) => (window.location.hash = SCOPES.find((x) => x.scope === v)!.hash)} options={SCOPES.map((x) => ({ value: x.scope, label: x.label }))} />;
 }
 
 /** One settings section: its name and when it applies on the left, its rows on the right, a hairline above. */
@@ -267,7 +265,7 @@ function RepoPolicyDraft({ repo, flip, currentSha, onDiscard }: { repo: string; 
     <Flex direction="column" gap="2" borderTopWidth="1px" borderTopColor="border" pt="2.5" aria-label={`repo policy ${repo}`}>
       <Flex justify="space-between" gap="3">
         <Text textStyle="label" fontSize="14px">{repo.split("/").pop()}: bug fixes {looser ? "may land on their own" : "wait for you to merge"}</Text>
-        <Text textStyle="body13" color={looser ? "owner" : "fg.muted"} flexShrink={0}>{looser ? "Looser" : "Stricter"}</Text>
+        <Badge size="sm" tone={looser ? "warning" : "neutral"}>{looser ? "Looser" : "Stricter"}</Badge>
       </Flex>
       <Text textStyle="body13" color="fg.muted">This is repo policy, so it opens a pull request that you merge. Nothing is written until you do.</Text>
       {stale ? <StaleNotice onReload={onDiscard} /> : null}
@@ -432,7 +430,7 @@ function Machine({ s, draft, wf, flips, onFlip }: { s: SettingsState; draft: Hos
     const missing = s.host.state === "missing";
     return (
       <Problem title={missing ? "No archangel.yaml." : s.host.state === "invalid" ? "archangel.yaml is invalid." : "archangel.yaml could not be read."}>
-        <Text textStyle="meta" color="fg.muted">{s.host.error}</Text>
+        {missing ? <Text textStyle="meta" color="fg.muted">{s.host.error}</Text> : <Issues text={s.host.error} />}
         {missing ? <Text textStyle="meta" color="fg.muted" mt="1">Copy archangel.example.yaml to archangel.yaml and edit it, or write it on the Raw file tab.</Text> : <Text textStyle="meta" color="fg.muted" mt="1">Fix it on the Raw file tab.</Text>}
       </Problem>
     );
@@ -440,7 +438,7 @@ function Machine({ s, draft, wf, flips, onFlip }: { s: SettingsState; draft: Hos
   const f = readForm(draft.text);
   const b = readForm(draft.base ?? "");
   if (draft.loadError) return <LoadFailed draft={draft} />;
-  if (!draft.read) return <Text textStyle="body13" color="fg.muted">Loading archangel.yaml...</Text>;
+  if (!draft.read) return <Skeleton label="Loading archangel.yaml" lines={4} />;
   if (!f || !b) return <Text role="alert" textStyle="body13" color="owner">The text on the Raw file tab does not parse as YAML, so the form cannot show it. Fix it there first.</Text>;
   return (
     <Flex direction="column" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5">
@@ -487,7 +485,7 @@ export function SettingsPage({ scope, settings, workflows, onRetry, children }: 
           <Button size="xs" variant="outline" borderRadius="10px" mt="2" onClick={onRetry}>Retry</Button>
         </Problem>
       ) : (
-        <Text textStyle="body13" color="fg.muted">Loading settings...</Text>
+        <Skeleton label="Loading settings" lines={4} />
       )
     ) : null;
   const stale = s && settings.error ? <Problem title={`Refresh failed (${settings.error}); showing the last loaded copy.`} /> : null;
@@ -495,14 +493,13 @@ export function SettingsPage({ scope, settings, workflows, onRetry, children }: 
   const wide = scope === "repo" || scope === "kernel";
   return (
     <Page>
-      {wide ? <Flex justify="flex-end"><Tabs scope={scope} /></Flex> : null}
+      <PageHeadline title="Settings" right={<Tabs scope={scope} />}>{SUB[scope]}</PageHeadline>
       <Flex direction={{ base: "column", lg: "row" }} gap="48px" flex="1">
         <Box flex="1" minW="0">
-          <PageHeadline title="Settings">{SUB[scope]}</PageHeadline>
           {scope === "repo" ? (
             children
           ) : scope === "raw" ? (
-            draft.loadError ? <LoadFailed draft={draft} /> : draft.read ? <RawFile draft={draft} /> : <Text textStyle="body13" color="fg.muted">Loading archangel.yaml...</Text>
+            draft.loadError ? <LoadFailed draft={draft} /> : draft.read ? <RawFile draft={draft} /> : <Skeleton label="Loading archangel.yaml" lines={4} />
           ) : unavailable ? (
             unavailable
           ) : scope === "kernel" ? (
@@ -514,14 +511,7 @@ export function SettingsPage({ scope, settings, workflows, onRetry, children }: 
             </>
           )}
         </Box>
-        {wide ? null : (
-          <Flex direction="column" gap="6" flexShrink={0}>
-            <Flex h={{ lg: "124px" }} pt="10px">
-              <Tabs scope={scope} />
-            </Flex>
-            <SidePanel s={s} draft={draft} flips={flips} wf={workflows} onDiscardFlip={discardFlip} />
-          </Flex>
-        )}
+        {wide ? null : <SidePanel s={s} draft={draft} flips={flips} wf={workflows} onDiscardFlip={discardFlip} />}
       </Flex>
     </Page>
   );

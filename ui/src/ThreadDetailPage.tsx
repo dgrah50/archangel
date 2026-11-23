@@ -1,14 +1,14 @@
 import { Box, Button, Flex, Text, chakra } from "@chakra-ui/react";
-import { useState } from "react";
 import { CAPTION_LABEL } from "../../src/core/recap-chapters.js";
 import type { ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
 import { Notice, type Feed } from "./AppView";
-import { age } from "./common";
 import { Check as CheckIcon, Dot as DotIcon, Eye, GitMerge, Hammer, X } from "lucide-react";
+import { Badge } from "./arc/badge/badge";
 import { CopyButton } from "./arc/copy-button/copy-button";
+import { Skeleton } from "./arc/skeleton/skeleton";
 import { Stepper } from "./arc/stepper/stepper";
 import { Timeline } from "./arc/timeline/timeline";
-import { Dot, LinkButton, Ref } from "./page";
+import { LinkButton, Ref, Section } from "./page";
 import type { ItemRef } from "./route";
 
 // One Thread in the right pane: phase rail, timeline from the Ledger audit (newest first), Gate proof as a checklist.
@@ -22,16 +22,6 @@ const RAIL: ReadonlyArray<{ kind: string; label: string }> = [
   { kind: "reviewing", label: "Review" },
   { kind: "landing", label: "Landing" },
 ];
-
-const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-
-function Check() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m2.5 6.5 2.3 2.3 4.7-5.3" />
-    </svg>
-  );
-}
 
 type PhaseDuration = ThreadDetail["phaseDurations"][number];
 
@@ -94,9 +84,9 @@ const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef; thread: Feed<ThreadDetail>; now: number; onRetry: () => void }) {
   if (thread.data === null) {
     return (
-      <Box p="6">
+      <Box>
         {thread.error === null ? (
-          <Text color="fg.muted">Loading thread...</Text>
+          <Skeleton label="Loading Thread" lines={4} />
         ) : (
           <Notice tone="red" title={`${item.repo}#${item.issue} could not be loaded`}>
             <Text textStyle="sm">{thread.error}</Text>
@@ -113,7 +103,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
   const openAt = events.findIndex((e) => e.kind === "attempt");
   const slug = /^[\w.-]+\/[\w.-]+$/.test(d.repo);
   return (
-    <Flex direction="column" gap="5" p="6" minW="0">
+    <Flex direction="column" gap="5" minW="0">
       <Flex justify="space-between" align="flex-start" gap="4" wrap="wrap">
         <Box minW="0" flex="1">
           <Text textStyle="meta" color="fg.muted">
@@ -143,7 +133,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
       ) : null}
       <PhaseRail phase={d.phase} durations={d.phaseDurations} />
       {d.threadRecommendation ? (
-        <Box bg="bg.muted" rounded="14px" px="4" py="3">
+        <Section gap="1">
           <Text textStyle="meta" color="fg.muted">
             The factory recommends, for this Thread
           </Text>
@@ -153,7 +143,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
           <Text textStyle="body13" color="fg.muted">
             {d.threadRecommendation.reason}
           </Text>
-        </Box>
+        </Section>
       ) : null}
       {d.chapters && d.chapters.length > 0 ? (
         <Box>
@@ -172,9 +162,9 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
                   <Text textStyle="rowTitle" color="fg">
                     {c.area === "(root)" ? "Repo root" : `${c.area}/`}
                   </Text>
-                  <Text textStyle="meta" color={c.kind === "protected" ? "owner" : "fg.muted"}>
+                  <Badge size="sm" tone={c.kind === "protected" ? "warning" : "neutral"}>
                     {c.kind}
-                  </Text>
+                  </Badge>
                   <Text textStyle="meta" color="fg.muted">
                     {c.files.length} file{c.files.length === 1 ? "" : "s"}, +{c.added} -{c.deleted}
                   </Text>
@@ -250,15 +240,15 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
             ) : (
               d.gate.map((g, i) => (
                 <Flex key={i} align="baseline" gap="2.5" py="2.5" textStyle="body13" color="fg">
-                  <Box color={g.passed ? "passed" : "fg.muted"} flexShrink={0}>
-                    {g.passed ? <Check /> : "x"}
+                  <Box color={g.passed ? "passed" : "fg.muted"} flexShrink={0} alignSelf="center">
+                    {g.passed ? <CheckIcon size={12} aria-hidden /> : <X size={12} aria-hidden />}
                   </Box>
                   <Text flex="1" minW="0" wordBreak="break-word">
                     {g.label}
                   </Text>
-                  <Text textStyle="meta" color={g.passed ? "passed" : "fg.muted"} flexShrink={0}>
+                  <Badge size="sm" tone={g.passed ? "success" : "neutral"}>
                     {g.passed ? "passed" : "failed"}
-                  </Text>
+                  </Badge>
                 </Flex>
               ))
             )}

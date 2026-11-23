@@ -4,7 +4,9 @@ import type { ThreadDetail } from "../../src/core/ui-thread.js";
 import type { UiState } from "../../src/core/ui-state.js";
 import type { Feed } from "./AppView";
 import { age, recommendationShort } from "./common";
-import { CopyCommand, Dot, LinkButton, Page, PageHeadline, Ref, Section, Ticked } from "./page";
+import { Badge } from "./arc/badge/badge";
+import { Skeleton } from "./arc/skeleton/skeleton";
+import { CopyCommand, Dot, LinkButton, MasterDetail, Page, PageHeadline, PickRow, Ref, Section, Ticked } from "./page";
 import { itemHash, threadHash, type ItemRef } from "./route";
 
 type Item = UiState["needsYou"][number];
@@ -27,7 +29,7 @@ const clock = (ts: number, timeZone: string) => new Intl.DateTimeFormat("en-GB",
 function AnsweredToday({ answered, inQueue }: { answered: UiState["answeredToday"]; inQueue?: boolean }) {
   if (answered.items.length === 0) return null;
   return (
-    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border" {...(inQueue ? { pl: { base: "6", md: "56px" }, pr: "6", pb: "5" } : {})}>
+    <Flex direction="column" gap="2" mt="auto" pt="4" borderTopWidth="1px" borderTopColor="border" {...(inQueue ? { px: "3", pb: "2" } : {})}>
       <Text textStyle="meta" color="fg.muted">
         Answered today
       </Text>
@@ -62,67 +64,59 @@ export function NeedsYouPage({ state, item, thread, onRetry }: { state: UiState;
   const selected = item === null ? queue[0]! : (queue.find((i) => same(i, item)) ?? null);
   const next = nextItem(queue, selected);
   return (
-    <Page pb="0">
-      <Flex align="flex-end" justify="space-between" gap="4" wrap="wrap">
-        <PageHeadline title="Needs you">{queue.length === 1 ? "1 decision" : `${queue.length} decisions, oldest first`}</PageHeadline>
-        {next && selected ? (
-          <Flex align="center" gap="4" pb="3.5" flexShrink={0}>
-            <Text textStyle="meta" color="fg.muted">
-              {queue.indexOf(selected) + 1} of {queue.length}
-            </Text>
-            <LinkButton href={itemHash({ repo: next.repo, issue: next.issueNumber })}>Next</LinkButton>
-          </Flex>
-        ) : null}
-      </Flex>
-      <Flex direction={{ base: "column", lg: "row" }} flex="1" borderTopWidth="1px" borderTopColor="border" mx={{ base: "-6", md: "-56px" }}>
-        <Flex as="ul" listStyleType="none" direction="column" w={{ lg: "400px" }} flexShrink={0} borderRightWidth={{ lg: "1px" }} borderRightColor="border" aria-label="Queue (oldest first)" css={{ "& > li": { borderBottomWidth: "1px", borderBottomColor: "var(--chakra-colors-border)" } }}>
-          {queue.map((i) => {
-            const on = selected === i;
-            return (
-              <li key={`${i.repo}#${i.issueNumber}`}>
-                <Link
-                  href={itemHash({ repo: i.repo, issue: i.issueNumber })}
-                  aria-current={on ? "true" : undefined}
-                  display="flex"
-                  flexDirection="column"
-                  alignItems="stretch"
-                  textAlign="left"
-                  gap="1"
-                  py="3.5"
-                  pl={{ base: "6", md: "56px" }}
-                  pr="6"
-                  bg={on ? "bg.subtle" : "transparent"}
-                  textDecoration="none"
-                  _hover={{ textDecoration: "none", bg: "bg.subtle" }}
-                >
-                  <Flex justify="space-between" align="baseline" gap="3">
-                    <Text textStyle="rowTitle" color="fg">
-                      {i.title}
+    <Page px="0" pb="0">
+      <Box px={{ base: "6", md: "56px" }}>
+        <PageHeadline
+          title="Needs you"
+          right={
+            next && selected ? (
+              <>
+                <Text textStyle="meta" color="fg.muted">
+                  {queue.indexOf(selected) + 1} of {queue.length}
+                </Text>
+                <LinkButton href={itemHash({ repo: next.repo, issue: next.issueNumber })}>Next</LinkButton>
+              </>
+            ) : undefined
+          }
+        >
+          {queue.length === 1 ? "1 decision" : `${queue.length} decisions, oldest first`}
+        </PageHeadline>
+      </Box>
+      <MasterDetail
+        list={
+          <>
+            <Flex as="ul" listStyleType="none" direction="column" gap="1" aria-label="Queue (oldest first)">
+              {queue.map((i) => (
+                <li key={`${i.repo}#${i.issueNumber}`}>
+                  <PickRow href={itemHash({ repo: i.repo, issue: i.issueNumber })} selected={selected === i} py="2.5" align="stretch" direction="column" gap="1">
+                    <Flex justify="space-between" align="baseline" gap="3">
+                      <Text textStyle="label" color="fg">
+                        {i.title}
+                      </Text>
+                      <Text textStyle="meta" color="fg.subtle" flexShrink={0}>
+                        {gap(state.generatedAt - i.since)}
+                      </Text>
+                    </Flex>
+                    <Text textStyle="meta" color="fg.muted">
+                      <Ref repo={i.repo} num={i.issueNumber} /> · {cap(i.decisionClass)} · {recommendationShort(i)}
                     </Text>
-                    <Text textStyle="figure" fontSize="15px" color={on ? "owner" : "fg.subtle"} flexShrink={0}>
-                      {gap(state.generatedAt - i.since)}
-                    </Text>
-                  </Flex>
-                  <Text textStyle="meta" color="fg.muted">
-                    <Ref repo={i.repo} num={i.issueNumber} /> · {cap(i.decisionClass)} · {recommendationShort(i)}
-                  </Text>
-                </Link>
-              </li>
-            );
-          })}
-          <AnsweredToday answered={state.answeredToday} inQueue />
-        </Flex>
-        <Box flex="1" minW="0" px={{ base: "6", md: "10" }} py="7">
-          {selected === null ? (
-            <Box role="status">
-              <Text textStyle="rowTitle">That item no longer needs you.</Text>
-              <Link href="#/needs-you">Back to the queue</Link>
-            </Box>
-          ) : (
-            <Detail item={selected} now={state.generatedAt} thread={thread} onRetry={onRetry} />
-          )}
-        </Box>
-      </Flex>
+                  </PickRow>
+                </li>
+              ))}
+            </Flex>
+            <AnsweredToday answered={state.answeredToday} inQueue />
+          </>
+        }
+      >
+        {selected === null ? (
+          <Box role="status">
+            <Text textStyle="rowTitle">That item no longer needs you.</Text>
+            <Link href="#/needs-you">Back to the queue</Link>
+          </Box>
+        ) : (
+          <Detail item={selected} now={state.generatedAt} thread={thread} onRetry={onRetry} />
+        )}
+      </MasterDetail>
     </Page>
   );
 }
@@ -140,12 +134,12 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
         <Text as="h2" textStyle="title" color="fg">
           {i.title}
         </Text>
-        <Text textStyle="meta" color="fg.muted">
-          <Box as="span" color="owner">
-            {cap(i.decisionClass)}
-          </Box>
-          {" · "}Waiting {gap(now - i.since)} · <Text as="span" textStyle="ref">{i.code}</Text>
-        </Text>
+        <Flex align="center" gap="2.5" wrap="wrap">
+          <Badge size="sm">{cap(i.decisionClass)}</Badge>
+          <Text textStyle="meta" color="fg.muted">
+            Waiting {gap(now - i.since)} · <Text as="span" textStyle="ref">{i.code}</Text>
+          </Text>
+        </Flex>
       </Flex>
       <Section gap="2">
         <Text textStyle="label" color="fg">
@@ -167,12 +161,10 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
             </Link>
           </Box>
         ) : (
-          <Text textStyle="body13" color="fg.muted">
-            Loading recap...
-          </Text>
+          <Skeleton label="Loading recap" lines={3} />
         )
       ) : (
-        <Flex direction={{ base: "column", xl: "row" }} gap="56px">
+        <Flex direction={{ base: "column", xl: "row" }} gap={{ base: "7", xl: "56px" }}>
           <Section flex="1" minW="0" gap="2">
             <Text textStyle="label" color="fg">
               Latest Recap
@@ -191,7 +183,7 @@ function Detail({ item: i, now, thread, onRetry }: { item: Item; now: number; th
                     <>
                       {d.gate.map((g, k) => (
                         <Box as="span" display="block" key={k}>
-                          {g.passed ? <Box as="span" color="passed">✓ Gate passed</Box> : g.label}
+                          {g.passed ? <Badge tone="success" size="sm" dot>Gate passed</Badge> : g.label}
                         </Box>
                       ))}
                     </>
