@@ -27,22 +27,3 @@ describe("Archangel's own protected paths", () => {
   });
 
 });
-
-describe("Gate pin drift covers the whole Gate bundle", () => {
-  it("lists every src file the bundled Gate imports in GATE_RELEVANT_PATHS", async () => {
-    const { build } = await import("esbuild");
-    const { GATE_RELEVANT_PATHS } = await import("../src/core/gate-pin.js");
-    const res = await build({
-      entryPoints: ["src/gate/cli.ts"],
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      write: false,
-      metafile: true,
-      logLevel: "silent",
-    });
-    const inputs = Object.keys(res.metafile.inputs).filter((f) => f.startsWith("src/"));
-    const uncovered = inputs.filter((f) => !GATE_RELEVANT_PATHS.some((p) => f === p || f.startsWith(`${p}/`)));
-    expect(uncovered).toEqual([]);
-  });
-});

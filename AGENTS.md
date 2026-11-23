@@ -26,6 +26,8 @@ When you touch an area, delete tests there that break these rules. Cutting a use
 
 Follow `ui/DESIGN.md` for how pages should look.
 
+For alignment or padding work on the dashboard, use the gridlines skill in `.claude/skills/gridlines`, with `ui/DESIGN.md` as the design policy it reads first.
+
 A PR that changes how the dashboard looks (anything under `ui/`) shows before and after screenshots of every page it touches in its description, and is not merged without them. Shoot both from the same seeded data at the same viewport: before from the base commit, after from the PR head. Lay them out as a table, one row per page.
 
 Images never go on main. Push them to the `pr-screenshots` branch under `<head-branch-name>/` and link them as `https://github.com/dgrah50/archangel/blob/pr-screenshots/<head-branch-name>/<file>?raw=true`.

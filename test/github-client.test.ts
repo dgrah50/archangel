@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import { describe, expect, it } from "bun:test";
-import { GitHubAppClient } from "../src/github/client.js";
+import { GitHubAppClient, violationsFromGateLog } from "../src/github/client.js";
 import { RECAP_MARKER } from "../src/core/recap.js";
 
 function generateTestRsaKey(): string {
@@ -267,5 +267,21 @@ describe("GitHubAppClient.squashMergePr refuses machine drafts", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("violationsFromGateLog", () => {
+  it("reads the violations out of the pretty-printed report among timestamped log lines", () => {
+    const log = [
+      "2026-01-01T00:00:00.1Z ##[group]Run gate",
+      "2026-01-01T00:00:01.2Z {",
+      '2026-01-01T00:00:01.2Z   "ok": false,',
+      '2026-01-01T00:00:01.2Z   "violations": [',
+      '2026-01-01T00:00:01.2Z     "base build failed (new test must compile against base APIs): boom"',
+      "2026-01-01T00:00:01.2Z   ]",
+      "2026-01-01T00:00:01.2Z }",
+    ].join("\n");
+    expect(violationsFromGateLog(log)).toEqual(["base build failed (new test must compile against base APIs): boom"]);
+    expect(violationsFromGateLog("no report here")).toEqual([]);
   });
 });
