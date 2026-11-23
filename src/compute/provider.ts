@@ -36,6 +36,19 @@ export interface ExecSpec {
   onStderr?: (chunk: string) => void;
   /** Peak-RSS poll interval; default 3000. */
   rssPollMs?: number;
+  /** What a confining provider must let the command reach beyond the workspace and its TMPDIR. Providers that do not confine ignore it. */
+  confine?: Confine;
+}
+
+/**
+ * An agent CLI's needs inside a sandbox. `state` is where it keeps its login and session files (read and write). `keychain` says how
+ * it uses macOS's keychain: `login` reads and writes the login keychain (a CLI whose login lives there), `service` only talks to the
+ * security service (TLS trust) and can open no keychain file, `none` is cut off from the service too (a CLI running on a HOME of its
+ * own, which would otherwise raise a "Keychain Not Found" dialog).
+ */
+export interface Confine {
+  state: string[];
+  keychain: "login" | "service" | "none";
 }
 
 export interface ExecResult {
@@ -100,6 +113,8 @@ export interface ListedPreview {
 export interface ComputeProvider {
   /** True when the workspace is on another machine: host credentials must never be passed to `exec`, and the workspace path does not exist here. */
   readonly remote?: boolean;
+  /** True when `exec` confines the command itself (the macOS sandbox). The CLI's own sandbox must then be off: macOS cannot nest them. */
+  readonly confines?: boolean;
   prepare(spec: PrepareSpec): Promise<Workspace>;
   /** Rejects only when the command cannot be started; a non-zero exit, a timeout and an abort are results. */
   exec(ws: Workspace, spec: ExecSpec): Promise<ExecResult>;

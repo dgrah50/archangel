@@ -77,6 +77,8 @@ export interface ReconcilerDeps {
   correctionDrafts?: CorrectionDraftDeps;
   /** Runs the read-only triage CLI; defaults to the Scout sandbox invoker. Tests pass a fake. */
   triageInvoker?: ScoutCliInvoker;
+  /** Where Attempts run on this machine: a plain throwaway clone by default, or the macOS sandbox (`compute.provider: sandbox`). */
+  localCompute?: ComputeProvider;
   /** Where Scouts run when the host config says so; absent means this machine. Implement, revise and review always stay local. */
   scoutCompute?: ComputeProvider;
   /** Where claude Attempts (implement, revise, rebase) run when they run remotely; unset keeps every Attempt local. */
@@ -230,7 +232,7 @@ export class Reconciler {
     this.ledger = deps.ledger.forRepo(`${deps.config.githubOwner}/${deps.config.githubRepo}`);
     this.github = deps.github;
     this.broker = deps.broker;
-    this.compute = new LocalProvider(deps.broker);
+    this.compute = deps.localCompute ?? new LocalProvider(deps.broker);
     this.scoutCompute = deps.scoutCompute;
     this.remoteAttemptCompute = deps.remoteAttemptCompute;
     this.previewCompute = deps.previewCompute;
@@ -1851,7 +1853,7 @@ export class Reconciler {
         if (kind === "rebase") await stageConflict(compute, ws, fromSha, mainSha);
         // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
         try {
-          await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
+          await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote || compute.confines ? { exec: (spec) => compute.exec(ws, spec), remote: Boolean(compute.remote) } : undefined);
         } catch (err) {
           // The repo's own setup script failed: the repo's problem, not a provider outage.
           if (!this.workflow || task.abortController.signal.aborted) throw err;
@@ -1955,7 +1957,7 @@ export class Reconciler {
       actualCostUsd = result.costUsd;
       transcriptPath = result.transcriptPath;
       if (result.ranOn === "remote" && remote) ranOn = remote;
-      this.ledger.recordAttemptProvenance(attemptId, { compute: ranOn.compute.remote ? "sail" : "local" });
+      this.ledger.recordAttemptProvenance(attemptId, { compute: ranOn.compute.remote ? "sail" : ranOn.compute.confines ? "sandbox" : "local" });
       if (result.durationMs !== undefined) this.ledger.recordAttemptMeasure(attemptId, { durationMs: result.durationMs, peakRssKb: result.peakRssKb ?? null });
       this.ledger.recordAttemptProvenance(attemptId, { provider: result.runBy?.provider ?? null, model: result.runBy?.model ?? null, accountId: result.runBy?.accountId ?? null });
       if (result.providersUsed && result.providersUsed.length > 0) {

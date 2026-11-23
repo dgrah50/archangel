@@ -281,10 +281,21 @@ export const SailImageSchema = z
   })
   .strict();
 
-/** Where Scouts run: `local` (default) or a Sail Sailbox. Strict: an unknown key or provider is a config error, never a silent local run. */
+/**
+ * Where agent runs happen: `local` (default: on this machine, each CLI under its own sandbox flag), `sandbox` (on this machine, every
+ * run confined by a macOS Seatbelt profile) or `sail` (a Sail Sailbox). Strict: an unknown key or provider is a config error, never a silent local run.
+ */
 export const ComputeConfigSchema = z
   .object({
-    provider: z.enum(["local", "sail"]).default("local"),
+    provider: z.enum(["local", "sandbox", "sail"]).default("local"),
+    /** Extra paths a sandboxed run may reach, beyond its workspace, temp dir, toolchain and the CLI's own login: toolchains or caches under your home (`~/.bun`, `~/go/pkg/mod`). */
+    sandbox: z
+      .object({
+        read: z.array(z.string().min(1)).default([]),
+        write: z.array(z.string().min(1)).default([]),
+      })
+      .strict()
+      .default({ read: [], write: [] }),
     sail: z
       .object({
         app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, "lowercase letters, digits and hyphens"),
@@ -311,7 +322,7 @@ export const ComputeConfigSchema = z
   .refine((c) => !(c.sail?.codexApiKeySecret && c.sail.codexBrokerHome), { message: "compute.sail: codexApiKeySecret and codexBrokerHome are exclusive: codex has one remote credential", path: ["sail"] })
   .refine((c) => !(c.sail?.geminiApiKeySecret && c.sail.agyBrokerHome), { message: "compute.sail: geminiApiKeySecret and agyBrokerHome are exclusive: agy has one remote credential", path: ["sail"] })
   .refine((c) => c.provider !== "sail" || c.sail !== undefined, { message: "compute.provider 'sail' needs a compute.sail block", path: ["sail"] })
-  .default({ provider: "local" });
+  .default({ provider: "local", sandbox: { read: [], write: [] } });
 export type ComputeConfig = z.infer<typeof ComputeConfigSchema>;
 
 export const RESEARCH_TOPIC_RE = /^[a-z0-9][a-z0-9 .+-]{0,39}$/;
@@ -521,6 +532,20 @@ export const HostYamlSchema = z.object({
     [...Object.entries(host.chains).map(([role, chain]) => [`chains.${role}`, chain] as [string, ProviderEntry[]]), ["reviewerChain", host.reviewerChain]],
     (p, message) => ctx.addIssue({ code: "custom", path: p, message }),
   );
+  // Inside the sandbox a CLI and the commands it runs share one confinement, so its login home is writable by repo code. Only a
+  // home that holds nothing but that login is safe to hand over: codex and agy need one. (claude keeps its login in the keychain and needs no home.)
+  if (host.compute.provider === "sandbox") {
+    for (const role of ["implement", "revise", "rebase"] as const) {
+      for (const entry of host.chains[role]) {
+        if (entry.provider === "claude") continue;
+        for (const a of accountsFor(host.accounts, entry)) {
+          if (!a.home) {
+            ctx.addIssue({ code: "custom", path: ["accounts"], message: `compute.provider 'sandbox': the ${a.provider} account '${a.id}' (chains.${role}) needs a \`home\` of its own, holding only that login; a sandboxed run can write to its CLI's home, so it must not be yours` });
+          }
+        }
+      }
+    }
+  }
   host.signals.rules.forEach((r, i) => {
     if (r.repo !== undefined && !host.projects.some((p) => p.repo.toLowerCase() === r.repo!.toLowerCase())) {
       ctx.addIssue({ code: "custom", path: ["signals", "rules", i, "repo"], message: `rule '${r.name}': '${r.repo}' is not a project in this file` });

@@ -117,7 +117,7 @@ export interface AttemptRecord {
   model: string | null;
   /** Which configured account (login) ran it; null when none was used. */
   accountId: string | null;
-  /** Where the agent ran: "local" or "sail"; null if the agent never ran. */
+  /** Where the agent ran: "local", "sandbox" (the macOS sandbox on this machine) or "sail"; null if the agent never ran. */
   compute: string | null;
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;

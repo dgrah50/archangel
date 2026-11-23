@@ -19,7 +19,16 @@ maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to ne
 maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
 maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per thread
 
-# Where Scouts run. Default is this machine. Uncomment to run Scouts in Sail Sailboxes (needs `sail auth login`; nothing
+# Where agents run. `local` (default): on this machine, each CLI under its own sandbox flag. `sandbox`: on this machine, every
+# run confined by a macOS Seatbelt profile (no reads of your home beyond its workspace, toolchain and own login); codex and agy
+# then need an account with its own `home` below (README, Running agents in the macOS sandbox).
+# compute:
+#   provider: sandbox
+#   sandbox:
+#     read: []                      # extra readable paths (toolchains under your home that are not on PATH)
+#     write: []                     # extra writable paths (caches a build must write, such as ~/go/pkg/mod)
+#
+# `sail`: Scouts and, with a remote credential, agents run in Sail Sailboxes (needs `sail auth login`; nothing
 # from this machine's environment goes into a box). A provider runs on Sail only when it has a remote credential below; otherwise it runs here.
 # compute:
 #   provider: sail

@@ -9,6 +9,18 @@ import type { OnboardRunner } from "../src/core/onboard.js";
 import { planWorkflowProposal } from "../src/core/workflow-propose.js";
 
 describe("config security invariants", () => {
+  it("compute.provider sandbox refuses a codex or agy writer account that has no home of its own", () => {
+    const base = { ownerUserId: 1, projects: [{ repo: "a/b" }], compute: { provider: "sandbox" } };
+    const bad = HostYamlSchema.safeParse(base);
+    expect(bad.success).toBe(false);
+    expect(JSON.stringify(bad.error?.issues)).toContain("needs a `home` of its own");
+    // claude keeps its login in the keychain and needs no home; codex and agy with their own homes are accepted.
+    const claudeOnly = { implement: [{ provider: "claude" }], revise: [{ provider: "claude" }], rebase: [{ provider: "claude" }] };
+    expect(HostYamlSchema.safeParse({ ...base, chains: claudeOnly }).success).toBe(true);
+    const accounts = [{ id: "claude", provider: "claude" }, { id: "codex", provider: "codex", home: "/logins/codex" }, { id: "agy", provider: "agy", home: "/logins/agy" }];
+    expect(HostYamlSchema.safeParse({ ...base, accounts }).success).toBe(true);
+  });
+
   it("loads .env without overriding existing process env and reads ARCHANGEL_GITHUB_PRIVATE_KEY_PATH", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-env-"));
     try {

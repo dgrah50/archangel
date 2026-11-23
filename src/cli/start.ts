@@ -16,6 +16,7 @@ import { TelegramNotifier } from "../core/notifier.js";
 import { recordDaemonFacts } from "../core/host-facts.js";
 import { defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
+import { AgentSandboxProvider } from "../compute/agent-sandbox.js";
 import { LocalProvider } from "../compute/local.js";
 import { createSailProvider, remoteAttemptProvider, remoteProviders } from "../compute/sail-sdk.js";
 import { Secret } from "@sailresearch/sdk";
@@ -102,6 +103,10 @@ function buildProject(cfg: ArchangelConfig, d: DaemonDeps, sinks: ProjectSinks):
       ? createSailProvider({ sail: cfg.compute.sail, broker, dataDir: paths.dataDir, repoSlug })
       : undefined;
   if (scoutCompute) sinks.sailProviders.push(scoutCompute);
+  const localCompute =
+    cfg.compute.provider === "sandbox"
+      ? new AgentSandboxProvider(new LocalProvider(broker), { read: cfg.compute.sandbox.read.map(resolveUserPath), write: cfg.compute.sandbox.write.map(resolveUserPath) })
+      : undefined;
   const implementer = new SubscriptionImplementer({
     chains: cfg.chains,
     accounts: cfg.accounts,
@@ -124,6 +129,7 @@ function buildProject(cfg: ArchangelConfig, d: DaemonDeps, sinks: ProjectSinks):
     notifier: d.notifier,
     logger,
     workerId: d.daemonOwnerId,
+    localCompute,
     scoutCompute,
     remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
     previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [cfg.ui.port] }),

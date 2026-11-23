@@ -4,10 +4,11 @@ import path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { LocalProvider } from "../src/compute/local.js";
 import { SandboxExecProvider } from "../src/compute/sandbox-exec.js";
+import { canSandbox } from "./helpers/can-sandbox.js";
 import type { Workspace } from "../src/compute/provider.js";
 
 const NODE = "/opt/homebrew/bin/node";
-const darwin = process.platform === "darwin" && fs.existsSync(NODE);
+const darwin = canSandbox && fs.existsSync(NODE);
 // CI is ubuntu: sandbox-exec exists only on macOS, so the sandbox tests run only on a dev Mac.
 const onMac = it.skipIf(!darwin);
 

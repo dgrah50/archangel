@@ -263,6 +263,25 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
     });
   }
 
+  // 4a. The macOS sandbox, when agent runs are confined by it: it must exist and must not already be inside one (macOS cannot nest them).
+  if (first.compute.provider === "sandbox") {
+    let problem: string | null = process.platform === "darwin" ? null : "sandbox-exec exists only on macOS";
+    if (problem === null) {
+      try {
+        await execFileAsync("sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"]);
+      } catch (err) {
+        problem = `sandbox-exec could not start a sandbox (${err instanceof Error ? err.message.split("\n")[0] : String(err)}); is the daemon itself running inside one?`;
+      }
+    }
+    checks.push({
+      id: "sandbox",
+      name: "macOS sandbox for agent runs",
+      status: problem === null ? "pass" : "fail",
+      detail: problem ?? "sandbox-exec works; agent runs are confined to their workspace, temp dir, toolchain and own login",
+      remediation: problem === null ? undefined : "Run the daemon outside any sandbox on macOS, or set compute.provider to local or sail.",
+    });
+  }
+
   // 4b. The Sail token broker for a dedicated codex ChatGPT login: its state and the token lifetime it measured.
   const brokerChecks = [
     { id: CODEX_BROKER_ID, home: first.compute.sail?.codexBrokerHome, relogin: "CODEX_HOME=<codexBrokerHome> codex login" },
