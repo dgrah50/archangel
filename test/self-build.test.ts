@@ -80,6 +80,6 @@ describe("archangel pitch promote --build", () => {
 
   it("is reachable only from the owner's CLI, never from the daemon", () => {
     const importers = execFileSync("grep", ["-rl", "self-build.js", "src"], { encoding: "utf8" }).trim().split("\n");
-    expect(importers).toEqual(["src/cli/index.ts"]);
+    expect(importers).toEqual(["src/cli/pitch.ts"]);
   });
 });
