@@ -38,7 +38,7 @@ export function isRateLimitOrQuotaError(text: string): boolean {
 }
 
 /** Why a CLI run failed, from stderr and the CLI's own final result envelope only. `quota` is handled by account failover. */
-export type CliFailureReason = "quota" | "provider_network" | "auth" | "context_overflow" | "permission_denied" | "unknown";
+export type CliFailureReason = "quota" | "provider_network" | "auth" | "context_overflow" | "permission_denied" | "model_unavailable" | "unknown";
 
 // Numeric statuses need a keyword and non-alphanumeric boundaries so "foo_test.go:429", "15290ms" and "c429f4b" never match.
 const CONTEXT_RE = /prompt is too long|context[ _-]?(?:length|window)[^\n]{0,40}(?:exceed|too long|limit)|exceeds? (?:the )?(?:maximum )?context|maximum context length/i;
@@ -47,6 +47,9 @@ const AUTH_RE =
 const NETWORK_RE =
   /econnreset|etimedout|econnrefused|enotfound|socket hang up|connection (?:reset|closed|was closed|lost|error)|network (?:error|is unreachable)|stream (?:closed|disconnected|error)|(?:http|status(?: code)?|error|code)[ :=]*5\d\d(?![A-Za-z0-9])|internal server error|bad gateway|service unavailable|gateway time-?out/i;
 const DENIED_RE = /auto-denied|permission[^\n]{0,40}headless mode cannot prompt/i;
+// The login cannot run the model a chain entry names: codex "The 'x' model is not supported when using Codex with a ChatGPT account",
+// claude "There's an issue with the selected model (x). It may not exist or you may not have access to it", an API not_found_error for "model: x".
+const MODEL_RE = /model[^\n]{0,80}(?:is not supported|does not exist|is not available|may not exist)|issue with the selected model|not_found_error[^\n]{0,60}model|(?:unknown|invalid|unsupported) model/i;
 
 function finalResult(stdout: string): Record<string, unknown> | null {
   const line = stdout.trim().split("\n").at(-1)?.trim();
@@ -62,6 +65,7 @@ export function classifyCliFailure(run: { stdout: string; stderr: string }): Cli
   if (finalResult(run.stdout)?.terminal_reason === "prompt_too_long" || CONTEXT_RE.test(signal)) return "context_overflow";
   if (AUTH_RE.test(signal)) return "auth";
   if (DENIED_RE.test(run.stderr)) return "permission_denied";
+  if (MODEL_RE.test(signal)) return "model_unavailable";
   if (NETWORK_RE.test(signal)) return "provider_network";
   return "unknown";
 }
@@ -86,6 +90,7 @@ const FAILURE_CATEGORY: Record<CliFailureReason, AttemptErrorCategory> = {
   auth: "auth",
   context_overflow: "context_overflow",
   permission_denied: "permission_denied",
+  model_unavailable: "model_unavailable",
   unknown: "implementer_failed",
 };
 
@@ -333,7 +338,7 @@ function extractErrorEnvelope(stdout: string): string {
       message?: string;
       result?: string;
     };
-    if (obj.type === "error" || obj.is_error === true || obj.status === "ERROR") {
+    if (obj.type === "error" || obj.type === "turn.failed" || obj.is_error === true || obj.status === "ERROR") {
       if (typeof obj.error === "string") return obj.error;
       if (obj.error && typeof obj.error.message === "string") return obj.error.message;
       if (typeof obj.message === "string") return obj.message;
@@ -513,6 +518,7 @@ export class SubscriptionImplementer implements Implementer {
           const i = runIndex++;
           const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
           const label = `${entry.provider}${entry.model ? ` (${entry.model})` : ""} [${account.id}]`;
+          const runBy = { provider: entry.provider, model: entry.model ?? null, accountId: account.id };
 
           this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { issue: input.issueNumber });
           fs.appendFileSync(
@@ -543,7 +549,7 @@ export class SubscriptionImplementer implements Implementer {
             brokerAccountId,
             agyBrokered,
           }).catch((err: unknown) => {
-            if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`);
+            if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`, runBy);
             throw err;
           });
 
@@ -586,7 +592,7 @@ export class SubscriptionImplementer implements Implementer {
               aborted: false,
               providersUsed,
               ranOn,
-              runBy: { provider: entry.provider, model: entry.model ?? null, accountId: account.id },
+              runBy,
               ...measured(),
             };
           }
@@ -616,15 +622,15 @@ export class SubscriptionImplementer implements Implementer {
           }
           if (reason === "auth" && brokerAccountId) {
             // A 401 on a brokered login is never retried by moving tokens around: the broker's token expired or was revoked.
-            throw new AttemptError("auth", `remote codex login rejected (the broker's token expired or was revoked; not retried): ${errors.join(" | ")}`);
+            throw new AttemptError("auth", `remote codex login rejected (the broker's token expired or was revoked; not retried): ${errors.join(" | ")}`, runBy);
           }
-          if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "));
+          if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "), runBy);
 
           // Continuity failover: cool this account down, then move on (same vendor's next account, else the next entry).
           this.state.recordCooldown(account.id, this.cooldownDurationMs, errorSignal.slice(0, 200));
           switches++;
           if (switches > MAX_ACCOUNT_SWITCHES) {
-            throw new AttemptError("quota", `account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
+            throw new AttemptError("quota", `account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`, runBy);
           }
           this.logger.warn(
             "implementer/continuity_failover",

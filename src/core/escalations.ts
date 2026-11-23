@@ -128,6 +128,7 @@ export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string
   auth: "A CLI login is invalid or expired: re-login the account named in the reason (its CLI's login, with that account's config dir), then retry.",
   permission_denied: "The CLI denied a tool in headless mode and did no work: check that provider's permission flags, then retry.",
   cli_missing: "The provider CLI is not installed or not on PATH: install it or run `archangel doctor`, then retry.",
+  model_unavailable: "The login cannot run the model named in the reason: change or remove that entry's `model` under `chains` in archangel.yaml (no `model` uses the CLI's default), restart the daemon, then retry.",
   context_overflow: "The prompt exceeded the model's context: narrow the issue, then retry.",
 };
 
@@ -139,6 +140,7 @@ export const OWNER_COMMANDS_LINE =
 const ATTEMPT_FAILURE_CLASS: Partial<Record<AttemptErrorCategory, DecisionClass>> = {
   auth: "credentials",
   cli_missing: "credentials",
+  model_unavailable: "credentials",
   permission_denied: "credentials",
   provider_network: "live_infrastructure",
 };

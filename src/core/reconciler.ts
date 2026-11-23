@@ -1788,7 +1788,7 @@ export class Reconciler {
     let transcriptPath: string | null = null;
     // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
     const handleFor = (compute: ComputeProvider) =>
-      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha }, async (ws) => {
+      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha, baseSha: mainSha }, async (ws) => {
         // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
         try {
           await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
@@ -2234,6 +2234,7 @@ export class Reconciler {
         errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
+      if (err instanceof AttemptError && err.runBy) this.ledger.recordAttemptProvenance(attemptId, { provider: err.runBy.provider, model: err.runBy.model, accountId: err.runBy.accountId ?? null });
       const cause = err instanceof AttemptError ? err.category : undefined;
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
@@ -2241,7 +2242,7 @@ export class Reconciler {
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}`, cause },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `${kind[0]!.toUpperCase()}${kind.slice(1)} attempt failed: ${msg}`, cause },
           { auditTopic: "thread/needs_you" },
         );
       }

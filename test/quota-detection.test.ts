@@ -20,5 +20,9 @@ describe("isRateLimitOrQuotaError", () => {
     expect(classifyCliFailure({ stdout: "", stderr: "Not logged in. Please run /login" })).toBe("auth");
     expect(classifyCliFailure({ stdout: "", stderr: "API Error: 503 service unavailable" })).toBe("provider_network");
     expect(classifyCliFailure({ stdout: "FAIL: ECONNRESET in test output", stderr: "foo_test.go:429 took 15290ms at c401f4b" })).toBe("unknown");
+    // codex reports a failed turn only as a `turn.failed` line on stdout (captured from a real run).
+    const turnFailed = (message: string) => ['{"type":"thread.started","thread_id":"t"}', '{"type":"turn.started"}', JSON.stringify({ type: "turn.failed", error: { message } })].join("\n");
+    expect(classifyCliFailure({ stdout: turnFailed("The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."), stderr: "" })).toBe("model_unavailable");
+    expect(classifyCliFailure({ stdout: turnFailed("You've hit your usage limit. Try again at 3:04 PM."), stderr: "" })).toBe("quota");
   });
 });

@@ -231,16 +231,19 @@ export class GitBroker {
     return cloneDir;
   }
 
-  /** A bundle holding `startSha` and its history, for a remote provider to start from; the box never needs a Git credential. */
-  async createStartBundle(issueNumber: number, startSha: string): Promise<string> {
+  /** A bundle holding `startSha` and its history (and `baseSha`, the default branch tip, when given), for a remote provider to start from; the box never needs a Git credential. */
+  async createStartBundle(issueNumber: number, startSha: string, baseSha?: string): Promise<string> {
     fs.mkdirSync(this.clonesDir, { recursive: true });
     const file = path.join(this.clonesDir, `start-${issueNumber}-${Date.now()}.bundle`);
     const ref = `refs/archangel/start/${issueNumber}`;
+    const baseRef = `refs/archangel/base/${issueNumber}`;
     await this.runGit(this.bareRepoPath, ["update-ref", ref, startSha]);
+    if (baseSha) await this.runGit(this.bareRepoPath, ["update-ref", baseRef, baseSha]);
     try {
-      await this.runGit(this.bareRepoPath, ["bundle", "create", file, ref]);
+      await this.runGit(this.bareRepoPath, ["bundle", "create", file, ref, ...(baseSha ? [baseRef] : [])]);
     } finally {
       await this.runGit(this.bareRepoPath, ["update-ref", "-d", ref]);
+      if (baseSha) await this.runGit(this.bareRepoPath, ["update-ref", "-d", baseRef]);
     }
     return file;
   }
