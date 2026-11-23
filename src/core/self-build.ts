@@ -55,8 +55,8 @@ interface OwnerBuildTask {
 /** The brief lifts the implementer prompt's protected-path rule, because this build is owner-supervised and its diff is read before anything is pushed. */
 const OWNER_BUILD_NOTE = [
   "",
-  "OWNER-RUN BUILD (this overrides rule 3's size limits and rule 4 above): the repository's owner is running you locally and will read the full diff before anything is pushed.",
-  "You MAY edit protected paths if the task needs it. Still keep the change as small as the task allows, and do not edit lockfiles or CI workflows unless the task requires it.",
+  "OWNER-RUN BUILD (this overrides rule 2, rule 3's size limits and rule 4 above): the repository's owner is running you locally and will read the full diff before anything is pushed.",
+  "You MAY edit protected paths, and you MAY change or delete existing tests, where the task needs it. Still keep the change as small as the task allows, and do not edit lockfiles or CI workflows unless the task requires it.",
 ].join("\n");
 
 /** Conventional-commit prefix of the PR, by what kind of change the pitch is. */
