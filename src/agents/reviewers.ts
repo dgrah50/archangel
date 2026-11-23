@@ -36,6 +36,8 @@ export interface ReviewRequest {
   repoInstructions?: string | null;
   skipVendors?: ReviewerVendor[];
   excludeVendors?: ReviewerVendor[];
+  /** Aborted when the daemon stops: a reviewer CLI still running is killed, and its vendor is reported as an error. */
+  signal?: AbortSignal;
 }
 
 export interface VendorReviewResult {
