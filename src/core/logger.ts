@@ -19,6 +19,15 @@ export interface Logger {
   error(event: string, message: string, meta?: { repo?: string; issue?: number; data?: Record<string, unknown> }): void;
 }
 
+/** One line for any thrown value: its message, and the underlying cause's code or message when it has one. Never a dumped object. */
+export function errorLine(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause as { code?: unknown; message?: unknown } | undefined;
+  const why = typeof cause?.code === "string" ? cause.code : typeof cause?.message === "string" ? cause.message : null;
+  const head = err.name && err.name !== "Error" ? `${err.name}: ${err.message}` : err.message;
+  return why && !head.includes(why) ? `${head} (${why})` : head;
+}
+
 export const NOOP_LOGGER: Logger = {
   info() {},
   warn() {},

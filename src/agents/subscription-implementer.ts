@@ -520,7 +520,7 @@ export class SubscriptionImplementer implements Implementer {
           const label = `${entry.provider}${entry.model ? ` (${entry.model})` : ""} [${account.id}]`;
           const runBy = { provider: entry.provider, model: entry.model ?? null, accountId: account.id };
 
-          this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { issue: input.issueNumber });
+          this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { repo: input.repo, issue: input.issueNumber });
           fs.appendFileSync(
             transcriptPath,
             `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, account: account.id, ts: Date.now() })}\n`,
@@ -635,7 +635,7 @@ export class SubscriptionImplementer implements Implementer {
           this.logger.warn(
             "implementer/continuity_failover",
             `${label} hit rate/quota limit (cooling down ${Math.round(this.cooldownDurationMs / 60_000)}m) -> switching (${switches}/${MAX_ACCOUNT_SWITCHES})`,
-            { issue: input.issueNumber },
+            { repo: input.repo, issue: input.issueNumber },
           );
           fs.appendFileSync(
             transcriptPath,
