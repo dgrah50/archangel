@@ -119,9 +119,13 @@ describe("an owner retry of a CI infrastructure escalation", () => {
       if (!retried.ok) throw new Error(retried.reject);
       h.ledger.transition(1, stuck.version, retried.next, {
         grantRetryBudget: true,
+        auditTopic: "thread/owner_retried",
         extraAudits: [{ topic: "thread/owner_retry", actor: "owner", payload: { via: "cli", code: "gate_timeout" } }],
         now: h.t0 + 6 * MIN,
       });
+      // any later no-topic transition (a phase_entered row and a newer phase clock) must not hide the pending retry
+      const entered = h.ledger.getThread(1)!;
+      h.ledger.transition(1, entered.version, { ...entered.phase, since: h.t0 + 6 * MIN + 1000 }, { now: h.t0 + 6 * MIN + 1000 });
 
       await h.reconciler.tick(h.t0 + 7 * MIN, { waitForAttempts: true });
       const after = h.ledger.getThread(1)!;
