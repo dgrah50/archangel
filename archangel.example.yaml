@@ -52,26 +52,24 @@ authMode: subscription
 #   - { id: agy-a,    provider: agy,    home: ~/.archangel/accounts/agy-a }
 #   - { id: agy-b,    provider: agy,    home: ~/.archangel/accounts/agy-b }
 
-# One chain per role, so menial work can run on cheaper models than the first implementation.
-# Each entry is { provider, model? }; the first entry that is not cooling down runs, the rest are failover.
+# One chain per role. Each entry is { provider, model? }; the first entry that is not cooling down runs, the rest are failover.
+# Without `model` the CLI's own default model runs. Add `model: <name>` to an entry to run menial roles (revise, rebase) on a
+# cheaper tier, but only a model that login can use: a model the login cannot run fails every Attempt of that role.
 # Vendor independence applies across implement, revise and rebase: no reviewer shares a vendor with any of them.
 chains:
   implement:
     - provider: codex
-      model: gpt-5.4          # the expensive tier for the first, hardest pass
     - provider: agy
-  revise:
+  revise:                     # review feedback (vendor stickiness still applies)
     - provider: codex
-      model: gpt-5.4-mini     # a cheaper tier for review feedback (vendor stickiness still applies)
     - provider: agy
-  rebase:
+  rebase:                     # LLM rebase only; the deterministic Broker rebase costs 0 tokens
     - provider: codex
-      model: gpt-5.4-mini     # LLM rebase only; the deterministic Broker rebase costs 0 tokens
     - provider: agy
   scout:                      # read-only Scouts: needs a claude or codex entry
     - provider: claude
     - provider: codex
-  triage:                     # reserved for escalation triage; validated, not used yet
+  triage:                     # read-only triage of an escalation, and the written recommendation on Needs you
     - provider: claude
 reviewerChain:
   - provider: agy
