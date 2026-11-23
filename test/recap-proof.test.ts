@@ -151,7 +151,7 @@ describe("Recap and PR body are scannable", () => {
     for (const title of ["Gate proof and reproduction output", "Independent Reviews"]) {
       expect(out).toMatch(new RegExp(`<details>\\n<summary>${title}</summary>`));
     }
-    expect(out).toContain("owner-written");
+    expect(out).toContain("quoted from issue #");
     expect(out).toContain("Machine triage (factory), not the owner");
     expect(out).toContain("not written by Archangel");
     expect(renderPrBody({ number: 7, title: "t", body: "b" }, []).startsWith("### Summary")).toBe(true);
@@ -179,7 +179,7 @@ describe("Recap and PR body are scannable", () => {
     expect(out).toContain("Store.Add keeps whitespace variants as separate entries.");
     expect(out).not.toContain("Two problems follow");
     expect(out).not.toContain("add ' a'");
-    expect(out).toContain("**Expected** (issue #");
+    expect(out).toContain("**Expected** (quoted from issue #");
     expect(out).toContain("trimmed queries dedupe.");
     expect(out).toContain("**Now:** changes `internal/store.go` (+2/−1); new test `internal/store_regression_test.go`");
     expect(renderPrBody({ number: 1, title: "t", body: issueBody }, chapters)).toContain("**Now:** changes `internal/store.go`");
