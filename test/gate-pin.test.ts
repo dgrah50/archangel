@@ -17,15 +17,15 @@ function checkout() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gatepin-"));
   git(root, "init", "-q", "-b", "main");
   fs.mkdirSync(path.join(root, "workflows"));
-  fs.mkdirSync(path.join(root, "src/gate"), { recursive: true });
+  fs.mkdirSync(path.join(root, "bin"));
   fs.writeFileSync(path.join(root, "workflows/archangel-gate.yml"), TEMPLATE);
-  fs.writeFileSync(path.join(root, "src/gate/g.ts"), "1");
+  fs.writeFileSync(path.join(root, "bin/archangel-gate.mjs"), "1");
   git(root, "add", "-A"); git(root, "commit", "-qm", "c1");
   const c1 = git(root, "rev-parse", "HEAD");
   fs.writeFileSync(path.join(root, "README.md"), "x");
   git(root, "add", "-A"); git(root, "commit", "-qm", "c2");
   const c2 = git(root, "rev-parse", "HEAD");
-  fs.writeFileSync(path.join(root, "src/gate/g.ts"), "2");
+  fs.writeFileSync(path.join(root, "bin/archangel-gate.mjs"), "2");
   git(root, "add", "-A"); git(root, "commit", "-qm", "c3");
   const c3 = git(root, "rev-parse", "HEAD");
   git(root, "update-ref", "refs/remotes/origin/main", c3);
@@ -61,30 +61,36 @@ function runnerFor(root: string, o: { wf?: string | null; openPr?: string; dirty
 }
 
 describe("drift detection", () => {
-  it("flags an older pin, accepts the latest or newer, flags an unknown pin", async () => {
+  it("a changed Gate bundle is a newer bundle, not drift; an unchanged one is current; an unknown pin is drift", async () => {
     const { root, c1, c2, c3 } = checkout();
     const wf = (sha: string) => withPin(TEMPLATE, sha);
-    const a = (sha: string) => assessPinDrift(execRunner, wf(sha), c3, { root, template: TEMPLATE });
-    expect((await a(c1)).reasons[0]).toContain("older than the latest gate-relevant commit");
-    expect((await a(c2)).drifted).toBe(true);
-    expect((await a(c3)).drifted).toBe(false);
+    const a = (sha: string) => assessPinDrift(execRunner, wf(sha), { root, template: TEMPLATE });
+    expect(await a(c1)).toMatchObject({ drifted: false, newerBundle: true });
+    // c2 only touched docs: its bundle is the one c1 pinned, still older than HEAD's
+    expect(await a(c2)).toMatchObject({ drifted: false, newerBundle: true });
+    expect(await a(c3)).toMatchObject({ drifted: false, newerBundle: false });
     expect((await a("f".repeat(40))).reasons[0]).toContain("not in the local Archangel checkout");
-    // a pin newer than the latest gate commit (e.g. a later docs commit) is fine
-    expect((await assessPinDrift(execRunner, wf(c3), c1, { root, template: TEMPLATE })).drifted).toBe(false);
     // the template's branch is the repo's own: a trunk workflow is current on trunk, and a `main` one is drift there
     const trunk = { root, template: TEMPLATE, branch: "trunk" };
-    expect((await assessPinDrift(execRunner, withBranch(wf(c3), "trunk"), c3, trunk)).drifted).toBe(false);
-    expect((await assessPinDrift(execRunner, wf(c3), c3, trunk)).drifted).toBe(true);
+    expect((await assessPinDrift(execRunner, withBranch(wf(c3), "trunk"), trunk)).drifted).toBe(false);
+    expect((await assessPinDrift(execRunner, wf(c3), trunk)).drifted).toBe(true);
   });
 
-  it("flags a pin on a divergent line that is neither older nor newer than the latest gate commit", async () => {
-    const { root, c1, c3 } = checkout();
+  it("a docs-only commit after the pin leaves the pin current", async () => {
+    const { root, c3 } = checkout();
+    fs.writeFileSync(path.join(root, "README.md"), "y");
+    git(root, "add", "-A"); git(root, "commit", "-qm", "c4");
+    expect(await assessPinDrift(execRunner, withPin(TEMPLATE, c3), { root, template: TEMPLATE })).toMatchObject({ drifted: false, newerBundle: false });
+  });
+
+  it("flags a pin on a divergent line that is not in main's history", async () => {
+    const { root, c1 } = checkout();
     git(root, "checkout", "-q", "-b", "side", c1);
-    fs.writeFileSync(path.join(root, "src/gate/g.ts"), "weakened");
+    fs.writeFileSync(path.join(root, "bin/archangel-gate.mjs"), "weakened");
     git(root, "add", "-A"); git(root, "commit", "-qm", "side");
     const side = git(root, "rev-parse", "HEAD");
     git(root, "checkout", "-q", "main");
-    const res = await assessPinDrift(execRunner, withPin(TEMPLATE, side), c3, { root, template: TEMPLATE });
+    const res = await assessPinDrift(execRunner, withPin(TEMPLATE, side), { root, template: TEMPLATE });
     expect(res.drifted).toBe(true);
     expect(res.reasons[0]).toContain("divergent history");
   });
