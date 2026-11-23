@@ -39,6 +39,22 @@ function createFixtureRemote(): { root: string; remoteBare: string; baseSha: str
 
 const BOUNDS = GatePolicySchema.parse({});
 
+describe("GitBroker errors never carry the remote's credentials", () => {
+  it("a failed fetch from a token URL reports the failure with the token taken out", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-redact-"));
+    try {
+      const broker = new GitBroker({ bareRepoPath: path.join(dir, "broker.git"), clonesDir: path.join(dir, "clones") });
+      const url = "https://x-access-token:ghs_abcdefghijklmnopqrstuvwxyz0123456789@localhost:1/o/r.git";
+      const err = await broker.ensureBareRepo(url).then(() => null, (e: unknown) => e as Error & { cmd?: string });
+      expect(err).not.toBeNull();
+      expect(`${err!.message} ${err!.cmd ?? ""}`).not.toContain("ghs_abcdefghijklmnopqrstuvwxyz0123456789");
+      expect(err!.message).toContain("https://***@localhost:1/o/r.git");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+});
+
 describe("GitBroker (ADR-0004 B2 isolation)", () => {
   it("isolates throwaway clones, ignores planted hooks, validates paths, and pushes factory/<n>", async () => {
     const { root, remoteBare, baseSha } = createFixtureRemote();

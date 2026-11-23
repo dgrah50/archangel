@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { redactCredentials } from "./secrets.js";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -71,6 +72,7 @@ export class ArchangelLogger implements Logger {
     meta?: { repo?: string; issue?: number; data?: Record<string, unknown> },
   ): void {
     const now = new Date();
+    message = redactCredentials(message);
     const record: LogRecord = {
       ts: now.toISOString(),
       level,
