@@ -2234,6 +2234,7 @@ export class Reconciler {
         errorCategory: err instanceof AttemptError ? err.category : "other",
         errorMessage: msg,
       });
+      if (err instanceof AttemptError && err.runBy) this.ledger.recordAttemptProvenance(attemptId, { provider: err.runBy.provider, model: err.runBy.model, accountId: err.runBy.accountId ?? null });
       const cause = err instanceof AttemptError ? err.category : undefined;
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
@@ -2241,7 +2242,7 @@ export class Reconciler {
           latest,
           kind === "plan"
             ? { t: "attempt_failed", code: "plan_unresolved", reason: `Plan attempt failed: ${msg}` }
-            : { t: "attempt_failed", code: "attempt_failed", reason: `Implement attempt failed: ${msg}`, cause },
+            : { t: "attempt_failed", code: "attempt_failed", reason: `${kind[0]!.toUpperCase()}${kind.slice(1)} attempt failed: ${msg}`, cause },
           { auditTopic: "thread/needs_you" },
         );
       }
