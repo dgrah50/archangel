@@ -184,8 +184,14 @@ export function fitProofMessage(headSha: string, proof: GateProof | undefined): 
     if (Buffer.byteLength(message) <= PROOF_MESSAGE_MAX_BYTES) return message;
     const key = (p.head_output?.length ?? 0) >= (p.base_output?.length ?? 0) ? "head_output" : "base_output";
     const cur = p[key];
-    if (!cur) return JSON.stringify({ head_sha: headSha });
-    p[key] = cur.slice(-Math.floor(cur.length * 0.8));
+    if (cur) {
+      const keep = Math.floor(cur.length * 0.8);
+      p[key] = keep > 0 ? cur.slice(-keep) : "";
+    } else if (p.junit) {
+      delete p.junit;
+    } else {
+      return JSON.stringify({ head_sha: headSha });
+    }
   }
 }
 
