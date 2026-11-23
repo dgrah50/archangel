@@ -22,7 +22,7 @@ it("GET /api/accounts needs the token, is 403 in remote mode, and never returns 
   ledger.setAccountCooldown("claude-a", 60_000, "usage limit reached");
   // Claude and agy usage is whatever the CLI itself prints for `/usage`; the runner stands in for the CLI.
   const runs: Array<{ cli: string; configDir?: string }> = [];
-  const usageRunner = async (cli: "claude" | "agy", env: NodeJS.ProcessEnv) => {
+  const usageRunner = async (cli: string, _args: string[], env: NodeJS.ProcessEnv) => {
     runs.push({ cli, configDir: env.CLAUDE_CONFIG_DIR });
     return cli === "claude"
       ? "Current session: 22% used · resets Nov 23 at 1:39am (America/Cayman)\nCurrent week (all models): 13% used · resets Nov 29 at 12:59pm (America/Cayman)\n"

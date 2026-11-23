@@ -5,7 +5,7 @@ import net from "node:net";
 import { promisify } from "node:util";
 import { ConfigError, REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
 import { Secret } from "@sailresearch/sdk";
-import { AGY_BROKER_ID, AGY_BROKER_SECRET } from "../compute/agy-broker-adapter.js";
+import { AGY_BROKER_ID, AGY_BROKER_SECRET, cliCommand } from "../compute/agy-broker-adapter.js";
 import { CODEX_BROKER_ID, CODEX_BROKER_SECRET } from "../compute/codex-broker-adapter.js";
 import { readBrokerState } from "../compute/token-broker.js";
 import { assessPinDrift, pinOf } from "./gate-pin.js";
@@ -170,7 +170,8 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
           verified.push(`${label} (${combined})`);
         }
       } else {
-        const { stdout } = await execFileAsync(p, ["--version"], { env });
+        const { cmd, args } = cliCommand(account, ["--version"]);
+        const { stdout } = await execFileAsync(cmd, args, { env });
         verified.push(`${label} (${stdout.trim().split("\n")[0]})`);
       }
     } catch (_err) {
@@ -564,13 +565,17 @@ async function smokeAccount(account: Account, roles: string[], baseEnv: NodeJS.P
   const login = provider === "codex" ? `${provider} login` : `${provider} auth login`;
   const homeHint = account.home ? ` with ${provider === "claude" ? "CLAUDE_CONFIG_DIR" : provider === "codex" ? "CODEX_HOME" : "HOME"}=${account.home}` : "";
   try {
-    const { stdout: v } = await execFileAsync(provider, ["--version"], { env });
+    const run = (args: string[]) => {
+      const c = cliCommand(account, args);
+      return execFileAsync(c.cmd, c.args, { env });
+    };
+    const { stdout: v } = await run(["--version"]);
     const version = v.trim().split("\n")[0];
     if (provider === "agy") {
       return { id, name, status: "pass", detail: `${version} (installed; auth not verifiable without a model call)` };
     }
     const args = provider === "codex" ? ["login", "status"] : ["auth", "status"];
-    const { stdout, stderr } = await execFileAsync(provider, args, { env });
+    const { stdout, stderr } = await run(args);
     const out = `${stdout}\n${stderr}`.trim();
     const ok = provider === "claude" ? /"loggedIn"\s*:\s*true/.test(out) : /logged in/i.test(out) && !/not\s+logged\s+in/i.test(out);
     if (!ok) {
