@@ -407,15 +407,15 @@ export class GitBroker {
     cloneDir: string,
     mainSha: string,
     timeoutMs = 5 * 60_000,
-    /** Runs the script on a remote workspace instead of in `cloneDir` on this machine. */
-    remote?: (spec: ExecSpec) => Promise<ExecResult>,
+    /** Runs the script through a compute provider instead of as a bare process here: on a remote workspace, or in `cloneDir` under the macOS sandbox. */
+    via?: { exec: (spec: ExecSpec) => Promise<ExecResult>; remote: boolean },
   ): Promise<{ ran: boolean; stdout: string }> {
     const script = await this.readFileAtRef(mainSha, ".agents/setup");
     if (!script || !script.trim()) {
       return { ran: false, stdout: "" };
     }
-    if (remote) {
-      const res = await remote({
+    if (via?.remote) {
+      const res = await via.exec({
         cmd: "/bin/sh",
         args: ["-eu", "-c", script],
         env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/tmp", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
@@ -435,6 +435,11 @@ export class GitBroker {
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_TERMINAL_PROMPT: "0",
       };
+      if (via) {
+        const res = await via.exec({ cmd: "/bin/sh", args: ["-eu", "-c", script], env: cleanEnv, timeoutMs });
+        if (res.code !== 0) throw new Error(`repo setup exited ${res.code}: ${(res.stderr || res.stdout).trim().slice(-300)}`);
+        return { ran: true, stdout: res.stdout };
+      }
       const { stdout } = await execFileGroup("/bin/sh", ["-eu", "-c", script], {
         cwd: cloneDir,
         env: cleanEnv,

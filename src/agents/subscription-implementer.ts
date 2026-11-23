@@ -1,11 +1,11 @@
 import { AGY_PLACEHOLDER_ENV, AGY_TOKEN_FILE, agyCommand } from "../compute/agy-broker-adapter.js";
 import { CODEX_PLACEHOLDER_ENV } from "../compute/codex-broker-adapter.js";
-import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
+import type { ComputeProvider, Confine, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
 import path from "node:path";
-import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
+import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, expandHome, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, cooldownAfterLimit, selectAccount, type AccountLedger } from "../core/accounts.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import { AttemptError, type AttemptErrorCategory, type ReviewerVendor } from "../ledger/schema.js";
@@ -202,6 +202,8 @@ function localEnv(input: { account?: Account; goCacheDir: string }): NodeJS.Proc
     USER: process.env.USER,
     LOGNAME: process.env.LOGNAME,
     TMPDIR: path.dirname(input.goCacheDir),
+    // claude keeps its shell scratch in /tmp/claude-<uid> unless told otherwise; this keeps it in the Attempt's own temp dir.
+    CLAUDE_CODE_TMPDIR: path.dirname(input.goCacheDir),
     LANG: process.env.LANG ?? "en_US.UTF-8",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -211,6 +213,18 @@ function localEnv(input: { account?: Account; goCacheDir: string }): NodeJS.Proc
     // The one passthrough for a second login: this account's config dir (nothing else from the host env).
     ...accountEnv(input.account),
   };
+}
+
+/**
+ * What a sandboxed CLI may reach of its own login. claude keeps its login in the keychain, so it needs no home (an account home is
+ * its config dir). codex and agy keep theirs in files, and a sandboxed run can write wherever its CLI can: they run only on a home
+ * of their own (the config refuses anything else), agy cut off from the keychain it would otherwise ask for.
+ */
+function confineFor(provider: CliProvider, account: Account | undefined): Confine {
+  const home = account?.home ? path.resolve(expandHome(account.home)) : null;
+  if (provider === "claude") return { state: home ? [home] : [], keychain: "login" };
+  if (!home) throw new AttemptError("auth", `the ${provider} account '${account?.id ?? provider}' has no home of its own, which a sandboxed run needs`);
+  return { state: [home], keychain: provider === "agy" ? "none" : "service" };
 }
 
 async function defaultCliInvoker(input: {
@@ -230,6 +244,8 @@ async function defaultCliInvoker(input: {
   // A remote box gets no host env at all: its only login is the placeholder CLAUDE_CODE_OAUTH_TOKEN the egress policy provides.
   const env: NodeJS.ProcessEnv = input.compute.remote ? remoteEnv() : localEnv(input);
   const cloneDir = input.workspace.path;
+  // A box or the macOS sandbox is the isolation boundary: the CLI's own sandbox comes off (macOS cannot nest them, and codex's mounts .git read-only).
+  const isolated = Boolean(input.compute.remote || input.compute.confines);
 
   let bin: string;
   let args: string[];
@@ -240,8 +256,7 @@ async function defaultCliInvoker(input: {
     args = [
       "exec",
       "--sandbox",
-      // codex's workspace-write sandbox mounts .git read-only, so a rebase or commit cannot run. A box is already the isolation boundary.
-      input.compute.remote ? "danger-full-access" : "workspace-write",
+      isolated ? "danger-full-access" : "workspace-write",
       "--ignore-user-config",
       "--ignore-rules",
       "--ephemeral",
@@ -250,7 +265,8 @@ async function defaultCliInvoker(input: {
       cloneDir,
       // The last-message file is a path on this machine; a box has no way to hand it back.
       ...(input.compute.remote ? [] : ["-o", input.outputFile]),
-      ...(input.brokerAccountId ? ["-c", 'cli_auth_credentials_store="file"'] : []),
+      // A box's synthetic login and a sandboxed run's own home both hold the login as a file: neither can open a keychain.
+      ...(input.brokerAccountId || input.compute.confines ? ["-c", 'cli_auth_credentials_store="file"'] : []),
       ...(input.model ? ["-m", input.model] : []),
       "-",
     ];
@@ -259,8 +275,7 @@ async function defaultCliInvoker(input: {
     const agyArgs = [
       "--mode",
       "auto",
-      // agy's terminal sandbox is dropped in a box for the same reason as codex's.
-      ...(input.compute.remote ? [] : ["--sandbox"]),
+      ...(isolated ? [] : ["--sandbox"]),
       "--dangerously-skip-permissions",
       "--disable-slash-commands",
       "--output-format",
@@ -269,7 +284,7 @@ async function defaultCliInvoker(input: {
       `-p=${input.prompt}`,
     ];
     // A box has no keychain to avoid and its own wrapper below; only a local run on an account with its own home needs the keychain-deny profile.
-    ({ cmd: bin, args } = input.compute.remote ? { cmd: "agy", args: agyArgs } : agyCommand(input.account, agyArgs));
+    ({ cmd: bin, args } = isolated ? { cmd: "agy", args: agyArgs } : agyCommand(input.account, agyArgs));
   } else {
     bin = "claude";
     args = [
@@ -304,6 +319,7 @@ async function defaultCliInvoker(input: {
     cmd: bin,
     args,
     env,
+    confine: input.compute.confines ? confineFor(provider, input.account) : undefined,
     stdin: stdinPrompt ?? undefined,
     timeoutMs,
     signal: abortController.signal,

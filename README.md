@@ -199,6 +199,38 @@ Archangel enforces its own reliability rules in CI so critical state transitions
 - **Exhaustive formal model checker (`bun run verify:formal`).** Explores reachable states of the Thread, Command, Pitch, and Daemon Lock state machines via BFS to verify safety invariants and liveness bounds.
 - **Structural AST lint (`bun run lint`).** Blocks silent catch handlers and recurring failure modes across the TypeScript source tree.
 
+## Running agents in the macOS sandbox
+
+`compute.provider: sandbox` keeps every agent run on this machine and confines it with a macOS Seatbelt profile (`sandbox-exec`). The agent CLI, the repo's setup script and every command the agent starts (tests, builds) run under one profile that denies by default.
+
+| The run can | The run cannot |
+|---|---|
+| Read and write its workspace, its temp dir and caches | Read anything else under your home: SSH keys, other checkouts, `.env` files |
+| Read and run the system toolchain, the directories on your `PATH`, and the CLI's own install | Write outside the workspace, temp dir and its own login |
+| Read and write the one login it runs on | Reach another CLI's login |
+| Use the network | |
+
+The last row is the difference from Sail. A sandboxed run can reach the network (the CLI must reach its model, and Seatbelt cannot filter by hostname) and it holds a real login, where a Sail box holds only a placeholder. Use Sail when that matters.
+
+Each CLI's own sandbox is turned off inside the profile, because macOS cannot nest sandboxes. That is also why codex can commit and rebase here: its own sandbox mounts `.git` read-only.
+
+**Logins.** A sandboxed run can write wherever its CLI can, so codex and agy must run on a login of their own, never the one you use yourself: give each an account with a `home` that holds only that login. The config is refused otherwise. claude keeps its login in the keychain and needs no home.
+
+```yaml
+compute:
+  provider: sandbox
+  sandbox:
+    read: [~/.bun]            # optional: toolchains under your home that are not a PATH directory
+    write: [~/go/pkg/mod]     # optional: caches a build must write
+
+accounts:
+  - { id: claude, provider: claude }
+  - { id: codex, provider: codex, home: ~/.archangel/accounts/codex }   # CODEX_HOME=<home> codex login, with cli_auth_credentials_store = "file"
+  - { id: agy, provider: agy, home: ~/.archangel/accounts/agy }         # HOME=<home> agy
+```
+
+`archangel doctor` checks that the sandbox can start. Reviews and Scouts are read-only and still run outside it.
+
 ## Running providers on Sail
 
 A provider runs on a Sail box only when it has a remote credential in `compute.sail`; otherwise it runs on this machine with its own login. This is decided per chain entry and never changes mid-Attempt. Nothing from your account homes or environment ever enters a box: it holds placeholders, and the real key is swapped in on the wire for the one allow-listed model host. Run `sail auth login` once, then pick a route per provider. `archangel doctor` checks that each named Sail secret exists.

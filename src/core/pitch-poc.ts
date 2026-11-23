@@ -75,7 +75,7 @@ export async function runPocBuild(deps: PocBuildDeps, issueNumber: number, mainS
   const handleFor = (c: ComputeProvider) =>
     new LazyWorkspace(c, { issueNumber, startSha: mainSha }, async (ws) => {
       try {
-        await broker.runRepoSetup(ws.path, mainSha, cfg.setupTimeoutMs, c.remote ? (spec) => c.exec(ws, spec) : undefined);
+        await broker.runRepoSetup(ws.path, mainSha, cfg.setupTimeoutMs, c.remote || c.confines ? { exec: (spec) => c.exec(ws, spec), remote: Boolean(c.remote) } : undefined);
       } catch (err) {
         throw new AttemptError("setup_failed", err instanceof Error ? err.message : String(err));
       }
