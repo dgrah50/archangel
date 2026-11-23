@@ -30,5 +30,3 @@ export function stepCommand(state: CommandState, ev: CommandEvent): CommandStep 
       return state.kind === "pending" ? { ok: true, next: { kind: "cancelled", reason: ev.reason } } : reject("a claimed or finished command cannot be cancelled");
   }
 }
-
-export const isTerminal = (s: CommandState) => s.kind === "completed" || s.kind === "failed" || s.kind === "cancelled";

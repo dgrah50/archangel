@@ -31,16 +31,6 @@ export interface CorrectionCounts {
   factoryRetries: Record<string, number>;
 }
 
-export const EMPTY_CORRECTIONS: CorrectionCounts = {
-  windowDays: null,
-  vetoOverruled: 0,
-  disagreements: 0,
-  ownerRetriesByCode: {},
-  reverts: 0,
-  findings: {},
-  factoryRetries: {},
-};
-
 /** First path segment as a slug (`src/core/x.ts` -> `src`, `README.md` -> `.`), or `other` for anything that is not a plain repo path. */
 export function topLevelDir(file: string): string {
   const parts = file.replace(/\\/g, "/").replace(/^\.\//, "").split("/");

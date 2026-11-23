@@ -18,8 +18,6 @@ export function cooldownAfterLimit(message: string, fallbackMs = ACCOUNT_COOLDOW
   return ms > 0 ? ms : fallbackMs;
 }
 
-/** A CLI-provided usage reading older than this is shown as stale. It is only ever a tie-breaker. */
-export const READING_STALE_MS = 30 * 60_000;
 
 /** What the selector may know about each account. Every method is a cheap read; none touches a token. */
 export interface AccountState {
