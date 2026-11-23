@@ -1,3 +1,4 @@
+import { agyCommand } from "../compute/agy-broker-adapter.js";
 import { execInGroup } from "../compute/local.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -153,8 +154,7 @@ export async function defaultReviewerCliInvoker(input: {
     ];
     stdinPrompt = input.prompt;
   } else if (input.provider === "agy") {
-    bin = "agy";
-    args = [
+    ({ cmd: bin, args } = agyCommand(input.account, [
       "--mode",
       "plan",
       "--disable-slash-commands",
@@ -164,7 +164,7 @@ export async function defaultReviewerCliInvoker(input: {
       schemaStr,
       ...(input.model ? ["--model", input.model] : []),
       `-p=${input.prompt}`,
-    ];
+    ]));
   } else {
     bin = "claude";
     args = [

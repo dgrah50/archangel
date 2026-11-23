@@ -1,4 +1,4 @@
-import { AGY_PLACEHOLDER_ENV, AGY_TOKEN_FILE } from "../compute/agy-broker-adapter.js";
+import { AGY_PLACEHOLDER_ENV, AGY_TOKEN_FILE, agyCommand } from "../compute/agy-broker-adapter.js";
 import { CODEX_PLACEHOLDER_ENV } from "../compute/codex-broker-adapter.js";
 import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
@@ -256,8 +256,7 @@ async function defaultCliInvoker(input: {
     ];
     stdinPrompt = input.prompt;
   } else if (input.provider === "agy") {
-    bin = "agy";
-    args = [
+    const agyArgs = [
       "--mode",
       "auto",
       // agy's terminal sandbox is dropped in a box for the same reason as codex's.
@@ -269,6 +268,8 @@ async function defaultCliInvoker(input: {
       ...(input.model ? ["--model", input.model] : []),
       `-p=${input.prompt}`,
     ];
+    // A box has no keychain to avoid and its own wrapper below; only a local run on an account with its own home needs the keychain-deny profile.
+    ({ cmd: bin, args } = input.compute.remote ? { cmd: "agy", args: agyArgs } : agyCommand(input.account, agyArgs));
   } else {
     bin = "claude";
     args = [
