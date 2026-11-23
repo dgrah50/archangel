@@ -793,7 +793,6 @@ export class Reconciler {
   private async processPendingCommands(mainSha: string, now: number): Promise<void> {
     const cmds = this.ledger.listPendingCommands();
     for (const cmd of cmds) {
-      if (cmd.kind !== "handoff") continue;
       // Claim first: if the CLI already cancelled (timed out), this fails and the Thread is left alone.
       if (!this.ledger.claimCommand(cmd.id, now)) continue;
       try {
@@ -1088,10 +1087,10 @@ export class Reconciler {
    * with the guidance as a labelled machine note; anything else (an escalate answer, an invalid or unsafe answer, a failed run, no
    * eligible vendor) releases the Needs You. Triage never approves, overrules a veto, grants budget or merges.
    */
-  private async runTriage(thread: ThreadRecord, issue: GitHubIssue | undefined, mainSha: string, now: number): Promise<void> {
+  private async runTriage(thread: ThreadRecord, issue: GitHubIssue, mainSha: string, now: number): Promise<void> {
     if (thread.phase.kind !== "needs_you" || thread.factoryTriage !== "pending") return;
     const phase = thread.phase;
-    if (!isTriageEligible(phase.code) || !issue || !this.factoryRetryOn() || thread.mode !== "autonomous") {
+    if (!isTriageEligible(phase.code) || !this.factoryRetryOn() || thread.mode !== "autonomous") {
       this.releaseTriage(thread, "factory retry is not available for this Thread.", "unavailable", now);
       return;
     }
@@ -1184,8 +1183,8 @@ export class Reconciler {
    * per needs_you entry (the audit row is written whatever the outcome), never retried, bounded per repo per day, and only through the
    * triage chain's read-only invoker. The text is untrusted: vetted, secret-scanned, shown only as machine advice, never posted to GitHub.
    */
-  private async runRecommendation(thread: ThreadRecord, issue: GitHubIssue | undefined, mainSha: string, now: number): Promise<void> {
-    if (thread.phase.kind !== "needs_you" || !issue || thread.factoryTriage === "pending") return;
+  private async runRecommendation(thread: ThreadRecord, issue: GitHubIssue, mainSha: string, now: number): Promise<void> {
+    if (thread.phase.kind !== "needs_you" || thread.factoryTriage === "pending") return;
     if (this.ledger.threadRecommendationFor(thread) !== null) return;
     if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
     if (this.ledger.recommendationsInLast24h(now) >= KERNEL.recommendationsPerRepoPerDay) return;
@@ -1303,7 +1302,7 @@ export class Reconciler {
    */
   private async processOwnerCommands(
     thread: ThreadRecord,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     now: number,
   ): Promise<ThreadRecord | "stop" | null> {
     if (thread.phase.kind !== "needs_you") return null;
@@ -1329,7 +1328,6 @@ export class Reconciler {
       }
       const command = firstLine.split(/\s+/)[1]?.toLowerCase() ?? "";
       if (command === "retry") {
-        if (!issue) return null;
         const retried = await this.ownerRetry(thread, issue, "comment", now);
         if (!retried) return "stop";
         this.ledger.recordOwnerCommand(c.id, thread.issueNumber, "retry", "owner", now);
@@ -1388,7 +1386,7 @@ export class Reconciler {
 
   private async reconcileThread(
     thread: ThreadRecord,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     mainSha: string,
     now: number,
   ): Promise<void> {
@@ -1425,7 +1423,7 @@ export class Reconciler {
     const fixForwardMergeId = this.ledger.fixForwardMergeId(thread.issueNumber);
     if (fixForwardMergeId !== null && (await this.closeFixForwardIfRevertLanded(thread, pr, fixForwardMergeId, now))) return;
 
-    const combinedLabels = [...new Set([...(issue?.labels ?? []), ...(pr?.labels ?? [])])];
+    const combinedLabels = [...new Set([...issue.labels, ...(pr?.labels ?? [])])];
     if (thread.phase.kind === "shadow_ready") {
       let disagreed = false;
       if (combinedLabels.includes(this.cfg.labels.disagree)) {
@@ -1472,7 +1470,6 @@ export class Reconciler {
       // A missing label only means "owner removed it" once our own add_label has been delivered; while it is
       // still queued (GitHub error, or a race inside this tick) the Thread must keep waiting.
       if (
-        issue &&
         !combinedLabels.includes(this.cfg.labels.needsYou) &&
         !this.ledger.hasPendingLabelAdd(thread.issueNumber, this.cfg.labels.needsYou)
       ) {
@@ -1506,7 +1503,7 @@ export class Reconciler {
     }
 
     // 6. Body edit TOCTOU check (ONLY while control === 'run' and not already needs_you/owner_driving/done — fixes O2, O3!).
-    if (issue && sha256(issue.body) !== thread.bodySha256) {
+    if (sha256(issue.body) !== thread.bodySha256) {
       const running = this.runningTasks.get(thread.issueNumber);
       if (running) {
         running.abortCause = "control";
@@ -1547,7 +1544,7 @@ export class Reconciler {
         return;
 
       case "queued": {
-        if (!issue || this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
+        if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return;
         // A chained pitch slice waits, queued, until the slice before it has merged; if that one ended unmerged, ask the owner once.
         const dependsOn = this.ledger.getThreadDependency(thread.issueNumber);
         if (dependsOn !== null) {
@@ -1602,14 +1599,14 @@ export class Reconciler {
       }
 
       case "reviewing": {
-        if (!pr || !issue) return;
+        if (!pr) return;
         await this.reconcileReviews(thread, pr, issue, mainSha, now);
         return;
       }
 
       case "landing": {
         if (!pr) return;
-        await this.reconcileLanding(thread, pr, issue, mainSha, now);
+        await this.reconcileLanding(thread, issue, mainSha, now);
         return;
       }
 
@@ -2313,7 +2310,7 @@ export class Reconciler {
   private async reconcileGateWait(
     thread: ThreadRecord,
     pr: GitHubPr,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     mainSha: string,
     now: number,
   ): Promise<void> {
@@ -2323,9 +2320,7 @@ export class Reconciler {
     // never appear. Resolve the conflict first; do not let the missing checks time out.
     if (pr.mergeable === false && thread.mode === "autonomous") {
       const cleanMergeTree = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
-      await this.rebaseOntoMain(thread, pr, issue, mainSha, cleanMergeTree, [
-        { code: "merge_conflict", message: "PR conflicts with the base branch; the Gate cannot run until it is rebased" },
-      ] as ReturnType<typeof computeBlockers>, now);
+      await this.rebaseOntoMain(thread, pr, issue, mainSha, cleanMergeTree, now);
       return;
     }
     // GitHub is still computing mergeability (and has not started workflows yet): keep waiting, and restart the
@@ -2405,7 +2400,6 @@ export class Reconciler {
         });
         if (
           thread.mode === "autonomous" &&
-          issue &&
           thread.revisionCount < budget(this.cfg.maxRevisionsPerThread, thread)
         ) {
           if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
@@ -2581,7 +2575,7 @@ export class Reconciler {
       { auditTopic: "review/quorum_approved", now },
     );
     if (landing) {
-      await this.reconcileLanding(landing, pr, issue, mainSha, now);
+      await this.reconcileLanding(landing, issue, mainSha, now);
     }
   }
 
@@ -2628,7 +2622,7 @@ export class Reconciler {
   private async freshCiAfterInfraRetry(
     thread: ThreadRecord,
     pr: GitHubPr,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     mainSha: string,
     failedGateCheckId: number | undefined,
     now: number,
@@ -2642,9 +2636,7 @@ export class Reconciler {
     if (pr.baseSha !== mainSha) {
       this.ledger.appendAudit("thread/infra_retry_handled", thread.issueNumber, "archangel", { via: "rebase" }, now);
       const clean = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
-      await this.rebaseOntoMain(thread, pr, issue, mainSha, clean, [
-        { code: "branch_behind_main", message: "Owner retry after a CI infrastructure failure: rerun CI on current main" },
-      ] as ReturnType<typeof computeBlockers>, now);
+      await this.rebaseOntoMain(thread, pr, issue, mainSha, clean, now);
       return true;
     }
     if (failedGateCheckId === undefined) return false;
@@ -2666,10 +2658,9 @@ export class Reconciler {
   private async rebaseOntoMain(
     thread: ThreadRecord,
     pr: GitHubPr,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     mainSha: string,
     cleanMergeTree: boolean,
-    blockers: ReturnType<typeof computeBlockers>,
     now: number,
   ): Promise<void> {
     // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
@@ -2697,7 +2688,7 @@ export class Reconciler {
           },
         );
         if (moved) {
-          this.logger?.info(
+          this.logger.info(
             "broker/deterministic_rebase",
             `Rebased ${thread.branchName} onto ${mainSha.slice(0, 8)} -> ${rebased.headSha.slice(0, 8)} (0 LLM tokens)`,
             { repo: this.ledger.repo, issue: thread.issueNumber },
@@ -2707,12 +2698,12 @@ export class Reconciler {
         return;
       }
     }
-    if (issue && thread.rebaseCount < rebaseBudget) {
+    if (thread.rebaseCount < rebaseBudget) {
       if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
       await this.spawnAttempt(thread, issue, "rebase", mainSha, [], [], now);
       return;
     }
-    if (issue && (await this.retryConflictFromMain(thread, pr, issue, mainSha, now))) return;
+    if (await this.retryConflictFromMain(thread, pr, issue, mainSha, now)) return;
     this.applyMachineEvent(
       thread,
       {
@@ -2795,8 +2786,7 @@ export class Reconciler {
 
   private async reconcileLanding(
     thread: ThreadRecord,
-    _stalePr: GitHubPr,
-    issue: GitHubIssue | undefined,
+    issue: GitHubIssue,
     mainSha: string,
     now: number,
   ): Promise<void> {
@@ -2852,7 +2842,7 @@ export class Reconciler {
       headSha: pr.headSha,
       shaRecordedByBroker: shaInfo.known && shaInfo.origin === "broker",
       postHandoff: thread.mode === "advisory",
-      labels: [...new Set([...pr.labels, ...(issue?.labels ?? [])])],
+      labels: [...new Set([...pr.labels, ...issue.labels])],
       pauseLabel: this.cfg.labels.paused,
       stopLabel: this.cfg.labels.stop,
       circuitBreakerTripped: cb.tripped,
@@ -2883,15 +2873,7 @@ export class Reconciler {
       blockers.some((b) => b.code === "merge_conflict" || b.code === "branch_behind_main") &&
       thread.mode === "autonomous"
     ) {
-      await this.rebaseOntoMain(
-        thread,
-        pr,
-        issue,
-        mainSha,
-        mergeTreeClean && !blockers.some((b) => b.code === "merge_conflict"),
-        blockers,
-        now,
-      );
+      await this.rebaseOntoMain(thread, pr, issue, mainSha, mergeTreeClean && !blockers.some((b) => b.code === "merge_conflict"), now);
       return;
     }
 

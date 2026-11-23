@@ -27,3 +27,7 @@ designs/
 
 # gridlines skill captures
 .gridlines/
+
+# Claude Code: agent worktrees and personal settings
+.claude/worktrees/
+.claude/settings.local.json
