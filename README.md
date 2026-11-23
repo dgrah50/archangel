@@ -340,7 +340,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 | `archangel daemon <install\|restart\|uninstall\|status>` | Install, gracefully restart (waiting for Ledger lock release), uninstall, or inspect the macOS `launchd` agents for the daemon and the dashboard. |
 | `archangel onboard <repo> [--dry-run]` | Create labels and open one onboarding PR with your `gh` CLI (never auto-merged). |
 | `archangel bump <repo> [pkgs...] [--patch\|--minor] [--yes]` | Bump dependencies in a throwaway clone with install scripts disabled, run `testCmd`, and open an owner-authored PR (never merged or run by the daemon). |
-| `archangel doctor [--offline] [--smoke] [--json]` | Verify host config, GitHub App permissions, repo files, Gate pin drift, and CLI logins. |
+| `archangel doctor [--offline] [--smoke] [--json]` | Verify host config, GitHub App permissions, repo files, Gate pin, and CLI logins. |
 | `archangel ui [--port <n>] [--host <host>] [--allow-remote]` | Serve the local 7-page dashboard. Host and port default to `ui.host` / `ui.port` in `archangel.yaml` (else `http://127.0.0.1:4477`). Remote mode disables all write routes. |
 | `archangel status [--repo <owner/name>] [--json]` | Print active Threads, `Needs you` queue, daily spend, merges, and shadow agreement. |
 | `archangel metrics [--days <n>] [--repo <owner/name>] [--json]` | Print outcomes per merged fix, owner corrections, vendor agreement, and active cooldowns. |
@@ -351,7 +351,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 | `archangel pitch promote <repo> <issue> --slice <n> --build [--yes]` | Owner-run self-build for a slice touching protected paths: implements it locally, shows the diff, then opens an owner-authored PR from `selfbuild/<issue>-<n>`. You merge it; the daemon never does. |
 | `archangel workflow propose <repo> --file <path> [--prompts <dir>] [--base-sha <sha256>] [--dry-run]` | Validate a `.agents/archangel.json` draft and open one unmerged PR. |
 | `archangel gate --base <ref> [--head <ref>] [--repo <dir>] [--skip-tests]` | Run the mechanical Gate locally against a repository ref. |
-| `archangel gate-bump <--repo <owner/name>\|--all> [--dry-run]` | Open PRs to re-pin `ARCHANGEL_GATE_SHA` on repositories with Gate pin drift. |
+| `archangel gate-bump <--repo <owner/name>\|--all> [--dry-run]` | Open PRs to re-pin `ARCHANGEL_GATE_SHA`. Run it when a Gate fix matters; an older pinned Gate is safe. |
 | `archangel replay [--repo <owner/name>] [--since <days>] [--run-tests] [--json]` | Replay the mechanical Gate offline against captured PRs and seeded corruptions. |
 | `archangel eval status [--repo <owner/name>]` | Show captured eval vault counts against calibration milestones. |
 | `archangel eval run --candidate <patch> [--heldout] [--max-cases <n>] [--json]` | Score a candidate prompt, skill, or rubric patch offline against captured review cases. |

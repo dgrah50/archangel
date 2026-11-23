@@ -2404,8 +2404,12 @@ export class Reconciler {
           return;
         }
         // What the agent needs to fix is the failure text (the failing test), not just the check name. Untrusted data; the tail is kept.
+        // A Gate failure that is not a failing head test has no head_output; its violations come from the job log.
+        // Untrusted: used only in the revise prompt, never for a trust or landing decision.
+        const gateViolations =
+          gateCheck && !gateProof?.head_output ? (await this.github.getGateViolations(gateCheck.id)).join("\n") : undefined;
         const failMsgs = verdict.failed.map((f) => {
-          const detail = (f.name === "Gate" ? gateProof?.head_output : checks.find((c) => c.name === f.name)?.output)?.trim();
+          const detail = (f.name === "Gate" ? gateProof?.head_output ?? gateViolations : checks.find((c) => c.name === f.name)?.output)?.trim();
           return `${f.name}: ${f.conclusion}${detail ? `\n${detail.slice(-1_200)}` : ""}`;
         });
         if (
