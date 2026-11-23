@@ -96,6 +96,9 @@ async function fixture(spec: Record<string, unknown> & { name: string } = SPEC) 
         prompts.push(i.prompt);
         // The claude CLI rejects a schema that carries a `$schema` dialect line, which failed every pitch run.
         expect(Object.keys(i.outputSchema ?? {})).not.toContain("$schema");
+        // No remote compute was given, so the Scout must run the local CLI (an `exec` sends it down the remote-box path).
+        expect(i.exec).toBeUndefined();
+        if (answer instanceof Error) throw answer;
         return answer;
       },
     }).then((res) => ({ res, called }));
@@ -121,6 +124,22 @@ describe("workflow kernel rules for pitch Scouts", () => {
 });
 
 describe("pitch Scout runs", () => {
+  it("a failed run is due again the next day (not next week, not next tick) and gives its daily slot back", async () => {
+    const f = await fixture();
+    const config = { ...f.config, scouts: { ...f.config.scouts, maxRunsPerDay: 1 } };
+    const DAY = 86_400_000;
+    try {
+      await expect(f.run(new Error("claude exited 1"), { config, onlyScheduled: true })).rejects.toThrow("claude exited 1");
+      expect((await f.run(out(pitch()), { config, onlyScheduled: true, now: NOW + 60_000 })).called).toBe(false);
+      await expect(f.run(new Error("claude exited 1"), { config, onlyScheduled: true, now: NOW + DAY })).rejects.toThrow("claude exited 1");
+      // The cap is one run a day and that day's run failed: an owner-started run still goes ahead.
+      const { res } = await f.run(out(pitch()), { config, now: NOW + DAY + 60_000 });
+      expect(res[0]).toMatchObject({ status: "ran", filedIssues: [300] });
+    } finally {
+      f.cleanup();
+    }
+  });
+
   it("files a valid pitch as an agent-pitch issue, records it, and never promotes it", async () => {
     const f = await fixture();
     try {
