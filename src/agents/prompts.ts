@@ -229,8 +229,9 @@ export function buildRebasePrompt(input: {
     `Rebase Attempt for Issue #${input.issueNumber}: ${input.title}`,
     "",
     ...formatRepoInstructions(input.repoInstructions),
-    `The branch \`factory/${input.issueNumber}\` has merge conflicts with \`${input.baseBranch}\`.`,
-    `Rebase onto \`${input.baseBranch}\` cleanly, resolve conflicts without modifying test files that exist on \`${input.baseBranch}\` (test files this branch added are yours to edit) or weakening your reproduction test, verify repo pre-commit hooks and ${testCmd}, and leave the rebased commit on \`factory/${input.issueNumber}\`.`,
+    `This issue's branch and \`${input.baseBranch}\` changed the same lines. Your working tree is \`${input.baseBranch}\` with the branch's whole change already applied on top; the files both sides changed contain git conflict markers (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`), and \`git status\` lists them as unmerged.`,
+    `Resolve every conflict by editing those files so that the change on \`${input.baseBranch}\` and this branch's change both hold, and no marker remains. Leave your edits in the working tree: they are committed for you. Do not run git commands that write (no rebase, merge, commit, checkout or reset).`,
+    `Do not modify test files that exist on \`${input.baseBranch}\` (test files this branch added are yours to edit) and do not weaken the reproduction test. Run the repo pre-commit hooks and ${testCmd} until green.`,
     "Do NOT modify protected paths. Do NOT attempt to push.",
     ...(input.ownerReply ? ["", ...formatOwnerReply(input.ownerReply)] : []),
   ].join("\n");

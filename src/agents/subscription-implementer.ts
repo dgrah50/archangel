@@ -6,7 +6,7 @@ import os from "node:os";
 import { tryParseJson } from "../core/json.js";
 import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
-import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
+import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, cooldownAfterLimit, selectAccount, type AccountLedger } from "../core/accounts.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
 import { AttemptError, type AttemptErrorCategory, type ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
@@ -469,6 +469,14 @@ export class SubscriptionImplementer implements Implementer {
     }
   }
 
+  blockedUntil(role: WriterRole, now: number): number | null {
+    const logins = this.chains[role].map((entry) => accountsFor(this.accounts, entry));
+    if (logins.some((accounts) => selectAccount(accounts, this.state, now) !== null)) return null;
+    const cooldownEnds = logins.flat().flatMap((a) => this.state.cooldownUntil(a.id, now) ?? []);
+    // Nothing cooling yet nothing selectable: every login is at its daily cap, which lifts with the local day. Look again in an hour.
+    return cooldownEnds.length > 0 ? Math.min(...cooldownEnds) : now + 3_600_000;
+  }
+
   async run(input: ImplementInput): Promise<ImplementResult> {
     fs.mkdirSync(this.transcriptsDir, { recursive: true });
     const transcriptPath = path.join(
@@ -628,7 +636,7 @@ export class SubscriptionImplementer implements Implementer {
           if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "), runBy);
 
           // Continuity failover: cool this account down, then move on (same vendor's next account, else the next entry).
-          this.state.recordCooldown(account.id, this.cooldownDurationMs, errorSignal.slice(0, 200));
+          this.state.recordCooldown(account.id, cooldownAfterLimit(errorSignal, this.cooldownDurationMs), errorSignal.slice(0, 200));
           switches++;
           if (switches > MAX_ACCOUNT_SWITCHES) {
             throw new AttemptError("quota", `account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`, runBy);

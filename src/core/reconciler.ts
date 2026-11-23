@@ -18,7 +18,7 @@ import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
-import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
+import { AttemptError, type AttemptErrorCategory, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, Ledger } from "../ledger/store.js";
 import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { LocalProvider } from "../compute/local.js";
@@ -137,6 +137,26 @@ const DETERMINISTIC_REBASE_CAP = 8;
 /** The conventional-commit type a PR title and its squash commit carry, by work class. */
 const PR_TITLE_PREFIX: Record<WorkClass, string> = { bugfix: "fix", feature: "feat", chore: "chore" };
 
+/**
+ * Puts a conflict with main in front of the agent as files to edit: the workspace becomes main with the branch's whole change
+ * applied on top (`git merge --squash`), and the files both sides changed carry git's conflict markers. The agent only edits
+ * files, and the Broker commits the tree it leaves, as for any Attempt. Asking the agent to run `git rebase` cannot work: codex's
+ * sandbox keeps `.git` read-only, so the rebase never started and the Attempt came back with the same head.
+ */
+async function stageConflict(compute: ComputeProvider, ws: Workspace, branchSha: string, mainSha: string): Promise<void> {
+  const git = async (args: string[], okCodes: number[]): Promise<void> => {
+    const res = await compute.exec(ws, {
+      cmd: "git",
+      args,
+      env: { PATH: compute.remote ? "/usr/local/bin:/usr/bin:/bin" : (process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      timeoutMs: 60_000,
+    });
+    if (res.code === null || !okCodes.includes(res.code)) throw new Error(`git ${args[0]} exited ${res.code} while staging the conflict: ${res.stderr.trim().slice(-300)}`);
+  };
+  await git(["reset", "-q", "--hard", mainSha], [0]);
+  await git(["merge", "--squash", "--no-commit", branchSha], [0, 1]); // 1: conflicts, which is the point
+}
+
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
   private readonly ledger: Ledger;
@@ -161,6 +181,8 @@ export class Reconciler {
   private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
   /** The review round the tick is waiting on, if any. Reviews run inside the tick, so a shutdown has to be able to stop one. */
   private reviewInFlight: AbortController | null = null;
+  /** The cooldown end the "every login is at its limit" wait was last logged for, so it is said once per wait, not once per tick. */
+  private quotaWaitLogged: number | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
@@ -1718,6 +1740,18 @@ export class Reconciler {
       return false;
     }
 
+    // Every login that could run this is at its usage limit: the Thread waits where it is, and the first tick after a cooldown
+    // ends starts it. A usage limit is the provider's clock running, not a decision for the owner, so nothing is escalated.
+    const blockedUntil = this.implementer.blockedUntil?.(kind === "plan" ? "implement" : kind, now) ?? null;
+    if (blockedUntil !== null) {
+      if (this.quotaWaitLogged !== blockedUntil) {
+        this.quotaWaitLogged = blockedUntil;
+        this.logger.warn("accounts/all_at_limit", `Every ${kind} login is at its usage limit; Attempts wait until about ${new Date(blockedUntil).toISOString()}`, { repo: this.ledger.repo, data: { kind, until: blockedUntil } });
+        this.ledger.appendAudit("accounts/all_at_limit", null, "archangel", { kind, until: blockedUntil }, now);
+      }
+      return false;
+    }
+
     const desiredReserve = Math.min(this.cfg.maxDailyUsd, 5.0);
     const reservedUsd = this.ledger.reserveBudget(this.cfg.maxDailyUsd, desiredReserve, 0.05, now);
     if (reservedUsd === null) {
@@ -1822,6 +1856,7 @@ export class Reconciler {
     // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
     const handleFor = (compute: ComputeProvider) =>
       new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha, baseSha: mainSha }, async (ws) => {
+        if (kind === "rebase") await stageConflict(compute, ws, fromSha, mainSha);
         // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
         try {
           await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);
@@ -1838,6 +1873,17 @@ export class Reconciler {
       remote?.destroy();
     };
     let ranOn: WorkspaceHandle = local;
+
+    /** Ends the Attempt as failed and escalates its Thread with `ev`, unless something else already moved the Thread. */
+    const fail = (
+      finish: { errorCategory: AttemptErrorCategory; errorMessage: string; headSha?: string },
+      ev: Extract<MachineEvent, { t: "attempt_failed" }>,
+      extra: { lastSummary?: string } = {},
+    ): void => {
+      this.ledger.finishAttempt(attemptId, { status: "failed", costUsd: actualCostUsd, reservedUsd, transcriptPath, ...finish });
+      const latest = this.ledger.getThread(workingThread.issueNumber);
+      if (latest && latest.version === workingThread.version) this.applyMachineEvent(latest, ev, { auditTopic: "thread/needs_you", ...extra });
+    };
 
     try {
       // Without a remote provider the one workspace is prepared up front, exactly as before.
@@ -2023,48 +2069,20 @@ export class Reconciler {
 
       // Nothing changed against main: not a policy failure. The implementer's own account of why is what the owner needs, so it is kept.
       if (validation.changedFiles.length === 0) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "The Attempt changed nothing against main",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
-            { auditTopic: "thread/needs_you", lastSummary: result.summary },
-          );
-        }
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "The Attempt changed nothing against main" },
+          { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
+          { lastSummary: result.summary },
+        );
         return;
       }
 
       if (validation.protectedViolations.length > 0) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "static_rejection",
-          errorMessage: validation.protectedViolations.join("; "),
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            {
-              t: "attempt_failed",
-              code: "broker_policy_failed",
-              reason: `Broker pre-push validation failed: ${validation.protectedViolations.join("; ")}`,
-            },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+        const violations = validation.protectedViolations.join("; ");
+        fail(
+          { headSha: validation.headSha, errorCategory: "static_rejection", errorMessage: violations },
+          { t: "attempt_failed", code: "broker_policy_failed", reason: `Broker pre-push validation failed: ${violations}` },
+        );
         return;
       }
 
@@ -2138,62 +2156,26 @@ export class Reconciler {
 
       // Detect no-op revisions so we escalate instead of re-pushing an identical SHA back into awaiting_gate.
       if (kind === "revise" && validation.headSha === fromSha) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "Revision attempt produced no new changes (identical SHA)",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
-          // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
-          const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
-          const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
-          this.applyMachineEvent(
-            latest,
-            conflict
-              ? {
-                  t: "attempt_failed",
-                  code: "existing_test_conflict",
-                  reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.`,
-                }
-              : {
-                  t: "attempt_failed",
-                  code: "revision_no_change",
-                  reason: "Revision attempt produced no new changes (identical SHA).",
-                },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+        // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
+        // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
+        const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
+        const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "Revision attempt produced no new changes (identical SHA)" },
+          conflict
+            ? { t: "attempt_failed", code: "existing_test_conflict", reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.` }
+            : { t: "attempt_failed", code: "revision_no_change", reason: "Revision attempt produced no new changes (identical SHA)." },
+        );
         return;
       }
 
-      // A rebase that left the head unchanged: either main already holds the branch's change, or the rebase did nothing.
-      if (kind === "rebase" && validation.headSha === fromSha) {
-        const alreadyOnMain = await this.broker.isAlreadyOnMain(mainSha, fromSha);
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "Rebase attempt produced no new changes (identical SHA)",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            alreadyOnMain
-              ? { t: "attempt_failed", code: "already_fixed", reason: "The branch's change is already on main; the rebase left nothing to push." }
-              : { t: "attempt_failed", code: "revision_no_change", reason: "Rebase attempt produced no new changes (identical SHA)." },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+      // The workspace started as main with the branch's change applied and conflict markers in the files both changed (see
+      // stageConflict). Markers still in the result mean the conflict was not resolved.
+      if (kind === "rebase" && /^\+(?:<{7}|>{7})(?: |$)/m.test((await this.broker.getDiffAndTouchedFiles(mainSha, validation.headSha)).diffText)) {
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "The rebase Attempt left conflict markers in the files" },
+          { t: "attempt_failed", code: "merge_conflict", reason: "The branch conflicts with main and the rebase Attempt left the conflict markers unresolved." },
+        );
         return;
       }
 
@@ -2300,6 +2282,15 @@ export class Reconciler {
       const cause = err instanceof AttemptError ? err.category : undefined;
       // The Thread still parks in Needs you (nothing retries by itself), but a run that never reached the issue is not one of its Attempts.
       if (isInfrastructureFailure(cause)) this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
+      // Every login hit its usage limit mid-run (each is now cooling down). The Thread goes back to where it resumes and waits
+      // with the others (see spawnAttempt) instead of each one asking the owner to retry it by hand.
+      if (cause === "quota") {
+        const current = this.ledger.getThread(workingThread.issueNumber);
+        if (current && current.version === workingThread.version) {
+          this.applyMachineEvent(current, { t: "attempt_aborted", cause: "control", now: Date.now() }, { auditTopic: "attempt/quota_wait", auditPayload: { error: msg.slice(0, 300) }, now: Date.now() });
+        }
+        return;
+      }
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
@@ -2536,7 +2527,9 @@ export class Reconciler {
         if (stop.signal.aborted) return;
         if (batch.errors.length > 0) {
           const errMsg = batch.errors.map((e) => `${e.vendor}: ${e.error}`).join("; ");
-          await this.handleReviewOutage(thread, errMsg, now);
+          // The round is complete only when every missing reviewer is back, so the latest known return time counts.
+          const retryAts = batch.errors.flatMap((e) => e.retryAt ?? []);
+          await this.handleReviewOutage(thread, errMsg, now, retryAts.length > 0 ? Math.max(...retryAts) : undefined);
           return;
         }
       } catch (err) {
@@ -2587,22 +2580,31 @@ export class Reconciler {
     }
   }
 
-  private async handleReviewOutage(thread: ThreadRecord, errMsg: string, now: number): Promise<void> {
+  /**
+   * A reviewer could not run. The Thread waits up to `reviewerOutageMaxMs` for it to come back, then asks the owner. When the
+   * provider said when it will be back (`retryAt`, from a usage-limit message) and that is further away than the wait, waiting
+   * is pointless: the owner is asked at once, with the date.
+   */
+  private async handleReviewOutage(thread: ThreadRecord, errMsg: string, now: number, retryAt?: number): Promise<void> {
     if (thread.phase.kind !== "reviewing") return;
     const outageSince = thread.phase.outageSince ?? now;
-    if (now - outageSince >= this.cfg.reviewerOutageMaxMs) {
+    const knownLong = retryAt !== undefined && retryAt - now >= this.cfg.reviewerOutageMaxMs;
+    if (knownLong || now - outageSince >= this.cfg.reviewerOutageMaxMs) {
       this.applyMachineEvent(
         thread,
         {
           t: "escalate",
           code: "review_outage",
-          reason: `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
+          reason: knownLong
+            ? `A required reviewer is at its usage limit until ${new Date(retryAt).toISOString()}, longer than the ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h the factory waits: ${errMsg}`
+            : `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
         },
         { auditTopic: "thread/needs_you", now },
       );
       return;
     }
     if (thread.phase.outageSince === null) {
+      this.logger.warn("review/outage_started", `Review is waiting on a reviewer (up to ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h): ${errMsg}`, { repo: this.ledger.repo, issue: thread.issueNumber });
       this.applyMachineEvent(
         thread,
         { t: "review_outage", now },

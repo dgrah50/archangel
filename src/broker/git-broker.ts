@@ -669,17 +669,6 @@ export class GitBroker {
     }
   }
 
-  /** True when merging `headSha` into `mainSha` changes nothing: the branch's change is already on main. A conflicting merge is false. */
-  async isAlreadyOnMain(mainSha: string, headSha: string): Promise<boolean> {
-    try {
-      const tree = (await this.runGit(this.bareRepoPath, ["merge-tree", "--write-tree", mainSha, headSha])).trim();
-      return tree === (await this.runGit(this.bareRepoPath, ["rev-parse", `${mainSha}^{tree}`])).trim();
-    } catch (err) {
-      if (isMergeTreeConflict(err)) return false;
-      throw err;
-    }
-  }
-
   /**
    * Deterministically rebases `headSha` onto `mainSha` inside an isolated Broker clone
    * (0 LLM tokens, hooks disabled). Returns `{ ok: false }` on rebase conflict so caller can fall back.

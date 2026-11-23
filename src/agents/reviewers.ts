@@ -55,7 +55,8 @@ export interface VendorReviewResult {
 
 export interface ReviewBatchOutcome {
   results: VendorReviewResult[];
-  errors: Array<{ vendor: ReviewerVendor; error: string }>;
+  /** `retryAt`: when the vendor's logins are all at a usage limit, the time the first is usable again. */
+  errors: Array<{ vendor: ReviewerVendor; error: string; retryAt?: number }>;
 }
 
 /** The two reviewer prompt templates. Eval swaps these to score a candidate wording against the current one. */
