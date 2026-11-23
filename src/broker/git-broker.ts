@@ -1,4 +1,4 @@
-import type { ExecResult, ExecSpec } from "../compute/provider.js";
+import type { CollectedResult, ExecResult, ExecSpec } from "../compute/provider.js";
 import type { WorkClass } from "../core/work-class.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -257,19 +257,23 @@ export class GitBroker {
    * hardened flags (fsck on fetch), then validated exactly like a clone; the scratch clone is always removed.
    */
   async fetchAndValidateCollected(
-    collected: { kind: "clone" | "bundle"; path: string },
+    collected: CollectedResult,
     issueNumber: number,
     baseSha: string,
     bounds: GatePolicy,
     workClass?: WorkClass,
   ): Promise<BrokerFetchValidation> {
     if (collected.kind === "clone") return this.fetchAndValidateFromClone(collected.path, issueNumber, baseSha, bounds, workClass);
-    await this.verifyBundle(collected.path);
+    if (collected.kind === "bundle") await this.verifyBundle(collected.path);
     const scratch = path.join(this.clonesDir, `bundle-${issueNumber}-${Date.now()}`);
     try {
       await this.runGit(this.clonesDir, ["clone", "--no-local", this.bareRepoPath, scratch]);
-      await this.runGit(scratch, ["fetch", collected.path, "+HEAD:refs/archangel/result"]);
-      await this.runGit(scratch, ["checkout", "-B", `factory/${issueNumber}`, "refs/archangel/result"]);
+      if (collected.kind === "empty") {
+        await this.runGit(scratch, ["checkout", "-B", `factory/${issueNumber}`, collected.startSha]);
+      } else {
+        await this.runGit(scratch, ["fetch", collected.path, "+HEAD:refs/archangel/result"]);
+        await this.runGit(scratch, ["checkout", "-B", `factory/${issueNumber}`, "refs/archangel/result"]);
+      }
       await this.runGit(scratch, ["remote", "remove", "origin"]);
       return await this.fetchAndValidateFromClone(scratch, issueNumber, baseSha, bounds, workClass);
     } finally {
@@ -656,6 +660,17 @@ export class GitBroker {
     try {
       await this.runGit(this.bareRepoPath, ["merge-tree", "--write-tree", baseSha, headSha]);
       return true;
+    } catch (err) {
+      if (isMergeTreeConflict(err)) return false;
+      throw err;
+    }
+  }
+
+  /** True when merging `headSha` into `mainSha` changes nothing: the branch's change is already on main. A conflicting merge is false. */
+  async isAlreadyOnMain(mainSha: string, headSha: string): Promise<boolean> {
+    try {
+      const tree = (await this.runGit(this.bareRepoPath, ["merge-tree", "--write-tree", mainSha, headSha])).trim();
+      return tree === (await this.runGit(this.bareRepoPath, ["rev-parse", `${mainSha}^{tree}`])).trim();
     } catch (err) {
       if (isMergeTreeConflict(err)) return false;
       throw err;

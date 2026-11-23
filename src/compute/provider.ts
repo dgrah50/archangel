@@ -48,10 +48,10 @@ export interface ExecResult {
 }
 
 /** What the Broker validates and fetches. A remote provider returns a bundle path instead of a clone path. */
-export interface CollectedResult {
-  kind: "clone" | "bundle";
-  path: string;
-}
+export type CollectedResult =
+  | { kind: "clone" | "bundle"; path: string }
+  /** The Attempt added no commits: HEAD is the start. The Broker validates `startSha` as an unchanged clone. */
+  | { kind: "empty"; startSha: string };
 
 /** What `expose` runs and how long it may live. */
 export interface ExposeSpec {

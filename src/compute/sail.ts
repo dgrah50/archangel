@@ -158,15 +158,19 @@ export class SailProvider implements ComputeProvider {
   }
 
   async collect(ws: Workspace): Promise<CollectedResult> {
-    await this.sh(
+    // `git bundle create` refuses an empty range, so an Attempt that changed nothing is reported as such instead of failing.
+    const out = await this.sh(
       ws.id,
       [
         `cd ${REPO_DIR}`,
         "git add -A",
         "(git diff --cached --quiet || git commit --no-verify -q -m 'archangel factory attempt')",
+        `if [ "$(git rev-list --count $(cat ${START_MARK})..HEAD)" = 0 ]; then echo EMPTY $(cat ${START_MARK}); exit 0; fi`,
         `git bundle create ${RESULT_BUNDLE} HEAD ^$(cat ${START_MARK})`,
       ].join(" && "),
     );
+    const empty = /^EMPTY ([0-9a-f]{40})\s*$/.exec(out);
+    if (empty) return { kind: "empty", startSha: empty[1]! };
     const size = Number((await this.sh(ws.id, `stat -c %s ${RESULT_BUNDLE}`)).trim());
     if (!(size <= MAX_RESULT_BUNDLE_BYTES)) throw new Error(`result bundle is ${size} bytes, over the ${MAX_RESULT_BUNDLE_BYTES} byte cap`);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sail-"));
