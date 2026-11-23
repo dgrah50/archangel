@@ -182,9 +182,9 @@ Start `archangel ui` (loopback `127.0.0.1:4477` by default) to monitor and confi
 
 | Page | What it shows |
 | --- | --- |
-| **Overview** | Waiting decisions and pitches, autonomy-cap warnings, live station line map, daily spend, cost per merged fix, and owner agreement rate. |
+| **Overview** | Fixes landed per day, Threads at each station, daily spend, cost per merged fix, owner agreement rate, usage for every account, autonomy-cap warnings, and every Thread grouped by what it is waiting for. |
 | **Needs you** | Oldest-first escalation queue with per-Thread recommendation, latest Recap (including Gate and Diff rows), blockers, Answered today log, and copyable `/archangel retry` commands. |
-| **Threads** | Two-pane Thread browser grouped by urgency with per-phase durations on the phase rail, Ledger audit timeline, and mechanical Gate proof. |
+| **Threads** | Two-pane Thread browser grouped by urgency with per-phase durations on the phase stepper, Ledger audit timeline, and mechanical Gate proof. |
 | **Pipeline** | Per-repo stage rules (Intake, Build, Gate, Review, Landing, Scouts), fleet Scout status, skills picker, and PR-only draft panel. |
 | **Pitches** | Read-only Scout pitch viewer with evidence, options considered, slice checkboxes, copyable promote commands, recently decided pitches, and next pitch Scout schedule. |
 | **Settings** | Machine settings (`Models`, `Accounts`, `Limits`, `Repos`, `Alerts`), Per-repo, Built-in kernel invariants, and Raw YAML tabs. |
