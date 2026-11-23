@@ -143,6 +143,15 @@ const PR_TITLE_PREFIX: Record<WorkClass, string> = { bugfix: "fix", feature: "fe
  * files, and the Broker commits the tree it leaves, as for any Attempt. Asking the agent to run `git rebase` cannot work: codex's
  * sandbox keeps `.git` read-only, so the rebase never started and the Attempt came back with the same head.
  */
+/** A diff with what a rebase alone changes taken out: blob ids and the line numbers (and function hint) of each hunk header. */
+function hunksOf(diffText: string): string {
+  return diffText
+    .split("\n")
+    .filter((l) => !l.startsWith("index "))
+    .map((l) => (l.startsWith("@@ ") ? "@@" : l))
+    .join("\n");
+}
+
 async function stageConflict(compute: ComputeProvider, ws: Workspace, branchSha: string, mainSha: string): Promise<void> {
   const git = async (args: string[], okCodes: number[]): Promise<void> => {
     const res = await compute.exec(ws, {
@@ -2634,15 +2643,18 @@ export class Reconciler {
   }
 
   /**
-   * A reviewer is shown the PR's diff and the full text of the files it touches, nothing else. When a clean rebase leaves that
-   * diff byte-identical (its blob ids included, so main moved only in files this PR does not touch), a second review would be
-   * given exactly the same input: the verdicts on the old head are recorded for the new one. The Gate still runs on the new head.
+   * A reviewer judges the PR's change. When a clean rebase leaves every hunk of the diff as it was, changed lines and the context
+   * around them, the change the reviewers approved is the change that will merge: the verdicts on the old head are recorded for
+   * the new one. Main may have moved elsewhere, in other files or further away in the same file (only blob ids and line numbers
+   * differ). A change that lands next to one of this PR's hunks alters its context, and the PR is reviewed again. Asking again for
+   * an unchanged change only re-rolls the verdict: reviewers have approved a diff and vetoed its rebased copy minutes later.
+   * The Gate still runs on the new head.
    */
   private async carryReviewsOver(thread: ThreadRecord, oldSha: string, newSha: string, mainSha: string, now: number): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, oldSha);
     if (reviews.length === 0) return;
     const [before, after] = await Promise.all([this.broker.getDiffAndTouchedFiles(mainSha, oldSha), this.broker.getDiffAndTouchedFiles(mainSha, newSha)]);
-    if (before.diffText !== after.diffText) return;
+    if (hunksOf(before.diffText) !== hunksOf(after.diffText)) return;
     for (const r of reviews) {
       this.ledger.recordReview({
         issueNumber: thread.issueNumber,
