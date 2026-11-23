@@ -120,8 +120,8 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
   max_attempts: {
     decisionClass: "spending",
-    short: "recommends retry for one more Attempt, or close",
-    recommendation: "The Thread has used its Attempts. A retry grants one more Attempt (and one more revision); comment what it should do differently first, or close the issue if it is not worth more runs.",
+    short: "recommends retry for a fresh budget, or close",
+    recommendation: "The Thread has used its Attempts. A retry grants a fresh budget of them; comment what it should do differently first, or close the issue if it is not worth more runs.",
   },
 };
 

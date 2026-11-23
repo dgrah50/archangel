@@ -157,6 +157,16 @@ async function stageConflict(compute: ComputeProvider, ws: Workspace, branchSha:
   await git(["merge", "--squash", "--no-commit", branchSha], [0, 1]); // 1: conflicts, which is the point
 }
 
+/**
+ * How many of something (Attempts, revisions, rebases, plans) a Thread may have run by now: the per-Thread limit to start with,
+ * and a fresh one for every time the owner answered it (at least one each time, so a limit of 0 still lets the owner's answer
+ * reach an Attempt). A fresh budget lets the Thread finish (an implement and the revision its review asks for) instead of
+ * coming back to the owner after a single Attempt.
+ */
+function budget(limit: number, thread: Pick<ThreadRecord, "retryGrants">): number {
+  return limit + thread.retryGrants * Math.max(limit, 1);
+}
+
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
   private readonly ledger: Ledger;
@@ -1574,10 +1584,10 @@ export class Reconciler {
           this.ledger.clearThreadDependency(thread.issueNumber);
         }
         if (this.needsPlan(thread)) {
-          if (this.ledger.countThreadPlans(thread.issueNumber) >= PLAN_ROUNDS_PER_THREAD + thread.retryGrants) {
+          if (this.ledger.countThreadPlans(thread.issueNumber) >= budget(PLAN_ROUNDS_PER_THREAD, thread)) {
             this.applyMachineEvent(
               thread,
-              { t: "escalate", code: "plan_unresolved", reason: `The factory wrote ${PLAN_ROUNDS_PER_THREAD + thread.retryGrants} plans and none was approved.` },
+              { t: "escalate", code: "plan_unresolved", reason: `The factory wrote ${budget(PLAN_ROUNDS_PER_THREAD, thread)} plans and none was approved.` },
               { auditTopic: "thread/needs_you", now },
             );
             return;
@@ -1727,13 +1737,13 @@ export class Reconciler {
     if (await this.autonomyCapReached(now)) {
       return false;
     }
-    if (!factoryRetry && thread.implementCount >= this.cfg.maxImplementAttemptsPerThread + thread.retryGrants) {
+    if (!factoryRetry && thread.implementCount >= budget(this.cfg.maxImplementAttemptsPerThread, thread)) {
       this.applyMachineEvent(
         thread,
         {
           t: "escalate",
           code: "max_attempts",
-          reason: `Used all ${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} to start with, plus one per owner retry).`,
+          reason: `Used all ${budget(this.cfg.maxImplementAttemptsPerThread, thread)} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} per owner answer).`,
         },
         { auditTopic: "thread/needs_you", now },
       );
@@ -2115,7 +2125,7 @@ export class Reconciler {
         }
 
         // Allow 1 pre-push local revision starting from the unpushed staging SHA!
-        if (kind === "implement" && latest.revisionCount < this.cfg.maxRevisionsPerThread + latest.retryGrants) {
+        if (kind === "implement" && latest.revisionCount < budget(this.cfg.maxRevisionsPerThread, latest)) {
           const backToQueued = this.applyMachineEvent(
             latest,
             { t: "attempt_aborted", cause: "control", now: Date.now() },
@@ -2405,7 +2415,7 @@ export class Reconciler {
         if (
           thread.mode === "autonomous" &&
           issue &&
-          thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants
+          thread.revisionCount < budget(this.cfg.maxRevisionsPerThread, thread)
         ) {
           if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
           await this.spawnAttempt(thread, issue, "revise", mainSha, failMsgs, [], now);
@@ -2557,7 +2567,7 @@ export class Reconciler {
         findings: JSON.parse(v.findingsJson) as ReviewFinding[],
       }));
 
-      if (thread.mode === "autonomous" && thread.revisionCount < this.cfg.maxRevisionsPerThread + thread.retryGrants) {
+      if (thread.mode === "autonomous" && thread.revisionCount < budget(this.cfg.maxRevisionsPerThread, thread)) {
         if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
         await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
       } else {
@@ -2673,7 +2683,7 @@ export class Reconciler {
   ): Promise<void> {
     // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
     // re-escalate on the very same conflict at once.
-    const rebaseBudget = this.cfg.maxRebasesPerThread + thread.retryGrants;
+    const rebaseBudget = budget(this.cfg.maxRebasesPerThread, thread);
     // Free and conflict-free, so it may exceed the LLM rebase budget: with several ready PRs, each merge puts the rest behind main.
     if (cleanMergeTree && thread.rebaseCount < Math.max(rebaseBudget, DETERMINISTIC_REBASE_CAP)) {
       const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
