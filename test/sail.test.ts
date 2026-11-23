@@ -133,7 +133,7 @@ describe("SailProvider", () => {
     const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(dir, "clones") });
 
     // A box whose /work is a local directory: the provider's real scripts run against real git.
-    const local = (s: string) => s.replaceAll("/work", box).replace("stat -c %s", "stat -f %z");
+    const local = (s: string) => s.replaceAll("/work", box).replace(/stat -c %s (\S+)/, "wc -c < $1");
     fs.mkdirSync(box);
     const client: SailClient = {
       findBox: async () => null,
