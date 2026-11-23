@@ -397,7 +397,8 @@ export class Reconciler {
       .filter((t) => t.phase.kind !== "done");
 
     // Ready PRs land one at a time, oldest PR first: each merge moves main, and the next PR is rebased and re-checked on the new tip.
-    const landingPr = (t: ThreadRecord) => (t.phase.kind === "landing" ? t.phase.prNumber : Number.MAX_SAFE_INTEGER);
+    // A Thread still reviewing can reach landing within this tick, so every Thread with a PR is ordered by it, not just those already landing.
+    const landingPr = (t: ThreadRecord) => ("prNumber" in t.phase ? (t.phase.prNumber ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER);
     const inProgress = openThreads
       .filter((t) => t.phase.kind !== "queued")
       .sort((a, b) => landingPr(a) - landingPr(b));
