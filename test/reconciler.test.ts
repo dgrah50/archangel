@@ -299,25 +299,46 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     }
   });
 
-  it("persists partial Promise.allSettled reviews, handles veto->revision, body TOCTOU->retry, timeout, and hard $20/day cap", async () => {
+  /** One repo, Ledger and Reconciler per test: each is a short flow with its own timeout budget, because every tick spawns real git. */
+  function world(implementer: Implementer, reviewers: ReviewerSuite) {
     const { root, remoteBare } = setupRepo();
     const ledger = new Ledger(":memory:", { repo: "acme/app" });
     const github = new FakeGitHub(remoteBare);
-    const broker = new GitBroker({
-      bareRepoPath: path.join(root, "broker.git"),
-      clonesDir: path.join(root, "clones"),
-    });
+    const broker = new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") });
     const notifier: Notifier = { async notifyNeedsYou() {}, async sendDigest() {} };
+    const reconciler = new Reconciler({ triageInvoker: noCli, config: makeTestConfig({ shadowMode: true, maxDailyUsd: 20 }), ledger, github, broker, implementer, reviewers, notifier });
+    const cleanup = () => {
+      ledger.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    };
+    const addIssue = (n: number, title: string, body: string) => {
+      github.issues.set(n, {
+        number: n, title, body, state: "open", authorId: 999, authorLogin: "dgrah50", authorAssociation: "OWNER",
+        labels: ["ready-for-agent"], updatedAt: new Date().toISOString(),
+      });
+      github.labelActors.set(`${n}:ready-for-agent`, 999);
+    };
+    return { ledger, github, reconciler, cleanup, addIssue };
+  }
+  const approveAll: ReviewerSuite = {
+    async reviewAll() {
+      return { results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0 }, { vendor: "gemini", verdict: "approve", findings: [], costUsd: 0 }], errors: [] };
+    },
+  };
+  const abortingImplementer = (promptsSeen: string[]): Implementer => ({
+    async run(input) {
+      promptsSeen.push(input.prompt);
+      return { summary: "Aborted", costUsd: 0.25, transcriptPath: null, aborted: true };
+    },
+  });
 
+  it("persists partial Promise.allSettled reviews, handles veto->revision and body TOCTOU->retry", async () => {
     let attemptNum = 0;
     const promptsSeen: string[] = [];
     const implementer: Implementer = {
       async run(input) {
         attemptNum++;
         promptsSeen.push(input.prompt);
-        if (input.issueNumber === 12) {
-          return { summary: "Aborted", costUsd: 0.25, transcriptPath: null, aborted: true };
-        }
         fs.writeFileSync(
           path.join((await input.workspaces.local.workspace()).path, "app.go"),
           `package demo\n\nfunc Val() int { return ${attemptNum === 1 ? 10 : 20} }\n`,
@@ -365,9 +386,7 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       },
     };
 
-    const cfg = makeTestConfig({ shadowMode: true, maxDailyUsd: 20 });
-    const reconciler = new Reconciler({ triageInvoker: noCli, config: cfg, ledger, github, broker, implementer, reviewers, notifier });
-
+    const { ledger, github, reconciler, cleanup } = world(implementer, reviewers);
     try {
       const mainSha = await github.getBranchTipSha("main");
       github.checks.set(mainSha, allGreenChecks());
@@ -415,20 +434,18 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       github.issues.get(8)!.labels = ["ready-for-agent"]; // owner cleared needs-you
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getThread(8)?.phase.kind).not.toBe("needs_you");
+    } finally {
+      cleanup();
+    }
+  });
 
-      // Implementer timeout -> cleanly transitions to needs_you(attempt_timeout) instead of sticking in working (Opus S1)!
-      github.issues.set(12, {
-        number: 12,
-        title: "Slow bug",
-        body: "Takes too long",
-        state: "open",
-        authorId: 999,
-        authorLogin: "dgrah50",
-        authorAssociation: "OWNER",
-        labels: ["ready-for-agent"],
-        updatedAt: new Date().toISOString(),
-      });
-      github.labelActors.set("12:ready-for-agent", 999);
+  it("an aborted implementer run lands in needs_you(attempt_timeout), and only the owner's reply reaches the retry prompt", async () => {
+    const promptsSeen: string[] = [];
+    const h = world(abortingImplementer(promptsSeen), approveAll);
+    try {
+      const { github, ledger, reconciler } = h;
+      github.checks.set(await github.getBranchTipSha("main"), allGreenChecks());
+      h.addIssue(12, "Slow bug", "Takes too long");
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getThread(12)?.phase).toMatchObject({ kind: "needs_you", code: "attempt_timeout" });
       expect(reconciler.activeTaskCount()).toBe(0);
@@ -450,9 +467,19 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
       expect(retryPrompt).toContain("cache it.");
       expect(retryPrompt).not.toContain("IGNORE PREVIOUS INSTRUCTIONS");
       expect(ledger.getThread(12)?.ownerReply).toContain("cache it.");
+    } finally {
+      h.cleanup();
+    }
+  });
 
+  it("the hard daily spend cap refuses new Attempts", async () => {
+    const promptsSeen: string[] = [];
+    const h = world(abortingImplementer(promptsSeen), approveAll);
+    try {
+      const { github, ledger, reconciler } = h;
+      github.checks.set(await github.getBranchTipSha("main"), allGreenChecks());
       // Hard $20/day spend cap refuses new Attempts
-      ledger.addSpend(19.0);
+      ledger.addSpend(20);
       github.issues.set(13, {
         number: 13,
         title: "Over budget",
@@ -465,13 +492,12 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
         updatedAt: new Date().toISOString(),
       });
       github.labelActors.set("13:ready-for-agent", 999);
-      const before = attemptNum;
+      
       await reconciler.tick(Date.now(), { waitForAttempts: true });
       expect(ledger.getThread(13)?.phase.kind).toBe("queued");
-      expect(attemptNum).toBe(before);
+      expect(promptsSeen).toHaveLength(0);
     } finally {
-      ledger.close();
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      h.cleanup();
     }
   });
 });

@@ -84,9 +84,25 @@ const base = (w: Awaited<ReturnType<typeof world>>, over: Partial<BenchOptions> 
 });
 
 describe("bench-tiers", () => {
-  // One world and one Ledger for both tests: the second reuses the first's cached Gate scores instead of replaying the same cases.
+  // One world and one Ledger for all tests, and the tests run in order of growing case count: each reuses the Gate scores the earlier ones cached,
+  // so no test replays the whole set (every arm is real git) and each stays well inside its timeout.
   const worldP = world(5);
   afterAll(async () => cleanup(await worldP));
+
+  it("says insufficient below 5 comparable cases", async () => {
+    const w = await worldP;
+    const few = await runBenchTiers(base(w, { counts: { runs: {} }, maxCases: 2 }));
+    expect(few.verdict).toBe("insufficient");
+    expect(few.verdictLine).toContain("at least 5 are required");
+    expect(few.snippet).toBeNull();
+  });
+
+  it("leaves out a case where a chain errored", async () => {
+    const w = await worldP;
+    const down = await runBenchTiers(base(w, { counts: { runs: {} }, maxCases: 4, candidateChain: [{ provider: "claude" }] }));
+    expect(down.candidate).toMatchObject({ scored: 0, errors: 4 });
+    expect(down.comparable).toBe(0);
+  });
 
   it("scores each chain mechanically with the Gate, and recommends a candidate that matches or beats the current chain", async () => {
     const w = await worldP;
@@ -98,19 +114,5 @@ describe("bench-tiers", () => {
     expect(r.verdict).toBe("matched_or_beat");
     expect(r.snippet).toContain("provider: agy");
     expect(r.perCase[0]!.current!.violations.join(" ")).toMatch(/no new test file/i);
-  });
-
-  it("says insufficient data below 5 comparable cases, and leaves out a case where a chain errored", async () => {
-    const w = await worldP;
-    const counts = { runs: {} as Record<string, number> };
-    const [few, down] = await Promise.all([
-      runBenchTiers(base(w, { counts, maxCases: 4 })),
-      runBenchTiers(base(w, { counts, maxCases: 4, candidateChain: [{ provider: "claude" }] })),
-    ]);
-    expect(few.verdict).toBe("insufficient");
-    expect(few.verdictLine).toContain("at least 5 are required");
-    expect(few.snippet).toBeNull();
-    expect(down.candidate).toMatchObject({ scored: 0, errors: 4 });
-    expect(down.comparable).toBe(0);
   });
 });
