@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
 import { beforeLine } from "../src/core/recap.js";
 
-it("keeps prose beginning with Reproducibly and stops at an Expected heading", () => {
+it("keeps Reproducibly prose and stops at Expected and Repro headings", () => {
   const line = beforeLine(
     7,
     "Digest drops items",
@@ -10,14 +10,25 @@ it("keeps prose beginning with Reproducibly and stops at an Expected heading", (
 
   expect(line).toContain("the digest drops the last item");
   expect(line).not.toContain("every item is listed");
-});
 
-it("stops at an underscore-emphasized Expected heading", () => {
-  const line = beforeLine(
+  const emphasizedLine = beforeLine(
     7,
     "Digest drops items",
     "Digest drops the last item.\n\n_Expected_: every item is listed.",
   );
+  expect(emphasizedLine).not.toContain("every item is listed");
 
-  expect(line).not.toContain("every item is listed");
+  const markdownHeadingLine = beforeLine(
+    7,
+    "Digest drops items",
+    "Digest drops the last item.\n\n## Expected/Actual\nThe digest should list every item.",
+  );
+  expect(markdownHeadingLine).not.toContain("The digest should list every item");
+
+  const reproHeadingLine = beforeLine(
+    7,
+    "Digest drops items",
+    "Digest drops the last item.\n\n## Repro.\nSteps follow.",
+  );
+  expect(reproHeadingLine).not.toContain("Steps follow");
 });
