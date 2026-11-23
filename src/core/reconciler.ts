@@ -2527,7 +2527,9 @@ export class Reconciler {
         if (stop.signal.aborted) return;
         if (batch.errors.length > 0) {
           const errMsg = batch.errors.map((e) => `${e.vendor}: ${e.error}`).join("; ");
-          await this.handleReviewOutage(thread, errMsg, now);
+          // The round is complete only when every missing reviewer is back, so the latest known return time counts.
+          const retryAts = batch.errors.flatMap((e) => e.retryAt ?? []);
+          await this.handleReviewOutage(thread, errMsg, now, retryAts.length > 0 ? Math.max(...retryAts) : undefined);
           return;
         }
       } catch (err) {
@@ -2578,22 +2580,31 @@ export class Reconciler {
     }
   }
 
-  private async handleReviewOutage(thread: ThreadRecord, errMsg: string, now: number): Promise<void> {
+  /**
+   * A reviewer could not run. The Thread waits up to `reviewerOutageMaxMs` for it to come back, then asks the owner. When the
+   * provider said when it will be back (`retryAt`, from a usage-limit message) and that is further away than the wait, waiting
+   * is pointless: the owner is asked at once, with the date.
+   */
+  private async handleReviewOutage(thread: ThreadRecord, errMsg: string, now: number, retryAt?: number): Promise<void> {
     if (thread.phase.kind !== "reviewing") return;
     const outageSince = thread.phase.outageSince ?? now;
-    if (now - outageSince >= this.cfg.reviewerOutageMaxMs) {
+    const knownLong = retryAt !== undefined && retryAt - now >= this.cfg.reviewerOutageMaxMs;
+    if (knownLong || now - outageSince >= this.cfg.reviewerOutageMaxMs) {
       this.applyMachineEvent(
         thread,
         {
           t: "escalate",
           code: "review_outage",
-          reason: `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
+          reason: knownLong
+            ? `A required reviewer is at its usage limit until ${new Date(retryAt).toISOString()}, longer than the ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h the factory waits: ${errMsg}`
+            : `Reviewer unavailable for >= ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h: ${errMsg}`,
         },
         { auditTopic: "thread/needs_you", now },
       );
       return;
     }
     if (thread.phase.outageSince === null) {
+      this.logger.warn("review/outage_started", `Review is waiting on a reviewer (up to ${Math.round(this.cfg.reviewerOutageMaxMs / 3_600_000)}h): ${errMsg}`, { repo: this.ledger.repo, issue: thread.issueNumber });
       this.applyMachineEvent(
         thread,
         { t: "review_outage", now },

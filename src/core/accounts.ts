@@ -8,6 +8,16 @@ import type { UsageWindow } from "./account-usage.js";
 /** At most this many account switches (after a limit error) within one Attempt before it fails with the quota error. */
 export const MAX_ACCOUNT_SWITCHES = 4;
 export const ACCOUNT_COOLDOWN_MS = 15 * 60_000;
+/**
+ * How long an account cools down after a limit error: the provider's own figure when its message gives one ("Resets in 134h23m",
+ * "resets in 2 d 4 h"), else the short default, after which the account is simply tried again.
+ */
+export function cooldownAfterLimit(message: string, fallbackMs = ACCOUNT_COOLDOWN_MS): number {
+  const m = /resets? in\s+(?:(\d+)\s*d[a-z]*\s*)?(?:(\d+)\s*h[a-z]*\s*)?(?:(\d+)\s*m[a-z]*)?/i.exec(message);
+  const ms = m ? Number(m[1] ?? 0) * 86_400_000 + Number(m[2] ?? 0) * 3_600_000 + Number(m[3] ?? 0) * 60_000 : 0;
+  return ms > 0 ? ms : fallbackMs;
+}
+
 /** A CLI-provided usage reading older than this is shown as stale. It is only ever a tie-breaker. */
 export const READING_STALE_MS = 30 * 60_000;
 

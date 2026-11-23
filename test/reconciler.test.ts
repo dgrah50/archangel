@@ -569,6 +569,39 @@ describe("Reconciler end-to-end (explicit state machine + fail-closed checks)", 
     }
   });
 
+  it("a reviewer known to be at its usage limit for longer than the factory waits is put to the owner at once, with the date", async () => {
+    const implementer: Implementer = {
+      async run(input) {
+        const dir = (await input.workspaces.local.workspace()).path;
+        fs.writeFileSync(path.join(dir, "app.go"), "package demo\n\nfunc Val() int { return 3 }\n");
+        git(dir, ["add", "-A"]);
+        git(dir, ["commit", "-m", "fix"]);
+        return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
+      },
+    };
+    const backAt = Date.now() + 134 * 3_600_000;
+    const reviewers: ReviewerSuite = {
+      async reviewAll() {
+        return { results: [{ vendor: "openai", verdict: "approve", findings: [], costUsd: 0 }], errors: [{ vendor: "gemini", error: "no available agy account", retryAt: backAt }] };
+      },
+    };
+    const h = world(implementer, reviewers);
+    try {
+      const { github, ledger, reconciler } = h;
+      github.checks.set(await github.getBranchTipSha("main"), allGreenChecks());
+      github.issues.set(15, { number: 15, title: "Val", body: "Val() should be 3", state: "open", authorId: 999, authorLogin: "dgrah50", authorAssociation: "OWNER", labels: ["ready-for-agent"], updatedAt: new Date().toISOString() });
+      github.labelActors.set("15:ready-for-agent", 999);
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      github.checks.set((ledger.getThread(15)!.phase as { headSha: string }).headSha, allGreenChecks());
+      await reconciler.tick(Date.now(), { waitForAttempts: true });
+      const phase = ledger.getThread(15)!.phase;
+      expect(phase).toMatchObject({ kind: "needs_you", code: "review_outage" });
+      expect(phase.kind === "needs_you" && phase.reason).toContain(new Date(backAt).toISOString());
+    } finally {
+      h.cleanup();
+    }
+  });
+
   it("a shutdown stops the review round the tick is waiting on, and that is not a reviewer outage", async () => {
     const implementer: Implementer = {
       async run(input) {
