@@ -175,8 +175,8 @@ function AccountLine({ a, now }: { a: AccountRow; now: number }) {
       </Box>
       <Flex align="center" gap="3" flex="1" minW="180px">
         {capped ? <Bar fraction={a.attemptsToday / a.maxAttemptsPerDay!} /> : a.usage ? <Bar fraction={tightest(a.usage).usedPercent / 100} /> : <Box flex="1" />}
-        <Text textStyle="body13" color="fg" whiteSpace={a.usage && !capped ? "normal" : "nowrap"}>
-          {capped ? `${a.attemptsToday} of ${a.maxAttemptsPerDay} attempts today` : a.usage ? `${usageWords(a.usage)} used` : today}
+        <Text textStyle="body13" color="fg" whiteSpace="nowrap" title={a.usage && !capped ? `${usageWords(a.usage)} used` : undefined}>
+          {capped ? `${a.attemptsToday} of ${a.maxAttemptsPerDay} attempts today` : a.usage ? `${usageWords(a.usage, 2)} used` : today}
         </Text>
       </Flex>
       <Text textStyle="meta" color="fg.subtle" w={{ lg: "230px" }} textAlign={{ lg: "end" }} flexShrink={0}>
@@ -250,7 +250,7 @@ function CostTrend({ state: s }: { state: UiState }) {
   const cost = s.outcomes.costUsdPerFix;
   const days = s.daily.map((d, i) => ({ day: d.day, v: d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null })).filter((d): d is { day: string; v: number } => d.v !== null);
   return days.length > 1 ? (
-    <Sparkline data={days.map((d) => d.v)} labels={days.map((d) => dayLabel(d.day, { day: "numeric", month: "short" }))} label="Cost per merged fix" value={cost === null ? undefined : usd(cost)} formatValue={(n) => usd(n)} height={44} area />
+    <Sparkline data={days.map((d) => d.v)} labels={days.map((d) => dayLabel(d.day, { day: "numeric", month: "short" }))} label="Cost per merged fix" value={cost === null ? undefined : usd(cost)} formatValue={(n) => usd(n)} width={420} height={56} area />
   ) : (
     <Stat label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} />
   );
