@@ -264,6 +264,8 @@ const AttemptLimitFields = {
 const TimeoutFields = {
   implementTimeoutMs: z.number().int().min(30_000).default(20 * 60_000),
   setupTimeoutMs: z.number().int().min(5_000).default(5 * 60_000),
+  /** How long one reviewer CLI may take on one review before it is stopped and the review counts as an outage. */
+  reviewTimeoutMs: z.number().int().min(30_000).default(10 * 60_000),
   staleLeaseMs: z.number().int().min(10_000).default(3 * 60_000),
   gateStartGraceMs: z.number().int().min(10_000).default(5 * 60_000),
   gateTimeoutMs: z.number().int().min(60_000).default(60 * 60_000),
@@ -667,6 +669,7 @@ export function loadProjectConfigs(opts: {
       maxRebasesPerThread: proj.maxRebasesPerThread ?? host.maxRebasesPerThread,
       implementTimeoutMs: host.implementTimeoutMs,
       setupTimeoutMs: host.setupTimeoutMs,
+      reviewTimeoutMs: host.reviewTimeoutMs,
       staleLeaseMs: host.staleLeaseMs,
       gateStartGraceMs: host.gateStartGraceMs,
       gateTimeoutMs: host.gateTimeoutMs,
