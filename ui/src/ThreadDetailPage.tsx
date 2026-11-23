@@ -4,6 +4,9 @@ import { CAPTION_LABEL } from "../../src/core/recap-chapters.js";
 import type { ThreadDetail, TimelineEvent } from "../../src/core/ui-thread.js";
 import { Notice, type Feed } from "./AppView";
 import { age } from "./common";
+import { Check as CheckIcon, Dot as DotIcon, Eye, GitMerge, Hammer, X } from "lucide-react";
+import { CopyButton } from "./arc/copy-button/copy-button";
+import { Timeline } from "./arc/timeline/timeline";
 import { Dot, LinkButton, Ref } from "./page";
 import type { ItemRef } from "./route";
 
@@ -71,47 +74,33 @@ function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDurati
   );
 }
 
-function CopyPath({ path }: { path: string }) {
-  const [done, setDone] = useState(false);
+/** One event's recorded fields, shown when its row is opened. */
+function EventDetail({ e }: { e: TimelineEvent }) {
   return (
-    <Button size="2xs" variant="ghost" ml="2" onClick={() => void navigator.clipboard.writeText(path).then(() => setDone(true))}>
-      {done ? "Copied" : "Copy path"}
-    </Button>
+    <Flex wrap="wrap" columnGap="6" rowGap="2">
+      {e.details.map((d, i) => (
+        <Box key={`${d.label}-${i}`} minW="0" maxW="100%">
+          <Text textStyle="meta" color="fg.subtle">
+            {d.label}
+          </Text>
+          <Flex align="center" gap="2">
+            <Text textStyle="meta" color="fg" fontFamily={d.label === "provider" ? undefined : "mono"} wordBreak="break-word">
+              {d.value}
+            </Text>
+            {d.label === "transcript" ? <CopyButton value={d.value} label="Copy path" variant="plain" /> : null}
+          </Flex>
+        </Box>
+      ))}
+    </Flex>
   );
 }
 
 const Details = chakra("details");
-
-function TimelineRow({ e, now, open }: { e: TimelineEvent; now: number; open: boolean }) {
-  return (
-    <Flex as="li" gap="4" py="3" role={e.tone === "failed" ? "alert" : undefined}>
-      <Text textStyle="ref" color="fg.subtle" w="44px" flexShrink={0} pt="2px" title={new Date(e.ts).toISOString()}>
-        {clock(e.ts)}
-      </Text>
-      <Details open={open} flex="1" minW="0">
-        <Text as="summary" textStyle="label" color={e.tone === "failed" ? "owner" : "fg"} fontWeight={e.kind === "attempt" || e.tone === "failed" ? "500" : "400"} cursor="pointer">
-          {e.title}{" "}
-          <Text as="span" textStyle="meta" color="fg.subtle" fontWeight="400">
-            {age(now - e.ts)} ago
-          </Text>
-        </Text>
-        <Flex mt="2" wrap="wrap" columnGap="6" rowGap="2">
-          {e.details.map((d, i) => (
-            <Box key={`${d.label}-${i}`} minW="0" maxW="100%">
-              <Text textStyle="meta" color="fg.subtle">
-                {d.label}
-              </Text>
-              <Text textStyle="meta" color="fg" fontFamily={d.label === "provider" ? undefined : "mono"} wordBreak="break-word">
-                {d.value}
-                {d.label === "transcript" ? <CopyPath path={d.value} /> : null}
-              </Text>
-            </Box>
-          ))}
-        </Flex>
-      </Details>
-    </Flex>
-  );
-}
+const ICON = { size: 14, "aria-hidden": true } as const;
+const eventIcon = (e: TimelineEvent) =>
+  e.tone === "failed" ? <X {...ICON} /> : e.kind === "attempt" ? <Hammer {...ICON} /> : e.kind === "review" ? <Eye {...ICON} /> : e.kind === "merge" ? <GitMerge {...ICON} /> : e.tone === "ok" ? <CheckIcon {...ICON} /> : <DotIcon {...ICON} />;
+const TONE = { ok: "success", failed: "danger", info: "neutral" } as const;
+const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef; thread: Feed<ThreadDetail>; now: number; onRetry: () => void }) {
   if (thread.data === null) {
@@ -247,10 +236,14 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
               No recorded events yet.
             </Text>
           ) : (
-            <Box as="ol" listStyleType="none" borderTopWidth="1px" borderTopColor="fg" aria-label="Timeline" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
-              {events.map((e, i) => (
-                <TimelineRow key={`${e.ts}-${i}`} e={e} now={now} open={i === openAt} />
-              ))}
+            <Box borderTopWidth="1px" borderTopColor="fg" pt="3">
+              <Timeline
+                label="Timeline"
+                now={now}
+                timeZone={TIME_ZONE}
+                defaultExpanded={events[openAt] ? [`${events[openAt].ts}-${openAt}`] : []}
+                events={events.map((e, i) => ({ id: `${e.ts}-${i}`, at: e.ts, title: e.title, tone: TONE[e.tone], icon: eventIcon(e), detail: e.details.length > 0 ? <EventDetail e={e} /> : undefined }))}
+              />
             </Box>
           )}
         </Box>

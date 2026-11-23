@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { AccountsPanel } from "./AccountsPanel";
 import { HostDraftBlock, HostErrorNotice, Problem, RawFile, SavedBlock, useHostDraft, type HostDraft } from "./HostConfigEditor";
 import { PROVIDERS, VENDOR, WRITER_CHAINS, addChainEntry, checkIndependence, editField, moveChainEntry, readForm, removeChainEntry, setChainEntry, type ChainEntry, type HostForm, type Provider } from "./host-edit";
+import SegmentedControl from "./arc/segmented-control/segmented-control";
 import { CopyCommand, Page, PageHeadline } from "./page";
 import { PrStatusCard, PreviewView, StaleNotice, isStale } from "./WorkflowEditor";
 import { fromForm, propose, proposingEnabled, toForm, type PreviewResult } from "./workflow-draft";
@@ -31,13 +32,9 @@ const SUB: Record<SettingsScope, string> = {
 
 function Tabs({ scope }: { scope: SettingsScope }) {
   return (
-    <Flex as="nav" aria-label="Settings scope" gap="2px" p="4px" rounded="14px" bg="bg.subtle" borderWidth="1px" borderColor="border" alignSelf="flex-start" flexShrink={0}>
-      {SCOPES.map((x) => (
-        <Link key={x.scope} href={x.hash} aria-current={x.scope === scope ? "page" : undefined} h="34px" px="14px" display="flex" alignItems="center" rounded="10px" bg={x.scope === scope ? "bg" : "transparent"} color={x.scope === scope ? "fg" : "fg.muted"} textStyle="body13" fontSize="14px" fontWeight={x.scope === scope ? "500" : "400"} textDecoration="none" _hover={{ textDecoration: "none", color: "fg" }}>
-          {x.label}
-        </Link>
-      ))}
-    </Flex>
+    <Box alignSelf="flex-start" flexShrink={0}>
+      <SegmentedControl label="Settings scope" value={scope} onValueChange={(v) => (window.location.hash = SCOPES.find((x) => x.scope === v)!.hash)} options={SCOPES.map((x) => ({ value: x.scope, label: x.label }))} />
+    </Box>
   );
 }
 
