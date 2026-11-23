@@ -184,7 +184,11 @@ function plainLine(text: string, max: number): string {
   return (t.length > max ? `${t.slice(0, max - 1)}…` : t).replace(/[\\`<>|[\]]/g, "\\$&");
 }
 
-const SECTION_START = /^\s*(?:#{1,6}\s*)?[*_]*(expected(?:\s+behaviou?r)?|repro(?:duction|\s+steps)?|steps\s+to\s+reproduce)[*_]*\s*:?/i;
+const SECTION_KEYWORD = "(?:expected(?:\\s+behaviou?r)?|repro(?:duction|\\s+steps)?|steps\\s+to\\s+reproduce)";
+const SECTION_START = new RegExp(
+  `^\\s*(?:#{1,6}\\s*[*_]*${SECTION_KEYWORD}\\b[*_]*(?:\\s*:|\\s+.*|$)|[*_]*${SECTION_KEYWORD}\\b[*_]*\\s*:)`,
+  "i",
+);
 
 /** The issue body's paragraphs before any Expected/Repro section, without code fences. */
 function problemParagraphs(body: string): string[] {
