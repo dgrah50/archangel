@@ -58,8 +58,8 @@ describe("placing chain entries on local and remote providers", () => {
         maxBudgetUsd: 1,
         role: "implement",
       });
-      // A local agy account with its own home runs under the keychain-deny sandbox-exec profile.
-      expect(local.calls.some((c) => c.cmd === "sandbox-exec" && c.args.includes("agy"))).toBe(true);
+      // On macOS a local agy account with its own home runs under sandbox-exec.
+      expect(local.calls.some((c) => c.cmd === "agy" || (c.cmd === "sandbox-exec" && c.args.includes("agy")))).toBe(true);
       expect(remote.calls.some((c) => c.cmd === "agy" || c.args.includes("agy"))).toBe(false);
       expect(res.ranOn).toBe("remote");
       expect(remote.calls.some((c) => c.args.includes("codex"))).toBe(true);

@@ -32,8 +32,8 @@ export const AGY_NO_KEYCHAIN_PROFILE = [
  * profile (inline, no temp file) and keeps its login in a file. The default home is the owner's real keychain and runs unchanged.
  */
 export function agyCommand(account: { home?: string } | undefined, args: string[]): { cmd: string; args: string[] } {
-  if (!account?.home) return { cmd: "agy", args };
-  if (process.platform !== "darwin") throw new Error("an agy account with its own home needs macOS sandbox-exec to keep agy off the keychain");
+  // The dialog is macOS's: elsewhere there is nothing to deny.
+  if (!account?.home || process.platform !== "darwin") return { cmd: "agy", args };
   return { cmd: "sandbox-exec", args: ["-p", AGY_NO_KEYCHAIN_PROFILE, "agy", ...args] };
 }
 
