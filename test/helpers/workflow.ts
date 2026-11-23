@@ -61,10 +61,11 @@ export function hashOfScout(spec: ScoutInput, prompt = SCOUT_PROMPT): string {
 }
 
 /** A Go repo's workflow for reconciler e2e tests: bugfixes may land autonomously (the host shadowMode arm decides). */
-export function goWorkflowJson(requiredChecks: string[] = ["Gate", "Test"]): string {
+export function goWorkflowJson(requiredChecks: string[] = ["Gate", "Test"], extra: Record<string, unknown> = {}): string {
   return workflowJson([], {
     requiredChecks,
     landing: { bugfix: "autonomous" },
+    ...extra,
     gate: { testFileGlobs: ["**/*_test.go"], testCmd: "go test ./..." },
   });
 }
