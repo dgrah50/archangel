@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { HostYamlSchema, type Chains } from "../config.js";
+import { HostYamlSchema, UiConfigSchema, type Chains } from "../config.js";
 
 /**
  * The data directory for read-only commands (`status`, `metrics`, `ui`, ...). `--data-dir` wins; otherwise it comes from the host
@@ -15,6 +15,23 @@ export function resolveDataDir(opts: { config?: string; dataDir?: string }, env:
     return HostYamlSchema.parse(parseYaml(fs.readFileSync(path.resolve(candidate), "utf8"))).dataDir;
   }
   return env.ARCHANGEL_DATA_DIR ?? ".archangel";
+}
+
+/**
+ * Where the dashboard binds: an explicit flag wins, else `ui` from the host config file (same lookup as `resolveDataDir`),
+ * else the defaults when there is no config file. `start` takes its preview-reserved port from the same `ui.port`.
+ */
+export function resolveUiSettings(
+  opts: { config?: string; host?: string; port?: string | number },
+  env: NodeJS.ProcessEnv = process.env,
+): { host: string; port: number } {
+  const candidate = opts.config ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
+  const file = path.resolve(candidate);
+  const ui =
+    opts.config || fs.existsSync(file)
+      ? HostYamlSchema.parse(parseYaml(fs.readFileSync(file, "utf8"))).ui
+      : UiConfigSchema.parse(undefined);
+  return { host: opts.host ?? ui.host, port: opts.port !== undefined ? Number(opts.port) : ui.port };
 }
 
 /** The host settings read-only tools need (no secrets): where the data lives and which CLIs review. */
