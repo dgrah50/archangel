@@ -1788,7 +1788,7 @@ export class Reconciler {
     let transcriptPath: string | null = null;
     // Claude runs on the remote provider when one is configured; every other entry runs in a local clone. Each is prepared on first use.
     const handleFor = (compute: ComputeProvider) =>
-      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha }, async (ws) => {
+      new LazyWorkspace(compute, { issueNumber: workingThread.issueNumber, startSha: fromSha, baseSha: mainSha }, async (ws) => {
         // Run repo `.agents/setup` strictly from mainSha with scrubbed env.
         try {
           await this.broker.runRepoSetup(ws.path, mainSha, this.cfg.setupTimeoutMs, compute.remote ? (spec) => compute.exec(ws, spec) : undefined);

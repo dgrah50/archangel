@@ -22,6 +22,7 @@ export const SAIL_USD_PER_BOX_MINUTE = (ASSUMED_USE.vcpu * SAIL_RATES.vcpuHour +
 export const MAX_START_BUNDLE_BYTES = 500 * 1024 * 1024;
 const REPO_DIR = "/work/repo";
 const START_MARK = "/work/.start-sha";
+const BASE_MARK = "/work/.base-sha";
 const RESULT_BUNDLE = "/work/out.bundle";
 
 export interface SailBoxInfo {
@@ -71,7 +72,7 @@ export class SailSpend {
 
 export interface SailProviderOptions {
   client: SailClient;
-  broker: Pick<GitBroker, "createStartBundle" | "verifyBundle">;
+  broker: Pick<GitBroker, "createStartBundle" | "verifyBundle" | "defaultBranch">;
   /** Box names start with this, and the orphan sweep only touches names that do. */
   namePrefix: string;
   maxLifetimeSeconds: number;
@@ -113,7 +114,7 @@ export class SailProvider implements ComputeProvider {
     try {
       const marked = await this.o.client.run(box.id, { argv: ["cat", START_MARK], env: {}, timeoutMs: 30_000 });
       if (marked.code === 0 && marked.stdout.trim() === spec.startSha) return ws;
-      const bundle = await this.o.broker.createStartBundle(spec.issueNumber, spec.startSha);
+      const bundle = await this.o.broker.createStartBundle(spec.issueNumber, spec.startSha, spec.baseSha);
       try {
         const bytes = fs.readFileSync(bundle);
         if (bytes.length > MAX_START_BUNDLE_BYTES) throw new Error(`start bundle is ${bytes.length} bytes, over the ${MAX_START_BUNDLE_BYTES} byte cap`);
@@ -129,8 +130,10 @@ export class SailProvider implements ComputeProvider {
           "git init -q",
           `git fetch -q /work/start.bundle refs/archangel/start/${spec.issueNumber}:refs/archangel/start`,
           `git checkout -q -f -B factory/${spec.issueNumber} ${spec.startSha}`,
+          ...(spec.baseSha ? [`git fetch -q /work/start.bundle refs/archangel/base/${spec.issueNumber}:refs/heads/${this.o.broker.defaultBranch}`] : []),
           `git config user.name 'Archangel Worker'`,
           `git config user.email archangel-worker@users.noreply.github.com`,
+          `echo ${spec.baseSha ?? spec.startSha} > ${BASE_MARK}`,
           `echo ${spec.startSha} > ${START_MARK}`,
         ].join(" && "),
       );
@@ -166,7 +169,8 @@ export class SailProvider implements ComputeProvider {
         "git add -A",
         "(git diff --cached --quiet || git commit --no-verify -q -m 'archangel factory attempt')",
         `if [ "$(git rev-list --count $(cat ${START_MARK})..HEAD)" = 0 ]; then echo EMPTY $(cat ${START_MARK}); exit 0; fi`,
-        `git bundle create ${RESULT_BUNDLE} HEAD ^$(cat ${START_MARK})`,
+        // A rebased HEAD is not a descendant of the start: leave out the base too, so the bundle holds the branch's own commits and its prerequisites are commits the Broker has.
+        `if [ "$(git rev-list --count HEAD ^$(cat ${START_MARK}) ^$(cat ${BASE_MARK}))" = 0 ]; then git bundle create ${RESULT_BUNDLE} HEAD ^$(cat ${START_MARK}); else git bundle create ${RESULT_BUNDLE} HEAD ^$(cat ${START_MARK}) ^$(cat ${BASE_MARK}); fi`,
       ].join(" && "),
     );
     const empty = /^EMPTY ([0-9a-f]{40})\s*$/.exec(out);

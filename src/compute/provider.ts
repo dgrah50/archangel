@@ -14,6 +14,8 @@ export interface PrepareSpec {
   issueNumber: number;
   /** The commit (or unpushed staging ref) the workspace starts at. */
   startSha: string;
+  /** The default branch tip the Attempt works against. A remote workspace gets it as a ref named after the default branch, as a local clone has. */
+  baseSha?: string;
 }
 
 export interface ExecSpec {

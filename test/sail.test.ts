@@ -36,7 +36,7 @@ function setup(client: SailClient, maxDailyComputeUsd = 5) {
   const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(dir, "clones") });
   const provider = new SailProvider({
     client,
-    broker: { createStartBundle: async () => path.join(dir, "start.bundle"), verifyBundle: (p) => broker.verifyBundle(p) },
+    broker: { createStartBundle: async () => path.join(dir, "start.bundle"), verifyBundle: (p) => broker.verifyBundle(p), defaultBranch: "main" },
     namePrefix: "archangel-",
     maxLifetimeSeconds: 600,
     maxDailyComputeUsd,
@@ -108,5 +108,61 @@ describe("SailProvider", () => {
     expect(v.headSha).toBe(start);
     expect(v.changedFiles).toEqual([]);
     expect(await broker.isAlreadyOnMain(start, start)).toBe(true);
+  });
+
+  it("a rebase workspace has the default branch at the target main SHA, and the rebased result bundles and validates", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-sailrebase-"));
+    const bare = path.join(dir, "broker.git");
+    const src = path.join(dir, "src");
+    const box = path.join(dir, "box");
+    const sh = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+    const commit = (file: string, msg: string) => {
+      fs.writeFileSync(path.join(src, file), msg);
+      sh(src, "add", "-A");
+      sh(src, "commit", "-q", "-m", msg);
+      return sh(src, "rev-parse", "HEAD");
+    };
+    execFileSync("git", ["init", "-q", "-b", "main", src]);
+    commit("a.txt", "root");
+    sh(src, "checkout", "-q", "-b", "factory/1");
+    const head = commit("feature.txt", "feature");
+    sh(src, "checkout", "-q", "main");
+    const mainSha = commit("b.txt", "main moved");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    sh(src, "push", "-q", bare, "main", "factory/1");
+    const broker = new GitBroker({ bareRepoPath: bare, clonesDir: path.join(dir, "clones") });
+
+    // A box whose /work is a local directory: the provider's real scripts run against real git.
+    const local = (s: string) => s.replaceAll("/work", box).replace("stat -c %s", "stat -f %z");
+    fs.mkdirSync(box);
+    const client: SailClient = {
+      findBox: async () => null,
+      createBox: async ({ name }) => ({ id: "box-1", name }),
+      run: async (_id, spec) => {
+        try {
+          const out = execFileSync(spec.argv[0]!, spec.argv.slice(1).map(local), { cwd: spec.cwd ? local(spec.cwd) : undefined, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+          return { code: 0, stdout: out, stderr: "", timedOut: false };
+        } catch (e) {
+          return { code: 1, stdout: "", stderr: String(e), timedOut: false };
+        }
+      },
+      writeFile: async (_id, p, data) => fs.writeFileSync(local(p), data),
+      readFile: async (_id, p) => fs.readFileSync(local(p)),
+      terminate: async () => undefined,
+      list: async () => [],
+    };
+    const provider = new SailProvider({ client, broker, namePrefix: "archangel-", maxLifetimeSeconds: 600, maxDailyComputeUsd: 5, spend: new SailSpend(path.join(dir, "spend.json")) });
+
+    const ws = await provider.prepare({ issueNumber: 1, startSha: head, baseSha: mainSha });
+    const repo = local(ws.path);
+    expect(sh(repo, "rev-parse", "main")).toBe(mainSha);
+    sh(repo, "rebase", "main");
+
+    const collected = await provider.collect(ws);
+    expect(collected.kind).toBe("bundle");
+    const gate = { maxNonTestLines: 100, maxTotalLines: 100, maxFiles: 10, extraProtectedPaths: [], testFileGlobs: [], testDataGlobs: [] } as never;
+    const v = await broker.fetchAndValidateCollected(collected, 1, mainSha, gate);
+    expect(sh(bare, "rev-parse", `${v.headSha}^`)).toBe(mainSha);
+    expect(v.changedFiles).toEqual(["feature.txt"]);
   });
 });
