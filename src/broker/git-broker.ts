@@ -22,7 +22,7 @@ export type LocalGateReport = GateReport;
 
 const execFileAsync = promisify(execFile);
 
-const HARDENED_GIT_FLAGS = [
+export const HARDENED_GIT_FLAGS = [
   "-c",
   "core.hooksPath=/dev/null",
   "-c",

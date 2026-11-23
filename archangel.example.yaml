@@ -134,6 +134,10 @@ reviewerChain:
 #   topics: [json query cli, jsonpath performance]
 #   maxFetchesPerDay: 20
 #   minIntervalMs: 3000
+#   # O9: up to 10 public repos (owner/name). The host keeps shallow read-only clones under dataDir/watched, refreshed weekly, and
+#   # shows the fleet-pr-miner only SHAs, file paths, layout, stars and latest release tag. A pattern from them (or from research)
+#   # is pitched only if a cited file in our own repo contains a cited symbol; otherwise the pitch is dropped.
+#   watchRepos: [owner/name]
 # signals:
 #   rules:
 #     - name: research-pitch
