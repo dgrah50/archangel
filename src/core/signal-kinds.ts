@@ -14,5 +14,9 @@ export const SIGNAL_KINDS = {
   telemetry_anomaly: { source: "telemetry", taint: "mechanical" },
   /** Computed here from the Ledger by arithmetic only: a (workflow, prompt) policy version whose outcomes got worse. */
   policy_regression: { source: "regression_watch", taint: "mechanical" },
+  /** Whitelisted counts the host fetched from an error tracker; error content is attacker-influenced, so a tracker's numbers are untrusted. */
+  prod_errors: { source: "prod_errors", taint: "untrusted" },
+  /** One production error group crossed the spike threshold in a day. */
+  prod_error_spike: { source: "prod_errors", taint: "untrusted" },
 } as const satisfies Record<string, { source: string; taint: SignalTaint }>;
 export type SignalKind = keyof typeof SIGNAL_KINDS;
