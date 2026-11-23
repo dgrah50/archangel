@@ -37,6 +37,7 @@
       "src/core/work-class.ts",
       "src/core/onboard.ts",
       "src/core/bump.ts",
+      "src/core/shutdown.ts",
       "src/core/pitch-promote.ts",
       "src/core/self-build.ts",
       "src/core/pitch-ingest.ts",

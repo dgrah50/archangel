@@ -6,13 +6,13 @@ import { tokenOf } from "./HealthPage";
 import { Problem } from "./HostConfigEditor";
 
 const when = (t: number) => new Date(t).toLocaleString();
-const back = (ms: number) => {
+export const back = (ms: number) => {
   const m = Math.max(1, Math.ceil(ms / 60_000));
   return m < 60 ? `${m} m` : `${Math.floor(m / 60)} h ${m % 60} m`;
 };
 const ROLE_WORD: Record<string, string> = { implement: "building", revise: "revising", rebase: "rebasing", review: "reviewing" };
 
-function Account({ a }: { a: AccountRow }) {
+export function Account({ a }: { a: AccountRow }) {
   const cooling = a.cooldownUntil !== null && a.cooldownUntil > Date.now();
   return (
     <Flex gap="4" align="baseline" py="2.5">
@@ -29,14 +29,15 @@ function Account({ a }: { a: AccountRow }) {
         </Text>
       </Flex>
       <Text textStyle="body13" color="fg.muted" flexShrink={0}>
-        {a.maxAttemptsPerDay === null ? `${a.attemptsToday} attempts today, no cap` : `${a.attemptsToday} of ${a.maxAttemptsPerDay} today`}
+        {a.maxAttemptsPerDay === null ? `${a.attemptsToday} ${a.attemptsToday === 1 ? "attempt" : "attempts"} today, no cap` : `${a.attemptsToday} of ${a.maxAttemptsPerDay} today`}
       </Text>
     </Flex>
   );
 }
 
 /** GET /api/accounts: needs the page's token and is never served remotely. Every failure is a visible state. */
-export function AccountsPanel() {
+/** This machine's accounts, polled. `token` is null when the dashboard cannot read them (remote mode). */
+export function useAccounts() {
   const [data, setData] = useState<AccountsState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const token = tokenOf();
@@ -57,6 +58,11 @@ export function AccountsPanel() {
     const poll = setInterval(load, POLL_MS);
     return () => clearInterval(poll);
   }, [load]);
+  return { data, error, token, load };
+}
+
+export function AccountsPanel() {
+  const { data, error, token, load } = useAccounts();
 
   const retry = (
     <Button size="xs" variant="outline" borderRadius="10px" mt="2" onClick={load}>Retry</Button>

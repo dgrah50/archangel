@@ -18,6 +18,7 @@ import type { ReviewPromptBuilders } from "../agents/reviewers.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
+import { SHUTDOWN_DEADLINE_MS, settleWithin } from "../core/shutdown.js";
 import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
@@ -306,7 +307,7 @@ program
     let stopping = false;
     let nextTimer: NodeJS.Timeout | null = null;
     let inFlightTick: Promise<void> | null = null;
-    let cleanupDone: Promise<void> | null = null;
+    let cleanupDone: Promise<boolean> | null = null;
 
     const runTick = (): Promise<void> => {
       inFlightTick = runTickBody().finally(() => {
@@ -375,22 +376,25 @@ program
       }
     };
 
-    // Idempotent (a second signal joins the first) and waits for the tick in flight, so nothing wakes on a closed Ledger.
-    const cleanup = (): Promise<void> => {
+    // Idempotent (a second signal joins the first). Waits for in-flight work only up to the deadline, then releases the
+    // Ledger lock regardless: a wedged Attempt must not hold the lock forever. Resolves false when the deadline passed.
+    const cleanup = (): Promise<boolean> => {
       cleanupDone ??= (async () => {
         stopping = true;
         if (nextTimer) clearTimeout(nextTimer);
         clearInterval(lockHeartbeat);
         stopAllPreviews();
         for (const b of brokers) b.stop();
-        for (const { rec } of reconcilers) {
-          rec.abortAllActive("control");
-          await rec.waitForActiveTasks();
-        }
-        await inFlightTick;
+        for (const { rec } of reconcilers) rec.abortAllActive("control");
+        const settled = await settleWithin(
+          Promise.all([...reconcilers.map(({ rec }) => rec.waitForActiveTasks()), inFlightTick]),
+          SHUTDOWN_DEADLINE_MS,
+        );
+        if (!settled) console.error(`[archangel] Shutdown deadline (${SHUTDOWN_DEADLINE_MS} ms) passed with work in flight; releasing the Ledger lock and exiting.`);
         setTelemetrySink(null);
         rootLedger.releaseDaemonLock(daemonOwnerId);
-        rootLedger.close();
+        if (settled) rootLedger.close();
+        return settled;
       })();
       return cleanupDone;
     };
@@ -412,12 +416,11 @@ program
       }, first.pollIntervalMs);
     };
 
-    process.on("SIGINT", () => {
-      void cleanup().finally(() => process.exit(0));
-    });
-    process.on("SIGTERM", () => {
-      void cleanup().finally(() => process.exit(0));
-    });
+    const exitAfterCleanup = () => {
+      void cleanup().then((settled) => process.exit(settled ? 0 : 1));
+    };
+    process.on("SIGINT", exitAfterCleanup);
+    process.on("SIGTERM", exitAfterCleanup);
 
     await runTick();
     scheduleNext();
