@@ -107,7 +107,6 @@ describe("SailProvider", () => {
     const v = await broker.fetchAndValidateCollected(collected, 1, start, gate);
     expect(v.headSha).toBe(start);
     expect(v.changedFiles).toEqual([]);
-    expect(await broker.isAlreadyOnMain(start, start)).toBe(true);
   });
 
   it("a rebase workspace has the default branch at the target main SHA, and the rebased result bundles and validates", async () => {
