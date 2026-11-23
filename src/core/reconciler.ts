@@ -134,6 +134,8 @@ const REVIEW_RESERVATION_USD = 0.25;
  */
 /** Provisional: most clean (0-token) rebases one Thread may take while ready PRs land ahead of it one by one. */
 const DETERMINISTIC_REBASE_CAP = 8;
+/** The conventional-commit type a PR title and its squash commit carry, by work class. */
+const PR_TITLE_PREFIX: Record<WorkClass, string> = { bugfix: "fix", feature: "feat", chore: "chore" };
 
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
@@ -157,6 +159,8 @@ export class Reconciler {
   /** Set when this tick already merged a PR: `main` moved, so every other landing PR is now behind and waits for the next tick's rebase. */
   private mergedThisTick = false;
   private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
+  /** The review round the tick is waiting on, if any. Reviews run inside the tick, so a shutdown has to be able to stop one. */
+  private reviewInFlight: AbortController | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
@@ -212,6 +216,7 @@ export class Reconciler {
 
   abortAllActive(cause: "control" | "handoff" = "control"): void {
     this.pocBuild?.abortController.abort(new Error(`Daemon shutdown (${cause})`));
+    this.reviewInFlight?.abort(new Error(`Daemon shutdown (${cause})`));
     for (const task of this.runningTasks.values()) {
       task.abortCause = cause;
       task.abortController.abort(new Error(`Daemon shutdown (${cause})`));
@@ -2016,6 +2021,28 @@ export class Reconciler {
 
       await this.pinEval(workingThread.issueNumber, validation.headSha);
 
+      // Nothing changed against main: not a policy failure. The implementer's own account of why is what the owner needs, so it is kept.
+      if (validation.changedFiles.length === 0) {
+        this.ledger.finishAttempt(attemptId, {
+          status: "failed",
+          headSha: validation.headSha,
+          costUsd: actualCostUsd,
+          reservedUsd,
+          transcriptPath,
+          errorCategory: "no_change",
+          errorMessage: "The Attempt changed nothing against main",
+        });
+        const latest = this.ledger.getThread(workingThread.issueNumber);
+        if (latest && latest.version === workingThread.version) {
+          this.applyMachineEvent(
+            latest,
+            { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
+            { auditTopic: "thread/needs_you", lastSummary: result.summary },
+          );
+        }
+        return;
+      }
+
       if (validation.protectedViolations.length > 0) {
         this.ledger.finishAttempt(attemptId, {
           status: "failed",
@@ -2195,7 +2222,7 @@ export class Reconciler {
 
       const { diffText: prDiff } = await this.broker.getDiffAndTouchedFiles(mainSha, validation.headSha);
       const pr = await this.github.createPr({
-        title: `fix(#${issue.number}): ${issue.title}`,
+        title: `${PR_TITLE_PREFIX[workClassOfBranch(workingThread.branchName)]}(#${issue.number}): ${issue.title}`,
         body: renderPrBody({ number: issue.number, title: issue.title, body: issue.body }, this.chaptersOfDiff(prDiff)),
         head: workingThread.branchName,
         base: this.cfg.defaultBranch,
@@ -2460,6 +2487,7 @@ export class Reconciler {
       }
 
       let reviewCostTotal = 0;
+      const stop = (this.reviewInFlight = new AbortController());
       try {
         const { diffText, touchedFiles } = await this.broker.getDiffAndTouchedFiles(
           pr.baseSha,
@@ -2480,6 +2508,7 @@ export class Reconciler {
           repoInstructions: await loadRepoInstructions(this.broker, mainSha),
           skipVendors: [...haveVendors],
           excludeVendors,
+          signal: stop.signal,
         });
 
         for (const r of batch.results) {
@@ -2503,6 +2532,8 @@ export class Reconciler {
         await this.pinEval(thread.issueNumber, headSha, pr.baseSha);
         this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
 
+        // Stopped by a shutdown, not an outage: the verdicts that did arrive are kept and the rest run on the next start.
+        if (stop.signal.aborted) return;
         if (batch.errors.length > 0) {
           const errMsg = batch.errors.map((e) => `${e.vendor}: ${e.error}`).join("; ");
           await this.handleReviewOutage(thread, errMsg, now);
@@ -2510,9 +2541,12 @@ export class Reconciler {
         }
       } catch (err) {
         this.ledger.settleBudget(reservedUsd, reviewCostTotal, now);
+        if (stop.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         await this.handleReviewOutage(thread, msg, now);
         return;
+      } finally {
+        this.reviewInFlight = null;
       }
     }
 
@@ -2910,7 +2944,7 @@ export class Reconciler {
       const mergedRes = await this.github.squashMergePr(
         pr.number,
         pr.headSha,
-        `fix(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
+        `${PR_TITLE_PREFIX[workClassOfBranch(thread.branchName)]}(#${thread.issueNumber}): ${thread.title} (#${pr.number})`,
       );
       squashSha = mergedRes.squashSha;
     } catch (err) {

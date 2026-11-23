@@ -74,6 +74,17 @@ describe("an implementer that did not finish is a failed Attempt", () => {
     );
   });
 
+  it("an implementer that changes nothing is put to the owner as already fixed, with its own explanation", async () => {
+    await failedAttempt(
+      { async run() { return { summary: "Clamp(5, 0, 3) already returns 3; nothing to change.", costUsd: 0, transcriptPath: null, aborted: false }; } },
+      ({ ledger }) => {
+        const phase = ledger.getThread(4)!.phase;
+        expect(phase).toMatchObject({ kind: "needs_you", code: "already_fixed" });
+        expect(phase.kind === "needs_you" && phase.reason).toContain("already returns 3; nothing to change.");
+      },
+    );
+  });
+
   it("puts an expired login to the owner as credentials, with the login advice", async () => {
     await failedAttempt(
       { async run() { throw new AttemptError("auth", "claude: login expired"); } },
