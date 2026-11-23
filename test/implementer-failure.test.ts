@@ -68,6 +68,7 @@ describe("an implementer that did not finish is a failed Attempt", () => {
         expect(a.errorMessage).toContain("error_max_turns");
         expect(ledger.getSpendBreakdown().spentUsd).toBeCloseTo(0.7);
         expect(ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "attempt_failed" });
+        expect(ledger.getThread(4)!.implementCount).toBe(1); // a run that worked on the issue and failed is one of the Thread's Attempts
         expect(github.prs.size).toBe(0); // nothing was pushed or opened
       },
     );
@@ -80,6 +81,7 @@ describe("an implementer that did not finish is a failed Attempt", () => {
         expect(ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "attempt_failed", cause: "auth" });
         expect(notified[0]).toMatchObject({ decisionClass: "credentials" });
         expect(notified[0]!.recommendation).toContain("re-login");
+        expect(ledger.getThread(4)!.implementCount).toBe(0); // the implementer never reached the issue: not one of the Thread's Attempts
       },
     );
   });
