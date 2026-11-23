@@ -121,32 +121,6 @@ export function Ref({ repo, num, href }: { repo: string; num: number; href?: str
   );
 }
 
-/** A metric: label, one big number (with an optional aside), and one sentence saying what it is for and what clears it. */
-export function Metric({ label, value, aside, visual, empty, children }: { label: string; value: ReactNode; aside?: ReactNode; visual?: ReactNode; empty?: boolean; children: ReactNode }) {
-  return (
-    <Section flex="1" minW="0" gap="1.5">
-      <Text textStyle="label" fontSize="12.5px" lineHeight="17px" color="fg">
-        {label}
-      </Text>
-      <Flex align="center" gap="4">
-        <Text textStyle="bigNumber" color={empty ? "fg.subtle" : "fg"} whiteSpace="pre">
-          {value}
-          {aside ? (
-            <Box as="span" fontSize="14px" fontWeight="400" letterSpacing="body" color="fg.subtle">
-              {" "}
-              {aside}
-            </Box>
-          ) : null}
-        </Text>
-        {visual}
-      </Flex>
-      <Text textStyle="meta" color="fg.muted" lineHeight="17px">
-        {children}
-      </Text>
-    </Section>
-  );
-}
-
 /** A thin progress bar in ink on a muted track. */
 export function Meter({ fraction }: { fraction: number }) {
   return (
@@ -175,9 +149,9 @@ export function Sparkline({ values, label }: { values: Array<number | null>; lab
   );
 }
 
-/** A 7px status dot: `ink` (solid), `owner` (amber), `passed` (green, pair with a text label), or `hollow`. */
-export function Dot({ tone = "ink" }: { tone?: "ink" | "owner" | "passed" | "hollow" }) {
-  return <Box w="7px" h="7px" rounded="full" flexShrink={0} boxSizing="border-box" {...(tone === "hollow" ? { borderWidth: "1.5px", borderColor: "border.emphasized" } : { bg: tone === "ink" ? "fg" : tone })} />;
+/** A 7px status dot: `ink` (solid), `owner` (amber), `passed` (green, pair with a text label), `ring` (ink outline) or `hollow` (grey outline). */
+export function Dot({ tone = "ink" }: { tone?: "ink" | "owner" | "passed" | "hollow" | "ring" }) {
+  return <Box w="7px" h="7px" rounded="full" flexShrink={0} boxSizing="border-box" {...(tone === "hollow" || tone === "ring" ? { borderWidth: "1.5px", borderColor: tone === "ring" ? "fg" : "border.emphasized" } : { bg: tone === "ink" ? "fg" : tone })} />;
 }
 
 /** A count that only the owner can clear: amber pill. */
