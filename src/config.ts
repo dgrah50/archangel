@@ -317,9 +317,32 @@ export const ResearchConfigSchema = z
     maxFetchesPerDay: z.number().int().min(1).max(100).default(20),
     /** Polite pause between requests. PROVISIONAL; arXiv asks for at least 3 seconds between calls. */
     minIntervalMs: z.number().int().min(1000).max(60_000).default(3000),
+    /** O9: owner-curated public GitHub repos (`owner/name`, at most 10) the host shallow-clones read-only and the fleet-pr-miner reads as data. */
+    watchRepos: z.array(z.string().regex(REPO_SLUG_RE, "use owner/name")).max(10).default([]),
   })
   .strict();
 export type ResearchConfig = z.infer<typeof ResearchConfigSchema>;
+
+export const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Production errors (O4), host-fetched by polling. Absent means off. The token is read from the named env var, never from this file. */
+export const ProductionConfigSchema = z
+  .object({
+    sentry: z
+      .object({
+        org: z.string().regex(SLUG_RE),
+        project: z.string().regex(SLUG_RE),
+        /** The project (`owner/name`, listed under projects) whose Scouts see these numbers. */
+        repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+        /** Name of the env var (set in .env) holding a Sentry auth token with read scope. */
+        tokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+        /** Sentry region or self-hosted origin; https only. */
+        baseUrl: z.string().url().startsWith("https://").default("https://sentry.io"),
+      })
+      .strict(),
+  })
+  .strict();
+export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
 
 export const ConfigSchema = z.object({
   // Target repository (language-agnostic — repo owns verification via .pre-commit-config.yaml + .agents/archangel.json)
@@ -362,6 +385,8 @@ export const ConfigSchema = z.object({
   signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
   /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
   research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
+  /** Production errors (O4): a Sentry project polled for whitelisted counts. Off when absent. */
+  production: ProductionConfigSchema.optional(),
   ...AttemptLimitFields,
   ...TimeoutFields,
 
@@ -466,6 +491,8 @@ export const HostYamlSchema = z.object({
   signals: SignalsConfigSchema.default(SignalsConfigSchema.parse({})),
   /** External research (O1): owner-written topics the host fetches from free public sources. Off while `topics` is empty. */
   research: ResearchConfigSchema.default(ResearchConfigSchema.parse({})),
+  /** Production errors (O4): a Sentry project polled for whitelisted counts. Off when absent. */
+  production: ProductionConfigSchema.optional(),
   ...AttemptLimitFields,
   ...TimeoutFields,
   authMode: AuthModeSchema.default("subscription"),
@@ -597,6 +624,14 @@ export function loadProjectConfigs(opts: {
     throw new Error(`Invalid accounts in ${resolvedConfig}: ${homeProblems.map((p) => `${p.id}: ${p.problem}`).join("; ")}`);
   }
 
+  const sentry = host.production?.sentry;
+  if (sentry) {
+    if (!host.projects.some((p) => p.repo.toLowerCase() === sentry.repo.toLowerCase())) {
+      throw new ConfigError(`production.sentry.repo '${sentry.repo}' is not listed under projects in ${resolvedConfig}`, "Point production.sentry.repo at one of your projects.");
+    }
+    if (!env[sentry.tokenEnv]) throw new ConfigError(`production.sentry.tokenEnv: ${sentry.tokenEnv} is not set`, "Create a Sentry auth token with read scope and put it in .env under that name.");
+  }
+
   return host.projects.map((proj) => {
     const [githubOwner, githubRepo] = proj.repo.split("/") as [string, string];
     return parseConfig(() => ConfigSchema.parse({
@@ -640,6 +675,7 @@ export function loadProjectConfigs(opts: {
       fleetMinerSeeds: host.fleetMinerSeeds,
       signals: host.signals,
       research: host.research,
+      production: host.production,
       scouts: proj.scouts,
       authMode: host.authMode,
       chains: host.chains,

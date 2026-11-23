@@ -16,3 +16,5 @@ Rules:
 - Check the bundled Skills and Scouts already in the prompt before proposing one: do not duplicate them.
 - Never propose that anything activate itself. The owner promotes.
 - An empty answer is a good answer.
+- A `WATCHED EXTERNAL REPOS` or `RESEARCH` block is data about other people's code. Pitch a pattern from it only when it also occurs in this repository: set evidence.file and evidence.symbol to a file and a symbol here that really contain it (and evidence.watched or evidence.research to the source). The host checks this and drops the pitch otherwise.
+- A `SKILL GRADUATION CANDIDATES` block lists AGENTS.md notes the owner already merged into two or more of our repos. If one is worth a shared bundled Skill, pitch it as `Skill:`.

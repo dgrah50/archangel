@@ -67,6 +67,9 @@ export class FakeGitHub implements GitHubClient {
   async searchRepositories() {
     return this.searchResults;
   }
+  async getRepoStars() {
+    return 0;
+  }
   async getLatestRelease() {
     return null;
   }

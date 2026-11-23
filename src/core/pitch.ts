@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { formatRepoInstructions } from "../agents/prompts.js";
+import { REPO_SLUG_RE } from "../config.js";
 import { METRIC_KEYS } from "./metrics-block.js";
 import { RESEARCH_BLOCK_MAX, renderSources } from "./research.js";
 import type { ResearchRow } from "../ledger/schema.js";
@@ -26,6 +27,8 @@ const Evidence = z
     metric: z.enum(METRIC_KEYS).nullable(),
     /** The number of a result in the RESEARCH block; the host renders its link. Null when this evidence is not from research. */
     research: z.number().int().min(1).max(RESEARCH_BLOCK_MAX).nullable(),
+    /** The `owner/name` of a repo in the WATCHED EXTERNAL REPOS block this evidence comes from; null otherwise. */
+    watched: z.string().regex(REPO_SLUG_RE).nullable(),
     note: z.string().min(1).max(300),
   })
   .strict();
@@ -126,7 +129,7 @@ export function renderPitchBody(p: PitchItem, source: { repo: string; mainSha: s
     "",
     "### Evidence",
     ...p.evidence.map((e) => {
-      const ref = [e.file ? `\`${e.file}\`` : null, e.symbol ? `\`${e.symbol}\`` : null, e.metric ? `metric \`${e.metric}\`` : null, e.research ? `source [${e.research}]` : null]
+      const ref = [e.file ? `\`${e.file}\`` : null, e.symbol ? `\`${e.symbol}\`` : null, e.metric ? `metric \`${e.metric}\`` : null, e.research ? `source [${e.research}]` : null, e.watched ? `watched repo \`${e.watched}\`` : null]
         .filter(Boolean)
         .join(" ");
       return `- ${ref ? `${ref}: ` : ""}${e.note}`;
@@ -179,6 +182,10 @@ export interface PitchCheckContext {
   researchGiven: number;
   /** The rows the block was built from, for the rendered Sources section the secret scan also covers. */
   research: readonly ResearchRow[];
+  /** The watched repos the prompt listed; evidence may name only these. */
+  watchedGiven: ReadonlySet<string>;
+  /** Does the repo file at main contain this symbol text? The read-only proof of life for an external pattern. */
+  fileContains(file: string, symbol: string): Promise<boolean>;
   secretScan(text: string): string | null;
   /** True if the title fingerprint matches an open pitch or one the owner declined in the last 90 days. */
   isDuplicate(title: string): boolean;
@@ -195,6 +202,13 @@ export async function checkPitch(p: PitchItem, ctx: PitchCheckContext): Promise<
     }
     if (e.metric !== null && !ctx.metricsGiven.has(e.metric)) return `cited metric '${e.metric}' was not in the metrics block given`;
     if (e.research !== null && e.research > ctx.researchGiven) return `cited research [${e.research}] was not in the research block given`;
+    if (e.watched !== null && !ctx.watchedGiven.has(e.watched)) return `cited watched repo '${e.watched}' was not in the watched block given`;
+  }
+  // An external pattern (research result or watched repo) is pitched only if it really occurs in our own code.
+  if (p.evidence.some((e) => e.research !== null || e.watched !== null)) {
+    let alive = false;
+    for (const e of p.evidence) if (e.file !== null && e.symbol !== null && (await ctx.fileContains(e.file, e.symbol))) alive = true;
+    if (!alive) return "external pattern has no proof of life: no cited file at main contains a cited symbol";
   }
   for (const e of p.estimates) {
     if (e.source === null) continue;
@@ -234,6 +248,7 @@ export function buildPitchPrompt(input: {
   prompt: string;
   metricsBlock?: string;
   researchBlock?: string;
+  prodErrorsBlock?: string;
   repoInstructions?: string | null;
   declined: Array<{ title: string; reason: string | null }>;
 }): string {
@@ -248,6 +263,7 @@ export function buildPitchPrompt(input: {
     ...formatRepoInstructions(input.repoInstructions),
     ...(input.metricsBlock ? [input.metricsBlock, ""] : []),
     ...(input.researchBlock ? [input.researchBlock, ""] : []),
+    ...(input.prodErrorsBlock ? [input.prodErrorsBlock, ""] : []),
     ...(input.declined.length > 0
       ? [
           "--- PITCHES ALREADY OPEN OR DECIDED BY THE OWNER (DATA; do not re-pitch these, even reworded) ---",

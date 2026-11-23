@@ -39,6 +39,7 @@ import { closeStalePreviews, pocWorkspaceDir } from "./pitch-preview.js";
 import { archangelPromptCommit } from "./regression-watch.js";
 import { isUndecided } from "./pitch-machine.js";
 import { expireStalePitches, syncPitchDecisions } from "./pitch-expiry.js";
+import { SentryProvider, type ProdErrorProvider } from "./prod-errors.js";
 import { fetchResearch } from "./research.js";
 import { convergeSignals, ingestSignals, wantedKinds } from "./signals.js";
 import { KERNEL, ownerMergesOnly, type EffectiveWorkflow, type OkWorkflow } from "./workflow.js";
@@ -449,6 +450,7 @@ export class Reconciler {
             this.cfg.research.topics.length > 0
               ? () => fetchResearch({ ledger: this.ledger, github: this.github, cfg: this.cfg.research, now })
               : undefined,
+          prodErrors: this.prodErrorProvider(now),
           now,
           onError: (adapter, err) => this.recordFault(`signals:${adapter}`, err, now),
           introducedBy: (kind, sha) =>
@@ -1314,6 +1316,15 @@ export class Reconciler {
       );
     }
     return null;
+  }
+
+  /** The Sentry provider when the owner configured one for this repo; the token is read from its env var here and goes nowhere but the request header. */
+  private prodErrorProvider(now: number): ProdErrorProvider | undefined {
+    const c = this.cfg.production?.sentry;
+    if (!c || c.repo.toLowerCase() !== this.ledger.repo.toLowerCase()) return undefined;
+    const token = process.env[c.tokenEnv];
+    if (!token) throw new Error(`${c.tokenEnv} is not set`);
+    return new SentryProvider({ baseUrl: c.baseUrl, org: c.org, project: c.project, token, now: () => now });
   }
 
   private async reconcileThread(

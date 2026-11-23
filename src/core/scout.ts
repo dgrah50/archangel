@@ -7,7 +7,7 @@ import { tryParseJson } from "./json.js";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import type { GitBroker } from "../broker/git-broker.js";
+import { GitBroker } from "../broker/git-broker.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { NO_ACCOUNT_STATE, selectAccount, type AccountState } from "./accounts.js";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, resolveRequiredReviewers, resolvePaths, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
@@ -22,6 +22,10 @@ import { FLEET_MINER_WINDOW_DAYS, buildFleetMinerBlock, provisionalLine, readSee
 import { formatRepoInstructions } from "../agents/prompts.js";
 import { loadRepoInstructions } from "./workflow-load.js";
 import { syncPitchDecisions } from "./pitch-expiry.js";
+import type { RepoAgentsFile } from "./graduation.js";
+import { buildGraduationBlock, findGraduationCandidates, otherRepos } from "./graduation.js";
+import { buildWatchedBlock, loadWatchedSummaries } from "./watched-repos.js";
+import { buildProdErrorsBlock } from "./prod-errors.js";
 import { buildResearchBlock, citableResearch } from "./research.js";
 import { METRICS_WINDOW_DAYS, METRIC_KEYS, buildMetricsBlockFrom } from "./metrics-block.js";
 import {
@@ -603,6 +607,9 @@ async function runPitchScout(opts: {
   const provisional = miner ? provisionalLine(ledger.computeMetrics({ repo: null }).outcomes.mergedFixes) : null;
   const minedShas = new Set(commits.map((c) => shortSha(c.sha)));
   const research = citableResearch(ledger, now);
+  const dataDir = resolvePaths(opts.config).dataDir;
+  const watched = miner ? await loadWatchedSummaries({ dataDir, repos: opts.config.research.watchRepos, github: opts.github, now }) : { summaries: [], failed: 0 };
+  const graduation = miner ? await graduationBlock(opts, ledger) : undefined;
   const compute = opts.compute ?? new LocalProvider(opts.broker);
   const workspace = await compute.prepare({ issueNumber: 900_000 + Math.floor(Math.random() * 90_000), startSha: opts.mainSha });
   const cloneDir = workspace.path;
@@ -620,6 +627,7 @@ async function runPitchScout(opts: {
         prompt: wf.prompt,
         repoInstructions: await loadRepoInstructions(opts.broker, opts.mainSha),
         researchBlock: buildResearchBlock(research),
+        prodErrorsBlock: buildProdErrorsBlock(ledger, now),
         declined: recent.map((r) => ({ title: r.title, reason: r.declineReason })),
         metricsBlock: wf.includeMetrics
           ? [
@@ -631,7 +639,7 @@ async function runPitchScout(opts: {
                   excludeScouts,
                 }),
               ),
-              ...(miner ? [buildClusterBlockFrom(ledger, { repo: null, now, excludeScouts }), minerBlock!] : []),
+              ...(miner ? [buildClusterBlockFrom(ledger, { repo: null, now, excludeScouts }), minerBlock!, buildWatchedBlock(watched.summaries, watched.failed), graduation].filter((b): b is string => b !== undefined) : []),
             ].join("\n\n")
           : undefined,
       }),
@@ -645,7 +653,6 @@ async function runPitchScout(opts: {
       return { ...summary, status: "failed_output" };
     }
     const fps = new Set(recent.map((r) => r.titleFp));
-    const dataDir = resolvePaths(opts.config).dataDir;
     const source = { repo: ledger.repo, mainSha: opts.mainSha };
     for (const pitch of parsed.data.pitches.slice(0, 1)) {
       const ingested = new Map<string, IngestedImage>();
@@ -659,6 +666,8 @@ async function runPitchScout(opts: {
           return image;
         },
         fileExists: async (file) => (await opts.broker.readFileAtRef(opts.mainSha, file)) !== null,
+        fileContains: async (file, symbol) => ((await opts.broker.readFileAtRef(opts.mainSha, file)) ?? "").includes(symbol),
+        watchedGiven: new Set(watched.summaries.map((w) => w.repo)),
         metricsGiven,
         researchGiven: research.length,
         research,
@@ -703,6 +712,25 @@ async function runPitchScout(opts: {
     compute.destroy(workspace);
   }
   return summary;
+}
+
+/** C4: this repo's AGENTS.md plus every other ledger repo's (read from its broker clone at the default branch), as graduation candidates. */
+async function graduationBlock(opts: { config: ArchangelConfig; broker: GitBroker; mainSha: string }, ledger: Ledger): Promise<string | undefined> {
+  const files: RepoAgentsFile[] = [];
+  const own = await opts.broker.readFileAtRef(opts.mainSha, "AGENTS.md");
+  if (own !== null) files.push({ repo: ledger.repo, text: own });
+  for (const repo of otherRepos(ledger)) {
+    const [githubOwner, githubRepo] = repo.split("/") as [string, string];
+    const bareRepoPath = resolvePaths({ ...opts.config, brokerBareRepoPath: undefined, githubOwner, githubRepo }).brokerBareRepoPath;
+    if (!fs.existsSync(bareRepoPath)) continue;
+    try {
+      const text = await new GitBroker({ bareRepoPath, clonesDir: opts.broker.clonesDir, defaultBranch: opts.config.defaultBranch }).readFileAtRef(opts.config.defaultBranch, "AGENTS.md");
+      if (text !== null) files.push({ repo, text });
+    } catch (err) {
+      ledger.appendAudit("graduation/unreadable", null, repo, { error: String(err).slice(0, 200) }, Date.now());
+    }
+  }
+  return buildGraduationBlock(findGraduationCandidates(files, scanForSecrets));
 }
 
 const CRITIC_FILE_MAX_CHARS = 8_000;

@@ -74,7 +74,7 @@ describe("fleet PR-Miner", () => {
       scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
     });
     const prompts: string[] = [];
-    const ev = (note: string) => ({ file: "app.ts", symbol: null, metric: null, research: null, note });
+    const ev = (note: string) => ({ file: "app.ts", symbol: null, metric: null, research: null, watched: null, note });
     const pitch = (note: string) => ({
       type: "feature", title: "Skill: reuse the dead-code check", problem: "Recurring cleanup commits.",
       evidence: [ev(note), { ...ev("util.ts repeats it"), file: "util.ts" }], proposal: "Add a Skill.", smallestVersion: "One Skill file.",

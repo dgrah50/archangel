@@ -48,7 +48,7 @@ describe("research fetcher", () => {
     const rows = citableResearch(ledger, NOW);
     expect(buildResearchBlock(rows)).not.toContain("arxiv.org");
 
-    const ev = (research: number | null) => ({ file: null, symbol: null, metric: null, research, note: "see https://evil.example/x" });
+    const ev = (research: number | null) => ({ file: research === null ? "app.ts" : null, symbol: research === null ? "parseFast" : null, metric: null, research, watched: null, note: "see https://evil.example/x" });
     const pitch = PitchOutputSchema.parse({
       pitches: [
         {
@@ -61,8 +61,10 @@ describe("research fetcher", () => {
     const body = renderPitchBody(pitch, { repo: "o/r", mainSha: "m" }, rows);
     expect(body).toContain("- [1] Fast JSON paths (2026-11-01), https://arxiv.org/abs/2401.00001");
 
-    const ctx = { fileExists: async () => true, ingestFigure: async () => { throw new Error("none"); }, source: { repo: "o/r", mainSha: "m" }, metricsGiven: new Set<string>(), secretScan: () => null, isDuplicate: () => false };
+    const ctx = { fileExists: async () => true, ingestFigure: async () => { throw new Error("none"); }, source: { repo: "o/r", mainSha: "m" }, metricsGiven: new Set<string>(), secretScan: () => null, isDuplicate: () => false, watchedGiven: new Set<string>(), fileContains: async () => true };
     expect(await checkPitch(pitch, { ...ctx, researchGiven: 1, research: rows })).toBeNull();
     expect(await checkPitch(pitch, { ...ctx, researchGiven: 0, research: [] })).toContain("research [1]");
+    // The hard rule: an external pattern with no real hit in our own code (no cited symbol in a cited file) is dropped.
+    expect(await checkPitch(pitch, { ...ctx, researchGiven: 1, research: rows, fileContains: async () => false })).toContain("proof of life");
   });
 });
