@@ -27,7 +27,7 @@ const AGY_HOSTS = ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis
  * Only hosts of configured providers are reachable, plus the package registry. GitHub is absent because the repo arrives as a bundle,
  * and so is every OAuth host (auth.openai.com, oauth2.googleapis.com): a box can never refresh a login.
  */
-export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "codexBrokerHome" | "geminiApiKeySecret" | "agyBrokerHome">) {
+export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "codexBrokerHome" | "geminiApiKeySecret" | "agyBrokerHome"> & { image?: { egressHosts: string[] } }) {
   const routes = [
     { secret: cfg.claudeTokenSecret, host: "api.anthropic.com", env: CLAUDE_TOKEN, prefix: "sk-ant-oat01-", header: "authorization" },
     ...(cfg.codexApiKeySecret ? [{ secret: cfg.codexApiKeySecret, host: "api.openai.com", env: OPENAI_KEY, prefix: "sk-", header: "authorization" }] : []),
@@ -38,7 +38,7 @@ export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codex
     ...(cfg.geminiApiKeySecret ? [{ secret: cfg.geminiApiKeySecret, host: "generativelanguage.googleapis.com", env: GEMINI_KEY, prefix: "AIza", header: "x-goog-api-key" }] : []),
   ];
   return {
-    allowlist: [...routes.map((r) => r.host), "registry.npmjs.org"],
+    allowlist: [...routes.map((r) => r.host), "registry.npmjs.org", ...(cfg.image?.egressHosts ?? [])],
     env: Object.fromEntries(routes.map((r) => [r.env, { secret: r.secret, placeholder_prefix: r.prefix }])),
     // A rule names the stored secret, not the env var.
     rules: Object.fromEntries(routes.map((r) => [r.host, [{ request: { replace: { headers: { [r.header]: r.secret } } } }]])),
@@ -55,13 +55,14 @@ export function remoteProviders(compute: ComputeConfig): ReadonlySet<CliProvider
   return set;
 }
 
-function imageFor(arch: "amd64" | "arm64"): Image {
-  return Image.debian(arch)
+function imageFor({ arch, setup }: SailConfig["image"]): Image {
+  const base = Image.debian(arch)
     .aptInstall("git", "curl", "ca-certificates", "unzip", "gnupg")
     .runCommand("curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs")
     .runCommand("curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash")
     .runCommand("npm install -g @anthropic-ai/claude-code @openai/codex")
     .runCommand("curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin");
+  return setup.reduce((image, command) => image.runCommand(command), base);
 }
 
 export function createSailClient(cfg: SailConfig): SailClient {
@@ -71,7 +72,7 @@ export function createSailClient(cfg: SailConfig): SailClient {
   const setup = () =>
     (ready ??= (async () => {
       const app = await App.find(cfg.app, { mintIfMissing: true });
-      const image = await imageFor(cfg.image.arch).build({ timeoutSeconds: 1800 });
+      const image = await imageFor(cfg.image).build({ timeoutSeconds: 1800 });
       const name = `${cfg.app}-${specHash}`;
       const existing = (await EgressPolicy.list()).find((p) => p.name === name);
       const policy = existing ? await EgressPolicy.get(existing.id) : await EgressPolicy.create(name, sailPolicyDoc(cfg));

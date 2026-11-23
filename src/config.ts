@@ -277,6 +277,15 @@ const TimeoutFields = {
   reviewerOutageMaxMs: z.number().int().min(60_000).default(6 * 60 * 60_000),
 };
 
+/** The Sail box image: its arch, plus the project's own toolchain as owner-written shell commands (run as root after the base image, in order) and the extra hosts those tools reach. Data only: nothing is detected. */
+export const SailImageSchema = z
+  .object({
+    arch: z.enum(["amd64", "arm64"]).default("amd64"),
+    setup: z.array(z.string().min(1)).default([]),
+    egressHosts: z.array(z.string().regex(/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/, "a bare hostname, no scheme or path")).default([]),
+  })
+  .strict();
+
 /** Where Scouts run: `local` (default) or a Sail Sailbox. Strict: an unknown key or provider is a config error, never a silent local run. */
 export const ComputeConfigSchema = z
   .object({
@@ -284,7 +293,7 @@ export const ComputeConfigSchema = z
     sail: z
       .object({
         app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, "lowercase letters, digits and hyphens"),
-        image: z.object({ arch: z.enum(["amd64", "arm64"]).default("amd64") }).strict().default({ arch: "amd64" }),
+        image: SailImageSchema.default(SailImageSchema.parse({})),
         maxLifetimeSeconds: z.number().int().min(60).max(3600).default(600),
         maxDailyComputeUsd: z.number().positive().default(2),
         /** Name of the Sail secret holding the Claude token; the egress policy swaps it in on the wire (the box sees a placeholder in CLAUDE_CODE_OAUTH_TOKEN). It must exist before the first box. */
@@ -479,6 +488,8 @@ const HostProjectYamlSchema = z.object({
   maxConcurrentThreads: z.number().int().min(1).max(3).default(2),
   maxAutoMergesPerDay: z.number().int().min(1).default(3),
   ...ProjectAttemptOverrides,
+  /** This project's toolchain on Sail boxes; replaces the host's `compute.sail.image.setup` and `egressHosts` (arch stays the host's). */
+  sailImage: SailImageSchema.omit({ arch: true }).optional(),
   scouts: ScoutsConfigSchema.default({
     enabled: false,
     maxRunsPerDay: 2,
@@ -669,7 +680,7 @@ export function loadProjectConfigs(opts: {
       pollIntervalMs: host.pollIntervalMs,
       maxDailyUsd: host.maxDailyUsd,
       dailyTimezone: host.dailyTimezone,
-      compute: host.compute,
+      compute: proj.sailImage && host.compute.sail ? { ...host.compute, sail: { ...host.compute.sail, image: { ...host.compute.sail.image, ...proj.sailImage } } } : host.compute,
       ui: host.ui,
       digestHour: host.digestHour,
       maxConcurrentThreads: proj.maxConcurrentThreads,
