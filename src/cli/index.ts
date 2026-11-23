@@ -2,12 +2,13 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { tryParseJson } from "../core/json.js";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
-import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
+import { resolveDataDir, resolveHostSettings, resolveUiSettings } from "./data-dir.js";
 import { INIT_NEXT_STEPS, runInit } from "./init.js";
 import { requireTransition } from "./transition.js";
 import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, resolveUserPath, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
@@ -36,7 +37,7 @@ import { bump, bumpRunner } from "../core/bump.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { computeHealth, renderHealth, renderStages } from "../core/status-text.js";
 import { recordDaemonFacts } from "../core/host-facts.js";
-import { assertBindable, startUiServer } from "../core/ui-server.js";
+import { assertBindable, startUiServer, UI_DIST_DIR } from "../core/ui-server.js";
 import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
@@ -262,7 +263,7 @@ program
         workerId: daemonOwnerId,
         scoutCompute,
         remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
-        previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [4477] }),
+        previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [cfg.ui.port] }),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"
@@ -511,8 +512,7 @@ pitchCmd
   .command("preview <repo> <issue>")
   .description("Run a built PoC in a macOS sandbox on a loopback URL and screenshot it (installed at build time; 60 min TTL, 15 min idle; Ctrl-C stops it)")
   .option("-c, --config <path>", "Path to archangel.yaml")
-  .option("--ui-port <n>", "The dashboard port, which a preview never uses", "4477")
-  .action(async (repo: string, issueArg: string, opts: { config?: string; uiPort: string }) => {
+  .action(async (repo: string, issueArg: string, opts: { config?: string }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
     const paths = resolvePaths(cfg);
     const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
@@ -523,7 +523,7 @@ pitchCmd
       const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
       const local = new LocalProvider(broker);
       const running = await startPocPreview(
-        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs, github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }) },
+        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [cfg.ui.port] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs, github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }) },
         Number(issueArg),
       );
       process.once("SIGINT", running.close);
@@ -1160,10 +1160,11 @@ program
   .description("Serve a local dashboard from the Ledger; its only write is a guarded POST that opens an unmerged workflow PR with your gh (disabled with --allow-remote)")
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--data-dir <dir>", "Archangel data directory")
-  .option("--port <n>", "Port", "4477")
-  .option("--host <host>", "Host to bind", "127.0.0.1")
+  .option("--port <n>", "Port (default: ui.port in archangel.yaml, else 4477)")
+  .option("--host <host>", "Host to bind (default: ui.host in archangel.yaml, else 127.0.0.1)")
   .option("--allow-remote", "Allow binding a non-loopback host (the page has no authentication)")
-  .action(async (opts: { config?: string; dataDir?: string; port: string; host: string; allowRemote?: boolean }) => {
+  .action(async (flags: { config?: string; dataDir?: string; port?: string; host?: string; allowRemote?: boolean }) => {
+    const opts = { ...flags, ...resolveUiSettings(flags) };
     assertBindable(opts.host, Boolean(opts.allowRemote));
     const paths = resolvePaths({ dataDir: resolveDataDir(opts) });
     // The Ledger belongs to the daemon: the UI never creates or writes it. Before the first `archangel start` it serves an
@@ -1460,49 +1461,29 @@ function escapeXml(s: string): string {
 }
 
 const LAUNCHD_LABEL = "com.archangel.daemon";
-function launchdPlistPath(): string {
-  return path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+const UI_LAUNCHD_LABEL = "com.archangel.ui";
+function launchdPlistPath(label: string): string {
+  return path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+}
+function launchdUid(): number {
+  return typeof process.getuid === "function" ? process.getuid() : 501;
 }
 
-const daemonCmd = program
-  .command("daemon")
-  .description("Manage the always-on macOS launchd user agent (fixed checkout, no secrets in plist)");
-
-daemonCmd
-  .command("install")
-  .description("Write and load ~/Library/LaunchAgents/com.archangel.daemon.plist")
-  .option("-c, --config <path>", "Path to archangel.yaml")
-  .action((opts: { config?: string }) => {
-    if (process.platform !== "darwin") {
-      throw new Error("`archangel daemon install` currently supports macOS (launchd) only.");
-    }
-    const workDir = process.cwd();
-    const entryTs = path.resolve(workDir, "src/cli/index.ts");
-    if (!fs.existsSync(entryTs)) {
-      throw new Error(`CLI entry not found at ${entryTs}. Run \`daemon install\` from the Archangel checkout.`);
-    }
-    const configPath = path.resolve(workDir, opts.config ?? "archangel.yaml");
-    const logDir = path.resolve(workDir, ".archangel");
-    fs.mkdirSync(logDir, { recursive: true });
-    const plistPath = launchdPlistPath();
-    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
-
-    // Capture current PATH so launchd can locate bun, git, go, codex, claude, and agy.
-    // Never write secrets into the plist; Archangel loads `.env` (chmod 600) at runtime.
-    const capturedPath = process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
-    const args = [process.execPath, entryTs, "start", "--config", configPath];
-
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+/** One launchd agent: restart on failure, logs to `<logDir>/<logName>.log` and `.err.log`. Never put a secret in here. */
+function renderPlist(a: { label: string; args: string[]; workDir: string; logDir: string; logName: string }): string {
+  // Capture current PATH so launchd can locate bun, git, go, codex, claude, and agy.
+  const capturedPath = process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
+  <string>${a.label}</string>
   <key>WorkingDirectory</key>
-  <string>${escapeXml(workDir)}</string>
+  <string>${escapeXml(a.workDir)}</string>
   <key>ProgramArguments</key>
   <array>
-${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
+${a.args.map((x) => `    <string>${escapeXml(x)}</string>`).join("\n")}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -1521,23 +1502,80 @@ ${args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n")}
   <key>ThrottleInterval</key>
   <integer>60</integer>
   <key>StandardOutPath</key>
-  <string>${escapeXml(path.join(logDir, "daemon.log"))}</string>
+  <string>${escapeXml(path.join(a.logDir, `${a.logName}.log`))}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(path.join(logDir, "daemon.err.log"))}</string>
+  <string>${escapeXml(path.join(a.logDir, `${a.logName}.err.log`))}</string>
 </dict>
 </plist>
 `;
-    fs.writeFileSync(plistPath, plist, { encoding: "utf8", mode: 0o600 });
-    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
-    try {
-      execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
-    } catch (_err) {
-      // launchctl bootout exits non-zero when the agent is not currently loaded.
-      void _err;
+}
+
+function bootoutAgent(label: string): void {
+  try {
+    execFileSync("launchctl", ["bootout", `gui/${launchdUid()}/${label}`], { stdio: "ignore" });
+  } catch (_err) {
+    // launchctl bootout exits non-zero when the agent is not currently loaded.
+    void _err;
+  }
+}
+
+function installAgent(a: { label: string; args: string[]; workDir: string; logDir: string; logName: string }): void {
+  const plistPath = launchdPlistPath(a.label);
+  fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+  fs.writeFileSync(plistPath, renderPlist(a), { encoding: "utf8", mode: 0o600 });
+  bootoutAgent(a.label);
+  execFileSync("launchctl", ["bootstrap", `gui/${launchdUid()}`, plistPath], { stdio: "inherit" });
+  console.log(`Installed & loaded ${a.label} (${plistPath}).`);
+}
+
+function isPortInUse(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    sock.setTimeout(1000);
+    sock.once("connect", () => { sock.destroy(); resolve(true); });
+    sock.once("timeout", () => { sock.destroy(); resolve(false); });
+    sock.once("error", () => resolve(false));
+  });
+}
+
+const daemonCmd = program
+  .command("daemon")
+  .description("Manage the always-on macOS launchd user agent (fixed checkout, no secrets in plist)");
+
+daemonCmd
+  .command("install")
+  .description("Write and load the daemon (com.archangel.daemon) and dashboard (com.archangel.ui) launchd agents in ~/Library/LaunchAgents")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action(async (opts: { config?: string }) => {
+    if (process.platform !== "darwin") {
+      throw new Error("`archangel daemon install` currently supports macOS (launchd) only.");
     }
-    execFileSync("launchctl", ["bootstrap", `gui/${uid}`, plistPath], { stdio: "inherit" });
-    console.log(`Installed & loaded ${LAUNCHD_LABEL} (${plistPath}).`);
-    console.log(`Logs: ${path.join(logDir, "daemon.log")} and ${path.join(logDir, "daemon.err.log")}`);
+    const workDir = process.cwd();
+    const entryTs = path.resolve(workDir, "src/cli/index.ts");
+    if (!fs.existsSync(entryTs)) {
+      throw new Error(`CLI entry not found at ${entryTs}. Run \`daemon install\` from the Archangel checkout.`);
+    }
+    const configPath = path.resolve(workDir, opts.config ?? "archangel.yaml");
+    const logDir = path.resolve(workDir, ".archangel");
+    fs.mkdirSync(logDir, { recursive: true });
+    // The dashboard cannot be served without its bundle; installing it anyway would crash-loop.
+    if (!fs.existsSync(path.join(UI_DIST_DIR, "index.html"))) {
+      throw new Error(`The dashboard is not built (${path.join(UI_DIST_DIR, "index.html")} is missing). Run \`bun run build\`, then \`daemon install\` again.`);
+    }
+    const ui = resolveUiSettings({ config: configPath });
+    const portBusy = await isPortInUse(ui.host, ui.port);
+
+    // Never write secrets into the plist; Archangel loads `.env` (chmod 600) at runtime.
+    // `bun` as found on PATH (a stable symlink such as /opt/homebrew/bin/bun), not this process's own binary: that is a versioned
+    // path which the next `brew upgrade bun` deletes, leaving both agents unable to start.
+    const bun = Bun.which("bun") ?? process.execPath;
+    installAgent({ label: LAUNCHD_LABEL, args: [bun, entryTs, "start", "--config", configPath], workDir, logDir, logName: "daemon" });
+    installAgent({ label: UI_LAUNCHD_LABEL, args: [bun, entryTs, "ui", "--config", configPath], workDir, logDir, logName: "ui" });
+    console.log(`Daemon logs: ${path.join(logDir, "daemon.log")} and ${path.join(logDir, "daemon.err.log")}`);
+    console.log(`Dashboard: http://${ui.host.includes(":") ? `[${ui.host}]` : ui.host}:${ui.port}  (logs: ${path.join(logDir, "ui.log")} and ${path.join(logDir, "ui.err.log")})`);
+    if (portBusy) {
+      console.warn(`WARNING: ${ui.host}:${ui.port} is already in use (likely a dashboard started by hand). The managed dashboard will keep failing to bind until that process is stopped.`);
+    }
   });
 
 function isProcessAlive(pid: number): boolean {
@@ -1580,28 +1618,34 @@ daemonCmd
     }
     execFileSync("launchctl", ["kickstart", target], { stdio: "inherit" });
     console.log(`Restarted ${LAUNCHD_LABEL}.`);
+    const uiTarget = `gui/${process.getuid!()}/${UI_LAUNCHD_LABEL}`;
+    try {
+      execFileSync("launchctl", ["print", uiTarget], { stdio: "ignore" });
+    } catch (_err) {
+      void _err;
+      console.log("The dashboard is not a managed service yet: re-run `archangel daemon install` to get it.");
+      return;
+    }
+    execFileSync("launchctl", ["kickstart", "-k", uiTarget], { stdio: "inherit" });
+    console.log(`Restarted ${UI_LAUNCHD_LABEL}.`);
   });
 
 daemonCmd
   .command("uninstall")
-  .description("Unload and remove ~/Library/LaunchAgents/com.archangel.daemon.plist")
+  .description("Unload and remove the daemon and dashboard launchd agents (com.archangel.daemon, com.archangel.ui)")
   .action(() => {
     if (process.platform !== "darwin") {
       throw new Error("`archangel daemon uninstall` currently supports macOS (launchd) only.");
     }
-    const plistPath = launchdPlistPath();
-    const uid = typeof process.getuid === "function" ? process.getuid() : 501;
-    try {
-      execFileSync("launchctl", ["bootout", `gui/${uid}/${LAUNCHD_LABEL}`], { stdio: "ignore" });
-    } catch (_err) {
-      // launchctl bootout exits non-zero when the agent is already unloaded.
-      void _err;
-    }
-    if (fs.existsSync(plistPath)) {
-      fs.rmSync(plistPath);
-      console.log(`Unloaded & removed ${plistPath}.`);
-    } else {
-      console.log(`${plistPath} not present.`);
+    for (const label of [LAUNCHD_LABEL, UI_LAUNCHD_LABEL]) {
+      const plistPath = launchdPlistPath(label);
+      bootoutAgent(label);
+      if (fs.existsSync(plistPath)) {
+        fs.rmSync(plistPath);
+        console.log(`Unloaded & removed ${plistPath}.`);
+      } else {
+        console.log(`${plistPath} not present.`);
+      }
     }
   });
 
@@ -1609,19 +1653,20 @@ daemonCmd
   .command("status")
   .description("Show macOS launchd daemon status")
   .action(() => {
-    const plistPath = launchdPlistPath();
-    console.log(`Plist: ${plistPath} (${fs.existsSync(plistPath) ? "installed" : "not installed"})`);
-    if (process.platform === "darwin") {
-      const uid = typeof process.getuid === "function" ? process.getuid() : 501;
-      try {
-        const out = execFileSync("launchctl", ["print", `gui/${uid}/${LAUNCHD_LABEL}`], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        const stateLine = out.split("\n").find((l) => l.includes("state =") || l.includes("pid ="));
-        console.log(stateLine?.trim() ?? "Loaded");
-      } catch (_err) {
-        console.log("Not loaded in launchd.");
+    for (const label of [LAUNCHD_LABEL, UI_LAUNCHD_LABEL]) {
+      const plistPath = launchdPlistPath(label);
+      console.log(`${label}: ${plistPath} (${fs.existsSync(plistPath) ? "installed" : "not installed"})`);
+      if (process.platform === "darwin") {
+        try {
+          const out = execFileSync("launchctl", ["print", `gui/${launchdUid()}/${label}`], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          const stateLine = out.split("\n").find((l) => l.includes("state =") || l.includes("pid ="));
+          console.log(stateLine?.trim() ?? "Loaded");
+        } catch (_err) {
+          console.log("Not loaded in launchd.");
+        }
       }
     }
   });

@@ -1840,6 +1840,10 @@ export class Reconciler {
 
       const approvedPlan = this.ledger.approvedThreadPlan(workingThread.issueNumber)?.text ?? null;
       const repoInstructions = await loadRepoInstructions(this.broker, mainSha);
+      const branchTestFiles =
+        kind === "revise"
+          ? parseDiffStat((await this.broker.getDiffAndTouchedFiles(mainSha, fromSha)).diffText).filter((f) => f.isNew && isTestFile(f.path, this.effectiveGate)).map((f) => f.path)
+          : [];
       const prompt =
         kind === "plan"
           ? buildPlanPrompt({
@@ -1878,6 +1882,7 @@ export class Reconciler {
                 approvedPlan,
                 repoInstructions,
                 workClass: workClassOfBranch(workingThread.branchName),
+                branchTestFiles,
               })
             : buildRebasePrompt({
                 issueNumber: issue.number,

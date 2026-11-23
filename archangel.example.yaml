@@ -6,6 +6,12 @@ pollIntervalMs: 30000
 maxDailyUsd: 20
 dailyTimezone: America/New_York
 
+# The dashboard: `daemon install` runs `archangel ui` as a launchd service on this host and port (defaults shown).
+# `start` keeps previews off this port. `ui --host/--port` flags override it.
+# ui:
+#   host: 127.0.0.1
+#   port: 4477
+
 # Per-thread limits (defaults shown; any project may override the first four)
 maxAutonomousStepsWithoutOwner: 25  # Attempt starts + auto-merges before the owner must be heard from
 maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to needs-you
