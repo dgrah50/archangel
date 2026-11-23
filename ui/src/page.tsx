@@ -1,5 +1,6 @@
 import { Box, Button, Flex, Link, Text, type FlexProps } from "@chakra-ui/react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { CopyButton } from "./arc/copy-button/copy-button";
 
 // Page primitives for the dashboard redesign. Every page opens with its title and its numbers, then sections of hairline-separated rows
 // on the surface: no cards, no shadows. Typography comes from the theme's text styles (headline, rowTitle, label, meta, ref, command ...).
@@ -137,26 +138,12 @@ export function OwedCount({ children }: { children: ReactNode }) {
 
 /** A command to copy and run by hand: the dashboard never restarts anything itself. */
 export function CopyCommand({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
   return (
-    <Flex align="center" gap="2" minH="30px" py="1" px="10px" rounded="10px" borderWidth="1px" borderColor="border" bg="bg.subtle">
+    <Flex align="center" gap="2" minH="36px" py="1" ps="12px" pe="1" rounded="10px" borderWidth="1px" borderColor="border" bg="bg.subtle">
       <Text textStyle="command" color="fg" flex="1" wordBreak="break-all">
         {command}
       </Text>
-      <Button
-        variant="plain"
-        size="xs"
-        h="auto"
-        minW="0"
-        p="0"
-        color="fg.muted"
-        fontWeight="400"
-        onClick={() => {
-          void navigator.clipboard?.writeText(command).then(() => setCopied(true), () => undefined);
-        }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </Button>
+      <CopyButton value={command} variant="plain" />
     </Flex>
   );
 }

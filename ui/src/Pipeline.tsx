@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { PipelineRepo, PipelineStage, WorkflowsState } from "../../src/core/ui-state.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { Workflow } from "../../src/core/workflow.js";
+import SegmentedControl from "./arc/segmented-control/segmented-control";
 import { Page, PageHeadline } from "./page";
 import { DraftPanel, StageEditor, useDraft, type Draft } from "./WorkflowEditor";
 
@@ -181,13 +182,9 @@ export function Pipeline({ data, settings }: { data: WorkflowsState; settings: S
     <Page>
       <Flex justify="space-between" align="flex-start" gap="6">
         <PageHeadline title="Pipeline">{`${short(repo.repo)} · rules live in the repo, edits open a PR only you can merge`}</PageHeadline>
-        <Flex gap="1" p="4px" rounded="12px" bg="bg.muted" mt="-9px" flexShrink={0} role="tablist" aria-label="Repo">
-          {data.repos.map((r) => (
-            <Button key={r.repo} role="tab" aria-selected={r.repo === repo.repo} size="sm" h="36px" px="16px" borderRadius="10px" variant="plain" fontWeight={r.repo === repo.repo ? "500" : "400"} {...(r.repo === repo.repo ? { bg: "bg", color: "fg" } : { color: "fg.muted" })} onClick={() => setPicked(r.repo)}>
-              {short(r.repo)}
-            </Button>
-          ))}
-        </Flex>
+        <Box mt="-7px" flexShrink={0}>
+          <SegmentedControl label="Repo" value={repo.repo} onValueChange={setPicked} options={data.repos.map((r) => ({ value: r.repo, label: short(r.repo) }))} />
+        </Box>
       </Flex>
       <RepoView key={repo.repo} r={repo} settings={settings} />
     </Page>
