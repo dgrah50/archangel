@@ -119,7 +119,7 @@ export interface StageMetrics {
   review: { byVendor: Record<string, { approve: number; veto: number }>; outages: number };
   landing: { autoMerged: number; ownerMerged: number; reverts: number; disagreements: number; autonomyCapHits: number };
   needsYou: { byDecisionClass: Record<string, number> };
-  /** Threads split by the workflow file version stamped on them ("none" for Threads from before stamping). */
+  /** Threads split by the workflow file version stamped on them ("none" for Threads with no stamp). */
   byWorkflowSha: Record<string, { threads: number; merged: number; reverted: number }>;
   /** Factory retries in the window, by outcome and by the escalation code they answered. */
   factoryRetries: { total: number; byOutcome: Record<FactoryOutcome, number>; byCode: Record<string, Record<FactoryOutcome, number>> };
@@ -157,50 +157,7 @@ export class Ledger {
     this.repo = opts.repo ?? "default";
     this.timeZone = opts.timeZone ?? "America/New_York";
     if (!opts.readonly) {
-      migrateOutbox(this.db);
-      this.dropLegacyDaemonCommands();
       this.db.exec(LEDGER_SCHEMA_SQL);
-      const cols = this.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
-      if (!cols.some((c) => c.name === "implementer_vendors_json")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN implementer_vendors_json TEXT NOT NULL DEFAULT '[]'");
-      }
-      if (!cols.some((c) => c.name === "owner_reply")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN owner_reply TEXT");
-      }
-      if (!cols.some((c) => c.name === "workflow_sha256")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN workflow_sha256 TEXT");
-      }
-      if (!cols.some((c) => c.name === "retry_grants")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN retry_grants INTEGER NOT NULL DEFAULT 0");
-      }
-      if (!cols.some((c) => c.name === "factory_retries")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN factory_retries INTEGER NOT NULL DEFAULT 0");
-        this.db.exec("ALTER TABLE threads ADD COLUMN factory_guidance TEXT");
-      }
-      if (!cols.some((c) => c.name === "factory_triage")) {
-        this.db.exec("ALTER TABLE threads ADD COLUMN factory_triage TEXT CHECK (factory_triage IN ('pending', 'done'))");
-      }
-      const addCols = (table: string, cols: string[], type = "TEXT") => {
-        const have = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
-        for (const c of cols) if (!have.includes(c)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c} ${type}`);
-      };
-      addCols("attempts", ["duration_ms", "peak_rss_kb"], "INTEGER");
-      addCols("attempts", ["provider", "model", "account_id", "compute", "prompt_sha256", "workflow_sha256", "error_category", "from_sha", "input_json"]);
-      addCols("reviews", ["provider", "model", "account_id", "prompt_sha256", "rubric_sha256", "workflow_sha256"]);
-      // Cooldowns are per account now (an implicit account's id is its provider name); the per-provider table is gone.
-      this.db.exec("DROP TABLE IF EXISTS provider_cooldowns");
-      const mergeCols = this.db.prepare("PRAGMA table_info(merges)").all() as Array<{ name: string }>;
-      if (!mergeCols.some((c) => c.name === "main_required_json")) {
-        this.db.exec("ALTER TABLE merges ADD COLUMN main_required_json TEXT NOT NULL DEFAULT '[]'");
-      }
-      if (!cols.some((c) => c.name === "issue_body")) this.db.exec("ALTER TABLE threads ADD COLUMN issue_body TEXT");
-      const spCols = this.db.prepare("PRAGMA table_info(scout_proposals)").all() as Array<{ name: string }>;
-      if (!spCols.some((c) => c.name === "file_sha256")) {
-        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN file_sha256 TEXT");
-      }
-      if (!spCols.some((c) => c.name === "auto_promoted")) {
-        this.db.exec("ALTER TABLE scout_proposals ADD COLUMN auto_promoted INTEGER NOT NULL DEFAULT 0");
-      }
     } else {
       this.db.exec("PRAGMA busy_timeout = 5000");
     }
@@ -745,12 +702,6 @@ export class Ledger {
     this.appendAudit("outbox/dead_letter", null, "archangel", { id, error });
   }
 
-  /** Commands are transient (a CLI waits seconds for the daemon): an old-shape table is dropped, not migrated. */
-  private dropLegacyDaemonCommands(): void {
-    const cols = (this.db.prepare("PRAGMA table_info(daemon_commands)").all() as Array<{ name: string }>).map((c) => c.name);
-    if (cols.includes("status")) this.db.exec("DROP TABLE daemon_commands");
-  }
-
 
   enqueueCommand(issueNumber: number, kind: "handoff", now = Date.now(), repo = this.repo): number {
     const info = this.db
@@ -1133,7 +1084,7 @@ export class Ledger {
     merges: Array<{ headSha: string; shadowOnly: boolean; disagreed: boolean; mainWatch: string }>;
     failedAttempts: Array<{ headSha: string; errorMessage: string; errorCategory: string | null }>;
     title: string;
-    /** The issue text kept at intake, or null for Threads from before it was kept. */
+    /** The issue text kept at intake, or null when none was given. */
     issueBody: string | null;
     /** The most recent head any Attempt produced (the head an owner-closed Thread ended with). */
     lastHead: string | null;
@@ -1175,19 +1126,6 @@ export class Ledger {
           .map((a) => ({ headSha: String(a.head_sha), errorMessage: String(a.error_message), errorCategory: a.error_category === null ? null : String(a.error_category) })),
         lastHead: heads.filter((h) => Number(h.issue_number) === t.issueNumber).map((h) => String(h.head_sha)).at(-1) ?? null,
       }));
-  }
-
-  /** Every commit a Thread's history depends on (reviewed heads, Attempt heads, merged heads), for eval-ref pinning. */
-  listEvalShas(repo = this.repo): Array<{ issueNumber: number; sha: string }> {
-    const rows = this.db
-      .prepare(
-        `SELECT issue_number, head_sha AS sha FROM reviews WHERE repo = ?
-         UNION SELECT issue_number, head_sha FROM attempts WHERE repo = ? AND head_sha IS NOT NULL
-         UNION SELECT issue_number, head_sha FROM merges WHERE repo = ?
-         ORDER BY issue_number, sha`,
-      )
-      .all(repo, repo, repo) as Array<{ issue_number: number; sha: string }>;
-    return rows.map((r) => ({ issueNumber: Number(r.issue_number), sha: String(r.sha) }));
   }
 
   getMerge(id: number): MergeRecord | null {
@@ -3090,7 +3028,7 @@ export class Ledger {
       if (a.status === "failed" && a.error_message) {
         const key = a.error_message.slice(0, 120);
         errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
-        const cat = a.error_category ?? "other"; // rows from before the category was recorded
+        const cat = a.error_category!; // every failed Attempt is finished with a category
         errorCategories[cat] = (errorCategories[cat] ?? 0) + 1;
       }
     }
@@ -3399,14 +3337,6 @@ function mapCommand(r: Record<string, unknown>): DaemonCommandRecord {
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
-}
-
-/** An outbox table from before explicit states gains `state` and `next_attempt_at`; existing rows stay deliverable. */
-function migrateOutbox(db: Database): void {
-  const cols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
-  if (cols.length === 0 || cols.some((c) => c.name === "state")) return;
-  db.exec("ALTER TABLE outbox ADD COLUMN state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'retrying', 'dead_letter'))");
-  db.exec("ALTER TABLE outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0");
 }
 
 function outboxRecord(r: Record<string, unknown>): OutboxRecord {

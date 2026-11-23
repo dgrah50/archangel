@@ -117,16 +117,12 @@ export function SmokeChecks() {
 }
 
 /** Errors the daemon recorded in the last 24h, per repo and class. The error text is untrusted: rendered as text only. */
-export function FaultsSection({ faults, now }: { faults: UiState["faults"] | null; now: number }) {
+export function FaultsSection({ faults, now }: { faults: UiState["faults"]; now: number }) {
   return (
     <Section aria-label="Faults" gap="2">
       <Text textStyle="rowTitle" color="fg">Faults</Text>
       <Text textStyle="meta" color="fg.muted">Recorded by the daemon in the last 24 hours, per repo and error class.</Text>
-      {faults === null ? (
-        <ReadError title="Faults are unavailable.">
-          <Text textStyle="meta" color="fg.muted">The Ledger schema is older than this dashboard. Restart the daemon so it can migrate.</Text>
-        </ReadError>
-      ) : faults.length === 0 ? (
+      {faults.length === 0 ? (
         <Text textStyle="meta" color="fg.muted">No errors survived in the last 24h.</Text>
       ) : (
         <RowList>
@@ -146,16 +142,12 @@ export function FaultsSection({ faults, now }: { faults: UiState["faults"] | nul
 }
 
 /** What the telemetry Scout found abnormal in the last 24h. Normal numbers are not shown. */
-export function TelemetrySection({ telemetry, now }: { telemetry: UiState["telemetry"] | null; now: number }) {
+export function TelemetrySection({ telemetry, now }: { telemetry: UiState["telemetry"]; now: number }) {
   return (
     <Section aria-label="Telemetry" gap="2">
       <Text textStyle="rowTitle" color="fg">Telemetry, last 24 h</Text>
       <Text textStyle="meta" color="fg.muted">Local measurements compared with the week before; only what is abnormal is listed. It clears itself once the numbers return to normal.</Text>
-      {telemetry === null ? (
-        <ReadError title="Telemetry is unavailable.">
-          <Text textStyle="meta" color="fg.muted">The Ledger schema is older than this dashboard. Restart the daemon so it can migrate.</Text>
-        </ReadError>
-      ) : telemetry.length === 0 ? (
+      {telemetry.length === 0 ? (
         <Text textStyle="meta" color="fg.muted">Nothing abnormal in the last 24h (needs signals enabled in archangel.yaml).</Text>
       ) : (
         <RowList>
