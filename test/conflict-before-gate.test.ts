@@ -7,6 +7,7 @@ import type { Implementer } from "../src/agents/implementer.js";
 import type { ReviewerSuite } from "../src/agents/reviewers.js";
 import { GitBroker } from "../src/broker/git-broker.js";
 import { ConfigSchema } from "../src/config.js";
+import { stepPhase } from "../src/core/thread-machine.js";
 import { Reconciler } from "../src/core/reconciler.js";
 import { Ledger } from "../src/ledger/store.js";
 import { FakeGitHub } from "./helpers/fake-github.js";
@@ -99,5 +100,41 @@ describe("a PR that conflicts with base is rebased before the Gate timers apply"
       h.cleanup();
     }
   });
+});
 
+describe("an owner retry of a CI infrastructure escalation", () => {
+  it("rebases a Thread whose branch is behind main, then waits on the new head instead of re-escalating on the old check", async () => {
+    const h = await harness("unrelated");
+    try {
+      const old = h.ledger.getThread(1)!;
+      if (old.phase.kind !== "awaiting_gate") throw new Error("unreachable");
+      const crashed = { id: 7, name: "Gate", status: "completed" as const, conclusion: "failure", appSlug: "github-actions" };
+      h.github.checks.set(old.phase.headSha, [crashed, { id: 8, name: "Test", status: "completed", conclusion: "success", appSlug: "github-actions" }]);
+      await h.reconciler.tick(h.t0 + 5 * MIN, { waitForAttempts: true });
+      const stuck = h.ledger.getThread(1)!;
+      expect(stuck.phase.kind === "needs_you" && stuck.phase.code).toBe("gate_timeout");
+
+      // what `archangel retry` records
+      const retried = stepPhase(stuck.phase, stuck.mode, { t: "owner_retry", now: h.t0 + 6 * MIN }, { issueNumber: 1, title: stuck.title, needsYouLabel: "needs-you" });
+      if (!retried.ok) throw new Error(retried.reject);
+      h.ledger.transition(1, stuck.version, retried.next, {
+        grantRetryBudget: true,
+        extraAudits: [{ topic: "thread/owner_retry", actor: "owner", payload: { via: "cli", code: "gate_timeout" } }],
+        now: h.t0 + 6 * MIN,
+      });
+
+      await h.reconciler.tick(h.t0 + 7 * MIN, { waitForAttempts: true });
+      const after = h.ledger.getThread(1)!;
+      expect(after.phase.kind).toBe("awaiting_gate");
+      if (after.phase.kind !== "awaiting_gate") throw new Error("unreachable");
+      expect(after.phase.headSha).not.toBe(old.phase.headSha);
+      expect(after.rebaseCount).toBe(1);
+      expect(after.revisionCount).toBe(0);
+
+      await h.reconciler.tick(h.t0 + 8 * MIN, { waitForAttempts: true });
+      expect(h.ledger.getThread(1)!.phase.kind).toBe("awaiting_gate");
+    } finally {
+      h.cleanup();
+    }
+  });
 });
