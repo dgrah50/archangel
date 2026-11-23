@@ -36,6 +36,8 @@
     "verify:formal": "bun formal/check.ts",
     "test": "bun test --parallel --timeout=30000 --timings=test/timings.json",
     "test:all": "bun run typecheck && bun run test",
+    "check": "bun run lint && bun run verify:formal && bun run test:all && bun run build && bun run check:bundle",
+    "check:bundle": "git diff --quiet -- bin/archangel-gate.mjs || { echo 'bin/archangel-gate.mjs is stale or hand-edited: commit the rebuilt bundle' >&2; git diff --stat -- bin/archangel-gate.mjs; exit 1; }",
     "start": "bun src/cli/index.ts start",
     "dev": "bun src/cli/index.ts"
   },

@@ -19,15 +19,6 @@ jobs:
         with:
           bun-version: "1.4.5"
       - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run verify:formal
-      - run: bun run test:all
-      - run: bun run build
-      # `bun run build` regenerates the Gate bundle that target repos run from a pinned SHA. If it differs from the committed file,
-      # the Gate sources changed without a rebuild or the bundle was edited by hand: either way the pin would not match the source.
-      - name: Committed Gate bundle matches a fresh build
-        run: |
-          if ! git diff --exit-code -- bin/archangel-gate.mjs; then
-            echo "::error file=bin/archangel-gate.mjs::bin/archangel-gate.mjs is stale or hand-edited. Run 'bun run build' and commit the result." >&2
-            exit 1
-          fi
+      # The same command agents run locally: lint, formal models, typecheck, tests, build, and the committed Gate bundle
+      # matching a fresh build (target repos run that bundle from a pinned SHA, so it must match the source).
+      - run: bun run check
