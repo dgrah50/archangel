@@ -4,8 +4,6 @@ import path from "node:path";
 import { ARCHANGEL_ROOT, createOrResetBranch, GATE_WORKFLOW_PATH, exitedOne, pinnedSha, withBranch, type OnboardRunner } from "./onboard.js";
 import { readRepoFile } from "./workflow-propose.js";
 
-/** Paths whose changes require every watched repo to re-pin the Gate (the pinned bundle and its workflow). */
-export const GATE_RELEVANT_PATHS = ["src/gate", "src/core/workflow.ts", "src/core/work-class.ts", "src/core/skills.ts", "src/core/spawn-group.ts", "src/core/fleet-scouts.ts", "src/config.ts", "src/core/signal-rules.ts", "src/core/signal-kinds.ts", "bin/archangel-gate.mjs", "workflows/archangel-gate.yml"];
 export const BUMP_BRANCH = "chore/archangel-gate-bump";
 
 const PIN_LINE = /^(\s*ARCHANGEL_GATE_SHA:)[ \t]*(\S*)[ \t]*$/m;
@@ -23,23 +21,25 @@ export function canonicalTemplate(root: string = ARCHANGEL_ROOT): string {
   return fs.readFileSync(path.join(root, "workflows/archangel-gate.yml"), "utf8");
 }
 
-/** Latest Archangel commit (local checkout) that touched anything the pinned Gate depends on. */
-export async function latestGateCommit(runner: OnboardRunner, root: string = ARCHANGEL_ROOT): Promise<string> {
-  const sha = (await runner.run("git", ["log", "-1", "--format=%H", "--", ...GATE_RELEVANT_PATHS], { cwd: root })).trim();
-  if (!sha) throw new Error("No gate-relevant commit found in the Archangel checkout (shallow clone?)");
-  return sha;
+const BUNDLE_PATH = "bin/archangel-gate.mjs";
+
+/** Blob id of the built Gate bundle at `ref`: the Gate itself, so config-schema churn the bundle never notices is not drift. */
+export async function gateBundleId(runner: OnboardRunner, ref: string = "HEAD", root: string = ARCHANGEL_ROOT): Promise<string> {
+  return (await runner.run("git", ["rev-parse", `${ref}:${BUNDLE_PATH}`], { cwd: root })).trim();
 }
 
 export interface PinDrift {
+  /** The pin or workflow is broken: missing, unknown, divergent, or the workflow differs from the template. */
   drifted: boolean;
   reasons: string[];
+  /** The pinned Gate bundle differs from the current one. Informational: an older Gate is safe, it runs the older checks. */
+  newerBundle: boolean;
 }
 
-/** Pure-ish: git reads only. A repo drifts when its pin is older than `latest` or its workflow differs from the template. */
+/** Pure-ish: git reads only. */
 export async function assessPinDrift(
   runner: OnboardRunner,
   workflow: string,
-  latest: string,
   opts: { root?: string; template?: string; branch?: string } = {},
 ): Promise<PinDrift> {
   const root = opts.root ?? ARCHANGEL_ROOT;
@@ -47,10 +47,11 @@ export async function assessPinDrift(
   // The template is written with the repo's own default branch, so that is what the workflow must be compared against.
   const template = opts.branch ? withBranch(base, opts.branch) : base;
   const reasons: string[] = [];
+  let newerBundle = false;
   const pin = pinOf(workflow);
   if (!pin) {
     reasons.push("workflow has no ARCHANGEL_GATE_SHA pin");
-  } else if (pin !== latest) {
+  } else {
     let known = true;
     try {
       await runner.run("git", ["rev-parse", "--verify", "--quiet", `${pin}^{commit}`], { cwd: root });
@@ -61,26 +62,22 @@ export async function assessPinDrift(
     if (!known) {
       reasons.push(`pin ${pin.slice(0, 10)} is not in the local Archangel checkout`);
     } else {
+      // A pin on a divergent (unmerged) line is unreviewed gate code, not merely older.
+      let onMain = true;
       try {
-        await runner.run("git", ["merge-base", "--is-ancestor", pin, latest], { cwd: root });
-        reasons.push(`pin ${pin.slice(0, 10)} is older than the latest gate-relevant commit ${latest.slice(0, 10)}`);
+        await runner.run("git", ["merge-base", "--is-ancestor", pin, "HEAD"], { cwd: root });
       } catch (err) {
         if (!exitedOne(err)) throw err;
-        // Not older than latest. It must also descend from latest: a pin on a divergent (unmerged) line
-        // is unreviewed gate code, not "newer".
-        try {
-          await runner.run("git", ["merge-base", "--is-ancestor", latest, pin], { cwd: root });
-        } catch (err2) {
-          if (!exitedOne(err2)) throw err2;
-          reasons.push(`pin ${pin.slice(0, 10)} is not a descendant of the latest gate-relevant commit ${latest.slice(0, 10)} (divergent history)`);
-        }
+        onMain = false;
+        reasons.push(`pin ${pin.slice(0, 10)} is not an ancestor of the current Archangel HEAD (divergent history)`);
       }
+      if (onMain) newerBundle = (await gateBundleId(runner, pin, root)) !== (await gateBundleId(runner, "HEAD", root));
     }
   }
   if (withPin(workflow, "PIN") !== withPin(template, "PIN")) {
     reasons.push("workflow differs from the canonical template (ignoring the pin)");
   }
-  return { drifted: reasons.length > 0, reasons };
+  return { drifted: reasons.length > 0, reasons, newerBundle };
 }
 
 async function readWorkflow(runner: OnboardRunner, repo: string, ref: string): Promise<{ content: string; blobSha: string } | null> {
@@ -100,7 +97,6 @@ export async function gateBump(
   const root = opts.root ?? ARCHANGEL_ROOT;
   for (const r of repos) if (!REPO_SLUG_RE.test(r)) throw new Error(`Expected owner/name, got '${r}'`);
   const head = await pinnedSha(runner, root, "bump the Gate pin");
-  const latest = await latestGateCommit(runner, root);
   const pinned = withPin(canonicalTemplate(root), head);
   const out: Record<string, "bumped" | "would-bump" | "current" | "no-workflow" | "pr-open"> = {};
 
@@ -112,12 +108,13 @@ export async function gateBump(
       out[repo] = "no-workflow";
       continue;
     }
-    const drift = await assessPinDrift(runner, wf.content, latest, { root, branch });
-    if (!drift.drifted) {
+    const drift = await assessPinDrift(runner, wf.content, { root, branch });
+    if (!drift.drifted && !drift.newerBundle) {
       log(`${repo}: Gate pin is current`);
       out[repo] = "current";
       continue;
     }
+    if (drift.newerBundle) drift.reasons.push("pinned Gate bundle differs from the current one");
     log(`${repo}: drift (${drift.reasons.join("; ")})`);
     const open = (
       await runner.run("gh", ["pr", "list", "--repo", repo, "--head", BUMP_BRANCH, "--state", "open", "--json", "url", "-q", ".[0].url"])
