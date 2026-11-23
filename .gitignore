@@ -24,3 +24,6 @@ docs/
 
 # Local design exports (owner PNGs)
 designs/
+
+# gridlines skill captures
+.gridlines/
