@@ -38,25 +38,33 @@ export function agyCommand(account: { home?: string } | undefined, args: string[
 }
 
 /**
- * Lets agy itself refresh the dedicated Google account and then reads the fresh access token from that profile's token file. The
- * profile is a HOME of its own (never the owner's): there agy finds no keychain and keeps its login in a file. agy only refreshes an
- * expired token, so the file's expiry is set in the past first and a cheap authenticated command (`agy models`) is run; agy then
- * refreshes through Google and rewrites the file. It runs under a sandbox-exec profile denying the keychain services so macOS shows no dialog. Google does not rotate the refresh token, so this does not fight a box or the owner.
+ * Lets agy itself refresh the dedicated Google account and reads the fresh access token it writes. agy only refreshes an expired
+ * token, so the refresh runs in a PRIVATE copy of the login: a throwaway HOME holding only the token file, its expiry set in the past,
+ * where a cheap authenticated command (`agy models`) makes agy refresh through Google and rewrite that copy. The account's own home is
+ * only read. Rewriting its login file instead killed any agy run using the same login at that moment (a review died with
+ * "error: interrupted" at each half-hourly refresh). Google does not rotate the refresh token, so the copy and the original both stay
+ * valid. It runs under a sandbox-exec profile denying the keychain services so macOS shows no dialog.
  */
-export function agyBrokerAdapter(home: string): BrokerAdapter {
+export function agyBrokerAdapter(home: string, refreshIn: (scratchHome: string) => Promise<void> = runAgy): BrokerAdapter {
   return {
     id: AGY_BROKER_ID,
     secretName: AGY_BROKER_SECRET,
     async refresh() {
       const before = readLogin(home);
-      writeLogin(home, { ...before.raw, token: { ...before.raw.token, expiry: "2000-01-01T00:00:00Z" } });
-      await runAgy(home);
-      const after = readLogin(home);
-      const expiresAt = Date.parse(after.expiry);
-      if (after.accessToken === before.accessToken || !(expiresAt - Date.now() > 5 * 60_000)) {
-        throw new Error("agy did not produce a fresh access token (login expired or revoked?)");
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-agy-home-"));
+      try {
+        fs.mkdirSync(path.dirname(path.join(scratch, AGY_TOKEN_FILE)), { recursive: true });
+        writeLogin(scratch, { ...before.raw, token: { ...before.raw.token, expiry: "2000-01-01T00:00:00Z" } });
+        await refreshIn(scratch);
+        const after = readLogin(scratch);
+        const expiresAt = Date.parse(after.expiry);
+        if (after.accessToken === before.accessToken || !(expiresAt - Date.now() > 5 * 60_000)) {
+          throw new Error("agy did not produce a fresh access token (login expired or revoked?)");
+        }
+        return { accessToken: after.accessToken, expiresAt, accountId: "consumer" };
+      } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
       }
-      return { accessToken: after.accessToken, expiresAt, accountId: "consumer" };
     },
   };
 }
