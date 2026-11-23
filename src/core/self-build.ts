@@ -26,7 +26,7 @@ export interface SelfBuildInput {
   slice: string;
   yes: boolean;
   labels: { agentPitch: string };
-  cfg: Pick<ArchangelConfig, "implementMaxTurns" | "implementTimeoutMs" | "setupTimeoutMs" | "maxDailyUsd">;
+  cfg: Pick<ArchangelConfig, "implementTimeoutMs" | "setupTimeoutMs">;
   implementer: Implementer;
   confirm: (question: string) => Promise<boolean>;
   log: (s: string) => void;
@@ -77,9 +77,7 @@ export async function selfBuild(runner: OnboardRunner, ledger: Ledger, input: Se
         workspaces: { local: handle },
         prompt: buildImplementPrompt({ issueNumber: input.issue, title, body, repoName: input.repo, gate, workClass: "feature", repoInstructions: await loadRepoInstructions(broker, mainSha) }) + OWNER_BUILD_NOTE,
         abortController: new AbortController(),
-        maxTurns: input.cfg.implementMaxTurns,
         timeoutMs: input.cfg.implementTimeoutMs,
-        maxBudgetUsd: Math.min(input.cfg.maxDailyUsd, 5),
         role: "implement",
       });
       if (result.aborted) throw new Error("The implementer was aborted; nothing was pushed.");

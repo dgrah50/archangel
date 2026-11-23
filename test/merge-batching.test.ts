@@ -33,7 +33,7 @@ async function landAll(issues: number[], write: (run: number, dir: string) => vo
   let reviewRuns = 0;
   const rec = new Reconciler({
     triageInvoker: noCli,
-    config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, maxAutoMergesPerDay: 10, maxConcurrentThreads: 3 }),
+    config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, maxAutoMergesPerDay: 10, maxConcurrentThreads: 3, chains: { implement: [{ provider: "claude" }], revise: [{ provider: "claude" }], rebase: [{ provider: "claude" }] } }),
     ledger,
     github,
     broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),

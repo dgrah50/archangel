@@ -37,9 +37,8 @@ describe("implementer vendor tracking across failover", () => {
         workspaces: localAt(repo),
         prompt: "fix",
         abortController: new AbortController(),
-        maxTurns: 1,
         timeoutMs: 1000,
-        maxBudgetUsd: 1, role: "implement" as const,
+        role: "implement" as const,
       });
       expect(res.providersUsed).toEqual(expect.arrayContaining(["openai", "gemini"]));
     } finally {

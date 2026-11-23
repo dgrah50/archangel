@@ -38,7 +38,6 @@ maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per th
 #       egressHosts: []             # extra hosts the box may reach (package registries, module proxies)
 
 # Execution timeouts (ms unless noted)
-implementMaxTurns: 40               # agent turn cap for one implement Attempt
 implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
 setupTimeoutMs: 300000              # .agents/setup dependency install
 staleLeaseMs: 180000                # daemon lock considered dead after this
@@ -46,9 +45,6 @@ gateStartGraceMs: 300000            # wait for the Gate check to start
 gateTimeoutMs: 3600000              # wait for the Gate check to finish
 reviewerOutageMaxMs: 21600000       # how long to wait for reviewers before escalating
 
-# Native CLI subscriptions with fallback chains (no API keys required),
-# or switch to `authMode: api` for metered API keys in .env.
-authMode: subscription
 # Subscription accounts (optional). Without this list there is one implicit account per provider on the CLI's default home.
 # Log each account in by hand with its own home, then list it here; Archangel never reads or copies a token:
 #   claude: CLAUDE_CONFIG_DIR=<home> claude        codex: CODEX_HOME=<home> codex login        agy: HOME=<home> agy
@@ -175,7 +171,7 @@ reviewerChain:
 # the held-out set and opens an agent-draft PR (owner merges) only if it beats the baseline. Bounded to 1 run per week by the command
 # itself, so a weekly schedule is safe, e.g. a launchd or cron entry (Mondays 09:00):
 #   0 9 * * 1  cd ~/Projects/archangel-deploy && bun src/cli/index.ts eval propose -c archangel.yaml
-# Needs authMode: subscription and Archangel's own repo (dgrah50/archangel) listed under projects.
+# Needs Archangel's own repo (dgrah50/archangel) listed under projects.
 
 # Optional Paseo daemon endpoint for Handoff
 paseoHost: 127.0.0.1:6767

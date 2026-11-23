@@ -30,7 +30,7 @@ function runner(chains: Parameters<typeof ChainsSchema.parse>[0]) {
     },
   });
   const run = (role: "implement" | "revise" | "rebase", extra: Record<string, unknown> = {}) =>
-    impl.run({ issueNumber: 1, workspaces: localAt(tmp), prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role, ...extra });
+    impl.run({ issueNumber: 1, workspaces: localAt(tmp), prompt: "p", abortController: new AbortController(), timeoutMs: 1000, role,...extra });
   return { run, calls, cleanup: () => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
 }
 
@@ -66,7 +66,7 @@ describe("reviewer independence across the writing roles", () => {
     revise: [{ provider: "claude", model: "haiku" }],
     rebase: [{ provider: "codex", model: "mini" }],
   });
-  const cfg = { authMode: "subscription" as const, chains, reviewerChain };
+  const cfg = { chains, reviewerChain };
 
   it("once Attempts record their vendors, only those vendors are excluded, so a model change never makes a vendor its own reviewer", () => {
     expect(resolveRequiredReviewers(cfg, ["openai"]).sort()).toEqual(["anthropic", "gemini"]);
@@ -74,10 +74,9 @@ describe("reviewer independence across the writing roles", () => {
   });
 
   it("doctor flags a writing vendor that leaves fewer than 2 independent reviewers, including one only a revise chain adds", () => {
-    expect(findReviewerIndependenceGaps({ authMode: "subscription", chains: ChainsSchema.parse({ implement: [{ provider: "codex" }], revise: [{ provider: "codex" }], rebase: [{ provider: "codex" }] }), reviewerChain: [{ provider: "agy" }, { provider: "claude" }] })).toEqual([]);
+    expect(findReviewerIndependenceGaps({ chains: ChainsSchema.parse({ implement: [{ provider: "codex" }], revise: [{ provider: "codex" }], rebase: [{ provider: "codex" }] }), reviewerChain: [{ provider: "agy" }, { provider: "claude" }] })).toEqual([]);
     expect(
       findReviewerIndependenceGaps({
-        authMode: "subscription",
         chains: ChainsSchema.parse({ implement: [{ provider: "codex" }], revise: [{ provider: "claude" }], rebase: [{ provider: "codex" }] }),
         reviewerChain: [{ provider: "agy" }, { provider: "claude" }],
       }),

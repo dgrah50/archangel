@@ -276,7 +276,6 @@ Host config (`archangel.yaml`):
 
 ```yaml
 ownerUserId: 123456 # gh api user --jq .id
-authMode: subscription
 accounts:
   - { id: codex-a, provider: codex, home: ~/.archangel/accounts/codex-a }
   - { id: codex-b, provider: codex, home: ~/.archangel/accounts/codex-b, maxAttemptsPerDay: 12 }
@@ -362,7 +361,6 @@ Repo policy (`.agents/archangel.json` on `main`):
 | `archangel handoff <issue> [--repo <owner/name>] [--repo-dir <dir>]` | Pause factory autonomy and hand off a Thread branch to Paseo. |
 | `archangel resume <issue> [--repo <owner/name>]` | Resume advisory Gate and review tracking after a Paseo handoff. |
 | `archangel reset-breaker [--repo <owner/name>]` | Clear a repository's red-main circuit breaker once `main` is green. |
-| `archangel studio [--port <n>]` | Launch read-only Mastra Studio against `mastra.db`. |
 
 </details>
 
@@ -370,7 +368,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 
 ### Do I need paid API keys to run Archangel?
 
-No. Default `authMode: subscription` drives the native `claude`, `codex`, and `agy` CLIs that you log into yourself. If you have multiple accounts for a provider, list their separate home directories under `accounts:` in `archangel.yaml` and Archangel fails over cleanly on rate limits without reading or copying credentials. Metered `authMode: api` is also supported if you prefer API keys.
+No. Archangel drives the native `claude`, `codex`, and `agy` CLIs that you log into yourself. If you have multiple accounts for a provider, list their separate home directories under `accounts:` in `archangel.yaml` and Archangel fails over cleanly on rate limits without reading or copying credentials.
 
 ### How does the mechanical Gate differ from AI review?
 

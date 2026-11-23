@@ -64,7 +64,7 @@ describe("the daemon never merges a machine draft", () => {
       const ledger = new Ledger(":memory:", { repo: "acme/app" });
       const { ConfigSchema } = await import("../src/config.js");
       const rec = new Reconciler({ triageInvoker: noCli,
-        config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false }),
+        config: ConfigSchema.parse({ githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2, githubPrivateKeyPem: "fake", shadowMode: false, chains: { implement: [{ provider: "claude" }], revise: [{ provider: "claude" }], rebase: [{ provider: "claude" }] } }),
         ledger, github,
         broker: new GitBroker({ bareRepoPath: path.join(root, "broker.git"), clonesDir: path.join(root, "clones") }),
         implementer: { async run(input) { fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc Val() int { return 99 }\n"); git((await input.workspaces.local.workspace()).path, ["add", "-A"]); git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]); return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false }; } },

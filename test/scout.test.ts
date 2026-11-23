@@ -77,7 +77,6 @@ function makeConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConfig {
     githubInstallationId: 456,
     githubPrivateKeyPem: "fake",
     githubAppBotUserId: 777,
-    authMode: "subscription",
     scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
     ...overrides,
   });

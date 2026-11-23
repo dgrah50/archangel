@@ -151,7 +151,6 @@ export interface BenchOptions {
   implementerFor: (chain: ProviderEntry[], role: WriterRole) => Implementer;
   runTests?: boolean;
   maxCases?: number;
-  implementMaxTurns?: number;
   implementTimeoutMs?: number;
   setupTimeoutMs?: number;
   now?: number;
@@ -211,9 +210,7 @@ async function runArm(c: BenchCase, chain: ProviderEntry[], opts: BenchOptions, 
       workspaces: { local: { compute: new LocalProvider(broker), workspace: async () => ({ id: clone, path: clone }) } },
       prompt: promptFor(c, policy.policy),
       abortController: new AbortController(),
-      maxTurns: opts.implementMaxTurns ?? 60,
       timeoutMs: opts.implementTimeoutMs ?? 20 * 60_000,
-      maxBudgetUsd: 0,
       role,
     });
     if (result.aborted || result.failure) throw new Error(result.failure ? `implementer ended with ${result.failure}` : "implementer aborted");

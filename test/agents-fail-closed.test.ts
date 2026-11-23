@@ -52,7 +52,7 @@ describe("provider failover", () => {
         : { code: 0, stdout: JSON.stringify({ result: "done" }), stderr: "", aborted: false };
     };
     const impl = new SubscriptionImplementer({ chains: { implement: [{ provider: "codex" }, { provider: "claude" }], revise: [{ provider: "codex" }], rebase: [{ provider: "codex" }] }, transcriptsDir: tmp(), invoker });
-    const res = await impl.run({ issueNumber: 1, workspaces: localAt(dir), prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 5000, maxBudgetUsd: 1, role: "implement" });
+    const res = await impl.run({ issueNumber: 1, workspaces: localAt(dir), prompt: "p", abortController: new AbortController(), timeoutMs: 5000, role: "implement" });
     expect(res.providersUsed).toEqual(expect.arrayContaining(["openai", "anthropic"]));
   });
 });

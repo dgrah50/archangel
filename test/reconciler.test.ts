@@ -33,6 +33,8 @@ function makeTestConfig(overrides: Partial<ArchangelConfig> = {}): ArchangelConf
     githubInstallationId: 67890,
     githubPrivateKeyPem: "fake",
     shadowMode: true,
+    // The fake reviewers answer as openai and gemini, so the writer is anthropic.
+    chains: { implement: [{ provider: "claude" }], revise: [{ provider: "claude" }], rebase: [{ provider: "claude" }] },
     ...overrides,
   });
 }

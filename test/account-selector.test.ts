@@ -93,7 +93,7 @@ function implementer(opts: { accounts: Account[]; chain: Array<{ provider: "clau
         : { code: 0, stdout: "{}", stderr: "", aborted: false };
     },
   });
-  const run = () => impl.run({ issueNumber: 1, workspaces: localAt(tmp), prompt: "p", abortController: new AbortController(), maxTurns: 1, timeoutMs: 1000, maxBudgetUsd: 1, role: "implement" });
+  const run = () => impl.run({ issueNumber: 1, workspaces: localAt(tmp), prompt: "p", abortController: new AbortController(), timeoutMs: 1000, role: "implement" });
   return { run, ran, cooled };
 }
 

@@ -38,10 +38,10 @@ export function resolveUiSettings(
 export function resolveHostSettings(
   opts: { config?: string; dataDir?: string },
   env: NodeJS.ProcessEnv = process.env,
-): { dataDir: string; authMode: "subscription" | "api"; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; chains: Chains } {
+): { dataDir: string; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; chains: Chains } {
   const candidate = opts.config ?? env.ARCHANGEL_CONFIG ?? "archangel.yaml";
   const file = path.resolve(candidate);
   if (!fs.existsSync(file)) throw new Error(`Host config not found: ${file}`);
   const host = HostYamlSchema.parse(parseYaml(fs.readFileSync(file, "utf8")));
-  return { dataDir: opts.dataDir ?? host.dataDir, authMode: host.authMode, reviewerChain: host.reviewerChain, chains: host.chains };
+  return { dataDir: opts.dataDir ?? host.dataDir, reviewerChain: host.reviewerChain, chains: host.chains };
 }

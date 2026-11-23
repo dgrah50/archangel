@@ -64,7 +64,6 @@ describe("archangel doctor --smoke (real subprocesses, per-account env isolation
       configPath,
       [
         "ownerUserId: 999",
-        "authMode: subscription",
         `dataDir: ${dir}/data`,
         "accounts:",
         `  - { id: claude-a, provider: claude, home: ${dir}/claude-a }`,

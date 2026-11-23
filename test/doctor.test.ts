@@ -19,7 +19,7 @@ describe("archangel doctor (Neon P3)", () => {
     const pem = makeKey();
     fs.writeFileSync(
       yamlPath,
-      `ownerUserId: 999\nauthMode: api\ndataDir: ${path.join(tmp, "data")}\nprojects:\n  - repo: acme/app\n`,
+      `ownerUserId: 999\ndataDir: ${path.join(tmp, "data")}\nprojects:\n  - repo: acme/app\n`,
     );
 
     let grantForbidden = true;
@@ -79,13 +79,17 @@ describe("archangel doctor (Neon P3)", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const port = (server.address() as { port: number }).port;
 
+    // Stand-ins for the three provider CLIs, so the subscription check passes without real logins.
+    const binDir = path.join(tmp, "bin");
+    fs.mkdirSync(binDir);
+    for (const [name, out] of [["claude", "claude 1.0.0"], ["codex", "Logged in"], ["agy", "agy 1.0.0"]] as const) {
+      fs.writeFileSync(path.join(binDir, name), `#!/bin/sh\necho "${out}"\n`, { mode: 0o755 });
+    }
     const env: NodeJS.ProcessEnv = {
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
       ARCHANGEL_GITHUB_APP_ID: "123",
       ARCHANGEL_GITHUB_INSTALLATION_ID: "456",
       ARCHANGEL_GITHUB_PRIVATE_KEY_PEM: pem,
-      ANTHROPIC_API_KEY: "sk-ant",
-      OPENAI_API_KEY: "sk-oai",
-      GOOGLE_GENERATIVE_AI_API_KEY: "sk-gem",
     };
 
     try {

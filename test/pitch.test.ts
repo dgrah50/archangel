@@ -81,7 +81,7 @@ async function fixture(spec: Record<string, unknown> & { name: string } = SPEC) 
   } as unknown as GitHubClient;
   const config = ConfigSchema.parse({
     githubOwner: "acme", githubRepo: "app", ownerUserId: 999, githubAppId: "1", githubInstallationId: 2,
-    githubPrivateKeyPem: "fake", githubAppBotUserId: 777, authMode: "subscription",
+    githubPrivateKeyPem: "fake", githubAppBotUserId: 777,
     scouts: { enabled: true, maxRunsPerDay: 5, maxOpenProposals: 5, maxAutoPromotionsPerDay: 1 },
   });
   let prompts: string[] = [];
@@ -246,32 +246,6 @@ describe("pitch Scout runs", () => {
 });
 
 describe("pitch cross-vendor veto", () => {
-  it("in api mode never lets the Scout's own vendor review its pitch (the Mastra suite ignores excludeVendors, so skipVendors must)", async () => {
-    const f = await fixture();
-    try {
-      const ran: string[] = [];
-      // Behaves like MastraReviewerSuite: runs every API vendor that is not in skipVendors, whatever excludeVendors says.
-      const mastraLike: ReviewerSuite = {
-        async reviewAll(req) {
-          const results = (["openai", "gemini"] as const)
-            .filter((v) => !(req.skipVendors ?? []).includes(v))
-            .map((vendor) => {
-              ran.push(vendor);
-              return { vendor, verdict: "approve" as const, findings: [], costUsd: 0 };
-            });
-          return { results, errors: [] };
-        },
-      };
-      // The pitch Scout runs on codex (OpenAI) here, so OpenAI must not critique it.
-      const config = ConfigSchema.parse({ ...f.config, authMode: "api", chains: { scout: [{ provider: "codex" }, { provider: "claude" }] }, reviewerChain: [{ provider: "codex" }, { provider: "claude" }] });
-      const { res } = await f.run(out(pitch()), { reviewers: mastraLike, config });
-      expect(ran).toEqual(["gemini"]);
-      expect(res[0]!.filedIssues).toEqual([300]);
-    } finally {
-      f.cleanup();
-    }
-  });
-
   it("drops a vetoed pitch, and never files when the critic is unavailable or errors (it can only veto, never be skipped)", async () => {
     const f = await fixture();
     try {

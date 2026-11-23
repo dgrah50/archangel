@@ -5,8 +5,6 @@
     "src/core/logger.ts",
     "src/core/recap.ts",
     "src/core/status-text.ts",
-    "src/core/studio.ts",
-    "src/core/ui-state.ts",
-    "src/mastra/index.ts"
+    "src/core/ui-state.ts"
   ]
 }

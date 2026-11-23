@@ -21,7 +21,6 @@ const DEFAULT_ACCOUNTS: AccountEntry[] = PROVIDERS.map((provider) => ({ id: prov
 export const WRITER_CHAINS = ["implement", "revise", "rebase"] as const;
 export interface HostForm {
   ownerUserId: number | null;
-  authMode: string;
   dailyTimezone: string;
   digestHour: number;
   maxDailyUsd: number;
@@ -120,7 +119,6 @@ export function readForm(text: string): HostForm | null {
   const c = (j.chains ?? {}) as Record<string, unknown>;
   return {
     ownerUserId: typeof j.ownerUserId === "number" ? j.ownerUserId : null,
-    authMode: typeof j.authMode === "string" ? j.authMode : "subscription",
     dailyTimezone: typeof j.dailyTimezone === "string" ? j.dailyTimezone : "America/New_York",
     digestHour: num("digestHour", 9),
     maxDailyUsd: num("maxDailyUsd", 20),
@@ -137,13 +135,12 @@ export function readForm(text: string): HostForm | null {
 /**
  * ADR-0003: the reviewers must not share a vendor with the writer. Whichever vendor in a writer chain ends up writing, two other
  * vendors from the reviewer chain must remain (the daemon resolves reviewers per Thread, so overlap alone is not a fault).
- * Subscription mode only: api mode fixes the reviewers.
  */
-export function checkIndependence(f: Pick<HostForm, "chains" | "reviewerChain" | "authMode">): { problems: string[]; writers: string[]; reviewers: string[] } {
+export function checkIndependence(f: Pick<HostForm, "chains" | "reviewerChain">): { problems: string[]; writers: string[]; reviewers: string[] } {
   const vendors = (c: ChainEntry[]) => [...new Set(c.map((e) => VENDOR[e.provider]).filter(Boolean))];
   const writers = vendors(WRITER_CHAINS.flatMap((r) => f.chains[r]));
   const reviewers = vendors(f.reviewerChain);
-  const problems = f.authMode === "api" ? [] : writers.flatMap((w) => {
+  const problems = writers.flatMap((w) => {
     const left = reviewers.filter((v) => v !== w);
     return left.length >= 2 ? [] : [`If ${w} writes, only ${left.length} independent reviewer vendor${left.length === 1 ? "" : "s"} remain (${left.join(", ") || "none"}); 2 are required.`];
   });
@@ -186,7 +183,7 @@ export function hostChanges(baseText: string, text: string): HostChange[] {
     const y = b[k] as number;
     if (x !== y) out.push({ key: k, label, from: show(x), to: show(y), direction: y > x ? "looser" : "stricter" });
   }
-  for (const [k, label] of [["ownerUserId", "Owner user id"], ["digestHour", "Digest hour"], ["dailyTimezone", "Timezone"], ["authMode", "Sign-in"]] as const) {
+  for (const [k, label] of [["ownerUserId", "Owner user id"], ["digestHour", "Digest hour"], ["dailyTimezone", "Timezone"]] as const) {
     if (a[k] !== b[k]) out.push({ key: k, label, from: String(a[k] ?? "none"), to: String(b[k] ?? "none"), direction: null });
   }
   for (const [k, label, get] of CHAINS) {
