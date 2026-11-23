@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { tryParseJson } from "./json.js";
 import { expandHome, type Account } from "../config.js";
+import type { UsageWindow } from "./account-usage.js";
 
 /** At most this many account switches (after a limit error) within one Attempt before it fails with the quota error. */
 export const MAX_ACCOUNT_SWITCHES = 4;
@@ -72,8 +73,10 @@ export function selectAccount(
 }
 
 export interface CodexReading {
+  /** The primary window's share used; the only number the selector uses. */
   usedPercent: number;
-  windowMinutes: number | null;
+  /** The primary and, when Codex reports one, the secondary window. */
+  windows: UsageWindow[];
   observedAt: number;
 }
 
@@ -113,18 +116,29 @@ export function readCodexUsage(home: string | undefined): CodexReading | null {
     const parsed = tryParseJson(lines[i]!);
     if (!parsed.ok) continue;
     const found = findRateLimits(parsed.value);
-    if (found) return { usedPercent: found.used_percent, windowMinutes: found.window_minutes ?? null, observedAt: mtime };
+    if (found) return { usedPercent: found.windows[0]!.usedPercent, windows: found.windows, observedAt: mtime };
   }
   return null;
 }
 
-function findRateLimits(v: unknown): { used_percent: number; window_minutes?: number } | null {
+interface CodexWindowRaw {
+  used_percent?: unknown;
+  window_minutes?: unknown;
+  resets_at?: unknown;
+}
+
+function codexWindow(w: CodexWindowRaw | null | undefined): UsageWindow | null {
+  if (!w || typeof w.used_percent !== "number") return null;
+  const minutes = typeof w.window_minutes === "number" ? w.window_minutes : null;
+  const label = minutes === 300 ? "5 h" : minutes === 10_080 ? "week" : minutes === null ? "limit" : `${minutes} min`;
+  return { label, usedPercent: w.used_percent, resetsAt: typeof w.resets_at === "number" ? w.resets_at * 1000 : null };
+}
+
+function findRateLimits(v: unknown): { windows: UsageWindow[] } | null {
   if (typeof v !== "object" || v === null) return null;
-  const rl = (v as { rate_limits?: { primary?: { used_percent?: unknown; window_minutes?: unknown } } }).rate_limits;
-  const p = rl?.primary;
-  if (p && typeof p.used_percent === "number") {
-    return { used_percent: p.used_percent, window_minutes: typeof p.window_minutes === "number" ? p.window_minutes : undefined };
-  }
+  const rl = (v as { rate_limits?: { primary?: CodexWindowRaw; secondary?: CodexWindowRaw | null } }).rate_limits;
+  const primary = codexWindow(rl?.primary);
+  if (primary) return { windows: [primary, codexWindow(rl?.secondary)].filter((w): w is UsageWindow => w !== null) };
   for (const child of Object.values(v as Record<string, unknown>)) {
     const f = findRateLimits(child);
     if (f) return f;

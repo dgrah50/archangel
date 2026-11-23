@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 import type { AccountRow } from "../../src/core/ui-accounts.js";
-import { back, useAccounts } from "./AccountsPanel";
+import { back, resetWords, tightest, useAccounts, usageWords } from "./AccountsPanel";
 import { age, recommendationShort } from "./common";
 import { Badge } from "./arc/badge/badge";
 import { BarChart } from "./arc/bar-chart/bar-chart";
@@ -198,7 +198,7 @@ function Chip({ href, solid, children }: { href: string; solid?: boolean; childr
 function Bar({ fraction }: { fraction: number }) {
   const f = Math.min(1, Math.max(0, fraction));
   return (
-    <Box h="6px" rounded="full" bg="bg.muted" overflow="hidden" flex="1">
+    <Box h="6px" rounded="full" bg="bg.muted" overflow="hidden" flex="1" minW="80px">
       <Box h="full" rounded="full" bg={f >= 0.9 ? "owner" : "fg"} w={`${Math.round(f * 100)}%`} />
     </Box>
   );
@@ -253,13 +253,13 @@ function AccountLine({ a, now }: { a: AccountRow; now: number }) {
         </Badge>
       </Box>
       <Flex align="center" gap="3" flex="1" minW="180px">
-        {capped ? <Bar fraction={a.attemptsToday / a.maxAttemptsPerDay!} /> : a.usage ? <Bar fraction={a.usage.usedPercent / 100} /> : <Box flex="1" />}
-        <Text textStyle="body13" color="fg" whiteSpace="nowrap">
-          {capped ? `${a.attemptsToday} of ${a.maxAttemptsPerDay} attempts today` : a.usage ? `${Math.round(a.usage.usedPercent)}% of its limit used` : today}
+        {capped ? <Bar fraction={a.attemptsToday / a.maxAttemptsPerDay!} /> : a.usage ? <Bar fraction={tightest(a.usage).usedPercent / 100} /> : <Box flex="1" />}
+        <Text textStyle="body13" color="fg" whiteSpace={a.usage && !capped ? "normal" : "nowrap"}>
+          {capped ? `${a.attemptsToday} of ${a.maxAttemptsPerDay} attempts today` : a.usage ? `${usageWords(a.usage)} used` : today}
         </Text>
       </Flex>
       <Text textStyle="meta" color="fg.subtle" w={{ lg: "230px" }} textAlign={{ lg: "end" }} flexShrink={0}>
-        {a.usage && !capped ? `${today} · read ${gap(now - a.usage.observedAt)} ago` : a.lastUsedAt ? `last used ${gap(now - a.lastUsedAt)} ago` : "not used yet"}
+        {a.usage && !capped ? [resetWords(a.usage, now), `read ${gap(now - a.usage.observedAt)} ago`].filter(Boolean).join(" · ") : a.lastUsedAt ? `last used ${gap(now - a.lastUsedAt)} ago` : "not used yet"}
       </Text>
     </Flex>
   );
