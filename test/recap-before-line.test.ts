@@ -11,3 +11,13 @@ it("keeps prose beginning with Reproducibly and stops at an Expected heading", (
   expect(line).toContain("the digest drops the last item");
   expect(line).not.toContain("every item is listed");
 });
+
+it("stops at an underscore-emphasized Expected heading", () => {
+  const line = beforeLine(
+    7,
+    "Digest drops items",
+    "Digest drops the last item.\n\n_Expected_: every item is listed.",
+  );
+
+  expect(line).not.toContain("every item is listed");
+});

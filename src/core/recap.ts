@@ -186,7 +186,7 @@ function plainLine(text: string, max: number): string {
 
 const SECTION_KEYWORD = "(?:expected(?:\\s+behaviou?r)?|repro(?:duction|\\s+steps)?|steps\\s+to\\s+reproduce)";
 const SECTION_START = new RegExp(
-  `^\\s*(?:#{1,6}\\s*[*_]*${SECTION_KEYWORD}\\b[*_]*(?:\\s*:|\\s+.*|$)|[*_]*${SECTION_KEYWORD}\\b[*_]*\\s*:)`,
+  `^\\s*(?:#{1,6}\\s*[*_]*${SECTION_KEYWORD}[*_]*(?:\\s*:|\\s+.*|$)|[*_]*${SECTION_KEYWORD}[*_]*\\s*:)`,
   "i",
 );
 
