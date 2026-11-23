@@ -130,7 +130,6 @@ export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string
   cli_missing: "The provider CLI is not installed or not on PATH: install it or run `archangel doctor`, then retry.",
   model_unavailable: "The login cannot run the model named in the reason: change or remove that entry's `model` under `chains` in archangel.yaml (no `model` uses the CLI's default), restart the daemon, then retry.",
   context_overflow: "The prompt exceeded the model's context: narrow the issue, then retry.",
-  quota: "Every account in the chain is at its usage limit: wait for the limit to reset, or add another login under `accounts` in archangel.yaml, then retry.",
   setup_failed: "The repo's `.agents/setup` script failed (see the reason): fix it on the default branch (`archangel doctor --verify-setup` runs it), then retry.",
 };
 
@@ -149,6 +148,7 @@ const ATTEMPT_FAILURE_CLASS: Partial<Record<AttemptErrorCategory, DecisionClass>
   permission_denied: "credentials",
   provider_network: "live_infrastructure",
   setup_failed: "live_infrastructure",
+  // Never put to the owner per Thread (the Thread waits for a cooldown to end); listed so the failed run is not charged to the Thread.
   quota: "spending",
 };
 

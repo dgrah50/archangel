@@ -469,6 +469,14 @@ export class SubscriptionImplementer implements Implementer {
     }
   }
 
+  blockedUntil(role: WriterRole, now: number): number | null {
+    const logins = this.chains[role].map((entry) => accountsFor(this.accounts, entry));
+    if (logins.some((accounts) => selectAccount(accounts, this.state, now) !== null)) return null;
+    const cooldownEnds = logins.flat().flatMap((a) => this.state.cooldownUntil(a.id, now) ?? []);
+    // Nothing cooling yet nothing selectable: every login is at its daily cap, which lifts with the local day. Look again in an hour.
+    return cooldownEnds.length > 0 ? Math.min(...cooldownEnds) : now + 3_600_000;
+  }
+
   async run(input: ImplementInput): Promise<ImplementResult> {
     fs.mkdirSync(this.transcriptsDir, { recursive: true });
     const transcriptPath = path.join(
