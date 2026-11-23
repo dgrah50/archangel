@@ -41,9 +41,9 @@ export function resolveUiSettings(
 export function resolveHostSettings(
   opts: { config?: string; dataDir?: string },
   env: NodeJS.ProcessEnv = process.env,
-): { dataDir: string; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; chains: Chains } {
+): { dataDir: string; reviewerChain: Array<{ provider: "codex" | "agy" | "claude"; model?: string }>; chains: Chains; reviewTimeoutMs: number } {
   const file = hostConfigFile(opts, env);
   if (!fs.existsSync(file)) throw new Error(`Host config not found: ${file}`);
   const host = readHostYaml(file);
-  return { dataDir: opts.dataDir ?? host.dataDir, reviewerChain: host.reviewerChain, chains: host.chains };
+  return { dataDir: opts.dataDir ?? host.dataDir, reviewerChain: host.reviewerChain, chains: host.chains, reviewTimeoutMs: host.reviewTimeoutMs };
 }

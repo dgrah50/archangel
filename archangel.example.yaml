@@ -40,6 +40,7 @@ maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per th
 # Execution timeouts (ms unless noted)
 implementTimeoutMs: 1200000         # wall-clock cap for one implement Attempt
 setupTimeoutMs: 300000              # .agents/setup dependency install
+reviewTimeoutMs: 600000             # one reviewer CLI on one review; past it the review counts as an outage and is retried
 staleLeaseMs: 180000                # daemon lock considered dead after this
 gateStartGraceMs: 300000            # wait for the Gate check to start
 gateTimeoutMs: 3600000              # wait for the Gate check to finish

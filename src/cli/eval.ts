@@ -72,7 +72,7 @@ export function registerEval(program: Command): void {
         const report = await runEval({
           ledger,
           sources: evalSources(ledger, dataDir, opts.repo),
-          suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts }),
+          suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), timeoutMs: host.reviewTimeoutMs, prompts }),
           baseline: baseline.prompts,
           candidate,
           heldout: opts.heldout,
@@ -100,7 +100,7 @@ export function registerEval(program: Command): void {
       const paths = resolvePaths(cfg);
       const ledger = new Ledger(root.ledgerDbPath, { repo: ARCHANGEL_REPO, timeZone: cfg.dailyTimezone });
       const now = Date.now();
-      const suiteFor = (prompts: ReviewPromptBuilders) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts });
+      const suiteFor = (prompts: ReviewPromptBuilders) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), timeoutMs: host.reviewTimeoutMs, prompts });
       try {
         const outcome = await proposePrompt({
           ledger,

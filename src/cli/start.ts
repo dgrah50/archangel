@@ -137,7 +137,7 @@ function buildProject(cfg: ArchangelConfig, d: DaemonDeps, sinks: ProjectSinks):
           return await runEval({
             ledger: rootLedger,
             sources: evalSources(rootLedger, d.dataDir),
-            suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), prompts }),
+            suiteFor: (prompts) => new SubscriptionReviewerSuite({ chain: first.reviewerChain, defaultExcludeVendors: primaryWriterVendors(first.chains), timeoutMs: first.reviewTimeoutMs, prompts }),
             baseline: baseline.prompts,
             candidate,
             heldout,
