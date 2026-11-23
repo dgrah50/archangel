@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { GitBroker, isProtectedPath } from "../broker/git-broker.js";
+import { isTestOrFixtureFile } from "../gate/gate.js";
 import type { ReviewerSuite } from "../agents/reviewers.js";
 import { NO_ACCOUNT_STATE, selectAccount, type AccountState } from "./accounts.js";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, resolveRequiredReviewers, resolvePaths, type Account, type ArchangelConfig, type ProviderEntry } from "../config.js";
@@ -702,12 +703,19 @@ async function runPitchScout(opts: {
         notFiled("pitch/dropped", "cites no mined commit", pitch.title);
         continue;
       }
-      // A build that must edit a protected path can only fail its bounds, so the daemon neither builds a PoC nor can take the slices: say so on the pitch.
-      const protectedFiles = [...new Set(pitch.evidence.flatMap((e) => (e.file !== null && isProtectedPath(e.file, opts.workflow.gate.extraProtectedPaths) ? [e.file] : [])))];
+      // The daemon may edit neither a protected path nor an existing test. A build that must edit a protected path can only fail its
+      // bounds (no PoC either); the pitch says which route does work.
+      const cited = [...new Set(pitch.evidence.flatMap((e) => (e.file === null ? [] : [e.file])))];
+      const protectedFiles = cited.filter((f) => isProtectedPath(f, opts.workflow.gate.extraProtectedPaths));
+      const frozenTests = cited.filter((f) => isTestOrFixtureFile(f, opts.workflow.gate));
+      const names = (files: string[]) => files.map((f) => `\`${f}\``).join(", ");
+      const buildCmd = `\`archangel pitch promote ${ledger.repo} <this issue> --slice 1 --build\`: it opens a PR for you to merge`;
       const ownerBuildNote =
         protectedFiles.length > 0
-          ? `\n\n_This pitch touches paths the factory may not edit (${protectedFiles.map((f) => `\`${f}\``).join(", ")}), so the daemon cannot build it. Build a slice yourself with \`archangel pitch promote ${ledger.repo} <this issue> --slice 1 --build\`: it opens a PR for you to merge._`
-          : "";
+          ? `\n\n_This pitch touches paths the factory may not edit (${names(protectedFiles)}), so the daemon cannot build it. Build a slice yourself with ${buildCmd}._`
+          : frozenTests.length > 0
+            ? `\n\n_This pitch cites existing tests (${names(frozenTests)}), and the factory may not change an existing test. If a slice has to, build it yourself with ${buildCmd}._`
+            : "";
       const body = `${provisional ? `**${provisional}.**\n\n` : ""}${renderPitchBody(pitch, source, research)}${ownerBuildNote}`;
       const veto = await pitchVeto(pitch, body, opts);
       if (veto) {

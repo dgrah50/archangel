@@ -55,8 +55,8 @@ interface OwnerBuildTask {
 /** The brief lifts the implementer prompt's protected-path rule, because this build is owner-supervised and its diff is read before anything is pushed. */
 const OWNER_BUILD_NOTE = [
   "",
-  "OWNER-RUN BUILD (this overrides rule 3's size limits and rule 4 above): the repository's owner is running you locally and will read the full diff before anything is pushed.",
-  "You MAY edit protected paths if the task needs it. Still keep the change as small as the task allows, and do not edit lockfiles or CI workflows unless the task requires it.",
+  "OWNER-RUN BUILD (this overrides rule 2, rule 3's size limits and rule 4 above): the repository's owner is running you locally and will read the full diff before anything is pushed.",
+  "You MAY edit protected paths, and you MAY change or delete existing tests, where the task needs it. Still keep the change as small as the task allows, and do not edit lockfiles or CI workflows unless the task requires it.",
 ].join("\n");
 
 /** Conventional-commit prefix of the PR, by what kind of change the pitch is. */
@@ -159,13 +159,19 @@ async function ownerBuild(runner: OnboardRunner, input: OwnerBuildDeps, task: Ow
       const headSha = await broker.stageCloneHead(ws.path, `refs/archangel/${task.branch}`, task.prTitle);
       if (headSha === mainSha) throw new Error("The implementer changed nothing; nothing was pushed.");
 
-      // The Gate's protected-path check would (rightly) refuse this PR; what runs here is the repo's own testCmd, with no credentials.
+      // The Gate passes an owner's branch through unchecked, so what proves this build is the repo's own testCmd, run here with no credentials.
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-selfbuild-home-"));
       let tests;
       try {
         tests = await compute.exec(ws, { cmd: "sh", args: ["-c", gate.testCmd], env: { PATH: process.env.PATH, HOME: home, CI: "1" }, timeoutMs: input.cfg.implementTimeoutMs });
       } finally {
-        fs.rmSync(home, { recursive: true, force: true });
+        // A test run can leave read-only trees in its HOME (Go's module cache is 0555): make them writable first, and never lose a finished build to a leftover temp dir.
+        try {
+          await compute.exec(ws, { cmd: "chmod", args: ["-R", "u+w", home], env: { PATH: process.env.PATH }, timeoutMs: 60_000 });
+          fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        } catch (err) {
+          input.log(`Left ${home} behind (${err instanceof Error ? err.message : String(err)}); remove it by hand.`);
+        }
       }
       const testsPassed = tests.code === 0;
       const stat = await broker.diffStat(mainSha, headSha);
@@ -193,6 +199,6 @@ async function ownerBuild(runner: OnboardRunner, input: OwnerBuildDeps, task: Ow
       handle.destroy();
     }
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
