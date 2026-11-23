@@ -144,6 +144,24 @@ reviewerChain:
 #       on: research
 #       do: { action: run_pitch, scout: fleet-pr-miner }
 
+# Production errors (O4, off while absent). Once an hour, and only when a signals rule listens for `prod_errors` or `prod_error_spike`,
+# the host polls Sentry's REST API (never a webhook) and stores only numbers: error counts per opaque group id (top 10), new-issue and
+# regression counts. No message, stack trace, user or URL is stored. The signals are untrusted: a rule on them may only run_pitch, and
+# pitch prompts see the numbers as a fenced DATA block. Create a Sentry auth token with read scope (project:read, event:read), put it in
+# .env under tokenEnv, and list `repo` under projects. The spike threshold (50 events a day in one group) is provisional.
+# production:
+#   sentry:
+#     org: my-org
+#     project: my-project
+#     repo: owner/name
+#     tokenEnv: SENTRY_AUTH_TOKEN
+# signals:
+#   enabled: true
+#   rules:
+#     - name: prod-spike-pitch
+#       on: prod_error_spike
+#       do: { action: run_pitch, scout: fleet-pr-miner }
+
 # Prompt proposer (O7): `archangel eval propose` drafts one reviewer prompt or rubric change from dev-set failure counts, scores it on
 # the held-out set and opens an agent-draft PR (owner merges) only if it beats the baseline. Bounded to 1 run per week by the command
 # itself, so a weekly schedule is safe, e.g. a launchd or cron entry (Mondays 09:00):

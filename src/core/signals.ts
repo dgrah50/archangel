@@ -5,6 +5,7 @@ import { SIGNAL_KINDS, type SignalKind } from "./signal-kinds.js";
 import { emit } from "./telemetry.js";
 import { ANOMALY_METRICS, anomalyEventId, detectAnomalies, TELEMETRY_SCOUT_EVERY_MS } from "./telemetry-scout.js";
 import { policyRegressions } from "./regression-watch.js";
+import { PROD_ERRORS_EVERY_MS, PROD_SPIKE_MIN_EVENTS, ProdErrorsPayload, ProdSpikePayload, spikes, summarizeGroups, type ProdErrorProvider } from "./prod-errors.js";
 import { REPO_RE } from "./telemetry-events.js";
 import { actionAllowed, ruleKey, type SignalRule, type SignalsConfig } from "./signal-rules.js";
 
@@ -55,6 +56,8 @@ const PAYLOADS = {
       promptCommit: z.string().regex(COMMIT_RE).nullable(),
     })
     .strict(),
+  prod_errors: ProdErrorsPayload,
+  prod_error_spike: ProdSpikePayload,
 } as const satisfies Record<SignalKind, z.ZodType>;
 
 /** Appends one signal; false when this event was already ingested. Source and taint come from the kind, not from the caller. */
@@ -90,6 +93,8 @@ export async function ingestSignals(opts: {
   schedules: ReadonlyArray<{ name: string; every: "daily" | "weekly" }>;
   /** The research fetcher (O1), present only when the owner wrote topics. Resolves to how many new results it stored. */
   research?: () => Promise<number>;
+  /** The production-error provider (O4), present only when the owner configured one for this repo. */
+  prodErrors?: ProdErrorProvider;
   now: number;
   onError: (adapter: string, err: unknown) => void;
   /** The commit that introduced a workflow file or prompt template version, for a regression's revert hint; null when unknown. */
@@ -128,6 +133,24 @@ export async function ingestSignals(opts: {
       ledger.setSignalWatermark("telemetry:anomaly", now, now);
     } catch (err) {
       opts.onError("telemetry:anomaly", err);
+    }
+  }
+
+  // Production errors (O4): polled hourly, only when a rule listens. Each hour is one summary; each group at the threshold is one spike per day.
+  if (opts.prodErrors && (wanted.has("prod_errors") || wanted.has("prod_error_spike"))) {
+    const mark = ledger.getSignalWatermark("prod_errors:poll");
+    if (!mark || now - mark.polledAt >= PROD_ERRORS_EVERY_MS) {
+      try {
+        const groups = await opts.prodErrors.fetchGroups();
+        recordSignal(ledger, "prod_errors", String(Math.floor(now / PROD_ERRORS_EVERY_MS)), summarizeGroups(groups), now);
+        const day = formatDayKey(now, ledger.dayTimeZone);
+        for (const g of spikes(groups)) {
+          recordSignal(ledger, "prod_error_spike", `${g.id}:${day}`, { window: "24h", id: g.id, count: g.count, threshold: PROD_SPIKE_MIN_EVENTS }, now);
+        }
+        ledger.setSignalWatermark("prod_errors:poll", now, now);
+      } catch (err) {
+        opts.onError("prod_errors:poll", err);
+      }
     }
   }
 
@@ -283,5 +306,5 @@ export async function convergeSignals(opts: {
 
 function refOf(payload: unknown): string {
   const p = payload as Record<string, unknown>;
-  return String(p.number ?? p.tag ?? p.slot ?? p.metric);
+  return String(p.number ?? p.tag ?? p.slot ?? p.metric ?? p.id ?? p.events);
 }

@@ -248,6 +248,7 @@ export function buildPitchPrompt(input: {
   prompt: string;
   metricsBlock?: string;
   researchBlock?: string;
+  prodErrorsBlock?: string;
   repoInstructions?: string | null;
   declined: Array<{ title: string; reason: string | null }>;
 }): string {
@@ -262,6 +263,7 @@ export function buildPitchPrompt(input: {
     ...formatRepoInstructions(input.repoInstructions),
     ...(input.metricsBlock ? [input.metricsBlock, ""] : []),
     ...(input.researchBlock ? [input.researchBlock, ""] : []),
+    ...(input.prodErrorsBlock ? [input.prodErrorsBlock, ""] : []),
     ...(input.declined.length > 0
       ? [
           "--- PITCHES ALREADY OPEN OR DECIDED BY THE OWNER (DATA; do not re-pitch these, even reworded) ---",
