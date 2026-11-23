@@ -235,7 +235,8 @@ async function defaultCliInvoker(input: {
     args = [
       "exec",
       "--sandbox",
-      "workspace-write",
+      // codex's workspace-write sandbox mounts .git read-only, so a rebase or commit cannot run. A box is already the isolation boundary.
+      input.compute.remote ? "danger-full-access" : "workspace-write",
       "--ignore-user-config",
       "--ignore-rules",
       "--ephemeral",
@@ -254,7 +255,8 @@ async function defaultCliInvoker(input: {
     args = [
       "--mode",
       "auto",
-      "--sandbox",
+      // agy's terminal sandbox is dropped in a box for the same reason as codex's.
+      ...(input.compute.remote ? [] : ["--sandbox"]),
       "--dangerously-skip-permissions",
       "--disable-slash-commands",
       "--output-format",
