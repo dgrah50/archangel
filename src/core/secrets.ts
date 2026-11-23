@@ -18,6 +18,14 @@ export function scanForSecrets(text: string): string | null {
   return null;
 }
 
+/**
+ * Error text with credentials taken out: the user:password part of any URL (git puts the whole command line, token URL
+ * included, into a failed command's message) and bare GitHub tokens. For text that is logged, stored or shown.
+ */
+export function redactCredentials(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***@").replace(/\b(?:gh[posur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "***");
+}
+
 /** The field itself when clean; otherwise a notice naming the matched pattern, reported through `onWithheld`. */
 export function withholdSecrets(text: string, onWithheld?: (pattern: string) => void): string {
   const hit = scanForSecrets(text);

@@ -1,5 +1,6 @@
 import type { Chapter } from "../core/recap-chapters.js";
 import { tryParseJson } from "../core/json.js";
+import { redactCredentials } from "../core/secrets.js";
 import {
   EscalationCodeSchema,
   OUTBOX_BACKOFF_BASE_MS,
@@ -1635,7 +1636,7 @@ export class Ledger {
           `INSERT INTO health_faults (repo, category, first_seen, last_seen, count, last_error, recent_json) VALUES (?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(repo, category) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1, last_error = excluded.last_error, recent_json = excluded.recent_json`,
         )
-        .run(repo, category, now, now, error.slice(0, 500), JSON.stringify(recent));
+        .run(repo, category, now, now, redactCredentials(error).slice(0, 500), JSON.stringify(recent));
       return recent.length;
     });
     return tx.immediate();

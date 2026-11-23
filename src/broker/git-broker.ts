@@ -9,6 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { REPO_SLUG_RE, type GatePolicy } from "../config.js";
 import { emit } from "../core/telemetry.js";
+import { redactCredentials } from "../core/secrets.js";
 import {
   getDiffStats,
   isProtectedPath,
@@ -85,6 +86,20 @@ export interface GitBrokerOptions {
  * - Fetches commits out of the throwaway clone into the bare clone with hooks/fsmonitor disabled,
  *   validates protected paths, diff bounds, and optional in-process language-agnostic Gate, and pushes only `factory/<n>`.
  */
+/**
+ * A failed git command's error names its whole command line, and fetch and push take the remote as a token URL. The token
+ * is taken out here, before the error can reach a log line, the Ledger or the owner; exit code and stderr are kept.
+ */
+function withoutCredentials(err: unknown): never {
+  if (err instanceof Error) {
+    err.message = redactCredentials(err.message);
+    const e = err as Error & { cmd?: string; stderr?: unknown };
+    if (typeof e.cmd === "string") e.cmd = redactCredentials(e.cmd);
+    if (typeof e.stderr === "string") e.stderr = redactCredentials(e.stderr);
+  }
+  throw err;
+}
+
 export class GitBroker {
   readonly bareRepoPath: string;
   readonly clonesDir: string;
@@ -120,7 +135,7 @@ export class GitBroker {
       cwd,
       env: this.gitEnv(env),
       maxBuffer: 20 * 1024 * 1024,
-    });
+    }).catch(withoutCredentials);
     return stdout;
   }
 
@@ -130,7 +145,7 @@ export class GitBroker {
       env: this.gitEnv(),
       maxBuffer: 20 * 1024 * 1024,
       encoding: "buffer",
-    });
+    }).catch(withoutCredentials);
     return stdout;
   }
 
