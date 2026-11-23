@@ -1,3 +1,4 @@
+import { Alert } from "./arc/alert/alert";
 import { Box, Button, Checkbox, Code, Flex, Text, Textarea } from "@chakra-ui/react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { ApplyResult, HostConfigRead, PreviewResult } from "../../src/core/ui-host-config.js";
@@ -18,11 +19,12 @@ const TITLE: Record<HostError["kind"], string> = {
 };
 
 /** A problem: a hairline rule and plain text, no box. Used for every failure state on the Settings page. */
-export function Problem({ title, children }: { title: ReactNode; children?: ReactNode }) {
+export function Problem({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <Box role="alert" borderTopWidth="1px" borderTopColor="owner" pt="2" mt="4">
-      <Text textStyle="label" color="owner">{title}</Text>
-      {children}
+    <Box mt="4">
+      <Alert tone="warning" title={title}>
+        {children}
+      </Alert>
     </Box>
   );
 }
@@ -140,7 +142,7 @@ export function HostDraftBlock({ draft: d }: { draft: HostDraft }) {
   const changes = hostChanges(d.base ?? "", d.text);
   const n = changes.length;
   return (
-    <Flex direction="column" gap="2.5" borderTopWidth="1px" borderTopColor="fg" pt="3">
+    <Flex direction="column" gap="2.5" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4">
       <Text textStyle="figure" fontSize="20px" lineHeight="26px" color="fg">
         {d.dirty ? (n === 0 ? "Raw edits, not saved yet" : `${n} change${n === 1 ? "" : "s"}, not saved yet`) : "Nothing unsaved"}
       </Text>
@@ -186,7 +188,7 @@ export function SavedBlock({ done, children }: { done: ApplyResult | null; child
 /** The Raw tab: the same draft as the form, edited as text. Raw edits replace the whole file. */
 export function RawFile({ draft: d }: { draft: HostDraft }) {
   return (
-    <Flex direction="column" gap="2" borderTopWidth="1px" borderTopColor="fg" pt="3" flex="1" minW="0">
+    <Flex direction="column" gap="2" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4" flex="1" minW="0">
       <Flex gap="2" align="center" wrap="wrap">
         <Text textStyle="body13" color="fg.muted">Applies after the daemon restarts.</Text>
         {d.read?.state === "missing" ? <Text textStyle="body13">No archangel.yaml yet: saving creates it.</Text> : <Text textStyle="body13" color="fg.muted">Comments and layout outside your edits are kept.</Text>}

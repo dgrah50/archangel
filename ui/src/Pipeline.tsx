@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { PipelineRepo, PipelineStage, WorkflowsState } from "../../src/core/ui-state.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import type { Workflow } from "../../src/core/workflow.js";
+import { Alert } from "./arc/alert/alert";
 import SegmentedControl from "./arc/segmented-control/segmented-control";
 import { Page, PageHeadline } from "./page";
 import { DraftPanel, StageEditor, useDraft, type Draft } from "./WorkflowEditor";
@@ -32,16 +33,11 @@ function Halted({ r }: { r: PipelineRepo }) {
           ? "The cached workflow is unreadable; the daemon will rewrite it on its next tick."
           : "Not resolved yet: the daemon has not read this repo's workflow.";
   return (
-    <Box role="alert" borderTopWidth="1px" borderColor="fg" py="3" mb="4">
-      <Text textStyle="body13" color="owner">
-        {r.status === "unresolved" ? "Waiting for the daemon. " : "Halted. "}
+    <Box mb="4">
+      <Alert tone="warning" title={r.status === "unresolved" ? "Waiting for the daemon" : "Halted"}>
         {text}
-      </Text>
-      {r.error ? (
-        <Text textStyle="meta" color="fg.muted" mt="1">
-          {r.error}
-        </Text>
-      ) : null}
+        {r.error ? ` ${r.error}` : ""}
+      </Alert>
     </Box>
   );
 }
@@ -99,7 +95,7 @@ function RepoLine({ r, settings, d }: { r: PipelineRepo; settings: SettingsState
   const [open, setOpen] = useState<EditableStage | null>(null);
   const builtIn = settings?.kernel.universalProtected ?? [];
   return (
-    <Box borderTopWidth="1px" borderTopColor="fg" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+    <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
       {ROWS.map((row) => {
         const stage = r.stages.find((s) => s.id === row.id);
         const editable = row.edit !== undefined && d !== null;

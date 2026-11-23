@@ -7,3 +7,4 @@ To update one, re-copy its files from the registry.
 Local change: `bar-chart.tsx` no longer rounds the average to a whole number (our daily counts are small, so "1" for 1.1 misleads).
 
 Added the same way: `segmented-control`, `copy-button` (with `lib/use-copy-feedback.ts`), `timeline`, `empty-state`.
+Also added: `alert`, `stepper`.

@@ -10,6 +10,7 @@ import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
 import { ThreadsPage } from "./ThreadsPage";
 import { SCHEMA_BEHIND } from "./payload";
+import { Alert } from "./arc/alert/alert";
 import { Page, Ticked } from "./page";
 import { PitchesPage } from "./PitchesPage";
 import type { PitchesState } from "../../src/core/ui-pitches.js";
@@ -34,14 +35,22 @@ export const DAEMON_OFFLINE_MS = 3 * 60_000;
 
 const ago = (ms: number) => (ms < 90_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`);
 
-/** A state banner: a hairline rule and plain text, no box. Amber (red tone) when the factory has stopped or may be stopped; ink when only the data is in doubt. */
-export function Notice({ tone, children }: { tone: "red" | "orange"; children: React.ReactNode }) {
+/** A state banner. Warning (amber) when the factory has stopped or may be stopped; info when only the data is in doubt. */
+export function Notice({ tone, title, children }: { tone: "red" | "orange"; title: string; children?: React.ReactNode }) {
   return (
-    <Box role="alert" borderTopWidth="1px" borderTopColor={tone === "red" ? "owner" : "fg"} py="2.5" mb="3" color={tone === "red" ? "owner" : "fg"}>
-      {children}
+    <Box mb="3">
+      <Alert tone={tone === "red" ? "warning" : "info"} title={title}>
+        {children}
+      </Alert>
     </Box>
   );
 }
+
+/** A banner sentence split into its lead (the alert title) and the rest. */
+const lead = (text: string): [string, string] => {
+  const m = /^(.*?)[:.]\s+(.*)$/s.exec(text);
+  return m ? [m[1]!, m[2]!.charAt(0).toUpperCase() + m[2]!.slice(1)] : [text.replace(/\.$/, ""), ""];
+};
 
 /** Which banners the current data needs: failed poll, stale data, daemon offline. Pure so each state can be tested. */
 export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "red" | "orange"; text: string }> {
@@ -65,8 +74,8 @@ function PipelinePage({ workflows, settings, onRetry }: { workflows: Feed<Workfl
       <>
         {workflows.error ? (
           <Box pt="4" px={{ base: "6", md: "56px" }}>
-            <Notice tone="red">
-              <Text textStyle="sm">Pipeline refresh failed ({workflows.error}); showing the last loaded copy.</Text>
+            <Notice tone="red" title="Pipeline refresh failed, showing the last loaded copy">
+              {workflows.error}
             </Notice>
           </Box>
         ) : null}
@@ -77,8 +86,7 @@ function PipelinePage({ workflows, settings, onRetry }: { workflows: Feed<Workfl
   return (
     <Page>
       {workflows.error ? (
-        <Notice tone="red">
-          <Text fontWeight="medium">Pipeline unavailable.</Text>
+        <Notice tone="red" title="Pipeline unavailable">
           <Text textStyle="sm">{workflows.error}</Text>
           <Button size="sm" mt="2" onClick={onRetry}>
             Retry
@@ -118,8 +126,7 @@ export function AppView({
     if (state.error === null) return <Text p="6" color="fg.muted">Loading...</Text>;
     return (
       <Box maxW="40rem" mx="auto" mt="10" p="5">
-        <Notice tone="red">
-          <Text fontWeight="medium">{state.code === SCHEMA_BEHIND ? "The Ledger schema is behind." : "Cannot load the dashboard."}</Text>
+        <Notice tone="red" title={state.code === SCHEMA_BEHIND ? "The Ledger schema is behind" : "Cannot load the dashboard"}>
           <Text textStyle="sm">{state.error}</Text>
           <Button size="sm" mt="2" onClick={onRetry}>
             Retry
@@ -133,8 +140,8 @@ export function AppView({
       {bannersFor(state, now).length > 0 ? (
         <Box pt="4" px={{ base: "6", md: "56px" }}>
           {bannersFor(state, now).map((b) => (
-            <Notice key={b.text} tone={b.tone}>
-              <Text textStyle="body13"><Ticked>{b.text}</Ticked></Text>
+            <Notice key={b.text} tone={b.tone} title={lead(b.text)[0]}>
+              {lead(b.text)[1] ? <Ticked>{lead(b.text)[1]}</Ticked> : null}
             </Notice>
           ))}
         </Box>

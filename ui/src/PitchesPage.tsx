@@ -42,7 +42,7 @@ export function PitchesPage({ pitches, now, onRetry }: { pitches: Feed<PitchesSt
     if (pitches.error === null) return <Text p="6" color="fg.muted">Loading...</Text>;
     return (
       <Page>
-        <Notice tone="red">
+        <Notice tone="red" title="Pitches could not be loaded">
           <Text textStyle="sm">{pitches.error}</Text>
           <Button size="sm" mt="2" onClick={onRetry}>
             Retry
@@ -220,7 +220,7 @@ const CHANGE_COLOR = { add: "green.fg", remove: "red.fg", modify: "fg", same: "f
 /** The model's nodes and edges, drawn here as an indented tree of React text. Nothing from the pitch is ever markup. */
 function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"]["changeDiagram"]> }) {
   return (
-    <Section gap="2">
+    <Section inner gap="2">
       <Text textStyle="body13" color="fg.subtle">What changes</Text>
       <Box borderLeftWidth="1px" borderLeftColor="border" pl="3">
         {diagramRows(diagram).map((r, i) => (
@@ -240,7 +240,7 @@ function ChangeDiagramBlock({ diagram }: { diagram: NonNullable<PitchRow["pitch"
 /** Numbers the pitch claims. Each says "Estimate, not measured" unless it is a measured number that cites a repo file. */
 function Estimates({ items }: { items: PitchRow["pitch"]["estimates"] }) {
   return (
-    <Section gap="2">
+    <Section inner gap="2">
       <Text textStyle="body13" color="fg.subtle">Numbers it claims</Text>
       {items.map((e, i) => (
         <Box key={i}>
@@ -288,7 +288,7 @@ function TryIt({ row, d, now }: { row: PitchRow; d: PitchesState; now: number })
     </Flex>
   );
   return (
-    <Section gap="3">
+    <Section inner gap="3">
       <Text textStyle="body13" color="fg.subtle">Try it</Text>
       {poc === null ? ask : null}
       {poc?.state.kind === "building" ? <Text textStyle="body13" color="fg">Building a PoC. It counts as build {poc.builds} of {d.pocMaxBuildsPerPitch} for this pitch.</Text> : null}
@@ -329,7 +329,7 @@ function Pictures({ items }: { items: PitchAttachment[] }) {
   const [open, setOpen] = useState<number | null>(null);
   const paths = [...new Set(items.filter((a) => a.kind === "repo").map((a) => a.path))];
   return (
-    <Section gap="3">
+    <Section inner gap="3">
       <Flex gap="10" direction={{ base: "column", xl: "row" }} justify="space-between">
         <Box minW="0" maxW="320px">
           <Text textStyle="body13" color="fg.subtle">Pictures, {items.length}</Text>

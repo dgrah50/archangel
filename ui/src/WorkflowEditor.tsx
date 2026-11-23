@@ -1,3 +1,4 @@
+import { Alert } from "./arc/alert/alert";
 import { Box, Button, Code, Flex, Input, Text, Textarea, chakra } from "@chakra-ui/react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { Workflow } from "../../src/core/workflow.js";
@@ -35,12 +36,12 @@ export const isStale = (pinnedSha: string, currentSha: string) => pinnedSha !== 
 
 export function StaleNotice({ onReload }: { onReload: () => void }) {
   return (
-    <Box role="alert" borderTopWidth="1px" borderColor="fg" py="2">
-      <Text textStyle="sm">The workflow changed upstream, so this draft is out of date and cannot be submitted.</Text>
-      <Button size="sm" mt="2" onClick={onReload}>
-        Workflow changed upstream: reload draft
+    <Alert tone="info" title="The workflow changed upstream">
+      This draft is out of date and cannot be submitted.
+      <Button size="sm" mt="2" display="flex" onClick={onReload}>
+        Reload draft
       </Button>
-    </Box>
+    </Alert>
   );
 }
 
@@ -66,7 +67,7 @@ export function PrStatusCard({ repo, url }: { repo: string; url: string }) {
   if (n === null) return <Text role="alert" color="owner" textStyle="sm">Cannot read PR status: the PR URL has no number ({url}).</Text>;
   const c = pr ? summarizeChecks(pr.statusCheckRollup) : null;
   return (
-    <Box borderTopWidth="1px" borderColor="fg" py="3" aria-label={`PR status ${repo}#${n}`}>
+    <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4" aria-label={`PR status ${repo}#${n}`}>
       <Text fontWeight="medium">PR #{n}</Text>
       {error ? <Text role="alert" color="owner" textStyle="sm">PR status read failed: {error}</Text> : null}
       {pr ? (
@@ -374,7 +375,7 @@ export function DraftPanel({ d, pollSeconds }: { d: Draft; pollSeconds: number |
   const loosens = d.preview?.loosens ?? false;
   const open = () => (loosens && !d.confirming ? d.setConfirming(true) : void d.run(false));
   return (
-    <Flex direction="column" gap="3.5" borderTopWidth="1px" borderTopColor="fg" pt="3" aria-label="draft changes">
+    <Flex direction="column" gap="3.5" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" py="4" aria-label="draft changes">
       <Box>
         <Text textStyle="figure" fontSize="20px" lineHeight="26px">
           {heading}
