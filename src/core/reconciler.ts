@@ -18,7 +18,7 @@ import type { ReviewerSuite } from "../agents/reviewers.js";
 import { isProtectedPath, type GitBroker } from "../broker/git-broker.js";
 import { isTestFile, type GateProof } from "../gate/gate.js";
 import { GitHubHttpError, type GitHubClient, type GitHubIssue, type GitHubPr, type IssueComment } from "../github/client.js";
-import { AttemptError, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
+import { AttemptError, type AttemptErrorCategory, type MergeRecord, type ReviewFinding, type ReviewerVendor, type ThreadRecord } from "../ledger/schema.js";
 import { HEALTH_FAULT_THRESHOLD, HEALTH_WINDOW_MS, Ledger } from "../ledger/store.js";
 import { branchNameFor, ownerMergeClass, workClassOfBranch, type WorkClass } from "./work-class.js";
 import { LocalProvider } from "../compute/local.js";
@@ -1853,6 +1853,17 @@ export class Reconciler {
     };
     let ranOn: WorkspaceHandle = local;
 
+    /** Ends the Attempt as failed and escalates its Thread with `ev`, unless something else already moved the Thread. */
+    const fail = (
+      finish: { errorCategory: AttemptErrorCategory; errorMessage: string; headSha?: string },
+      ev: Extract<MachineEvent, { t: "attempt_failed" }>,
+      extra: { lastSummary?: string } = {},
+    ): void => {
+      this.ledger.finishAttempt(attemptId, { status: "failed", costUsd: actualCostUsd, reservedUsd, transcriptPath, ...finish });
+      const latest = this.ledger.getThread(workingThread.issueNumber);
+      if (latest && latest.version === workingThread.version) this.applyMachineEvent(latest, ev, { auditTopic: "thread/needs_you", ...extra });
+    };
+
     try {
       // Without a remote provider the one workspace is prepared up front, exactly as before.
       if (!remote) await local.workspace();
@@ -2037,48 +2048,20 @@ export class Reconciler {
 
       // Nothing changed against main: not a policy failure. The implementer's own account of why is what the owner needs, so it is kept.
       if (validation.changedFiles.length === 0) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "The Attempt changed nothing against main",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
-            { auditTopic: "thread/needs_you", lastSummary: result.summary },
-          );
-        }
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "The Attempt changed nothing against main" },
+          { t: "attempt_failed", code: "already_fixed", reason: `The ${kind} Attempt changed nothing against main. It said: ${result.summary.replace(/\s+/g, " ").trim().slice(0, 600)}` },
+          { lastSummary: result.summary },
+        );
         return;
       }
 
       if (validation.protectedViolations.length > 0) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "static_rejection",
-          errorMessage: validation.protectedViolations.join("; "),
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            {
-              t: "attempt_failed",
-              code: "broker_policy_failed",
-              reason: `Broker pre-push validation failed: ${validation.protectedViolations.join("; ")}`,
-            },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+        const violations = validation.protectedViolations.join("; ");
+        fail(
+          { headSha: validation.headSha, errorCategory: "static_rejection", errorMessage: violations },
+          { t: "attempt_failed", code: "broker_policy_failed", reason: `Broker pre-push validation failed: ${violations}` },
+        );
         return;
       }
 
@@ -2152,62 +2135,28 @@ export class Reconciler {
 
       // Detect no-op revisions so we escalate instead of re-pushing an identical SHA back into awaiting_gate.
       if (kind === "revise" && validation.headSha === fromSha) {
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "Revision attempt produced no new changes (identical SHA)",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
-          // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
-          const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
-          const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
-          this.applyMachineEvent(
-            latest,
-            conflict
-              ? {
-                  t: "attempt_failed",
-                  code: "existing_test_conflict",
-                  reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.`,
-                }
-              : {
-                  t: "attempt_failed",
-                  code: "revision_no_change",
-                  reason: "Revision attempt produced no new changes (identical SHA).",
-                },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+        // Mechanical cause: a failing test file named in the feedback or in the implementer's own summary that already exists on
+        // base (and is a test file by the repo's globs) means the issue contradicts frozen behaviour. That is the owner's call.
+        const base = extractPrFromPhase(workingThread.phase)?.baseSha ?? mainSha;
+        const conflict = await this.findExistingTestConflict([...gateViolations, result.summary], base);
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "Revision attempt produced no new changes (identical SHA)" },
+          conflict
+            ? { t: "attempt_failed", code: "existing_test_conflict", reason: `Issue #${issue.number} appears to contradict the existing test ${conflict}, which the factory may not change; the revision came back unchanged.` }
+            : { t: "attempt_failed", code: "revision_no_change", reason: "Revision attempt produced no new changes (identical SHA)." },
+        );
         return;
       }
 
       // A rebase that left the head unchanged: either main already holds the branch's change, or the rebase did nothing.
       if (kind === "rebase" && validation.headSha === fromSha) {
         const alreadyOnMain = await this.broker.isAlreadyOnMain(mainSha, fromSha);
-        this.ledger.finishAttempt(attemptId, {
-          status: "failed",
-          headSha: validation.headSha,
-          costUsd: actualCostUsd,
-          reservedUsd,
-          transcriptPath,
-          errorCategory: "no_change",
-          errorMessage: "Rebase attempt produced no new changes (identical SHA)",
-        });
-        const latest = this.ledger.getThread(workingThread.issueNumber);
-        if (latest && latest.version === workingThread.version) {
-          this.applyMachineEvent(
-            latest,
-            alreadyOnMain
-              ? { t: "attempt_failed", code: "already_fixed", reason: "The branch's change is already on main; the rebase left nothing to push." }
-              : { t: "attempt_failed", code: "revision_no_change", reason: "Rebase attempt produced no new changes (identical SHA)." },
-            { auditTopic: "thread/needs_you" },
-          );
-        }
+        fail(
+          { headSha: validation.headSha, errorCategory: "no_change", errorMessage: "Rebase attempt produced no new changes (identical SHA)" },
+          alreadyOnMain
+            ? { t: "attempt_failed", code: "already_fixed", reason: "The branch's change is already on main; the rebase left nothing to push." }
+            : { t: "attempt_failed", code: "revision_no_change", reason: "Rebase attempt produced no new changes (identical SHA)." },
+        );
         return;
       }
 
