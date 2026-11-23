@@ -11,6 +11,8 @@ export interface ChapterFile {
   path: string;
   added: number;
   deleted: number;
+  /** True when the diff creates the file. */
+  isNew?: boolean;
 }
 
 export interface Chapter {
@@ -44,7 +46,8 @@ export function parseDiffStat(diffText: string): ChapterFile[] {
       cur = m ? { path: m[1]!, added: 0, deleted: 0 } : null;
       if (cur) files.push(cur);
       inHunk = false;
-    } else if (cur && line.startsWith("@@")) inHunk = true;
+    } else if (cur && !inHunk && line.startsWith("new file mode")) cur.isNew = true;
+    else if (cur && line.startsWith("@@")) inHunk = true;
     else if (cur && inHunk) {
       if (line.startsWith("+")) cur.added++;
       else if (line.startsWith("-")) cur.deleted++;
@@ -133,4 +136,20 @@ export function renderChaptersSection(chapters: readonly Chapter[]): string[] {
     if (c.caption) lines.push("", `_${CAPTION_LABEL}:_`, "```text", c.caption.replace(/`/g, "'"), "```");
   }
   return lines;
+}
+
+const codeList = (paths: string[]): string => `${paths.slice(0, 3).map(inline).join(", ")}${paths.length > 3 ? ` and ${paths.length - 3} more` : ""}`;
+
+/** The Summary's mechanical "Now" line: code files with the diff stat, then new test files (the reproduction test in a bugfix). */
+export function nowLine(chapters: readonly Chapter[]): string {
+  const files = chapters.flatMap((c) => c.files.map((f) => ({ ...f, test: c.kind === "test" })));
+  if (files.length === 0) return "**Now:** no file changes were read from the diff.";
+  const code = files.filter((f) => !f.test);
+  const tests = files.filter((f) => f.test);
+  const parts: string[] = [];
+  if (code.length > 0) parts.push(`changes ${codeList(code.map((f) => f.path))} (+${code.reduce((n, f) => n + f.added, 0)}/−${code.reduce((n, f) => n + f.deleted, 0)})`);
+  const fresh = tests.filter((f) => f.isNew);
+  if (fresh.length > 0) parts.push(`new test ${codeList(fresh.map((f) => f.path))}`);
+  if (tests.length > fresh.length) parts.push(`${tests.length - fresh.length} existing test file${tests.length - fresh.length === 1 ? "" : "s"} changed`);
+  return `**Now:** ${parts.join("; ")}`;
 }

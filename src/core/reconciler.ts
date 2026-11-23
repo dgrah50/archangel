@@ -2134,9 +2134,10 @@ export class Reconciler {
       await this.broker.pushFactoryBranch(workingThread.branchName, validation.headSha, freshRemoteUrl);
       this.ledger.recordPushedSha(validation.headSha, workingThread.issueNumber, "broker");
 
+      const { diffText: prDiff } = await this.broker.getDiffAndTouchedFiles(mainSha, validation.headSha);
       const pr = await this.github.createPr({
         title: `fix(#${issue.number}): ${issue.title}`,
-        body: renderPrBody({ number: issue.number, title: issue.title, body: issue.body }),
+        body: renderPrBody({ number: issue.number, title: issue.title, body: issue.body }, this.chaptersOfDiff(prDiff)),
         head: workingThread.branchName,
         base: this.cfg.defaultBranch,
       });
@@ -3098,8 +3099,15 @@ export class Reconciler {
     this.ledger.appendAudit("fix_forward/ready", thread.issueNumber, "archangel", { prNumber: pr.number, headSha: pr.headSha }, now);
   }
 
+  private chaptersOfDiff(diffText: string): Chapter[] {
+    return buildChapters(parseDiffStat(diffText), {
+      isProtected: (p) => isProtectedPath(p, this.effectiveGate.extraProtectedPaths),
+      isTest: (p) => isTestFile(p, this.effectiveGate),
+    });
+  }
+
   /**
-   * The feature PR's chapters for its current head: grouped mechanically from the diff, then at most one read-only model run for one-line
+   * The PR's chapters for its current head: grouped mechanically from the diff, then at most one read-only model run for one-line
    * captions (never retried; its absence leaves the chapters bare). Recorded once per head. Null when the diff could not be read.
    */
   private async chaptersFor(thread: ThreadRecord, pr: GitHubPr): Promise<Chapter[] | null> {
@@ -3108,12 +3116,9 @@ export class Reconciler {
     let workspace: Workspace | null = null;
     try {
       const { diffText } = await this.broker.getDiffAndTouchedFiles(pr.baseSha, pr.headSha);
-      let chapters = buildChapters(parseDiffStat(diffText), {
-        isProtected: (p) => isProtectedPath(p, this.effectiveGate.extraProtectedPaths),
-        isTest: (p) => isTestFile(p, this.effectiveGate),
-      });
+      let chapters = this.chaptersOfDiff(diffText);
       const choice = pickTriageProvider(this.cfg.chains.triage, { code: "attempt_failed", vetoers: [], implementerVendors: thread.implementerVendors });
-      if (choice && chapters.length > 0) {
+      if (choice && chapters.length > 0 && workClassOfBranch(thread.branchName) === "feature") {
         try {
           workspace = await this.compute.prepare({ issueNumber: thread.issueNumber, startSha: pr.headSha });
           const raw = await this.triageInvoker({
@@ -3148,7 +3153,7 @@ export class Reconciler {
   ): Promise<void> {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const triage = this.ledger.latestTriage(thread.issueNumber);
-    const chapters = workClassOfBranch(thread.branchName) === "feature" ? await this.chaptersFor(thread, pr) : null;
+    const chapters = await this.chaptersFor(thread, pr);
     let gateProof: GateProof | null = null;
     let gateProofError: string | null = null;
     try {
