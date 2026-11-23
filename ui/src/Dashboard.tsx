@@ -83,8 +83,11 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
         <Group label="Queued" n={s.groups.Queued.length} tone="hollow">
           {plain(s.groups.Queued, "hollow")}
         </Group>
-        <Group label="Landed in the last 7 days" n={s.groups["Done in last 7 days"].length} tone="passed" folded>
-          {plain(s.groups["Done in last 7 days"], "passed")}
+        <Group label="Landed in the last 7 days" n={s.groups["Landed in last 7 days"].length} tone="passed" folded>
+          {plain(s.groups["Landed in last 7 days"], "passed")}
+        </Group>
+        <Group label="Closed without landing" n={s.groups["Closed in last 7 days"].length} tone="hollow" folded>
+          {plain(s.groups["Closed in last 7 days"], "hollow")}
         </Group>
         {empty ? (
           <Text textStyle="body13" color="fg.muted" px="3">

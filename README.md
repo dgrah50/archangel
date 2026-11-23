@@ -237,6 +237,17 @@ Never log that account in anywhere else: its refresh token rotates and only the 
 
 ### Verify the codex ChatGPT broker (once, after creating the dedicated account)
 
+A box ships git, Node, Bun and the agent CLIs only. A project that needs another toolchain (Go, Rust, Python) lists it under its `projects` entry as `sailImage`: `setup` is shell commands run as root, in order, after the base image, and `egressHosts` are the extra hosts the box may reach (the default allowlist is the model hosts and registry.npmjs.org). Nothing is detected. Changing either builds a new image and saved egress policy; the same two fields under `compute.sail.image` set a host-wide default that `sailImage` replaces.
+
+```yaml
+projects:
+  - repo: owner/name
+    sailImage:
+      setup:
+        - 'curl -fsSL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /usr/local -xz && ln -s /usr/local/go/bin/go /usr/local/go/bin/gofmt /usr/local/bin/'
+      egressHosts: [proxy.golang.org, sum.golang.org, storage.googleapis.com]
+```
+
 `compute.sail.codexBrokerHome` points at a CODEX_HOME holding a dedicated ChatGPT login (never your main account) stored as a file (`cli_auth_credentials_store = "file"`). The daemon's token broker is the only thing that refreshes it: it lets codex do the refresh (`codex app-server`, `account/read` with `refreshToken`), writes only the access token to the Sail secret `ARCHANGEL_CODEX_ACCESS`, and refreshes at about half the token's life. A box holds a placeholder and cannot reach `auth.openai.com`, so it can never refresh. If a refresh fails the broker writes a sentinel into the secret and Attempts refuse to start; a 401 mid-Attempt fails the Attempt and is never retried by copying tokens.
 
 Two things are not proven until you run them on the real account:

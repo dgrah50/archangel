@@ -32,6 +32,9 @@ maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per th
 #     codexBrokerHome: ~/.archangel/accounts/codex-sail   # instead of codexApiKeySecret: a dedicated ChatGPT login the daemon's token broker keeps fresh (see README, Running providers on Sail)
 #     agyBrokerHome: ~/.archangel/accounts/agy-sail   # instead of geminiApiKeySecret: a dedicated Google account's agy login (HOME=<dir> agy) the token broker keeps fresh (see README)
 #     geminiApiKeySecret: GEMINI_API_KEY_SAIL  # agy entries run on Sail with this Gemini API key; unset: agy stays local
+#     image:                        # the box has git, Node, Bun and the agent CLIs only; add a project's toolchain here, or per project via sailImage (README)
+#       setup: []                   # shell commands run as root, in order, after the base image
+#       egressHosts: []             # extra hosts the box may reach (package registries, module proxies)
 
 # Execution timeouts (ms unless noted)
 implementMaxTurns: 40               # agent turn cap for one implement Attempt
