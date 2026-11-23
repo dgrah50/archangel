@@ -4,7 +4,7 @@ import { tryParseJson } from "./json.js";
 import { workClassOfBranch } from "./work-class.js";
 import { extractPrFromPhase } from "./thread-machine.js";
 import { tailOutput, type GateProof } from "../gate/gate.js";
-import { renderChaptersSection, type Chapter } from "./recap-chapters.js";
+import { nowLine, renderChaptersSection, type Chapter } from "./recap-chapters.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { renderShotImages, type ShotLink } from "./pr-shots.js";
 import type { ReviewFinding, ReviewRecord, ThreadRecord, TriageSummary } from "../ledger/schema.js";
@@ -166,22 +166,64 @@ function plainLine(text: string, max: number): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+const SECTION_START = /^\s*(?:#{1,6}\s*)?[*_]*(expected(?:\s+behaviou?r)?|repro(?:duction|\s+steps)?|steps\s+to\s+reproduce)[*_]*\s*:?/i;
+
+/** The issue body's paragraphs before any Expected/Repro section, without code fences. */
+function problemParagraphs(body: string): string[] {
+  const lines: string[] = [];
+  let fenced = false;
+  for (const l of body.split("\n")) {
+    if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
+    else if (!fenced) {
+      if (SECTION_START.test(l)) break;
+      lines.push(l);
+    }
+  }
+  return lines.join("\n").split(/\n\s*\n/).map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+/** The first complete sentences of the problem statement, up to about 300 characters, skipping lead-ins that end with ":". */
+function problemSentences(body: string): string {
+  const out: string[] = [];
+  let len = 0;
+  for (const sentence of problemParagraphs(body).flatMap((p) => p.split(/(?<=[.!?])\s+/))) {
+    if (sentence.endsWith(":")) continue;
+    if (out.length > 0 && len + sentence.length + 1 > 300) break;
+    out.push(sentence);
+    len += sentence.length + 1;
+  }
+  return out.join(" ");
+}
+
 /** The "Before" line from the issue the owner wrote, shared by the PR body and the Recap. */
 export function beforeLine(issueNumber: number, title: string, body?: string | null): string {
-  const firstPara = (body ?? "").split(/\n\s*\n/).find((p) => p.trim()) ?? "";
-  const detail = firstPara ? ` — ${plainLine(firstPara, 200)}` : "";
+  const problem = problemSentences(body ?? "");
+  const detail = problem ? ` — ${plainLine(problem, 320)}` : "";
   return `**Before** (issue #${issueNumber}, owner-written): ${plainLine(title, 120)}${detail}`;
 }
 
+/** The owner's own "Expected:" line from the issue, or null when the issue has none. */
+export function expectedLine(issueNumber: number, body?: string | null): string | null {
+  const lines = (body ?? "").split("\n");
+  const at = lines.findIndex((l) => /^\s*(?:#{1,6}\s*)?[*_]*expected(?:\s+behaviou?r)?[*_]*\s*:/i.test(l));
+  if (at === -1) return null;
+  const text = [lines[at]!.replace(/^[^:]*:[*_]*/, ""), ...lines.slice(at + 1)].join("\n").split(/\n\s*\n|\n\s*#/)[0]!.replace(/\s+/g, " ").trim();
+  const first = plainLine(text.split(/(?<=[.!?])\s+/)[0] ?? "", 200);
+  return first ? `**Expected** (issue #${issueNumber}, owner-written): ${first}` : null;
+}
+
 /** The PR body: the Summary the Recap later extends, then the closing keyword. */
-export function renderPrBody(issue: { number: number; title: string; body?: string | null }): string {
+export function renderPrBody(issue: { number: number; title: string; body?: string | null }, chapters: readonly Chapter[]): string {
   return [
     "### Summary",
     beforeLine(issue.number, issue.title, issue.body),
-    "**Now:** fixed by this PR. The Recap comment lists what changed and the proof.",
+    expectedLine(issue.number, issue.body),
+    nowLine(chapters),
     "",
     `Closes #${issue.number}`,
-  ].join("\n");
+  ]
+    .filter((l): l is string => l !== null)
+    .join("\n");
 }
 
 /** What changed, one line per chapter (at most 6), from the mechanical chapters of a feature PR. */
@@ -194,8 +236,11 @@ function chapterLines(chapters: readonly Chapter[]): string[] {
 function renderSummary(input: Parameters<typeof renderRecapComment>[0], workClass: string): string[] {
   const { thread, reviews, blockers } = input;
   const out = ["#### Summary", beforeLine(thread.issueNumber, thread.title, input.issueBody)];
+  const expected = expectedLine(thread.issueNumber, input.issueBody);
+  if (expected) out.push(expected);
   const chapters = input.chapters ?? [];
-  if (chapters.length > 0) {
+  out.push(nowLine(chapters));
+  if (workClass === "feature" && chapters.length > 0) {
     const added = chapters.reduce((n, c) => n + c.added, 0);
     const deleted = chapters.reduce((n, c) => n + c.deleted, 0);
     out.push("", `**What changed** (+${added}/−${deleted})`, ...chapterLines(chapters));
