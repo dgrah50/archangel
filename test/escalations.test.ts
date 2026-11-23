@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { collectOwnerReply } from "../src/core/owner-reply.js";
 
 import { buildImplementPrompt, buildRebasePrompt, buildRevisionPrompt } from "../src/agents/prompts.js";
-import type { EscalationCode } from "../src/core/thread-machine.js";
+import { stepPhase, type EscalationCode, type MachineEvent, type Phase } from "../src/core/thread-machine.js";
 import type { ThreadRecord } from "../src/ledger/schema.js";
 
 function needsYouThread(code: EscalationCode): ThreadRecord {
@@ -78,3 +78,13 @@ describe("owner reply", () => {
   });
 });
 
+describe("the needs-you label", () => {
+  it("comes off however the wait ends: a retry, a close, or the PR being closed or merged", () => {
+    const waiting: Phase = { kind: "needs_you", code: "gate_failed", reason: "r", resumeTo: { kind: "queued" } };
+    const events: MachineEvent[] = [{ t: "owner_retry", now: 1 }, { t: "owner_abandon" }, { t: "pr_observed", status: "closed" }];
+    for (const ev of events) {
+      const step = stepPhase(waiting, "autonomous", ev, { issueNumber: 7, title: "t", needsYouLabel: "needs-you" });
+      expect(step.ok ? step.effects : ev.t).toEqual([{ kind: "remove_label", issueNumber: 7, label: "needs-you" }]);
+    }
+  });
+});

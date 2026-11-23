@@ -243,8 +243,16 @@ export function stepPhase(
   ev: MachineEvent,
   meta: { issueNumber: number; title: string; needsYouLabel: string },
 ): StepResult {
-  const ok = (next: Phase, effects: OutboxEffect[] = [], nextMode?: Mode): StepResult =>
-    nextMode ? { ok: true, next: validated(next), nextMode, effects } : { ok: true, next: validated(next), effects };
+  // The needs-you label comes off whenever the Thread stops waiting on the owner, whichever event ended the wait: a retry, a close,
+  // the PR being merged or closed, or the owner taking over and later resuming. (A factory retry answers a held-back escalation,
+  // whose label was never added.)
+  const answered = (next: Phase): boolean =>
+    ev.t !== "factory_retry" &&
+    ((phase.kind === "needs_you" && next.kind !== "needs_you" && next.kind !== "owner_driving") || (phase.kind === "owner_driving" && next.kind !== "owner_driving"));
+  const ok = (next: Phase, given: OutboxEffect[] = [], nextMode?: Mode): StepResult => {
+    const effects: OutboxEffect[] = answered(next) ? [...given, { kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }] : given;
+    return nextMode ? { ok: true, next: validated(next), nextMode, effects } : { ok: true, next: validated(next), effects };
+  };
 
   if (phase.kind === "done") {
     return { ok: false, reject: `Cannot apply ${ev.t} to terminal phase done(${phase.outcome})` };
@@ -545,7 +553,7 @@ export function stepPhase(
                 nudgedAt: null,
               }
             : { kind: "queued" };
-        return ok(nextPhase, [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }]);
+        return ok(nextPhase);
       }
       if (ev.t === "factory_retry") {
         return ok(
@@ -576,15 +584,11 @@ export function stepPhase(
               since: ev.now,
               nudgedAt: null,
             },
-            [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
+            [],
             "advisory",
           );
         }
-        return ok(
-          { kind: "queued" },
-          [{ kind: "remove_label", issueNumber: meta.issueNumber, label: meta.needsYouLabel }],
-          "advisory",
-        );
+        return ok({ kind: "queued" }, [], "advisory");
       }
       return { ok: false, reject: `Event ${ev.t} not allowed in owner_driving` };
     }
