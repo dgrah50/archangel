@@ -19,7 +19,7 @@ import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
 import { SHUTDOWN_DEADLINE_MS, settleWithin } from "../core/shutdown.js";
-import { ArchangelLogger } from "../core/logger.js";
+import { ArchangelLogger, errorLine } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
@@ -136,16 +136,15 @@ program
     const sharedPaths = resolvePaths(first);
     const daemonOwnerId = `daemon-${process.pid}-${Date.now()}`;
 
-    if (!opts.once) {
+    if (!opts.once && process.stdout.isTTY) {
       console.log(
         "[archangel] Tip: run under `caffeinate -i archangel start` on macOS laptops to avoid sleep mid-Attempt.",
       );
     }
-    console.log(
-      `[archangel] Loaded ${projects.length} project(s): ${projects
-        .map((p) => `${p.githubOwner}/${p.githubRepo}`)
-        .join(", ")}`,
-    );
+    const logger = new ArchangelLogger({
+      logFilePath: path.join(sharedPaths.dataDir, "archangel.log.jsonl"),
+      consoleOutput: true,
+    });
 
     if (
       first.authMode === "api" &&
@@ -171,8 +170,8 @@ program
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
       if (rootLedger.heartbeatDaemonLock(daemonOwnerId)) return;
-      console.error("[archangel] Lost the Ledger daemon lock to another process; shutting down.");
-      void cleanup().finally(() => process.exit(1));
+      logger.error("daemon/lock_lost", "Lost the Ledger daemon lock to another process; shutting down.");
+      void cleanup("lock_lost").finally(() => process.exit(1));
     }, 30_000);
 
     const reviewers = makeReviewerSuite(first, sharedPaths.mastraDbPath, rootLedger);
@@ -180,17 +179,17 @@ program
       botToken: first.telegramBotToken,
       chatId: first.telegramChatId,
     });
-    const logger = new ArchangelLogger({
-      logFilePath: path.join(sharedPaths.dataDir, "archangel.log.jsonl"),
-      consoleOutput: true,
-    });
     const accountState = rootLedger.accountState(first.accounts);
 
+    const chain = (entries: Array<{ provider: string }>) => entries.map((e) => e.provider).join("->");
     logger.info(
       "daemon/started",
-      first.authMode === "subscription"
-        ? `Auth mode: subscription (impl=${first.chains.implement.map((e) => e.provider).join("->")}, revise=${first.chains.revise.map((e) => e.provider).join("->")}, rebase=${first.chains.rebase.map((e) => e.provider).join("->")}, scout=${first.chains.scout.map((e) => e.provider).join("->")}, reviewers=${first.reviewerChain.map((e) => e.provider).join("->")})`
-        : "Auth mode: api (metered keys)",
+      `Started (pid ${process.pid}) on ${projects.map((p) => `${p.githubOwner}/${p.githubRepo}`).join(", ")}; ${
+        first.authMode === "subscription"
+          ? `subscription CLIs (impl=${chain(first.chains.implement)}, revise=${chain(first.chains.revise)}, rebase=${chain(first.chains.rebase)}, scout=${chain(first.chains.scout)}, reviewers=${chain(first.reviewerChain)})`
+          : "metered API keys"
+      }`,
+      { data: { pid: process.pid, repos: projects.map((p) => `${p.githubOwner}/${p.githubRepo}`), authMode: first.authMode, once: Boolean(opts.once) } },
     );
 
     /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
@@ -201,7 +200,7 @@ program
     const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
     const agyBrokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.agyBrokerHome ? [resolveUserPath(cfg.compute.sail.agyBrokerHome)] : [])));
     const brokers = [...[...brokerHomes].map((home) => codexBrokerAdapter(home)), ...[...agyBrokerHomes].map((home) => agyBrokerAdapter(home))].map(
-      (adapter) => new TokenBroker(adapter, sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => console.error(`[archangel] ${m}`)),
+      (adapter) => new TokenBroker(adapter, sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => logger.error("broker/token", m)),
     );
     await Promise.all(brokers.map((b) => b.start()));
     const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
@@ -296,9 +295,7 @@ program
             : undefined,
       });
       const swept = rec.startupSweep();
-      if (swept.length > 0) {
-        console.log(`[archangel] [${repoSlug}] Stale-working sweep recovered threads: ${swept.join(", ")}`);
-      }
+      if (swept.length > 0) logger.info("daemon/stale_working_recovered", `Recovered Threads left working by the last run: ${swept.join(", ")}`, { repo: repoSlug, data: { issues: swept } });
       digestSources.push({ repoSlug, github, agentProposedLabel: cfg.labels.agentProposed });
       appClients.set(repoSlug, { github, broker, defaultBranch: cfg.defaultBranch });
       return { repoSlug, rec };
@@ -316,19 +313,25 @@ program
       return inFlightTick;
     };
 
+    /** A step that failed and was survived: one line, and for a repo's tick a health fact (shown on the dashboard, and a Needs you once it repeats). */
+    const survived = (step: string, err: unknown, repo?: string) => {
+      logger.error(`daemon/${step}_error`, errorLine(err), repo ? { repo } : undefined);
+      if (repo) rootLedger.recordHealthFault(step, errorLine(err), Date.now(), repo);
+    };
+
     const runTickBody = async () => {
       try {
         const swept = await sweepOrphanPreviews();
-        if (swept.length > 0) console.log(`[archangel] Killed orphan preview(s): ${swept.join(", ")}`);
+        if (swept.length > 0) logger.info("preview/orphans_killed", `Killed orphan preview(s): ${swept.join(", ")}`);
       } catch (err) {
-        console.error("[archangel] Preview sweep error:", err);
+        survived("preview_sweep", err);
       }
       for (const sail of sailProviders) {
         try {
           const swept = await sail.sweepOrphans();
-          if (swept.length > 0) console.log(`[archangel] Terminated orphan Sail box(es): ${swept.join(", ")}`);
+          if (swept.length > 0) logger.info("sail/orphans_terminated", `Terminated orphan Sail box(es): ${swept.join(", ")}`);
         } catch (err) {
-          console.error("[archangel] Sail sweep error:", err);
+          survived("sail_sweep", err);
         }
       }
       for (const { repoSlug, rec } of reconcilers) {
@@ -339,7 +342,7 @@ program
           // With --once the tick also waits for Attempts, which is not tick time.
           if (!opts.once) emit("tick_ms", Date.now() - t0, {}, repoSlug);
         } catch (err) {
-          console.error(`[archangel] [${repoSlug}] Tick error:`, err);
+          survived("tick", err, repoSlug);
         }
       }
       if (Date.now() - lastTranscriptPrune >= 3_600_000) {
@@ -347,16 +350,16 @@ program
         for (const dir of transcriptDirs) {
           try {
             const n = pruneTranscripts(dir, Date.now() - TRANSCRIPT_RETENTION_MS);
-            if (n > 0) console.log(`[archangel] Pruned ${n} old transcript file(s) in ${dir}`);
+            if (n > 0) logger.info("daemon/transcripts_pruned", `Pruned ${n} old transcript file(s) in ${dir}`);
           } catch (err) {
-            console.error("[archangel] Transcript prune error:", err);
+            survived("transcript_prune", err);
           }
         }
       }
       try {
         rootLedger.pruneTelemetry(Date.now() - TELEMETRY_RETENTION_MS, TELEMETRY_PRUNE_BATCH);
       } catch (err) {
-        console.error("[archangel] Telemetry prune error:", err);
+        survived("telemetry_prune", err);
       }
       try {
         await sendDigestIfDue(rootLedger, notifier, {
@@ -372,15 +375,17 @@ program
           },
         });
       } catch (err) {
-        console.error("[archangel] Digest error:", err);
+        survived("digest", err);
       }
     };
 
     // Idempotent (a second signal joins the first). Waits for in-flight work only up to the deadline, then releases the
     // Ledger lock regardless: a wedged Attempt must not hold the lock forever. Resolves false when the deadline passed.
-    const cleanup = (): Promise<boolean> => {
+    const cleanup = (why: string): Promise<boolean> => {
       cleanupDone ??= (async () => {
         stopping = true;
+        const inFlight = reconcilers.reduce((n, { rec }) => n + rec.activeTaskCount(), 0);
+        logger.info("daemon/stopping", `Stopping (${why}); ${inFlight} Attempt(s) in flight are aborted and resume on the next start`, { data: { why, inFlight } });
         if (nextTimer) clearTimeout(nextTimer);
         clearInterval(lockHeartbeat);
         stopAllPreviews();
@@ -390,7 +395,8 @@ program
           Promise.all([...reconcilers.map(({ rec }) => rec.waitForActiveTasks()), inFlightTick]),
           SHUTDOWN_DEADLINE_MS,
         );
-        if (!settled) console.error(`[archangel] Shutdown deadline (${SHUTDOWN_DEADLINE_MS} ms) passed with work in flight; releasing the Ledger lock and exiting.`);
+        if (settled) logger.info("daemon/stopped", "Stopped cleanly; Ledger lock released", { data: { why, settled } });
+        else logger.error("daemon/stopped", `Shutdown deadline (${SHUTDOWN_DEADLINE_MS} ms) passed with work in flight; releasing the Ledger lock and exiting`, { data: { why, settled } });
         setTelemetrySink(null);
         rootLedger.releaseDaemonLock(daemonOwnerId);
         if (settled) rootLedger.close();
@@ -403,7 +409,7 @@ program
       try {
         await runTick();
       } finally {
-        await cleanup();
+        await cleanup("once");
       }
       return;
     }
@@ -416,11 +422,11 @@ program
       }, first.pollIntervalMs);
     };
 
-    const exitAfterCleanup = () => {
-      void cleanup().then((settled) => process.exit(settled ? 0 : 1));
+    const exitAfterCleanup = (signal: string) => {
+      void cleanup(signal).then((settled) => process.exit(settled ? 0 : 1));
     };
-    process.on("SIGINT", exitAfterCleanup);
-    process.on("SIGTERM", exitAfterCleanup);
+    process.on("SIGINT", () => exitAfterCleanup("SIGINT"));
+    process.on("SIGTERM", () => exitAfterCleanup("SIGTERM"));
 
     await runTick();
     scheduleNext();
