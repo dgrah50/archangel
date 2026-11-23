@@ -33,6 +33,7 @@ const CODE_QUALITY_RULES: string[] = [
   "- Make the smallest diff that fixes the issue. Do not add an abstraction, option, or file that has a single caller.",
   "- When a fix touches multi-flag or nullable state, make the state explicit (one closed union or one transition function) instead of adding another boolean.",
   "- Before using any API, read the repository's local docs and type definitions for it. Do not look anything up on the web.",
+  "- Keep the diff conflict-resistant: do not reformat, reorder imports, rename, or move code outside the lines the fix needs, and do not edit lockfiles, generated files, or shared registries (index/barrel files, route or config lists) unless the fix requires it. Broad or incidental edits are what conflict with a moving main branch.",
 ];
 
 /**
