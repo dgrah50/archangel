@@ -671,6 +671,17 @@ export class GitBroker {
     return { diffText, touchedFiles };
   }
 
+  /** True when `sha` contains `ancestorSha` (for a branch head and the main tip: the branch is up to date with main). */
+  async isAncestor(ancestorSha: string, sha: string): Promise<boolean> {
+    try {
+      await this.runGit(this.bareRepoPath, ["merge-base", "--is-ancestor", ancestorSha, sha]);
+      return true;
+    } catch (err) {
+      if (exitedOne(err)) return false;
+      throw err;
+    }
+  }
+
   /**
    * Checks whether `headSha` merges cleanly onto `baseSha` without modifying any working tree.
    */

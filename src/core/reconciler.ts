@@ -2560,7 +2560,7 @@ export class Reconciler {
     if (!retry || (handled && handled.id > retry.id)) return false;
     const code = (JSON.parse(retry.payloadJson) as { code?: unknown }).code;
     if (code !== "gate_timeout" && code !== "gate_untrusted") return false;
-    if (pr.baseSha !== mainSha) {
+    if (!(await this.broker.isAncestor(mainSha, pr.headSha))) {
       this.ledger.appendAudit("thread/infra_retry_handled", thread.issueNumber, "archangel", { via: "rebase" }, now);
       const clean = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
       await this.rebaseOntoMain(thread, pr, issue, mainSha, clean, now);
@@ -2750,7 +2750,8 @@ export class Reconciler {
     const reviews = this.ledger.getReviewsForSha(thread.issueNumber, pr.headSha);
     const cb = this.ledger.getCircuitBreaker();
 
-    const branchUpToDateWithMain = pr.baseSha === mainSha;
+    // From git, not from the PR: GitHub reports the base branch's current tip as `base.sha` even while the branch is behind it.
+    const branchUpToDateWithMain = await this.broker.isAncestor(mainSha, pr.headSha);
 
     // Feature and chore Threads never merge autonomously: they always take the owner-merge (shadow_ready) path.
     const isOwnerMergeClass = ownerMergeClass(workClassOfBranch(thread.branchName));
@@ -2858,6 +2859,12 @@ export class Reconciler {
     } catch (err) {
       const after = await this.github.getPrLive(pr.number).catch(() => null);
       if (!after?.merged || !after.mergeCommitSha) {
+        // GitHub refused (a ruleset the daemon cannot see, or the head moved under it): not landed. The Thread stays in landing
+        // and is looked at again next tick; a refusal that repeats raises the health notice. The rest of this repo's tick goes on.
+        if (err instanceof GitHubHttpError) {
+          this.recordFault("merge_refused", err, now, thread.issueNumber);
+          return;
+        }
         throw err;
       }
       squashSha = after.mergeCommitSha;

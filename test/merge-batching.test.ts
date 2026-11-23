@@ -28,6 +28,7 @@ async function landAll(issues: number[], write: (run: number, dir: string) => vo
   git(seed, ["commit", "-qm", "i"]);
   git(root, ["clone", "-q", "--bare", seed, path.join(root, "remote.git")]);
   const github = new FakeGitHub(path.join(root, "remote.git"));
+  github.requireUpToDate = true; // GitHub refuses a behind branch, as main's ruleset does
   const ledger = new Ledger(":memory:", { repo: "acme/app" });
   let n = 0;
   let reviewRuns = 0;
