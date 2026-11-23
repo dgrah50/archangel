@@ -1,4 +1,5 @@
 import { Box, Button, Flex, Text } from "@chakra-ui/react";
+
 import { useState, type ReactNode } from "react";
 import type { PipelineRepo, PipelineStage, WorkflowsState } from "../../src/core/ui-state.js";
 import type { SettingsState } from "../../src/core/ui-settings.js";
@@ -164,25 +165,25 @@ function Editing({ r, draft, sha, settings, poll }: { r: PipelineRepo; draft: Wo
   );
 }
 
-export function Pipeline({ data, settings }: { data: WorkflowsState; settings: SettingsState | null }) {
+/** The Pipeline page, or with `embedded` just its repo switcher and line, for the Settings "Per repo" tab that already has its title. */
+export function Pipeline({ data, settings, embedded }: { data: WorkflowsState; settings: SettingsState | null; embedded?: boolean }) {
   const [picked, setPicked] = useState<string | null>(null);
   const repo = data.repos.find((r) => r.repo === picked) ?? data.repos[0];
+  const wrap = (body: ReactNode) => (embedded ? <>{body}</> : <Page>{body}</Page>);
   if (!repo) {
-    return (
-      <Page>
-        <PageHeadline title="Pipeline">no repo has a line yet; add one in Setup and health</PageHeadline>
-      </Page>
-    );
+    return wrap(embedded ? <Text textStyle="body13" color="fg.muted">No repo has a line yet; add one in Setup and health.</Text> : <PageHeadline title="Pipeline">no repo has a line yet; add one in Setup and health</PageHeadline>);
   }
-  return (
-    <Page>
-      <Flex justify="space-between" align="flex-start" gap="6">
-        <PageHeadline title="Pipeline">{`${short(repo.repo)} · rules live in the repo, edits open a PR only you can merge`}</PageHeadline>
-        <Box mt="-7px" flexShrink={0}>
-          <SegmentedControl label="Repo" value={repo.repo} onValueChange={setPicked} options={data.repos.map((r) => ({ value: r.repo, label: short(r.repo) }))} />
-        </Box>
-      </Flex>
+  const switcher = <SegmentedControl label="Repo" value={repo.repo} onValueChange={setPicked} options={data.repos.map((r) => ({ value: r.repo, label: short(r.repo) }))} />;
+  return wrap(
+    <>
+      {embedded ? (
+        <Box mb="4">{switcher}</Box>
+      ) : (
+        <PageHeadline title="Pipeline" right={switcher}>
+          {`${short(repo.repo)} · rules live in the repo, edits open a PR only you can merge`}
+        </PageHeadline>
+      )}
       <RepoView key={repo.repo} r={repo} settings={settings} />
-    </Page>
+    </>,
   );
 }

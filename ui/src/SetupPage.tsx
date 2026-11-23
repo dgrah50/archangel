@@ -13,8 +13,11 @@ import { FaultsSection, TelemetrySection, LadderList, ReadError, SmokeChecks, to
 import { HostErrorNotice, PreviewPanel } from "./HostConfigEditor";
 import { applyHostConfig, applyOnboard, ghRead, loadHostConfig, planOnboard, previewHostConfig, type HostError } from "./host-config-client";
 import { addProject } from "./host-edit";
+import { Check } from "lucide-react";
 import { Alert } from "./arc/alert/alert";
-import { CopyCommand, Dot, Page, PageHeadline, Section } from "./page";
+import { Badge } from "./arc/badge/badge";
+import { Skeleton } from "./arc/skeleton/skeleton";
+import { CopyCommand, Dot, Issues, Page, PageHeadline, PickRow, Section } from "./page";
 import { ONBOARD_BRANCH, deriveSteps, groupSteps, isNoOnboardingPr, isNotProtected, protectionCommand, smokeIssueUrl, type OnboardingPr } from "./setup-steps";
 
 interface GhRepo {
@@ -63,25 +66,28 @@ const short = (repo: string) => repo.split("/").pop() ?? repo;
 const safeUrl = (u: unknown): string | null => (typeof u === "string" && u.startsWith("https://") ? u : null);
 const outline = { variant: "outline", size: "sm", borderRadius: "12px" } as const;
 
-function Mark({ done }: { done: boolean }) {
-  return done ? (
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-label="Done" role="img" style={{ flexShrink: 0, color: "var(--chakra-colors-fg)" }}>
-      <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ) : (
-    <Flex role="img" aria-label="Needs attention" w="16px" h="16px" align="center" justify="center" flexShrink={0}><Dot tone="owner" /></Flex>
+/** A done check, or the amber dot for what needs attention: one mark for the step list and the checks table. */
+function Mark({ done, label }: { done: boolean; label?: string }) {
+  return (
+    <Flex role="img" aria-label={label ?? (done ? "Done" : "Needs attention")} w="16px" h="16px" align="center" justify="center" flexShrink={0}>
+      {done ? <Check size={14} strokeWidth={2} aria-hidden /> : <Dot tone="owner" />}
+    </Flex>
   );
 }
 
-/** A problem in plain words: title, an amber tag, the explanation, and commands to copy. */
-function Problem({ title, tag, children }: { title: string; tag: string; children?: React.ReactNode }) {
+/** A problem in plain words: a badge for what kind it is, the title, the explanation, and commands to copy. Amber only when the owner has to act. */
+function Problem({ title, tag, children }: { title: string; tag: "Needs you" | "Failing" | "Warning" | "Next step" | "Works, but not protected"; children?: React.ReactNode }) {
+  const act = tag === "Needs you" || tag === "Failing";
   return (
-    <Alert tone="warning" title={`${tag}: ${title}`}>
-      {children}
+    <Alert tone={act ? "warning" : "info"} title={title}>
+      <Flex direction="column" gap="2" align="flex-start">
+        <Badge size="sm" tone={act ? "warning" : "neutral"} dot={act}>{tag}</Badge>
+        {children}
+      </Flex>
     </Alert>
   );
 }
-const Prose = ({ children }: { children: React.ReactNode }) => <Text textStyle="body13" color="fg.muted">{children}</Text>;
+const Prose = ({ children }: { children: React.ReactNode }) => <Text textStyle="body13" color="fg.muted" whiteSpace="pre-line">{children}</Text>;
 const Line = ({ children }: { children: React.ReactNode }) => <Text textStyle="meta" color="fg.muted">{children}</Text>;
 const Sub = ({ children }: { children: React.ReactNode }) => <Text textStyle="label" color="fg" mt="2">{children}</Text>;
 
@@ -96,7 +102,7 @@ function GhError({ error, what, onRetry }: { error: HostError; what: string; onR
 }
 
 function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onRetry: () => void }) {
-  if (gh.state === "idle" || gh.state === "loading") return <Line>Looking for the onboarding PR...</Line>;
+  if (gh.state === "idle" || gh.state === "loading") return <Skeleton label="Looking for the onboarding PR" lines={2} />;
   if (gh.state === "error" && isNoOnboardingPr(gh.error.message)) {
     return (
       <Problem title="Not onboarded yet" tag="Next step">
@@ -114,12 +120,15 @@ function PrCard({ repo, gh, onRetry }: { repo: string; gh: Gh<OnboardingPr>; onR
   const bad = rows.filter((r) => /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED)$/.test(r.result));
   return (
     <Flex direction="column" gap="2" aria-label="Onboarding PR">
-      <Text textStyle="label" color="fg">#{pr.number} {pr.title} <Text as="span" color={pr.state === "MERGED" ? "passed" : "fg.muted"}>{pr.state === "MERGED" ? "Merged" : pr.state === "OPEN" ? "Open" : "Closed"}</Text></Text>
+      <Flex align="center" gap="2.5" wrap="wrap">
+        <Text textStyle="label" color="fg">#{pr.number} {pr.title}</Text>
+        <Badge size="sm" tone={pr.state === "MERGED" ? "success" : "neutral"} dot={pr.state === "MERGED"}>{pr.state === "MERGED" ? "Merged" : pr.state === "OPEN" ? "Open" : "Closed"}</Badge>
+      </Flex>
       {rows.length === 0 ? <Line>No checks reported.</Line> : rows.map((r) => (
-        <Line key={r.name}>
-          <Text as="span" color={bad.includes(r) ? "owner" : r.result === "SUCCESS" ? "passed" : "fg.muted"} mr="2">{r.result.toLowerCase()}</Text>
-          {r.url ? <Link href={r.url} target="_blank" rel="noreferrer noopener">{r.name}</Link> : r.name}
-        </Line>
+        <Flex key={r.name} align="center" gap="2.5">
+          <Badge size="sm" tone={bad.includes(r) ? "warning" : r.result === "SUCCESS" ? "success" : "neutral"}>{r.result.toLowerCase()}</Badge>
+          <Line>{r.url ? <Link href={r.url} target="_blank" rel="noreferrer noopener">{r.name}</Link> : r.name}</Line>
+        </Flex>
       ))}
       {bad.length > 0 ? <Text role="alert" textStyle="meta" color="owner">{bad.length === 1 ? "1 check is" : `${bad.length} checks are`} failing on this PR.</Text> : null}
       {pr.state === "CLOSED" ? <Text role="alert" textStyle="meta" color="owner">The PR was closed without merging. Plan and apply again above.</Text> : null}
@@ -223,7 +232,7 @@ function AddProject({ repo, defaultBranch, onChanged }: { repo: string; defaultB
 
 function RepoPicker({ repo, gh, onRetry }: { repo: string | null; gh: Gh<GhRepo[]>; onRetry: () => void }) {
   if (gh.state === "error") return <GhError error={gh.error} what="list your repos" onRetry={onRetry} />;
-  if (gh.state !== "ok") return <Line>Loading your repos...</Line>;
+  if (gh.state !== "ok") return <Skeleton label="Loading your repos" lines={1} />;
   return (
     <NativeSelect.Root size="sm" maxW="28rem">
       <NativeSelect.Field aria-label="Repo" value={repo ?? ""} onChange={(e) => { window.location.hash = e.target.value ? `#/setup/${e.target.value}` : "#/setup"; }}>
@@ -246,12 +255,8 @@ const PROTECTION_ROW = "Merging requires the Gate and CI";
 const stripRepo = (name: string) => name.replace(/\s*\([^()]*\)$/, "");
 
 function Cell({ status, title }: { status: "pass" | "bad" | "none" | "pending"; title?: string }) {
-  if (status === "pass") return (
-    <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Passed" style={{ color: "var(--chakra-colors-fg)" }}>
-      <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-  if (status === "bad") return <Flex role="img" aria-label={title ?? "Needs attention"} title={title} w="16px" h="16px" align="center" justify="center"><Dot tone="owner" /></Flex>;
+  if (status === "pass") return <Mark done label="Passed" />;
+  if (status === "bad") return <Box title={title}><Mark done={false} label={title ?? "Needs attention"} /></Box>;
   return <Text textStyle="meta" color="fg.subtle" title={status === "pending" ? "Not read yet" : "Not reported"}>{status === "pending" ? "..." : "-"}</Text>;
 }
 
@@ -335,14 +340,18 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
 
   return (
     <Page>
-      <Flex align="flex-end" justify="space-between" gap="6" wrap="wrap">
-        <PageHeadline title="Setup and health">{first ? "not set up yet; work down the steps" : todo === 0 ? "set up and running" : `${todo} to look at`}</PageHeadline>
-        <Flex align="center" gap="3" pb="3.5">
-          {checkedAt !== null ? <Text textStyle="meta" color="fg.muted">Checked {checkedAt < 90_000 ? `${Math.round(checkedAt / 1000)} s` : age(checkedAt)} ago</Text> : null}
-          <Button {...outline} onClick={checkAgain}>Check again</Button>
-          <Button size="sm" borderRadius="12px" onClick={() => setView(3)}>Add a repo</Button>
-        </Flex>
-      </Flex>
+      <PageHeadline
+        title="Setup and health"
+        right={
+          <>
+            {checkedAt !== null ? <Text textStyle="meta" color="fg.muted">Checked {checkedAt < 90_000 ? `${Math.round(checkedAt / 1000)} s` : age(checkedAt)} ago</Text> : null}
+            <Button {...outline} onClick={checkAgain}>Check again</Button>
+            <Button size="sm" borderRadius="12px" onClick={() => setView(3)}>Add a repo</Button>
+          </>
+        }
+      >
+        {first ? "not set up yet; work down the steps" : todo === 0 ? "set up and running" : `${todo} to look at`}
+      </PageHeadline>
       {!enabled ? <ReadError title="GitHub reads and writes are off for this dashboard (remote mode, or no token)."><Line>Start `archangel ui` without --allow-remote to use the repo steps.</Line></ReadError> : null}
       {feedErrors.map(([what, feed]) => feed.error === null ? null : (
         <ReadError key={what} title={`${what} ${feed.data ? "refresh failed; showing the last copy" : "unavailable"}.`}>
@@ -351,17 +360,16 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
         </ReadError>
       ))}
       <Flex gap="56px" direction={{ base: "column", lg: "row" }} flexShrink={0}>
-        <Flex as="ol" direction="column" flex={{ lg: "0 0 38%" }} minW="0" listStyleType="none" aria-label="Setup steps" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" px="5" alignSelf="flex-start" w="full" css={{ "& > li + li": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+        <Flex as="ol" direction="column" gap="1" flex={{ lg: "0 0 420px" }} minW="0" listStyleType="none" aria-label="Setup steps" alignSelf="flex-start" w="full">
           {groups.map((g) => (
             <li key={g.n}>
-              <Flex as="button" w="full" textAlign="left" gap="3.5" align="center" py="3.5" cursor="pointer" aria-current={open === g.n ? "step" : undefined} onClick={() => setView(g.n)}>
+              <PickRow selected={open === g.n} onClick={() => setView(g.n)} py="2.5" gap="3">
                 <Mark done={g.done} />
                 <Flex direction="column" gap="1px" flex="1" minW="0">
-                  <Text textStyle="rowTitle" color="fg">{g.title}</Text>
-                  <Text textStyle="meta" color={g.done ? "fg.muted" : "owner"}>{g.sentence}</Text>
+                  <Text textStyle="label" color="fg">{g.title}</Text>
+                  <Text textStyle="meta" color="fg.muted">{g.sentence}</Text>
                 </Flex>
-                {open === g.n ? <Text color="fg.muted" aria-hidden>›</Text> : null}
-              </Flex>
+              </PickRow>
             </li>
           ))}
         </Flex>
@@ -380,10 +388,10 @@ export function SetupPage({ repo: routeRepo, state, settings, workflows, evals, 
 
           {open === 2 ? (
             <Flex direction="column" gap="2">
-              {host === undefined ? <Line>Loading archangel.yaml...</Line> : host.state === "ok" ? (
+              {host === undefined ? <Skeleton label="Loading archangel.yaml" lines={2} /> : host.state === "ok" ? (
                 <Prose>archangel.yaml is valid: owner id {host.config.ownerUserId}, {host.config.projects.length} {host.config.projects.length === 1 ? "project" : "projects"}.</Prose>
               ) : (
-                <Problem title={host.state === "missing" ? "There is no archangel.yaml." : `archangel.yaml is ${host.state}.`} tag="Needs you"><Prose>{host.error}</Prose></Problem>
+                <Problem title={host.state === "missing" ? "There is no archangel.yaml." : `archangel.yaml is ${host.state}.`} tag="Needs you"><Issues text={host.error} /></Problem>
               )}
               {user.state === "error" ? <GhError error={user.error} what="read your GitHub user id" onRetry={reloadUser} /> : user.state === "ok" ? (
                 <Line>Your GitHub user is {user.value.login} (id <Code>{user.value.id}</Code>).{host?.state === "ok" && host.config.ownerUserId !== user.value.id ? " This does not match ownerUserId in archangel.yaml." : ""}</Line>
