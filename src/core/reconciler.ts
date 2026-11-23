@@ -2272,6 +2272,7 @@ export class Reconciler {
         return;
 
       case "timeout":
+        if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, undefined, now)) return;
         this.applyMachineEvent(
           thread,
           { t: "escalate", code: "gate_timeout", reason: verdict.detail },
@@ -2280,6 +2281,7 @@ export class Reconciler {
         return;
 
       case "untrusted":
+        if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, undefined, now)) return;
         this.applyMachineEvent(
           thread,
           {
@@ -2296,6 +2298,7 @@ export class Reconciler {
         // crashed or never ran: infrastructure, not a code failure, so never a revision.
         const gateCheck = verdict.failed.some((f) => f.name === "Gate") ? checks.find((c) => c.name === "Gate") : undefined;
         if (gateCheck && !(await this.github.getGateProof(gateCheck.id, pr.headSha))) {
+          if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, gateCheck.id, now)) return;
           this.applyMachineEvent(
             thread,
             {
@@ -2516,6 +2519,43 @@ export class Reconciler {
         { auditTopic: "review/outage_started", auditPayload: { error: errMsg }, now },
       );
     }
+  }
+
+  /**
+   * The owner retried a Thread that escalated on CI infrastructure (`gate_timeout`, `gate_untrusted`): the old checks on this head
+   * will never change, so get a new run instead of re-escalating on them. Behind main: rebase through the usual path (a new head,
+   * so CI runs main's current workflow file and Gate pin; counted as a rebase, never a revision). Already current: re-request the
+   * failed Gate check once (same workflow file). Both restart the Gate clock, which ends the retry (the marker is the owner_retry
+   * audit row, newer than the clock only until then). Returns true when it acted; the Gate itself is never skipped.
+   */
+  private async freshCiAfterInfraRetry(
+    thread: ThreadRecord,
+    pr: GitHubPr,
+    issue: GitHubIssue | undefined,
+    mainSha: string,
+    failedGateCheckId: number | undefined,
+    now: number,
+  ): Promise<boolean> {
+    if (thread.phase.kind !== "awaiting_gate" || thread.mode !== "autonomous") return false;
+    const retry = this.ledger.listAudit({ repo: this.ledger.repo, topicPrefix: "thread/owner_retry", issueNumber: thread.issueNumber, limit: 1 })[0];
+    if (!retry || retry.ts < thread.phase.since) return false;
+    const code = (JSON.parse(retry.payloadJson) as { code?: unknown }).code;
+    if (code !== "gate_timeout" && code !== "gate_untrusted") return false;
+    if (pr.baseSha !== mainSha) {
+      const clean = await this.broker.isMergeTreeClean(mainSha, pr.headSha);
+      await this.rebaseOntoMain(thread, pr, issue, mainSha, clean, [
+        { code: "branch_behind_main", message: "Owner retry after a CI infrastructure failure: rerun CI on current main" },
+      ] as ReturnType<typeof computeBlockers>, now);
+      return true;
+    }
+    if (failedGateCheckId === undefined) return false;
+    await this.github.rerunCheckRun(failedGateCheckId);
+    this.applyMachineEvent(
+      thread,
+      { t: "head_moved", pr: { prNumber: pr.number, headSha: pr.headSha, baseSha: pr.baseSha }, now },
+      { auditTopic: "gate/rerun_requested", now },
+    );
+    return true;
   }
 
   /**
