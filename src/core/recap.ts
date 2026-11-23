@@ -79,8 +79,8 @@ export function renderRecapComment(input: {
   if (input.triage) {
     const t = input.triage;
     const body = [`Vendor: ${t.vendor}. Decision: ${t.action === "guidance" ? "guidance" : "escalated"}. Cause: ${t.cause}.`];
-    if (t.action === "guidance" && t.steps.length > 0) body.push("", ...fencedText(t.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")));
-    else if (t.action === "escalate" && t.reason) body.push("", ...fencedText(t.reason));
+    if (t.action === "guidance" && t.steps.length > 0) body.push("", ...fencedText(t.steps.map((s, i) => `${i + 1}. ${safe(s)}`).join("\n")));
+    else if (t.action === "escalate" && t.reason) body.push("", ...fencedText(safe(t.reason)));
     lines.push(...details("Machine triage (factory), not the owner", body));
   }
   const chapterSection = renderChaptersSection(input.chapters ?? []);
