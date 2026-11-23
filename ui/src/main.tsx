@@ -41,9 +41,9 @@ function App() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <ErrorBoundary>
-    <Provider>
+  <Provider>
+    <ErrorBoundary>
       <App />
-    </Provider>
-  </ErrorBoundary>,
+    </ErrorBoundary>
+  </Provider>,
 );
