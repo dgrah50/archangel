@@ -53,7 +53,7 @@ function world(factoryRetry: "off" | "once") {
     sql(ledger, "UPDATE threads SET rebase_count = ? WHERE issue_number = 4", rebaseCount);
   };
   const conflict = () =>
-    (rec as unknown as Priv).rebaseOntoMain(ledger.getThread(4), { number: 9, headSha: "h", baseSha: "b", labels: [] }, github.issues.get(4), "mainsha", false, [], Date.now());
+    (rec as unknown as Priv).rebaseOntoMain(ledger.getThread(4), { number: 9, headSha: "h", baseSha: "b", labels: [] }, github.issues.get(4), "mainsha", false, Date.now());
   return { root, ledger, rec, spawn, start, conflict, notes, github, cleanup: () => { ledger.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } };
 }
 
