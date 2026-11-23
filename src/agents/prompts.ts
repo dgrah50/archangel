@@ -230,7 +230,7 @@ export function buildRebasePrompt(input: {
     "",
     ...formatRepoInstructions(input.repoInstructions),
     `The branch \`factory/${input.issueNumber}\` has merge conflicts with \`${input.baseBranch}\`.`,
-    `Rebase onto \`${input.baseBranch}\` cleanly, resolve conflicts without modifying pre-existing test files or weakening your reproduction test, verify repo pre-commit hooks and ${testCmd}, and leave the rebased commit on \`factory/${input.issueNumber}\`.`,
+    `Rebase onto \`${input.baseBranch}\` cleanly, resolve conflicts without modifying test files that exist on \`${input.baseBranch}\` (test files this branch added are yours to edit) or weakening your reproduction test, verify repo pre-commit hooks and ${testCmd}, and leave the rebased commit on \`factory/${input.issueNumber}\`.`,
     "Do NOT modify protected paths. Do NOT attempt to push.",
     ...(input.ownerReply ? ["", ...formatOwnerReply(input.ownerReply)] : []),
   ].join("\n");
