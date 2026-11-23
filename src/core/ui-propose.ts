@@ -58,8 +58,9 @@ export interface DiffLine {
 
 /** Line diff (LCS) trimmed to changed lines plus two lines of context. Workflow files are small. */
 export function lineDiff(a: string, b: string): DiffLine[] {
-  const x = a.split("\n");
-  const y = b.split("\n");
+  const x = a === "" ? [] : a.split("\n");
+  const y = b === "" ? [] : b.split("\n");
+  if (x.length * y.length > 4_000_000) return [{ op: "+", text: "(file too large to diff)" }];
   const dp: number[][] = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
   for (let i = x.length - 1; i >= 0; i--) {
     for (let j = y.length - 1; j >= 0; j--) {

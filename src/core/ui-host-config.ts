@@ -6,7 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { HostYamlSchema, loadProjectConfigs } from "../config.js";
 import { redactSecrets } from "./ui-doctor.js";
-import { ProposeRefusal } from "./ui-propose.js";
+import { lineDiff, ProposeRefusal } from "./ui-propose.js";
 
 /**
  * W2: the one route that may write archangel.yaml. Everything here exists to keep that safe:
@@ -117,24 +117,6 @@ function envWarnings(text: string, env: NodeJS.ProcessEnv): string[] {
   }
 }
 
-/** A small line diff (LCS), enough to show what changes in a config file of a few hundred lines. */
-export function lineDiff(a: string, b: string): string {
-  const x = a === "" ? [] : a.split("\n");
-  const y = b === "" ? [] : b.split("\n");
-  if (x.length * y.length > 4_000_000) return "(file too large to diff)";
-  const t = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
-  for (let i = x.length - 1; i >= 0; i--) for (let j = y.length - 1; j >= 0; j--) t[i]![j] = x[i] === y[j] ? t[i + 1]![j + 1]! + 1 : Math.max(t[i + 1]![j]!, t[i]![j + 1]!);
-  const out: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < x.length || j < y.length) {
-    if (i < x.length && j < y.length && x[i] === y[j]) (i++, j++);
-    else if (j < y.length && (i === x.length || t[i]![j + 1]! >= t[i + 1]![j]!)) out.push(`+ ${y[j++]}`);
-    else out.push(`- ${x[i++]}`);
-  }
-  return out.join("\n");
-}
-
 const Body = z.object({
   mode: z.enum(["preview", "apply"]),
   /** sha256 of the file version this change is based on; null when there is no file yet. */
@@ -180,7 +162,10 @@ export function makeHostConfigHandler(deps: HostConfigDeps) {
     const cur = current();
     if (cur.read.sha256 !== b.baseSha256) throw new ProposeRefusal(409, "archangel.yaml changed on disk since you loaded it; reload and reapply your edit");
     const parsed = parseHost(b.rawText);
-    const diff = lineDiff(cur.read.text ?? "", b.rawText);
+    const diff = lineDiff(cur.read.text ?? "", b.rawText)
+      .filter((line) => line.op !== " ")
+      .map((line) => `${line.op} ${line.text}`)
+      .join("\n");
     if (!parsed.ok) return { mode: "preview", valid: false, errors: parsed.errors, warnings: [], loosening: [], diff, baseSha256: b.baseSha256 };
     const hash = sha256(b.rawText);
     for (const [k, v] of previews) if (now() - v.at > PREVIEW_TTL_MS) previews.delete(k);
