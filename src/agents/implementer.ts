@@ -9,6 +9,8 @@ import type { WriterRole } from "../config.js";
 import type { ReviewerVendor } from "../ledger/schema.js";
 
 export interface ImplementInput {
+  /** `owner/name`, for log lines. */
+  repo?: string;
   issueNumber: number;
   /** Where the agent may run. Each chain entry runs in exactly one of them: claude in `remote` when there is one, everything else in `local`. */
   workspaces: { local: WorkspaceHandle; remote?: WorkspaceHandle };

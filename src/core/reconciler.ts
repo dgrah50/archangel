@@ -975,10 +975,23 @@ export class Reconciler {
             ? ` (${updated.phase.outcome})`
             : "";
       const lvl = updated.phase.kind === "needs_you" ? "warn" : "info";
+      const next = updated.phase;
       this.logger[lvl](
-        extra.auditTopic ?? `phase/${updated.phase.kind}`,
-        `${thread.phase.kind} -> ${updated.phase.kind}${detail}`,
-        { repo: this.ledger.repo, issue: thread.issueNumber },
+        extra.auditTopic ?? `phase/${next.kind}`,
+        `${thread.phase.kind} -> ${next.kind}${detail}`,
+        {
+          repo: this.ledger.repo,
+          issue: thread.issueNumber,
+          data: {
+            from: thread.phase.kind,
+            to: next.kind,
+            event: ev.t,
+            ...(next.kind === "needs_you" ? { code: next.code, ...(next.cause ? { cause: next.cause } : {}) } : {}),
+            ...(next.kind === "done" ? { outcome: next.outcome } : {}),
+            ...(next.kind === "working" ? { attempt: next.attempt, attemptId: next.attemptId } : {}),
+            ...("prNumber" in next && next.prNumber ? { pr: next.prNumber } : {}),
+          },
+        },
       );
     }
     return updated;
@@ -1862,6 +1875,7 @@ export class Reconciler {
 
       const result: ImplementResult = await this.implementer
         .run({
+        repo: this.ledger.repo,
         issueNumber: issue.number,
         workspaces: { local, ...(remote ? { remote } : {}) },
         prompt,
