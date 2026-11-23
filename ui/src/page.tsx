@@ -121,34 +121,6 @@ export function Ref({ repo, num, href }: { repo: string; num: number; href?: str
   );
 }
 
-/** A thin progress bar in ink on a muted track. */
-export function Meter({ fraction }: { fraction: number }) {
-  return (
-    <Box flex="1" h="4px" rounded="2px" bg="bg.muted">
-      <Box h="4px" rounded="2px" bg="fg" w={`${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`} />
-    </Box>
-  );
-}
-
-/** A small trend line in ink with a dot on the latest point. `values` may hold nulls (no data that day): they are skipped. */
-export function Sparkline({ values, label }: { values: Array<number | null>; label: string }) {
-  const w = 150;
-  const h = 24;
-  const pts = values.map((v, i) => (v === null ? null : { i, v })).filter((p): p is { i: number; v: number } => p !== null);
-  if (pts.length < 2) return null;
-  const lo = Math.min(...pts.map((p) => p.v));
-  const hi = Math.max(...pts.map((p) => p.v));
-  const x = (i: number) => 2 + (i / Math.max(1, values.length - 1)) * (w - 8);
-  const y = (v: number) => (hi === lo ? h / 2 : 5 + ((hi - v) / (hi - lo)) * (h - 10));
-  const last = pts[pts.length - 1]!;
-  return (
-    <svg role="img" aria-label={label} width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ flexShrink: 0, color: "var(--chakra-colors-fg)" }}>
-      <polyline points={pts.map((p) => `${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ")} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={x(last.i)} cy={y(last.v)} r="2.5" fill="currentColor" />
-    </svg>
-  );
-}
-
 /** A 7px status dot: `ink` (solid), `owner` (amber), `passed` (green, pair with a text label), `ring` (ink outline) or `hollow` (grey outline). */
 export function Dot({ tone = "ink" }: { tone?: "ink" | "owner" | "passed" | "hollow" | "ring" }) {
   return <Box w="7px" h="7px" rounded="full" flexShrink={0} boxSizing="border-box" {...(tone === "hollow" || tone === "ring" ? { borderWidth: "1.5px", borderColor: tone === "ring" ? "fg" : "border.emphasized" } : { bg: tone === "ink" ? "fg" : tone })} />;

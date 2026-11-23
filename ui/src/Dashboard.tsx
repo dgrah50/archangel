@@ -3,7 +3,11 @@ import type { ReactNode } from "react";
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
 import { age, recommendationShort } from "./common";
-import { CopyCommand, Dot, Meter, Page, PageHeadline, Ref, Sparkline } from "./page";
+import { Badge } from "./arc/badge/badge";
+import { BarChart } from "./arc/bar-chart/bar-chart";
+import { Sparkline } from "./arc/sparkline/sparkline";
+import { UsageMeter } from "./arc/usage-meter/usage-meter";
+import { CopyCommand, Dot, Page, PageHeadline, Ref } from "./page";
 import { threadHash } from "./route";
 
 // Strings from the Ledger (issue titles) are untrusted: they are only ever rendered as React text children,
@@ -37,7 +41,7 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
     <Page>
       <Flex justify="space-between" align="baseline" columnGap="6" wrap="wrap">
         <PageHeadline title="Overview" />
-        <Flex gap="5" pb="5" wrap="wrap">
+        <Flex gap="2" pb="5" wrap="wrap">
           <Count tone={waiting > 0 ? "owner" : "hollow"}>{waiting > 0 ? `${waiting} need you` : "nothing needs you"}</Count>
           {s.groups.Stuck.length > 0 ? <Count tone="owner">{s.groups.Stuck.length} stuck</Count> : null}
           <Count tone="ink">{running.length} running</Count>
@@ -95,14 +99,13 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
   );
 }
 
+const BADGE: Record<Tone, "warning" | "success" | "neutral"> = { owner: "warning", passed: "success", ink: "neutral", hollow: "neutral", ring: "neutral" };
+
 function Count({ tone, children }: { tone: Tone; children: ReactNode }) {
   return (
-    <Flex align="center" gap="2">
-      <Dot tone={tone} />
-      <Text textStyle="body13" color="fg.muted">
-        {children}
-      </Text>
-    </Flex>
+    <Badge tone={BADGE[tone]} dot={tone !== "hollow"} pill>
+      {children}
+    </Badge>
   );
 }
 
@@ -188,38 +191,22 @@ function Chip({ href, solid, children }: { href: string; solid?: boolean; childr
   );
 }
 
-/** A summary panel: a grey label over a filled block. */
-function Panel({ label, children }: { label: string; children: ReactNode }) {
+/** A summary card: Arc's resting surface (panel fill, hairline border, surface radius). */
+function Panel({ children }: { children: ReactNode }) {
   return (
-    <Flex direction="column" gap="2" flex="1" minW="0">
-      <Text textStyle="meta" color="fg.muted" px="3">
-        {label}
-      </Text>
-      <Flex direction="column" flex="1" bg="bg.subtle" rounded="14px" px="4" py="3">
-        {children}
-      </Flex>
+    <Flex direction="column" flex="1" minW="0" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface" p="5">
+      {children}
     </Flex>
   );
 }
 
+const dayLabel = (key: string, opts: Intl.DateTimeFormatOptions) => new Date(`${key}T12:00:00`).toLocaleDateString("en-GB", opts);
+
 function LandedPanel({ state: s }: { state: UiState }) {
-  const total = s.daily.reduce((n, d) => n + d.merged, 0);
-  const top = Math.max(1, ...s.daily.map((d) => d.merged));
+  const data = s.daily.map((d, i) => ({ key: d.day, label: dayLabel(d.day, { weekday: "short", day: "numeric", month: "short" }), axisLabel: i % 3 === 1 ? dayLabel(d.day, { day: "numeric", month: "short" }) : undefined, value: d.merged }));
   return (
-    <Panel label="Landed">
-      <Flex align="baseline" gap="2.5">
-        <Text textStyle="figure" color={total === 0 ? "fg.subtle" : "fg"}>
-          {total}
-        </Text>
-        <Text textStyle="meta" color="fg.muted">
-          last 14 days
-        </Text>
-      </Flex>
-      <Flex align="flex-end" justify="space-between" gap="4px" flex="1" minH="88px" pt="3" role="img" aria-label="Fixes landed per day, last 14 days">
-        {s.daily.map((d) => (
-          <Box key={d.day} title={`${d.day}: ${d.merged}`} flex="1" maxW="10px" rounded="3px" bg={d.merged === 0 ? "border.emphasized" : "fg"} h={d.merged === 0 ? "3px" : `${(d.merged / top) * 100}%`} />
-        ))}
-      </Flex>
+    <Panel>
+      <BarChart data={data} label="Fixes landed" period="Last 14 days" averageLabel="Landed per day" valueLabel="Landed" height={188} formatValue={(v) => (Number.isInteger(v) ? String(v) : v.toFixed(1))} />
     </Panel>
   );
 }
@@ -234,9 +221,12 @@ function LinePanel({ state: s }: { state: UiState }) {
     { label: "Ready for you to merge", list: s.stages["Ready for owner"], tone: "ring" },
   ];
   return (
-    <Panel label="On the line">
+    <Panel>
+      <Text textStyle="body13" color="fg.muted" pb="3">
+        On the line
+      </Text>
       {stations.map((st) => (
-        <Flex key={st.label} align="center" gap="3" flex="1" minH="26px">
+        <Flex key={st.label} align="center" gap="3" h="30px" flexShrink={0}>
           <Text textStyle="body13" color={st.list.length === 0 ? "fg.subtle" : "fg"} w="150px" flexShrink={0}>
             {st.label}
           </Text>
@@ -253,64 +243,60 @@ function LinePanel({ state: s }: { state: UiState }) {
           </Text>
         </Flex>
       ))}
+      <Box borderTopWidth="1px" borderColor="border" mt="4" pt="4" flex="1">
+        <CostTrend state={s} />
+      </Box>
     </Panel>
   );
 }
 
-function SpendRow({ label, value, hint, children }: { label: string; value: ReactNode; hint: string; children?: ReactNode }) {
-  return (
-    <Flex align="center" gap="3" flex="1" minH="44px" title={hint} css={{ "& + &": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
-      <Text textStyle="body13" color="fg" flexShrink={0}>
-        {label}
-      </Text>
-      <Flex flex="1" minW="0" justify="flex-end" align="center">
-        {children}
-      </Flex>
-      <Text textStyle="body13" color="fg" flexShrink={0} whiteSpace="pre">
-        {value}
-      </Text>
-    </Flex>
+/** Per day: that day's metered spend over the fixes that landed that day. */
+function CostTrend({ state: s }: { state: UiState }) {
+  const cost = s.outcomes.costUsdPerFix;
+  const days = s.daily.map((d, i) => ({ day: d.day, v: d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null })).filter((d): d is { day: string; v: number } => d.v !== null);
+  return days.length > 1 ? (
+    <Sparkline data={days.map((d) => d.v)} labels={days.map((d) => dayLabel(d.day, { day: "numeric", month: "short" }))} label="Cost per merged fix" value={cost === null ? undefined : usd(cost)} formatValue={(n) => usd(n)} height={44} area />
+  ) : (
+    <Stat label="Cost per merged fix" value={cost === null ? "n/a" : usd(cost)} />
   );
 }
 
 function SpendPanel({ state: s }: { state: UiState }) {
   const { todayUsd, capUsd } = s.spend;
-  const cost = s.outcomes.costUsdPerFix;
-  // Per day: that day's metered spend over the fixes that landed that day.
-  const trend = s.daily.map((d, i) => (d.merged > 0 ? s.spend.daily[i]!.usd / d.merged : null));
   const v = Object.values(s.outcomes.vendorAgreement);
   const approved = v.reduce((n, a) => n + a.approvedMerges, 0);
   const agreed = v.reduce((n, a) => n + a.undisputed, 0);
-  const none = <Text as="span" color="fg.subtle">n/a</Text>;
   return (
-    <Panel label="Spend and trust">
-      <SpendRow
-        label="Spent today"
-        hint={capUsd === null ? "Metered API only. The daily cap is unavailable: archangel.yaml could not be read." : `Metered API only. At ${usd(capUsd, 0)} the factory stops until midnight; raise it in Settings.`}
-        value={
-          <>
-            {usd(todayUsd)}
-            {capUsd === null ? null : <Text as="span" color="fg.subtle">{` of ${usd(capUsd, 0)}`}</Text>}
-          </>
-        }
-      >
-        {capUsd === null ? null : (
-          <Flex w="96px">
-            <Meter fraction={todayUsd / capUsd} />
-          </Flex>
+    <Panel>
+      <Flex direction="column" gap="4" flex="1" justify="space-between">
+        {capUsd === null ? (
+          <Stat label="Spent today" value={usd(todayUsd)} note="daily cap unavailable" />
+        ) : (
+          <UsageMeter label="Spent today" segments={[{ id: "metered", label: "Metered API", value: todayUsd }]} limit={capUsd} unit="USD" decimals={2} freeLabel="Left today" overLabel="Over the cap" />
         )}
-      </SpendRow>
-      <SpendRow label="Cost per merged fix" hint="Subscription runs count $0. Change models in Pipeline." value={cost === null ? none : usd(cost)}>
-        <Sparkline values={trend} label="Cost per merged fix, last 14 days" />
-      </SpendRow>
-      <SpendRow label="Verdicts you agreed with" hint="Reviewed merges you did not dispute: the evidence for letting a repo land on its own." value={approved === 0 ? none : `${Math.round((agreed / approved) * 100)}%`}>
-        {approved === 0 ? null : (
-          <Text textStyle="meta" color="fg.subtle">
-            {agreed} of {approved}
-          </Text>
-        )}
-      </SpendRow>
+        <Box borderTopWidth="1px" borderColor="border" pt="4">
+          <Stat label="Verdicts you agreed with" value={approved === 0 ? "n/a" : `${Math.round((agreed / approved) * 100)}%`} note={approved === 0 ? "none reviewed yet" : `${agreed} of ${approved}`} />
+        </Box>
+      </Flex>
     </Panel>
+  );
+}
+
+function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <Flex align="baseline" gap="3">
+      <Text textStyle="body13" color="fg.muted" flex="1" whiteSpace="nowrap">
+        {label}
+      </Text>
+      {note ? (
+        <Text textStyle="meta" color="fg.subtle">
+          {note}
+        </Text>
+      ) : null}
+      <Text textStyle="label" color={value === "n/a" ? "fg.subtle" : "fg"}>
+        {value}
+      </Text>
+    </Flex>
   );
 }
 
