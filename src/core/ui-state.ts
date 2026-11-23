@@ -25,7 +25,7 @@ export const STAGES = [
 export type Stage = (typeof STAGES)[number];
 
 /** The Threads page groups by what each Thread needs from the owner, most urgent first. */
-export const NEED_GROUPS = ["Needs you", "Ready for owner", "Stuck", "In review", "Waiting on CI", "Working", "Queued", "Done in last 7 days"] as const;
+export const NEED_GROUPS = ["Needs you", "Ready for owner", "Stuck", "In review", "Waiting on CI", "Working", "Queued", "Landed in last 7 days", "Closed in last 7 days"] as const;
 export type NeedGroup = (typeof NEED_GROUPS)[number];
 /** No phase change for this long, outside `queued`, means a Thread is stuck rather than working. */
 export const STUCK_MS = 6 * 3_600_000;
@@ -44,7 +44,7 @@ export interface UiState {
   /** Set by the UI server before the daemon has ever created the Ledger; everything below is then an empty stand-in. */
   ledgerMissing?: boolean;
   needsYou: Array<UiItem & { decisionClass: string; recommendation: string; recommendationShort: string; code: string; reason: string; threadRecommendation: { headline: string; reason: string } | null }>;
-  /** The same Threads grouped by what they need (Threads page); `Done in last 7 days` is bounded like `stages`. */
+  /** The same Threads grouped by what they need (Threads page). Finished Threads are split by whether they landed (merged) or were closed without landing; both are bounded like `stages`. */
   groups: Record<NeedGroup, UiItem[]>;
   stages: Record<Stage, UiItem[]>;
   outcomes: ReturnType<Ledger["computeMetrics"]>["outcomes"];
@@ -155,6 +155,8 @@ function needGroupOf(phase: Phase, updatedAt: number, now: number): NeedGroup | 
   switch (stage) {
     case "Owner driving":
       return null; // the owner is already on it
+    case "Done in last 7 days":
+      return phase.kind === "done" && (phase.outcome === "merged" || phase.outcome === "owner_merged") ? "Landed in last 7 days" : "Closed in last 7 days";
     default:
       return stage;
   }

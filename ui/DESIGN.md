@@ -57,7 +57,7 @@ Before hand-building a control, check that list of Arc components first. A hand-
 - **One card style.** Panel fill, a hairline border, the surface radius, no shadow: `Section` in `page.tsx`, or `bg="bg.panel" borderWidth="1px" borderColor="border" rounded="surface"`.
 - **Cards never nest.** A section inside a card is `<Section inner>`: a hairline above it, no second box.
 - **Rows inside a card** are separated by hairlines (`RowList`), not by their own boxes.
-- **Group bands** (the Overview's "Needs you", "Running" …) are a filled strip that folds, not a card (`Group`). The Threads page uses the same bands, names, order and dots; Queued and Landed fold there.
+- **Group bands** (the Overview's "Needs you", "Running" …) are a filled strip that folds, not a card (`Group`). The Threads page uses the same bands, names, order and dots; Queued, Landed and Closed without landing fold there. A finished Thread is "Landed" only when its PR merged; one that was closed or abandoned goes under "Closed without landing" with a hollow dot.
 - **Selectable lists** (Needs you, Pitches, Threads, Setup steps) are one pattern: rows on the bare surface (`PickRow`, or `Line` for one-line Threads), a 10px radius, a lighter fill on hover, a hairline outline and a filled background on the selected row. No dividers between rows, no amber on the selected row. Needs you, Threads and Pitches put the list left and the detail right in `MasterDetail`, edge to edge under the title.
 - Master and detail pages keep the list on the bare surface and put the detail's blocks in cards.
 - **State words are badges** (`Badge`), not coloured text: green only for passed or healthy, amber (`warning`) only when the owner has to act, grey for everything else.

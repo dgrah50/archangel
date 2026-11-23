@@ -30,15 +30,17 @@ const mins = (ms: number) => (ms < 60_000 ? "<1 m" : ms < 120 * 60_000 ? `${Math
 const durationText = (d: PhaseDuration) => (d.running ? (d.limitMs !== null ? `${mins(d.ms)} of ${Math.round(d.limitMs / 60_000)}` : `running ${mins(d.ms)}`) : mins(d.ms));
 
 /** The Thread's place on the line. A phase that is off the line (needs you, done) is named beside the last station it reached. */
-function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDuration[] }) {
-  const at = RAIL.findIndex((r) => r.kind === phase);
-  const reached = RAIL.reduce((n, r, i) => (durations.some((d) => d.kind === r.kind) ? i : n), 0);
+function PhaseRail({ phase, outcome, durations }: { phase: string; outcome: string | null; durations: PhaseDuration[] }) {
+  // Only a feature in a repo with plan approval has a Plan station; every other Thread goes from Queued to Working.
+  const rail = RAIL.filter((r) => r.kind !== "awaiting_plan" || phase === "awaiting_plan" || durations.some((d) => d.kind === "awaiting_plan"));
+  const at = rail.findIndex((r) => r.kind === phase);
+  const reached = rail.reduce((n, r, i) => (durations.some((d) => d.kind === r.kind) ? i : n), 0);
   return (
     <Flex direction="column" gap="2">
       <Stepper
         label="Phase"
-        current={at !== -1 ? at : phase === "done" ? RAIL.length : reached}
-        steps={RAIL.map((r) => {
+        current={at !== -1 ? at : outcome === "merged" || outcome === "owner_merged" ? rail.length : reached}
+        steps={rail.map((r) => {
           const d = durations.find((x) => x.kind === r.kind);
           const over = d !== undefined && d.running && d.limitMs !== null && d.ms > d.limitMs;
           return { id: r.kind, label: r.label, description: d && !over ? durationText(d) : undefined, error: d && over ? `${durationText(d)}, over the limit` : undefined };
@@ -46,7 +48,7 @@ function PhaseRail({ phase, durations }: { phase: string; durations: PhaseDurati
       />
       {at === -1 ? (
         <Text textStyle="meta" color="fg.muted">
-          Now: {phase.replace(/_/g, " ")}
+          Now: {(outcome ?? phase).replace(/_/g, " ")}
         </Text>
       ) : null}
     </Flex>
@@ -131,7 +133,7 @@ export function ThreadDetailPage({ item, thread, now, onRetry }: { item: ItemRef
           {thread.error}
         </Notice>
       ) : null}
-      <PhaseRail phase={d.phase} durations={d.phaseDurations} />
+      <PhaseRail phase={d.phase} outcome={d.outcome} durations={d.phaseDurations} />
       {d.threadRecommendation ? (
         <Section gap="1">
           <Text textStyle="meta" color="fg.muted">

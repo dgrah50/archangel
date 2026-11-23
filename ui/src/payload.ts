@@ -7,7 +7,7 @@ import type { UiState, WorkflowsState } from "../../src/core/ui-state.js";
 
 const obj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 /** Display order of the Threads page; src/core/ui-state.ts NEED_GROUPS is the same list (pinned by a test). */
-export const NEED_GROUPS_UI = ["Needs you", "Ready for owner", "Stuck", "In review", "Waiting on CI", "Working", "Queued", "Done in last 7 days"] as const;
+export const NEED_GROUPS_UI = ["Needs you", "Ready for owner", "Stuck", "In review", "Waiting on CI", "Working", "Queued", "Landed in last 7 days", "Closed in last 7 days"] as const;
 const STAGE_NAMES = ["Working", "Waiting on CI", "In review", "Ready for owner", "Needs you", "Owner driving", "Queued", "Done in last 7 days"];
 
 /** Structural guard for /api/state: a corrupt or partial payload must surface as an error, never render as blank or zero. */
