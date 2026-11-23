@@ -10,6 +10,7 @@ import { scanForSecrets } from "./secrets.js";
 const MAX_FINDINGS_PER_VENDOR = 20;
 const MAX_VIOLATIONS = 10;
 const TEXT_MAX = 400;
+const VIOLATION_MAX = 1500;
 
 const Finding = z.object({
   file: z.string().max(300),
@@ -24,7 +25,7 @@ export const AttemptInputSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("revise"),
     findings: z.array(z.object({ vendor: z.string().max(40), findings: z.array(Finding).max(MAX_FINDINGS_PER_VENDOR) })).max(6),
-    gateViolations: z.array(z.string().max(300)).max(MAX_VIOLATIONS),
+    gateViolations: z.array(z.string().max(VIOLATION_MAX)).max(MAX_VIOLATIONS),
   }),
   z.object({ kind: z.literal("rebase"), conflictBase: Sha }),
 ]);
@@ -53,7 +54,7 @@ export function captureAttemptInput(
               ...(f.suggestion === undefined ? {} : { suggestion: cut(f.suggestion, TEXT_MAX) }),
             })),
           })),
-          gateViolations: src.gateViolations.slice(0, MAX_VIOLATIONS).map((v) => cut(v, 300)),
+          gateViolations: src.gateViolations.slice(0, MAX_VIOLATIONS).map((v) => cut(v, VIOLATION_MAX)),
         };
   const parsed = AttemptInputSchema.safeParse(input);
   if (!parsed.success) return null;
