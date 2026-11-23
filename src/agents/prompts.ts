@@ -287,6 +287,9 @@ export function buildConflictReference(input: {
 const REVIEWER_EXPECT_LINE =
   "Before reading the diff, state in one line what fix you would expect for this issue, then compare the diff against it.";
 const REVIEWER_SIBLING_LINE = "Check sibling code paths and callers of the changed code for the same defect.";
+/** Without this a reviewer vetoes for anything imperfect nearby, round after round, and a Thread never converges. */
+const REVIEWER_SCOPE_LINE =
+  "What a veto is for: the change does not deliver what the issue asks; or it makes an input that behaved correctly on the base code behave worse (name the input and its result before and after); or it breaks a veto rule above. A defect the base code already had, on input the issue does not mention, is not this change's to fix: list it as a minor finding marked pre-existing, and do not veto for it.";
 
 export function buildOpenAiReviewerPrompt(input: {
   issueNumber: number;
@@ -320,6 +323,7 @@ export function buildOpenAiReviewerPrompt(input: {
     "3. Are any tests weakened, skipped, mocked out, or misleading?",
     "Veto for: an added fallback, compatibility shim, or dual old/new code path; an abstraction, option, or file with a single caller; a new boolean or nullable that allows an impossible flag combination.",
     "Readability, naming, and duplication problems are minor findings: do not veto solely for them.",
+    REVIEWER_SCOPE_LINE,
     ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
     "Return verdict='approve' ONLY if you are confident the fix is correct and minimal; otherwise return verdict='veto' with concrete structured findings.",
   ].join("\n");
@@ -365,8 +369,9 @@ export function buildGeminiAdversarialPrompt(input: {
     "- Verify the test isn't bending correct behavior, skipping assertions, or exiting early.",
     "Veto for: an added fallback, compatibility shim, or dual old/new code path; an abstraction, option, or file with a single caller; a new boolean or nullable that allows an impossible flag combination.",
     "Readability, naming, and duplication problems are minor findings: do not veto solely for them.",
+    REVIEWER_SCOPE_LINE,
     ...(input.reviewRubric ? ["", "Project-specific review rubric:", input.reviewRubric] : []),
-    "Return verdict='veto' with exact file/line findings if you find ANY real defect or risk; otherwise return verdict='approve'.",
+    "Return verdict='veto' with exact file/line findings if you find a real defect in what this change does; otherwise return verdict='approve'.",
   ].join("\n");
 }
 
