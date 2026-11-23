@@ -138,6 +138,8 @@ export interface GateProof {
 export const GATE_PROOF_ANNOTATION_TITLE = "archangel-gate-proof";
 export const PROOF_MAX_LINES = 40;
 export const PROOF_MAX_CHARS = 3000;
+/** GitHub truncates a check-run annotation message at 4,096 characters; a truncated proof is invalid JSON and reads as no proof. */
+export const PROOF_MESSAGE_MAX_BYTES = 3900;
 
 /**
  * Runs the Gate for GitHub Actions with workflow commands disabled while any repo-authored code
@@ -165,13 +167,26 @@ export async function runGateForActions(
     log(`::${token}::`);
   }
   if (proofHeadSha !== undefined && /^[0-9a-f]{40}$/.test(proofHeadSha)) {
-    const message = JSON.stringify({ head_sha: proofHeadSha, ...report.proof })
+    const message = fitProofMessage(proofHeadSha, report.proof)
       .replace(/%/g, "%25")
       .replace(/\r/g, "%0D")
       .replace(/\n/g, "%0A");
     log(`::notice title=${GATE_PROOF_ANNOTATION_TITLE}::${message}`);
   }
   return report;
+}
+
+/** The proof JSON, with its output tails shortened (keeping the end) until it fits one annotation message. */
+export function fitProofMessage(headSha: string, proof: GateProof | undefined): string {
+  const p: GateProof = { ...proof };
+  for (;;) {
+    const message = JSON.stringify({ head_sha: headSha, ...p });
+    if (Buffer.byteLength(message) <= PROOF_MESSAGE_MAX_BYTES) return message;
+    const key = (p.head_output?.length ?? 0) >= (p.base_output?.length ?? 0) ? "head_output" : "base_output";
+    const cur = p[key];
+    if (!cur) return JSON.stringify({ head_sha: headSha });
+    p[key] = cur.slice(-Math.floor(cur.length * 0.8));
+  }
 }
 
 /** Last ~40 lines, capped at 3,000 chars (keeping the end, where failures and summaries are). */
