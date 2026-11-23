@@ -80,6 +80,10 @@ export interface GitHubClient {
   listMergedPrsSince(sinceMs: number, baseBranch: string): Promise<Array<{ number: number; mergedAt: number }>>;
   /** Published, non-draft releases after `sinceMs`, oldest first. */
   listReleasesSince(sinceMs: number): Promise<Array<{ tag: string; publishedAt: number }>>;
+  /** Public repository search (read-only, not scoped to this repo). `query` is host-built from owner topics and fixed templates. */
+  searchRepositories(query: string, sort: "updated" | "stars", limit: number): Promise<Array<{ fullName: string; url: string; pushedAt: string; description: string | null }>>;
+  /** The latest published release of a public repository, or null when it has none. */
+  getLatestRelease(fullName: string): Promise<{ tag: string; name: string | null; url: string; publishedAt: string; body: string | null } | null>;
   /** Open Dependabot alerts created after `sinceMs`, oldest first. Needs the App's `vulnerability_alerts` read permission. */
   listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>>;
   createIssue?(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue>;
@@ -503,6 +507,36 @@ export class GitHubAppClient implements GitHubClient {
       .sort((a, b) => a.publishedAt - b.publishedAt);
   }
 
+  async searchRepositories(query: string, sort: "updated" | "stars", limit: number) {
+    const res = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      "GET",
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=${sort}&order=desc&per_page=${Math.min(Math.max(limit, 1), 10)}`,
+    );
+    return (res.items ?? []).map((r) => ({
+      fullName: String(r.full_name),
+      url: String(r.html_url),
+      pushedAt: String(r.pushed_at),
+      description: typeof r.description === "string" ? r.description : null,
+    }));
+  }
+
+  async getLatestRelease(fullName: string) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(fullName)) throw new Error("not a repository full name");
+    try {
+      const r = await this.request<Record<string, unknown>>("GET", `/repos/${fullName}/releases/latest`);
+      return {
+        tag: String(r.tag_name),
+        name: typeof r.name === "string" ? r.name : null,
+        url: String(r.html_url),
+        publishedAt: String(r.published_at),
+        body: typeof r.body === "string" ? r.body : null,
+      };
+    } catch (err) {
+      if (err instanceof GitHubHttpError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
   async listDependabotAlertsSince(sinceMs: number): Promise<Array<{ number: number; createdAt: number; severity: string; ghsaId: string }>> {
     const items = await this.request<Array<Record<string, unknown>>>(
       "GET",
@@ -603,7 +637,9 @@ export class GitHubAppClient implements GitHubClient {
 
     const parsed = runs.map((cr) => {
       const app = (cr.app ?? {}) as { slug?: string };
+      const out = (cr.output ?? {}) as { title?: string | null; summary?: string | null; text?: string | null };
       return {
+        output: [out.title, out.summary, out.text].filter((x): x is string => Boolean(x)).join("\n").slice(0, 6000),
         id: Number(cr.id),
         name: String(cr.name ?? ""),
         status: String(cr.status ?? "queued") as CheckStatus["status"],

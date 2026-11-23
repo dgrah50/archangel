@@ -1,3 +1,4 @@
+import type { Chapter } from "../core/recap-chapters.js";
 import { tryParseJson } from "../core/json.js";
 import {
   EscalationCodeSchema,
@@ -50,6 +51,7 @@ import {
   type ReviewerVendor,
   type ReviewVerdict,
   type ScoutProposalRecord,
+  type ResearchRow,
   type SignalRecord,
   type SignalTaint,
   type ThreadRecord,
@@ -262,6 +264,34 @@ export class Ledger {
     return (
       this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?").get(repo, now - 86_400_000) as { n: number }
     ).n;
+  }
+
+  /**
+   * Claims the one fix-forward of a red-main incident (the merge that turned main red), atomically: refused when the incident
+   * already has one, or when the repo spent its daily factory-retry allowance. The claim is a `factory/retry` audit row (so it counts
+   * against that allowance) with no escalation code, which keeps it out of factory-retry outcomes and auto-off.
+   */
+  claimFixForward(mergeId: number, perRepoPerDay: number, now = Date.now()): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const key = `fix_forward:${this.repo}:${mergeId}`;
+      if (this.getSystemState(key) !== null) return false;
+      const today = this.db
+        .prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/retry' AND ts > ?")
+        .get(this.repo, now - 86_400_000) as { n: number };
+      if (today.n >= perRepoPerDay) return false;
+      this.setSystemState(key, "claimed", now);
+      this.appendAudit("factory/retry", null, "factory", { fixForward: true, mergeId }, now);
+      return true;
+    });
+    return tx.immediate();
+  }
+
+  /** The red merge a fix-forward Thread (by issue number) races a revert for, or null when the Thread is not a fix-forward. */
+  fixForwardMergeId(issueNumber: number, repo = this.repo): number | null {
+    const row = this.listAudit({ repo, topicPrefix: "fix_forward/started", issueNumber, limit: 1 })[0];
+    if (!row) return null;
+    const id = (JSON.parse(row.payloadJson) as { mergeId?: unknown }).mergeId;
+    return typeof id === "number" ? id : null;
   }
 
   /** The latest auto-off of factory retry for this repo: the audit row id and the workflow file version it tripped under. */
@@ -1524,6 +1554,16 @@ export class Ledger {
     return { text: typeof p.headline === "string" && typeof p.reason === "string" ? { headline: p.headline, reason: p.reason } : null };
   }
 
+  /** The chapters recorded for a head (`factory/chapters` audit row), written once per head so the Recap never re-asks the model. */
+  recordChapters(issueNumber: number, headSha: string, chapters: Chapter[], now = Date.now()): void {
+    this.appendAudit("factory/chapters", issueNumber, "factory", { headSha, chapters }, now);
+  }
+
+  latestChapters(issueNumber: number, repo = this.repo): { headSha: string; chapters: Chapter[] } | null {
+    const row = this.listAudit({ repo, topicPrefix: "factory/chapters", issueNumber, limit: 1 })[0];
+    return row ? (JSON.parse(row.payloadJson) as { headSha: string; chapters: Chapter[] }) : null;
+  }
+
   recommendationsInLast24h(now = Date.now(), repo = this.repo): number {
     return (
       this.db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE repo = ? AND topic = 'factory/recommendation' AND ts > ?").get(repo, now - 86_400_000) as { n: number }
@@ -1859,6 +1899,41 @@ export class Ledger {
       )
       .run(s.repo, s.source, s.kind, s.dedupeKey, s.taint, JSON.stringify(s.payload), s.observedAt);
     return r.changes === 1;
+  }
+
+  /** Stores one sanitized research result; false when this URL is already stored. */
+  insertResearchResult(r: Omit<ResearchRow, "id">): boolean {
+    return (
+      this.db
+        .prepare(`INSERT OR IGNORE INTO research_results (repo, source, template, topic, title, url, date, snippet, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(this.repo, r.source, r.template, r.topic, r.title, r.url, r.date, r.snippet, r.fetchedAt).changes === 1
+    );
+  }
+
+  /** The newest stored results fetched at or after `sinceMs`, newest first. A citation index is a position in this list. */
+  listResearchResults(sinceMs: number, limit: number): ResearchRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM research_results WHERE repo = ? AND fetched_at >= ? ORDER BY fetched_at DESC, id DESC LIMIT ?`)
+      .all(this.repo, sinceMs, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      source: String(r.source),
+      template: Number(r.template),
+      topic: String(r.topic),
+      title: String(r.title),
+      url: String(r.url),
+      date: String(r.date),
+      snippet: String(r.snippet),
+      fetchedAt: Number(r.fetched_at),
+    }));
+  }
+
+  recordResearchFetch(now: number): void {
+    this.db.prepare(`INSERT INTO research_fetches (repo, day_key, at) VALUES (?, ?, ?)`).run(this.repo, formatDayKey(now, this.timeZone), now);
+  }
+
+  countResearchFetchesToday(now: number): number {
+    return Number((this.db.prepare(`SELECT COUNT(*) AS n FROM research_fetches WHERE repo = ? AND day_key = ?`).get(this.repo, formatDayKey(now, this.timeZone)) as { n: number }).n);
   }
 
   /** This repo's signals observed at or after `sinceMs`, oldest first. */

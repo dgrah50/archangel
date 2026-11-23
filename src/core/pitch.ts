@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { formatRepoInstructions } from "../agents/prompts.js";
 import { METRIC_KEYS } from "./metrics-block.js";
+import { RESEARCH_BLOCK_MAX, renderSources } from "./research.js";
+import type { ResearchRow } from "../ledger/schema.js";
 import { DIAGRAM_CHANGES, renderDiagramTree } from "./pitch-diagram.js";
 import type { IngestedImage } from "./pitch-ingest.js";
 
@@ -22,6 +24,8 @@ const Evidence = z
     file: z.string().max(300).nullable(),
     symbol: z.string().max(200).nullable(),
     metric: z.enum(METRIC_KEYS).nullable(),
+    /** The number of a result in the RESEARCH block; the host renders its link. Null when this evidence is not from research. */
+    research: z.number().int().min(1).max(RESEARCH_BLOCK_MAX).nullable(),
     note: z.string().min(1).max(300),
   })
   .strict();
@@ -113,7 +117,7 @@ export function pitchJsonSchema(): Record<string, unknown> {
 const escapeCaption = (c: string): string => c.replace(/[\[\]()<>`\\\r\n]+/g, " ").trim();
 
 /** Issue body rendered from the schema fields only (the model's text is placed in fixed sections). Figure URLs are host-built from a checked path and the main SHA. */
-export function renderPitchBody(p: PitchItem, source: { repo: string; mainSha: string }): string {
+export function renderPitchBody(p: PitchItem, source: { repo: string; mainSha: string }, research: readonly ResearchRow[] = []): string {
   const lines = [
     `**Pitch (agent-written, not promoted).** Type: \`${p.type}\`, size ${p.size}, recommendation: **${p.recommendation}**.`,
     "",
@@ -122,11 +126,13 @@ export function renderPitchBody(p: PitchItem, source: { repo: string; mainSha: s
     "",
     "### Evidence",
     ...p.evidence.map((e) => {
-      const ref = [e.file ? `\`${e.file}\`` : null, e.symbol ? `\`${e.symbol}\`` : null, e.metric ? `metric \`${e.metric}\`` : null]
+      const ref = [e.file ? `\`${e.file}\`` : null, e.symbol ? `\`${e.symbol}\`` : null, e.metric ? `metric \`${e.metric}\`` : null, e.research ? `source [${e.research}]` : null]
         .filter(Boolean)
         .join(" ");
       return `- ${ref ? `${ref}: ` : ""}${e.note}`;
     }),
+    "",
+    ...(renderSources(research, p.evidence.flatMap((e) => (e.research === null ? [] : [e.research]))) ?? []).flatMap((l, i) => (i === 0 ? ["", l] : [l])),
     "",
     "### Proposal",
     p.proposal,
@@ -169,6 +175,10 @@ export interface PitchCheckContext {
   source: { repo: string; mainSha: string };
   /** The metric keys present in the metrics block the Scout was given (empty when it got none). */
   metricsGiven: ReadonlySet<string>;
+  /** How many results the RESEARCH block listed (0 when it had none): a citation must be within it. */
+  researchGiven: number;
+  /** The rows the block was built from, for the rendered Sources section the secret scan also covers. */
+  research: readonly ResearchRow[];
   secretScan(text: string): string | null;
   /** True if the title fingerprint matches an open pitch or one the owner declined in the last 90 days. */
   isDuplicate(title: string): boolean;
@@ -184,6 +194,7 @@ export async function checkPitch(p: PitchItem, ctx: PitchCheckContext): Promise<
       if (!(await ctx.fileExists(e.file))) return `cited file '${e.file}' does not exist at main`;
     }
     if (e.metric !== null && !ctx.metricsGiven.has(e.metric)) return `cited metric '${e.metric}' was not in the metrics block given`;
+    if (e.research !== null && e.research > ctx.researchGiven) return `cited research [${e.research}] was not in the research block given`;
   }
   for (const e of p.estimates) {
     if (e.source === null) continue;
@@ -202,7 +213,7 @@ export async function checkPitch(p: PitchItem, ctx: PitchCheckContext): Promise<
       return `figure '${f.path}' was rejected: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
     }
   }
-  const secret = ctx.secretScan(`${p.title}\n${renderPitchBody(p, ctx.source)}`);
+  const secret = ctx.secretScan(`${p.title}\n${renderPitchBody(p, ctx.source, ctx.research)}`);
   if (secret) return `secret scan matched ${secret}`;
   if (ctx.isDuplicate(p.title)) return "duplicates an open or recently declined pitch";
   return null;
@@ -222,6 +233,7 @@ export function buildPitchPrompt(input: {
   skills: Array<{ ref: string; content: string }>;
   prompt: string;
   metricsBlock?: string;
+  researchBlock?: string;
   repoInstructions?: string | null;
   declined: Array<{ title: string; reason: string | null }>;
 }): string {
@@ -235,6 +247,7 @@ export function buildPitchPrompt(input: {
     "",
     ...formatRepoInstructions(input.repoInstructions),
     ...(input.metricsBlock ? [input.metricsBlock, ""] : []),
+    ...(input.researchBlock ? [input.researchBlock, ""] : []),
     ...(input.declined.length > 0
       ? [
           "--- PITCHES ALREADY OPEN OR DECIDED BY THE OWNER (DATA; do not re-pitch these, even reworded) ---",

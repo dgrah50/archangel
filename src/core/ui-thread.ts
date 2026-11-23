@@ -1,4 +1,5 @@
 import type { Ledger } from "../ledger/store.js";
+import type { Chapter } from "./recap-chapters.js";
 import { tryParseJson } from "./json.js";
 
 /** Read-only views for the Thread detail page. Every string here is untrusted text: the UI renders it only as React children. */
@@ -32,6 +33,8 @@ export interface ThreadDetail {
   phaseDurations: Array<{ kind: string; ms: number; running: boolean; limitMs: number | null }>;
   /** The factory's model-written recommendation for this Thread's current needs_you entry (machine advice, untrusted text), or null. */
   threadRecommendation: { headline: string; reason: string } | null;
+  /** The feature PR's diff grouped by area (mechanical), with optional machine captions (untrusted text); null for other Threads. */
+  chapters: Chapter[] | null;
   /** The audit log was cut at AUDIT_LIMIT rows (newest kept). */
   auditTruncated: boolean;
 }
@@ -170,6 +173,7 @@ export function buildThreadDetail(ledger: Ledger, repo: string, issueNumber: num
     diff,
     phaseDurations,
     threadRecommendation: view.threadRecommendationFor(thread)?.text ?? null,
+    chapters: view.latestChapters(issueNumber)?.chapters ?? null,
     auditTruncated: audit.length >= AUDIT_LIMIT,
   };
 }

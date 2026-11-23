@@ -37,6 +37,12 @@ export class FakeGitHub implements GitHubClient {
       .filter((c) => c.createdAt > sinceMs)
       .map((c) => ({ id: c.id ?? 0, userId: c.userId, isBot: Boolean(c.isBot), body: c.body, createdAt: c.createdAt }));
   }
+  nextIssueNumber = 200;
+  async createIssue(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue> {
+    const issue = { number: this.nextIssueNumber++, title: input.title, body: input.body, labels: [...input.labels], state: "open" } as unknown as GitHubIssue;
+    this.issues.set(issue.number, issue);
+    return issue;
+  }
   async closeIssue(issueNumber: number): Promise<void> {
     const i = this.issues.get(issueNumber);
     if (i) i.state = "closed";
@@ -56,6 +62,13 @@ export class FakeGitHub implements GitHubClient {
   }
   async listReleasesSince(sinceMs: number) {
     return this.releases.filter((r) => r.publishedAt > sinceMs);
+  }
+  searchResults: Array<{ fullName: string; url: string; pushedAt: string; description: string | null }> = [];
+  async searchRepositories() {
+    return this.searchResults;
+  }
+  async getLatestRelease() {
+    return null;
   }
   async listDependabotAlertsSince(sinceMs: number) {
     return this.alerts.filter((a) => a.createdAt > sinceMs);
