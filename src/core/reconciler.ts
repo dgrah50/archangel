@@ -29,7 +29,7 @@ import { captureAttemptInput } from "./attempt-input.js";
 import { PLAN_MAX_CHARS, PLAN_ROUNDS_PER_THREAD, renderPlanComment, vetPlan } from "./plan.js";
 import { NOOP_LOGGER, type Logger } from "./logger.js";
 import type { Notifier } from "./notifier.js";
-import { renderPrBody, renderRecapComment } from "./recap.js";
+import { renderNeedsYouNote, renderPrBody, renderRecapComment } from "./recap.js";
 import { attachCaptions, buildChapters, buildChaptersPrompt, parseDiffStat, CHAPTER_CAPTIONS_JSON_SCHEMA, CHAPTERS_TIMEOUT_MS, type Chapter } from "./recap-chapters.js";
 import { scanForSecrets, withholdSecrets } from "./secrets.js";
 import { defaultScoutCliInvoker, runScoutsForProject, scoutContentHash, type ScoutCliInvoker } from "./scout.js";
@@ -723,6 +723,8 @@ export class Reconciler {
               workClassOfBranch((eff.issueNumber === null ? null : this.ledger.getThread(eff.issueNumber))?.branchName ?? ""),
               eff.cause,
             );
+            // GitHub first: it is idempotent, so a retry after a failed notification repeats nothing visible.
+            if (eff.issueNumber !== null) await this.showNeedsYouOnGitHub(eff.issueNumber);
             await this.notifier.notifyNeedsYou({
               issueNumber: eff.issueNumber,
               title: eff.title,
@@ -742,6 +744,22 @@ export class Reconciler {
         this.ledger.failOutbox(item.id, err instanceof Error ? err.message : String(err));
       }
     }
+  }
+
+  /**
+   * Every escalation reaches the owner on GitHub, whichever code path raised it: the PR's Recap when the Thread has a PR, else one
+   * comment on the issue (keyed by the Thread version, so a retried delivery edits it instead of posting again).
+   */
+  private async showNeedsYouOnGitHub(issueNumber: number): Promise<void> {
+    const thread = this.ledger.getThread(issueNumber);
+    if (thread?.phase.kind !== "needs_you") return; // already answered
+    const prNumber = thread.phase.prNumber ?? extractPrFromPhase(thread.phase)?.prNumber ?? null;
+    if (prNumber) {
+      await this.postRecapSafe(thread, await this.github.getPrLive(prNumber), []);
+      return;
+    }
+    const marker = `<!-- archangel:needs-you:${thread.version} -->`;
+    await this.github.upsertMarkedComment(issueNumber, marker, renderNeedsYouNote(marker, thread));
   }
 
   private async processPendingCommands(mainSha: string, now: number): Promise<void> {
@@ -1466,7 +1484,7 @@ export class Reconciler {
         running.abortCause = "control";
         running.abortController.abort(new Error("Issue body modified mid-attempt"));
       }
-      const escalated = this.applyMachineEvent(
+      this.applyMachineEvent(
         thread,
         {
           t: "escalate",
@@ -1475,9 +1493,6 @@ export class Reconciler {
         },
         { auditTopic: "thread/needs_you", now },
       );
-      if (escalated && pr) {
-        await this.postRecapSafe(escalated, pr, [{ code: "paused", message: "Issue body changed after intake" }]);
-      }
       return;
     }
 
@@ -2215,7 +2230,8 @@ export class Reconciler {
           },
         );
         if (updated) {
-          await this.postRecapSafe(updated, pr, [
+          // Read back right after the push, an existing PR can still report its previous head.
+          await this.postRecapSafe(updated, { ...pr, headSha: validation.headSha }, [
             { code: "check_pending", message: "Waiting for required Gate & CI checks" },
           ]);
         }
@@ -2345,7 +2361,8 @@ export class Reconciler {
         // A completed Gate always writes a proof annotation for this head, pass or fail. A failed Gate check without one
         // crashed or never ran: infrastructure, not a code failure, so never a revision.
         const gateCheck = verdict.failed.some((f) => f.name === "Gate") ? checks.find((c) => c.name === "Gate") : undefined;
-        if (gateCheck && !(await this.github.getGateProof(gateCheck.id, pr.headSha))) {
+        const gateProof = gateCheck ? await this.github.getGateProof(gateCheck.id, pr.headSha) : null;
+        if (gateCheck && !gateProof) {
           if (await this.freshCiAfterInfraRetry(thread, pr, issue, mainSha, gateCheck.id, now)) return;
           this.applyMachineEvent(
             thread,
@@ -2358,7 +2375,11 @@ export class Reconciler {
           );
           return;
         }
-        const failMsgs = verdict.failed.map((f) => `${f.name}: ${f.conclusion}`);
+        // What the agent needs to fix is the failure text (the failing test), not just the check name. Untrusted data; the tail is kept.
+        const failMsgs = verdict.failed.map((f) => {
+          const detail = (f.name === "Gate" ? gateProof?.head_output : checks.find((c) => c.name === f.name)?.output)?.trim();
+          return `${f.name}: ${f.conclusion}${detail ? `\n${detail.slice(-1_200)}` : ""}`;
+        });
         if (
           thread.mode === "autonomous" &&
           issue &&
@@ -2406,7 +2427,7 @@ export class Reconciler {
     const excludeVendors = thread.implementerVendors;
     const requiredVendors = resolveRequiredReviewers(this.cfg, excludeVendors);
     if (requiredVendors.length < 2) {
-      const escalated = this.applyMachineEvent(
+      this.applyMachineEvent(
         thread,
         {
           t: "escalate",
@@ -2415,14 +2436,6 @@ export class Reconciler {
         },
         { auditTopic: "thread/needs_you", now },
       );
-      if (escalated) {
-        await this.postRecapSafe(escalated, pr, [
-          {
-            code: "insufficient_independent_reviewers",
-            message: `Only ${requiredVendors.length} independent reviewer(s) available after failover`,
-          },
-        ]);
-      }
       return;
     }
     const haveVendors = new Set(existing.map((r) => r.vendor));
@@ -2517,7 +2530,7 @@ export class Reconciler {
         if (this.runningTasks.size >= this.cfg.maxConcurrentThreads) return; // all slots busy: wait, do not escalate
         await this.spawnAttempt(thread, issue, "revise", mainSha, [], structuredFindings, now);
       } else {
-        const escalated = this.applyMachineEvent(
+        this.applyMachineEvent(
           thread,
           {
             t: "escalate",
@@ -2526,11 +2539,6 @@ export class Reconciler {
           },
           { auditTopic: "thread/needs_you", now },
         );
-        if (escalated) {
-          await this.postRecapSafe(escalated, pr, [
-            { code: "review_vetoed", message: `Vetoed by ${vetoes.map((v) => v.vendor).join(", ")}` },
-          ]);
-        }
       }
       return;
     }
@@ -2663,7 +2671,7 @@ export class Reconciler {
       return;
     }
     if (issue && (await this.retryConflictFromMain(thread, pr, issue, mainSha, now))) return;
-    const escalated = this.applyMachineEvent(
+    this.applyMachineEvent(
       thread,
       {
         t: "escalate",
@@ -2672,9 +2680,6 @@ export class Reconciler {
       },
       { auditTopic: "thread/needs_you", now },
     );
-    if (escalated) {
-      await this.postRecapSafe(escalated, pr, blockers);
-    }
   }
 
   /**

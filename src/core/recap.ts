@@ -147,11 +147,29 @@ export function renderRecapComment(input: {
   lines.push(
     ...details(
       "Current Blockers",
-      blockers.length > 0 ? blockers.map((b) => `- \`${b.code}\`: ${safe(b.message)}`) : ["- None — eligible to land."],
+      blockers.length > 0
+        ? blockers.map((b) => `- \`${b.code}\`: ${safe(b.message)}`)
+        : thread.phase.kind === "needs_you"
+          ? [`- \`${thread.phase.code}\`: waiting for your answer (see Needs You above)`]
+          : ["- None — eligible to land."],
     ),
   );
 
   return lines.join("\n");
+}
+
+/** The comment that tells the owner about an escalation on a Thread with no PR yet: what happened, the advice, and how to answer. */
+export function renderNeedsYouNote(marker: string, thread: ThreadRecord): string {
+  if (thread.phase.kind !== "needs_you") throw new Error("renderNeedsYouNote needs a Thread in needs_you");
+  const policy = describeEscalation(thread.phase.code, workClassOfBranch(thread.branchName), thread.phase.cause);
+  return [
+    marker,
+    `**Archangel needs you** on this Thread: ${formatDecisionClass(policy.decisionClass)} (\`${thread.phase.code}\`)`,
+    "",
+    withholdSecrets(thread.phase.reason),
+    "",
+    `**Recommended:** ${policy.recommendation}`,
+  ].join("\n");
 }
 
 /** A collapsed section. The blank lines around the body are what make GitHub render markdown inside <details>. */

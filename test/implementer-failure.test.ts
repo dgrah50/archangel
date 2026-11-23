@@ -77,11 +77,16 @@ describe("an implementer that did not finish is a failed Attempt", () => {
   it("puts an expired login to the owner as credentials, with the login advice", async () => {
     await failedAttempt(
       { async run() { throw new AttemptError("auth", "claude: login expired"); } },
-      ({ ledger, notified }) => {
+      ({ ledger, notified, github }) => {
         expect(ledger.getThread(4)!.phase).toMatchObject({ kind: "needs_you", code: "attempt_failed", cause: "auth" });
         expect(notified[0]).toMatchObject({ decisionClass: "credentials" });
         expect(notified[0]!.recommendation).toContain("re-login");
         expect(ledger.getThread(4)!.implementCount).toBe(0); // the implementer never reached the issue: not one of the Thread's Attempts
+        // No PR exists yet, so the owner is told on the issue itself: what happened, and the advice with the commands to answer.
+        const notes = (github.comments.get(4) ?? []).filter((c) => c.includes("Archangel needs you"));
+        expect(notes).toHaveLength(1);
+        expect(notes[0]).toContain("claude: login expired");
+        expect(notes[0]).toContain("/archangel retry");
       },
     );
   });
