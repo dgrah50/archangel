@@ -153,7 +153,7 @@ export function buildClusterBlock(rows: ClusterRows | null, now: number): string
     if (a.status !== "failed" || !a.errorMessage) continue;
     if (week === "This") attempts.failedThis++;
     else attempts.failedPrev++;
-    const cat = a.errorCategory ?? "other"; // rows from before the category was recorded
+    const cat = a.errorCategory!; // every failed Attempt is finished with a category
     att.add((ATTEMPT_ERROR_CATEGORIES as readonly string[]).includes(cat) ? cat : "other", a.ts, now);
     for (const k of gateViolationKinds(a.errorMessage, a.errorCategory)) gate.add(k, a.ts, now);
   }

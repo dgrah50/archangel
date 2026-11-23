@@ -69,20 +69,13 @@ export interface UiState {
   daily: Array<{ day: string; merged: number; reworkAttempts: number }>;
   scouts: Array<{ repo: string; issueNumber: number; scoutName: string; autoPromoted: boolean; hasThread: boolean; createdAt: number }>;
   /** Subsystem error classes survived in the last 24h, per repo. */
-  /** Null when the Ledger's schema is behind (no `health_faults` table yet): only this section is unavailable, never the whole dashboard. */
-  faults: ReturnType<Ledger["listHealthFaults"]> | null;
-  /** What the telemetry Scout found abnormal in the last 24h (nothing normal is listed). Null when the Ledger's schema is behind. */
-  telemetry: Array<{ repo: string; title: string; detail: string; observedAt: number }> | null;
+  faults: ReturnType<Ledger["listHealthFaults"]>;
+  /** What the telemetry Scout found abnormal in the last 24h (nothing normal is listed). */
+  telemetry: Array<{ repo: string; title: string; detail: string; observedAt: number }>;
 }
 
 const DAY_MS = 86_400_000;
 
-/** True for the SQLite errors a Ledger that the daemon has not migrated yet produces. */
-export function isSchemaBehind(err: unknown): boolean {
-  return err instanceof Error && /no such (table|column)/i.test(err.message);
-}
-
-/** Runs one section's read; a missing table or column makes that section null instead of failing the whole payload. Other errors still throw. */
 const fmtAnomaly = (unit: "ms" | "share" | "count", n: number): string =>
   unit === "ms" ? (n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${Math.round(n)} ms`) : unit === "share" ? `${Math.round(n * 100)}%` : `${Math.round(n * 10) / 10}`;
 
@@ -96,15 +89,6 @@ function describeAnomaly(a: { repo: string; payload: Record<string, unknown>; ob
     detail: `${fmtAnomaly(t.unit, p.observed)} in the last 24h against ${fmtAnomaly(t.unit, p.baseline)}${per} over the 7 days before (${p.ratio}x).`,
     observedAt: a.observedAt,
   };
-}
-
-function schemaGap<T>(read: () => T): T | null {
-  try {
-    return read();
-  } catch (err) {
-    if (isSchemaBehind(err)) return null;
-    throw err;
-  }
 }
 
 function stageOf(phase: Phase, updatedAt: number, now: number): Stage | null {
@@ -251,8 +235,8 @@ export function buildUiState(ledger: Ledger, now = Date.now(), limits: ReturnTyp
     shipping: metrics.shipping,
     corrections: ledger.computeCorrections({ sinceMs: now - CORRECTION_WINDOW_DAYS * DAY_MS, now }),
     daemonHeartbeatAt: ledger.daemonHeartbeatAt(),
-    faults: schemaGap(() => ledger.listHealthFaults(now)),
-    telemetry: schemaGap(() => ledger.listTelemetryAnomalies(now - DAY_MS).map((a) => describeAnomaly(a))),
+    faults: ledger.listHealthFaults(now),
+    telemetry: ledger.listTelemetryAnomalies(now - DAY_MS).map((a) => describeAnomaly(a)),
     daily: ledger.dailyOutcomes(14, now),
     autonomySteps: Object.fromEntries(repos.map((r) => [r, ledger.autonomousStepsSinceOwner(r)])),
     ownerLastHeardAt: Object.fromEntries(repos.map((r) => [r, ledger.ownerLastHeardAt(r)])),
@@ -546,7 +530,7 @@ export function buildWorkflowsState(ledger: Ledger, now = Date.now(), signalRule
       const signals: SignalsView | null = signalRules
         ? {
             rules: signalRules.filter((r) => r.repo === undefined || r.repo.toLowerCase() === repo.toLowerCase()),
-            counts: schemaGap(() => ledger.signalCounts(now - 7 * DAY_MS, repo)) ?? {},
+            counts: ledger.signalCounts(now - 7 * DAY_MS, repo),
           }
         : null;
       const hit = cached.get(repo);

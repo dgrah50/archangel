@@ -9,7 +9,6 @@ import { SettingsPage } from "./SettingsPage";
 import type { SettingsState } from "../../src/core/ui-settings.js";
 import { SetupPage } from "./SetupPage";
 import { ThreadsPage } from "./ThreadsPage";
-import { SCHEMA_BEHIND } from "./payload";
 import { Alert } from "./arc/alert/alert";
 import { Skeleton } from "./arc/skeleton/skeleton";
 import { Page, Ticked } from "./page";
@@ -24,8 +23,6 @@ export interface Feed<T> {
   data: T | null;
   at: number | null;
   error: string | null;
-  /** Server error code of the latest failure, when it sent one (for example `ledger_schema_behind`). */
-  code?: string | null;
 }
 
 export const POLL_MS = 15_000;
@@ -130,7 +127,7 @@ export function AppView({
     }
     return (
       <Box maxW="40rem" mx="auto" mt="10" p="5">
-        <Notice tone="red" title={state.code === SCHEMA_BEHIND ? "The Ledger schema is behind" : "Cannot load the dashboard"}>
+        <Notice tone="red" title="Cannot load the dashboard">
           <Text textStyle="sm">{state.error}</Text>
           <Button size="sm" mt="2" onClick={onRetry}>
             Retry

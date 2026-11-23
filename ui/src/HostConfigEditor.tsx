@@ -13,7 +13,6 @@ const TITLE: Record<HostError["kind"], string> = {
   validation: "The change was rejected.",
   forbidden: "Editing is disabled for this dashboard (remote mode, or not wired). Nothing was changed.",
   unauthorized: "This page has no valid token, so it cannot edit. Reload the page from the local dashboard.",
-  schema_behind: "The Ledger schema is behind. Restart the daemon so it can migrate, then try again.",
   network: "Could not reach the dashboard server.",
   error: "The request failed.",
 };

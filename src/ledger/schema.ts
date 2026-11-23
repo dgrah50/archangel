@@ -108,21 +108,21 @@ export interface AttemptRecord {
   costUsd: number;
   transcriptPath: string | null;
   errorMessage: string | null;
-  /** null while running, on success, and on rows from before the category was recorded. */
+  /** null while running and on success. */
   errorCategory: AttemptErrorCategory | null;
   startedAt: number;
   finishedAt: number | null;
-  /** Replay provenance, set when the Attempt ran (null for rows from before capture). */
+  /** Replay provenance, set when the Attempt ran (null if it ended before the agent started). */
   provider: string | null;
   model: string | null;
-  /** Which configured account (login) ran it; null for rows from before accounts. */
+  /** Which configured account (login) ran it; null when none was used. */
   accountId: string | null;
-  /** Where the agent ran: "local" or "sail"; null for rows from before it was recorded. */
+  /** Where the agent ran: "local" or "sail"; null if the agent never ran. */
   compute: string | null;
   /** sha256 of the prompt template (inputs blanked), so a prompt edit changes it. */
   promptSha256: string | null;
   workflowSha256: string | null;
-  /** Wall time of the agent runs and peak RSS (KB) of their process tree; null for rows from before measurement or when unmeasured. */
+  /** Wall time of the agent runs and peak RSS (KB) of their process tree; null when unmeasured. */
   durationMs: number | null;
   peakRssKb: number | null;
 }
@@ -258,7 +258,7 @@ CREATE TABLE IF NOT EXISTS threads (
   factory_guidance TEXT,
   factory_triage TEXT CHECK (factory_triage IN ('pending', 'done')),
   workflow_sha256 TEXT,
-  /** The issue text as it was at intake (replay and eval show it to the reviewers). Null for Threads from before it was kept. */
+  /** The issue text as it was at intake (replay and eval show it to the reviewers). */
   issue_body TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -285,6 +285,9 @@ CREATE TABLE IF NOT EXISTS attempts (
   workflow_sha256 TEXT,
   duration_ms INTEGER,
   peak_rss_kb INTEGER,
+  error_category TEXT,
+  from_sha TEXT,
+  input_json TEXT,
   FOREIGN KEY (repo, issue_number) REFERENCES threads(repo, issue_number)
 );
 

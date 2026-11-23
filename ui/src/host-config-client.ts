@@ -1,10 +1,9 @@
 import type { ApplyResult as OnboardApply, PlanResult } from "../../src/core/ui-onboard.js";
 import type { ApplyResult, HostConfigRead, PreviewResult } from "../../src/core/ui-host-config.js";
-import { SCHEMA_BEHIND } from "./payload";
 import { csrfToken } from "./workflow-draft";
 
 const URL = "/api/host-config";
-export type HostErrorKind = "conflict" | "stale_plan" | "validation" | "forbidden" | "unauthorized" | "schema_behind" | "network" | "error";
+export type HostErrorKind = "conflict" | "stale_plan" | "validation" | "forbidden" | "unauthorized" | "network" | "error";
 export interface HostError {
   kind: HostErrorKind;
   message: string;
@@ -14,8 +13,7 @@ export type HostResult<T> = { ok: true; value: T } | { ok: false; error: HostErr
 function classify(status: number, body: { error?: string } | null, text: string): HostError {
   const message = body?.error ?? `HTTP ${status}${text ? `: ${text.slice(0, 200)}` : ""}`;
   const kind: HostErrorKind =
-    (status === 503 && body?.error === SCHEMA_BEHIND) || /no such (table|column)/.test(message) ? "schema_behind"
-    : status === 409 && /changed on disk/.test(message) ? "conflict"
+    status === 409 && /changed on disk/.test(message) ? "conflict"
     : status === 409 && /no recent (plan|preview)/.test(message) ? "stale_plan"
     : status === 400 || status === 422 ? "validation"
     : status === 403 ? "forbidden"

@@ -369,7 +369,6 @@ export class Reconciler {
         throw new Error(`main tip ${mainSha.slice(0, 10)} is not in the broker repo after a re-fetch; retrying next tick`);
       }
     }
-    await this.backfillEvalRefs();
 
     // Resolve the repo's workflow (`.agents/archangel.json` at the `main` tip) against the host config.
     // Missing or invalid halts new work for this repo (fail closed); owner commands and post-merge main
@@ -728,14 +727,6 @@ export class Reconciler {
         this.logger.warn("eval/pin_failed", err instanceof Error ? err.message : String(err), { repo: this.ledger.repo });
       }
     }
-  }
-
-  /** One-shot per repo: pin every reviewed, Attempt and merged head still fetchable, so history from before capture is kept. */
-  private async backfillEvalRefs(): Promise<void> {
-    const key = `eval_refs_backfilled:${this.ledger.repo}`;
-    if (this.ledger.getSystemState(key)) return;
-    for (const { issueNumber, sha } of this.ledger.listEvalShas()) await this.pinEval(issueNumber, sha);
-    this.ledger.setSystemState(key, "1");
   }
 
   private async flushOutbox(): Promise<void> {
@@ -3029,7 +3020,7 @@ export class Reconciler {
     // workflow can never leave a red main unwatched.
     for (const m of pending) {
       if (m.mainRequired.length === 0) {
-        // Only rows from before checks were recorded can get here. Nothing can be verified, so say so and close the row.
+        // A merge with no recorded required checks: nothing can be verified, so say so and close the row.
         await this.notifyPostMergeUnverified(m, "no required main checks were recorded for this merge");
         this.ledger.updateMergeMainWatch(m.id, { kind: "timed_out", at: now });
         this.ledger.appendAudit("post_merge/missing_required_checks", m.issueNumber, "archangel", { mergeId: m.id }, now);
