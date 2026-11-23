@@ -161,6 +161,8 @@ export class Reconciler {
   private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
   /** The review round the tick is waiting on, if any. Reviews run inside the tick, so a shutdown has to be able to stop one. */
   private reviewInFlight: AbortController | null = null;
+  /** The cooldown end the "every login is at its limit" wait was last logged for, so it is said once per wait, not once per tick. */
+  private quotaWaitLogged: number | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
   private workflow: OkWorkflow | null = null;
@@ -1718,6 +1720,18 @@ export class Reconciler {
       return false;
     }
 
+    // Every login that could run this is at its usage limit: the Thread waits where it is, and the first tick after a cooldown
+    // ends starts it. A usage limit is the provider's clock running, not a decision for the owner, so nothing is escalated.
+    const blockedUntil = this.implementer.blockedUntil?.(kind === "plan" ? "implement" : kind, now) ?? null;
+    if (blockedUntil !== null) {
+      if (this.quotaWaitLogged !== blockedUntil) {
+        this.quotaWaitLogged = blockedUntil;
+        this.logger.warn("accounts/all_at_limit", `Every ${kind} login is at its usage limit; Attempts wait until about ${new Date(blockedUntil).toISOString()}`, { repo: this.ledger.repo, data: { kind, until: blockedUntil } });
+        this.ledger.appendAudit("accounts/all_at_limit", null, "archangel", { kind, until: blockedUntil }, now);
+      }
+      return false;
+    }
+
     const desiredReserve = Math.min(this.cfg.maxDailyUsd, 5.0);
     const reservedUsd = this.ledger.reserveBudget(this.cfg.maxDailyUsd, desiredReserve, 0.05, now);
     if (reservedUsd === null) {
@@ -2300,6 +2314,15 @@ export class Reconciler {
       const cause = err instanceof AttemptError ? err.category : undefined;
       // The Thread still parks in Needs you (nothing retries by itself), but a run that never reached the issue is not one of its Attempts.
       if (isInfrastructureFailure(cause)) this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
+      // Every login hit its usage limit mid-run (each is now cooling down). The Thread goes back to where it resumes and waits
+      // with the others (see spawnAttempt) instead of each one asking the owner to retry it by hand.
+      if (cause === "quota") {
+        const current = this.ledger.getThread(workingThread.issueNumber);
+        if (current && current.version === workingThread.version) {
+          this.applyMachineEvent(current, { t: "attempt_aborted", cause: "control", now: Date.now() }, { auditTopic: "attempt/quota_wait", auditPayload: { error: msg.slice(0, 300) }, now: Date.now() });
+        }
+        return;
+      }
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(

@@ -43,6 +43,11 @@ export interface ImplementResult {
 
 export interface Implementer {
   run(input: ImplementInput): Promise<ImplementResult>;
+  /**
+   * When no login of the role's chain can run right now (each is cooling down after a usage limit, or at its daily cap): the
+   * time one is next usable. Null when a run can start now. Absent for implementers with no accounts to wait on.
+   */
+  blockedUntil?(role: WriterRole, now: number): number | null;
 }
 
 export interface ClaudeImplementerOptions {

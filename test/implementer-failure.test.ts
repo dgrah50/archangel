@@ -85,6 +85,26 @@ describe("an implementer that did not finish is a failed Attempt", () => {
     );
   });
 
+  it("a usage limit on every login is a wait, not a question for the owner: the Thread returns to the queue and nothing runs until a login is usable", async () => {
+    let runs = 0;
+    let until: number | null = null;
+    await failedAttempt(
+      {
+        async run() {
+          runs++;
+          until = Date.now() + 15 * 60_000; // every login is now cooling down
+          throw new AttemptError("quota", "All fallback subscription providers exhausted");
+        },
+        blockedUntil: () => until,
+      },
+      ({ ledger, notified }) => {
+        expect(runs).toBe(1); // the second tick started nothing
+        expect(ledger.getThread(4)).toMatchObject({ phase: { kind: "queued" }, implementCount: 0 });
+        expect(notified).toHaveLength(0);
+      },
+    );
+  });
+
   it("puts an expired login to the owner as credentials, with the login advice", async () => {
     await failedAttempt(
       { async run() { throw new AttemptError("auth", "claude: login expired"); } },
