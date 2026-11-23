@@ -129,6 +129,9 @@ const REVIEW_RESERVATION_USD = 0.25;
  * - Owner Control (`run | paused | stopped`) is derived fresh from GitHub labels every tick.
  * - Mode (`autonomous | advisory`) structurally prevents factory attempts after Handoff.
  */
+/** Provisional: most clean (0-token) rebases one Thread may take while ready PRs land ahead of it one by one. */
+const DETERMINISTIC_REBASE_CAP = 8;
+
 export class Reconciler {
   private readonly cfg: ArchangelConfig;
   private readonly ledger: Ledger;
@@ -148,6 +151,8 @@ export class Reconciler {
   private readonly runningTasks = new Map<number, RunningTask>();
   /** The one PoC build in flight, if any: it takes a concurrency slot like a Thread's Attempt. */
   private prShot: Promise<void> | null = null;
+  /** Set when this tick already merged a PR: `main` moved, so every other landing PR is now behind and waits for the next tick's rebase. */
+  private mergedThisTick = false;
   private pocBuild: { abortController: AbortController; promise: Promise<void> } | null = null;
   private readonly rejectedIssueCache = new Map<number, string>(); // issueNumber -> updatedAt
   /** The workflow resolved at the start of the current tick; null until the first tick resolves one. */
@@ -305,6 +310,7 @@ export class Reconciler {
   }
 
   private async runTickInternal(now: number): Promise<void> {
+    this.mergedThisTick = false;
     let phaseStart = Date.now();
     const endPhase = (phase: "sync" | "threads" | "signals" | "scouts"): void => {
       emit("tick_phase_ms", Date.now() - phaseStart, { phase }, this.ledger.repo);
@@ -388,7 +394,11 @@ export class Reconciler {
       .listThreads()
       .filter((t) => t.phase.kind !== "done");
 
-    const inProgress = openThreads.filter((t) => t.phase.kind !== "queued");
+    // Ready PRs land one at a time, oldest PR first: each merge moves main, and the next PR is rebased and re-checked on the new tip.
+    const landingPr = (t: ThreadRecord) => (t.phase.kind === "landing" ? t.phase.prNumber : Number.MAX_SAFE_INTEGER);
+    const inProgress = openThreads
+      .filter((t) => t.phase.kind !== "queued")
+      .sort((a, b) => landingPr(a) - landingPr(b));
     const queued = openThreads.filter((t) => t.phase.kind === "queued");
 
     for (const thread of inProgress) {
@@ -2492,7 +2502,8 @@ export class Reconciler {
     // The owner's retry grants one more of each Attempt kind (as for implements and revisions), or a merge_conflict retry would
     // re-escalate on the very same conflict at once.
     const rebaseBudget = this.cfg.maxRebasesPerThread + thread.retryGrants;
-    if (cleanMergeTree && thread.rebaseCount < rebaseBudget) {
+    // Free and conflict-free, so it may exceed the LLM rebase budget: with several ready PRs, each merge puts the rest behind main.
+    if (cleanMergeTree && thread.rebaseCount < Math.max(rebaseBudget, DETERMINISTIC_REBASE_CAP)) {
       const rebased = await this.broker.rebaseCleanOntoMain(thread.issueNumber, mainSha, pr.headSha);
       if (rebased.ok) {
         const remoteUrl = await this.github.getRemoteUrlWithToken();
@@ -2724,6 +2735,9 @@ export class Reconciler {
     // Defence in depth behind the blocker: a machine-drafted PR is never merged by the daemon, whatever else happens above.
     if (pr.headRef.startsWith(AGENT_DRAFT_PREFIX)) return;
 
+    // One merge per tick: the merge below moved main, so any other ready PR is stale until it is rebased and its checks rerun.
+    if (this.mergedThisTick) return;
+
     // All blockers empty -> squash merge pinned strictly to approved head SHA (B7 + Opus S10 recovery!).
     let squashSha: string;
     try {
@@ -2741,6 +2755,7 @@ export class Reconciler {
       squashSha = after.mergeCommitSha;
     }
 
+    this.mergedThisTick = true;
     await this.pinEval(thread.issueNumber, pr.headSha, pr.baseSha);
     const mergeRow = this.ledger.recordMerge({
       issueNumber: thread.issueNumber,
