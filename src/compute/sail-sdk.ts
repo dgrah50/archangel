@@ -3,6 +3,7 @@ import path from "node:path";
 import { App, EgressPolicy, Image, Sailbox, type ImageSpec } from "@sailresearch/sdk";
 import type { GitBroker } from "../broker/git-broker.js";
 import type { CliProvider, ComputeConfig } from "../config.js";
+import { AGY_BROKER_SECRET, AGY_PLACEHOLDER_ENV } from "./agy-broker-adapter.js";
 import { CODEX_BROKER_SECRET, CODEX_PLACEHOLDER_ENV } from "./codex-broker-adapter.js";
 import { SailProvider, SailSpend, type SailBoxInfo, type SailClient } from "./sail.js";
 
@@ -18,18 +19,22 @@ const IMAGE_REV = 2;
 const CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN";
 const OPENAI_KEY = "OPENAI_API_KEY";
 const GEMINI_KEY = "GEMINI_API_KEY";
+/** The hosts agy 1.5.14 sends its consumer login to: the daily one was observed on the wire; the production one is inferred from the binary. */
+const AGY_HOSTS = ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"];
 
 /**
  * Each provider that runs on Sail has one host, one placeholder env var and one header the egress policy swaps the real secret into.
  * Only hosts of configured providers are reachable, plus the package registry. GitHub is absent because the repo arrives as a bundle,
  * and so is every OAuth host (auth.openai.com, oauth2.googleapis.com): a box can never refresh a login.
  */
-export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "codexBrokerHome" | "geminiApiKeySecret">) {
+export function sailPolicyDoc(cfg: Pick<SailConfig, "claudeTokenSecret" | "codexApiKeySecret" | "codexBrokerHome" | "geminiApiKeySecret" | "agyBrokerHome">) {
   const routes = [
     { secret: cfg.claudeTokenSecret, host: "api.anthropic.com", env: CLAUDE_TOKEN, prefix: "sk-ant-oat01-", header: "authorization" },
     ...(cfg.codexApiKeySecret ? [{ secret: cfg.codexApiKeySecret, host: "api.openai.com", env: OPENAI_KEY, prefix: "sk-", header: "authorization" }] : []),
     // The broker's access token for a ChatGPT login: only chatgpt.com is reachable, never auth.openai.com, so a box cannot refresh.
     ...(cfg.codexBrokerHome ? [{ secret: CODEX_BROKER_SECRET, host: "chatgpt.com", env: CODEX_PLACEHOLDER_ENV, prefix: "cgpt-", header: "authorization" }] : []),
+    // The broker's access token for a Google login: only the Cloud Code hosts are reachable, never oauth2.googleapis.com or accounts.google.com, so a box cannot refresh.
+    ...(cfg.agyBrokerHome ? AGY_HOSTS.map((host) => ({ secret: AGY_BROKER_SECRET, host, env: AGY_PLACEHOLDER_ENV, prefix: "ya29", header: "authorization" })) : []),
     ...(cfg.geminiApiKeySecret ? [{ secret: cfg.geminiApiKeySecret, host: "generativelanguage.googleapis.com", env: GEMINI_KEY, prefix: "AIza", header: "x-goog-api-key" }] : []),
   ];
   return {
@@ -46,7 +51,7 @@ export function remoteProviders(compute: ComputeConfig): ReadonlySet<CliProvider
   const set = new Set<CliProvider>();
   if (sail?.remoteClaudeAttempts) set.add("claude");
   if (sail?.codexApiKeySecret || sail?.codexBrokerHome) set.add("codex");
-  if (sail?.geminiApiKeySecret) set.add("agy");
+  if (sail?.geminiApiKeySecret || sail?.agyBrokerHome) set.add("agy");
   return set;
 }
 

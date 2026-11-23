@@ -24,6 +24,7 @@ maxRebasesPerThread: 1              # conflict-resolution rebase Attempts per th
 #     remoteClaudeAttempts: false   # let claude entries run on Sail (off: they stay local)
 #     codexApiKeySecret: OPENAI_API_KEY_SAIL   # codex entries run on Sail with this OpenAI API key (`sail secret set <name>`); unset: codex stays local
 #     codexBrokerHome: ~/.archangel/accounts/codex-sail   # instead of codexApiKeySecret: a dedicated ChatGPT login the daemon's token broker keeps fresh (see README, Running providers on Sail)
+#     agyBrokerHome: ~/.archangel/accounts/agy-sail   # instead of geminiApiKeySecret: a dedicated Google account's agy login (HOME=<dir> agy) the token broker keeps fresh (see README)
 #     geminiApiKeySecret: GEMINI_API_KEY_SAIL  # agy entries run on Sail with this Gemini API key; unset: agy stays local
 
 # Execution timeouts (ms unless noted)

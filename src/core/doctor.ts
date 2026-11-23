@@ -5,6 +5,7 @@ import net from "node:net";
 import { promisify } from "node:util";
 import { ConfigError, REPO_POLICY_PATH, accountEnv, accountsFor, loadProjectConfigs, resolvePaths, resolveRequiredReviewers, writerVendors, type Account, type ArchangelConfig } from "../config.js";
 import { Secret } from "@sailresearch/sdk";
+import { AGY_BROKER_ID, AGY_BROKER_SECRET } from "../compute/agy-broker-adapter.js";
 import { CODEX_BROKER_ID, CODEX_BROKER_SECRET } from "../compute/codex-broker-adapter.js";
 import { readBrokerState } from "../compute/token-broker.js";
 import { assessPinDrift, latestGateCommit } from "./gate-pin.js";
@@ -297,11 +298,16 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
   }
 
   // 4b. The Sail token broker for a dedicated codex ChatGPT login: its state and the token lifetime it measured.
-  if (first.compute.provider === "sail" && first.compute.sail?.codexBrokerHome) {
-    const st = readBrokerState(paths.dataDir, CODEX_BROKER_ID);
+  const brokerChecks = [
+    { id: CODEX_BROKER_ID, home: first.compute.sail?.codexBrokerHome, relogin: "CODEX_HOME=<codexBrokerHome> codex login" },
+    { id: AGY_BROKER_ID, home: first.compute.sail?.agyBrokerHome, relogin: "HOME=<agyBrokerHome> agy" },
+  ];
+  for (const bc of brokerChecks) {
+    if (first.compute.provider !== "sail" || !bc.home) continue;
+    const st = readBrokerState(paths.dataDir, bc.id);
     checks.push({
-      id: "sail_broker",
-      name: "Sail token broker (codex)",
+      id: bc.id === CODEX_BROKER_ID ? "sail_broker" : `sail_broker:${bc.id}`,
+      name: `Sail token broker (${bc.id})`,
       status: st?.status === "ok" && (st.expiresAt ?? 0) > Date.now() ? "pass" : "fail",
       detail: !st
         ? "the broker has not refreshed yet"
@@ -310,7 +316,7 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
           : (st.expiresAt ?? 0) <= Date.now()
             ? "the access token has expired and the broker has not refreshed it (is the daemon running?)"
             : `ok; measured access-token lifetime ${st.lifetimeSeconds !== null ? `${(st.lifetimeSeconds / 3600).toFixed(1)}h` : "unknown"}, expires ${new Date(st.expiresAt ?? 0).toISOString()}`,
-      remediation: st?.status === "ok" && (st.expiresAt ?? 0) > Date.now() ? undefined : "Start the daemon; if it stays failed, log the dedicated account in again: CODEX_HOME=<codexBrokerHome> codex login",
+      remediation: st?.status === "ok" && (st.expiresAt ?? 0) > Date.now() ? undefined : `Start the daemon; if it stays failed,log the dedicated account in again: ${bc.relogin}`,
     });
   }
 
@@ -386,6 +392,7 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
       ...(sail.remoteClaudeAttempts ? [{ provider: "claude", secret: sail.claudeTokenSecret }] : []),
       ...(sail.codexApiKeySecret ? [{ provider: "codex", secret: sail.codexApiKeySecret }] : []),
       ...(sail.codexBrokerHome ? [{ provider: "codex (broker)", secret: CODEX_BROKER_SECRET }] : []),
+      ...(sail.agyBrokerHome ? [{ provider: "agy (broker)", secret: AGY_BROKER_SECRET }] : []),
       ...(sail.geminiApiKeySecret ? [{ provider: "agy", secret: sail.geminiApiKeySecret }] : []),
     ];
     if (needed.length > 0) {
@@ -398,7 +405,7 @@ async function runChecks(opts: DoctorOptions): Promise<DoctorReport> {
             name: `Sail secret for ${n.provider}`,
             status: found ? "pass" : "fail",
             detail: found ? `${n.secret} exists` : `${n.secret} is not a Sail secret`,
-            remediation: found ? undefined : n.secret === CODEX_BROKER_SECRET ? "Start the daemon: the token broker creates it." : `Run \`sail secret set ${n.secret}\` and paste the key at the hidden prompt.`,
+            remediation: found ? undefined : n.secret === CODEX_BROKER_SECRET || n.secret === AGY_BROKER_SECRET ?"Start the daemon: the token broker creates it." : `Run \`sail secret set ${n.secret}\` and paste the key at the hidden prompt.`,
           });
         }
       } catch (err) {
