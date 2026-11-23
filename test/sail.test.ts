@@ -163,5 +163,11 @@ describe("SailProvider", () => {
     const v = await broker.fetchAndValidateCollected(collected, 1, mainSha, gate);
     expect(sh(bare, "rev-parse", `${v.headSha}^`)).toBe(mainSha);
     expect(v.changedFiles).toEqual(["feature.txt"]);
+
+    // The bundle is fetched: destroying the box removes it (the daemon left one temp dir per collected result).
+    const bundle = (collected as { path: string }).path;
+    expect(fs.existsSync(bundle)).toBe(true);
+    provider.destroy(ws);
+    expect(fs.existsSync(path.dirname(bundle))).toBe(false);
   });
 });

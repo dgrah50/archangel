@@ -87,6 +87,8 @@ export class SailProvider implements ComputeProvider {
   /** Boxes this process prepared and has not destroyed: the live Attempts that own a box. */
   private readonly live = new Set<string>();
   private readonly startedAt = new Map<string, number>();
+  /** The temp dir holding each box's collected result bundle; removed with the box. */
+  private readonly collected = new Map<string, string>();
 
   constructor(private readonly o: SailProviderOptions) {}
 
@@ -186,12 +188,18 @@ export class SailProvider implements ComputeProvider {
       fs.rmSync(dir, { recursive: true, force: true });
       throw err;
     }
+    this.collected.set(ws.id, dir);
     return { kind: "bundle", path: file };
   }
 
   /** Idempotent. Fire and forget like the interface says: a failed terminate is left to `maxLifetimeSeconds` and the sweep. */
   destroy(ws: Workspace): void {
     this.live.delete(ws.id);
+    const bundleDir = this.collected.get(ws.id);
+    if (bundleDir !== undefined) {
+      this.collected.delete(ws.id);
+      fs.rmSync(bundleDir, { recursive: true, force: true });
+    }
     const started = this.startedAt.get(ws.id);
     if (started !== undefined) {
       this.startedAt.delete(ws.id);
