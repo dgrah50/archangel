@@ -15,6 +15,8 @@ import { bump, bumpRunner } from "../core/bump.js";
 import { TelegramNotifier } from "../core/notifier.js";
 import { assertBindable, startUiServer } from "../core/ui-server.js";
 import { runScoutsForProject } from "../core/scout.js";
+import { ownerFix } from "../core/self-build.js";
+import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
 import { SandboxExecProvider } from "../compute/sandbox-exec.js";
 import { execFileGroup } from "../core/spawn-group.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
@@ -273,6 +275,33 @@ export function registerOps(program: Command): void {
     .description("List bundled Scout skills (reference them from a Scout's `skills` list in .agents/archangel.json)")
     .action(() => {
       for (const ref of listAllSkills()) console.log(ref);
+    });
+
+  scoutCmd
+    .command("fix <repo> <issue>")
+    .description("Build the fix for a Scout's bug proposal here with the implementer (it may edit protected paths), show the diff, and open an owner-authored PR on selfbuild/* that you merge yourself")
+    .option("-c, --config <path>", "Path to archangel.yaml")
+    .option("--yes", "Skip the confirmation prompt", false)
+    .action(async (repo: string, issueArg: string, opts: { config?: string; yes?: boolean }) => {
+      const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+      const paths = resolvePaths(cfg);
+      const ledger = new Ledger(paths.ledgerDbPath, { repo, timeZone: cfg.dailyTimezone });
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const url = await ownerFix(execRunner, ledger, {
+          repo,
+          issue: Number(issueArg),
+          yes: Boolean(opts.yes),
+          cfg,
+          implementer: new SubscriptionImplementer({ chains: cfg.chains, accounts: cfg.accounts, transcriptsDir: paths.transcriptsDir }),
+          confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
+          log: (line) => console.log(line),
+        });
+        console.log(`Opened ${url}. Merging it is up to you; Archangel never merges it.`);
+      } finally {
+        rl.close();
+        ledger.close();
+      }
     });
 
   scoutCmd

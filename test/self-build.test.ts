@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import type { Implementer } from "../src/agents/implementer.js";
 import type { OnboardRunner } from "../src/core/onboard.js";
 import { scoutContentHash } from "../src/core/scout.js";
-import { selfBuild } from "../src/core/self-build.js";
+import { ownerFix, selfBuild } from "../src/core/self-build.js";
 import { Ledger } from "../src/ledger/store.js";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -78,8 +78,26 @@ describe("archangel pitch promote --build", () => {
     }
   });
 
+  it("scout fix builds only a proposal this Ledger recorded, and only while its text is what the Scout filed", async () => {
+    const ledger = new Ledger(":memory:", { repo: "acme/app" });
+    ledger.recordScoutProposal({ issueNumber: 5, scoutName: "bug-hunt", contentSha256: scoutContentHash("t", "filed body"), titleFp: "fp", fileSha256: "h", autoPromoted: false });
+    const calls: string[][] = [];
+    const runner: OnboardRunner = {
+      async run(_cmd, args) {
+        calls.push(args);
+        return JSON.stringify({ title: "t", body: "edited body", state: "OPEN" });
+      },
+    };
+    const deps = { repo: "acme/app", yes: true, cfg: { implementTimeoutMs: 60_000, setupTimeoutMs: 60_000 }, implementer: {} as Implementer, confirm: async () => true, log: () => {} };
+    await expect(ownerFix(runner, ledger, { ...deps, issue: 6 })).rejects.toThrow("not a Scout proposal");
+    await expect(ownerFix(runner, ledger, { ...deps, issue: 5 })).rejects.toThrow("edited after it was filed");
+    // Refused before anything was cloned or built.
+    expect(calls.every((a) => a[0] === "issue" && a[1] === "view")).toBe(true);
+    ledger.close();
+  });
+
   it("is reachable only from the owner's CLI, never from the daemon", () => {
     const importers = execFileSync("grep", ["-rl", "self-build.js", "src"], { encoding: "utf8" }).trim().split("\n");
-    expect(importers).toEqual(["src/cli/pitch.ts"]);
+    expect(importers.sort()).toEqual(["src/cli/ops.ts", "src/cli/pitch.ts"]);
   });
 });

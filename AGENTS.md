@@ -22,6 +22,10 @@ No UI tests in this repo: no rendering, component-output, contrast or accessibil
 
 When you touch an area, delete tests there that break these rules. Cutting a useless test is a good change.
 
+## Gate bundle: rebuild it when you change what it bundles
+
+`bin/archangel-gate.mjs` is the Gate, bundled from `src/gate/**` and everything that imports into it (`src/config.ts` among others). When you change one of those files, run `bun run build:gate-bundle` and commit the rebuilt bundle in the same PR. `bun run check` (and CI) fails on a stale bundle; `bun run test:all` alone does not notice.
+
 ## UI changes: before and after screenshots in the PR
 
 Follow `ui/DESIGN.md` for how pages should look.

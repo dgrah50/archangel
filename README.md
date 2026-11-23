@@ -345,6 +345,7 @@ Repo policy (`.agents/archangel.json` on `main`):
 | `archangel metrics [--days <n>] [--repo <owner/name>] [--json]` | Print outcomes per merged fix, owner corrections, vendor agreement, and active cooldowns. |
 | `archangel events [--repo <owner/name>] [--topic <prefix>] [--issue <n>] [--limit <n>]` | Inspect the append-only SQLite audit log. |
 | `archangel scout run [name] [--repo <owner/name>] [--dry-run]` | Run read-only Scouts against `main`, or list declared Scouts with `--dry-run`. |
+| `archangel scout fix <repo> <issue> [--yes]` | Owner-run fix for a Scout's bug proposal that touches protected paths: implements it locally, runs the repo's tests, shows the diff, then opens an owner-authored PR from `selfbuild/fix-<issue>`. You merge it; the daemon never does. |
 | `archangel scout skills` | List bundled Scout skills (`general/`, `go/`, `typescript/`). |
 | `archangel pitch promote <repo> <issue> [--slice <n>] [--chain] [--yes]` | Turn pitch slice(s) (single number or comma list like `1,2`) into owner-authored `class:feature` issues. |
 | `archangel pitch promote <repo> <issue> --slice <n> --build [--yes]` | Owner-run self-build for a slice touching protected paths: implements it locally, shows the diff, then opens an owner-authored PR from `selfbuild/<issue>-<n>`. You merge it; the daemon never does. |
