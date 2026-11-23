@@ -155,14 +155,19 @@ describe("pitch Scout runs", () => {
     }
   });
 
-  it("queues an automatic PoC build for a pitch that is not size L, never for size L", async () => {
+  it("queues an automatic PoC build for a pitch that is not size L, never for size L or for one that touches a protected path", async () => {
     const f = await fixture();
     try {
       await f.run(out(pitch({ size: "M" })));
       await f.run(out(pitch({ size: "L", title: "Split the monolith into packages" })), { now: NOW + 8 * DAY });
-      expect(f.created).toHaveLength(2);
+      // The daemon may not edit the workflow file, so a build could only fail its bounds: the pitch points the owner at --build instead.
+      await f.run(out(pitch({ title: "Drop the unused scout entry", evidence: [evidence({ file: ".agents/archangel.json" }), evidence()] })), { now: NOW + 16 * DAY });
+      expect(f.created).toHaveLength(3);
       expect(f.ledger.getPoc(300)).toMatchObject({ autoQueued: true, builds: 0 });
       expect(f.ledger.getPoc(301)).toBeNull();
+      expect(f.ledger.getPoc(302)).toBeNull();
+      expect(f.created[2]!.body).toContain("pitch promote acme/app <this issue> --slice 1 --build");
+      expect(f.created[0]!.body).not.toContain("--build");
     } finally {
       f.cleanup();
     }

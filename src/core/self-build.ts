@@ -10,6 +10,7 @@ import { GatePolicySchema, REPO_POLICY_PATH, type ArchangelConfig } from "../con
 import { AttemptError } from "../ledger/schema.js";
 import type { Ledger } from "../ledger/store.js";
 import type { OnboardRunner } from "./onboard.js";
+import type { PitchItem } from "./pitch.js";
 import { loadPromotablePitch, markSlices, parseSlices, sliceIssueBody } from "./pitch-promote.js";
 import { loadRepoInstructions } from "./workflow-load.js";
 
@@ -39,6 +40,9 @@ const OWNER_BUILD_NOTE = [
   "OWNER-RUN BUILD (this overrides rule 3's size limits and rule 4 above): the repository's owner is running you locally and will read the full diff before anything is pushed.",
   "You MAY edit protected paths if the task needs it. Still keep the change as small as the task allows, and do not edit lockfiles or CI workflows unless the task requires it.",
 ].join("\n");
+
+/** Conventional-commit prefix of the PR, by what kind of change the pitch is. */
+const PR_PREFIX: Record<PitchItem["type"], string> = { removal: "refactor", architecture: "refactor", performance: "perf", ux: "feat", feature: "feat" };
 
 export async function selfBuild(runner: OnboardRunner, ledger: Ledger, input: SelfBuildInput): Promise<string> {
   const { pitch, promotedSoFar } = await loadPromotablePitch(runner, ledger, input);
@@ -83,7 +87,8 @@ export async function selfBuild(runner: OnboardRunner, ledger: Ledger, input: Se
       if (result.aborted) throw new Error("The implementer was aborted; nothing was pushed.");
       if (result.failure) throw new Error(`The implementer did not finish (${result.failure}); nothing was pushed.`);
 
-      const headSha = await broker.stageCloneHead(ws.path, `refs/archangel/selfbuild/${input.issue}-${index + 1}`, `feat: ${title}`);
+      const prTitle = `${PR_PREFIX[pitch.type]}: ${title}`;
+      const headSha = await broker.stageCloneHead(ws.path, `refs/archangel/selfbuild/${input.issue}-${index + 1}`, prTitle);
       if (headSha === mainSha) throw new Error("The implementer changed nothing; nothing was pushed.");
 
       // The Gate's protected-path check would (rightly) refuse this PR; what runs here is the repo's own testCmd, with no credentials.
@@ -106,16 +111,21 @@ export async function selfBuild(runner: OnboardRunner, ledger: Ledger, input: Se
       await runner.run("git", ["update-ref", `refs/heads/${branch}`, headSha], { cwd: bare });
       await runner.run("git", ["push", "origin", branch], { cwd: bare });
       const prBody = [
-        `Built locally by \`archangel pitch promote --build\` from pitch #${input.issue} (agent-written, owner-promoted), slice ${index + 1}. The owner read the diff before it was pushed.`,
+        "## Summary",
         "",
-        `- \`${gate.testCmd}\`: passed locally`,
-        "- This touches paths the daemon may never edit, so the Gate's protected-path check will flag it; merge it yourself once CI is otherwise green. Archangel never merges it.",
+        `Built locally by \`archangel pitch promote --build\` from pitch #${input.issue} (agent-written, owner-promoted), slice ${index + 1} of ${pitch.slices.length}. The owner read the diff before it was pushed.`,
+        "",
+        `**Problem.** ${pitch.problem}`,
+        "",
+        `**This slice.** ${pitch.slices[index]!.acceptance}`,
+        "",
+        `**Verified.** \`${gate.testCmd}\` passed locally. No reviewer model read this change: the owner is its reviewer, and Archangel never merges it.`,
         "",
         "```",
         stat,
         "```",
       ].join("\n");
-      const url = (await runner.run("gh", ["pr", "create", "--repo", input.repo, "--base", base, "--head", branch, "--title", title, "--body", prBody])).trim();
+      const url = (await runner.run("gh", ["pr", "create", "--repo", input.repo, "--base", base, "--head", branch, "--title", prTitle, "--body", prBody])).trim();
 
       markSlices(ledger, input.issue, [index], pitch.slices.length, input.now);
       ledger.appendAudit("pitch/self_built", input.issue, "owner", { slice: index, branch, pr: url }, input.now);
