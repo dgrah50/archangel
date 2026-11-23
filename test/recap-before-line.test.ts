@@ -18,6 +18,14 @@ it("keeps Reproducibly prose and stops at Expected and Repro headings", () => {
   );
   expect(emphasizedLine).not.toContain("every item is listed");
 
+  const multiWordLabelsLine = beforeLine(
+    7,
+    "Digest drops items",
+    "Digest drops the last item.\n\n**Reproduction steps:** open a digest.\n\n**Expected result:** every item is listed.",
+  );
+  expect(multiWordLabelsLine).not.toContain("open a digest");
+  expect(multiWordLabelsLine).not.toContain("every item is listed");
+
   const markdownHeadingLine = beforeLine(
     7,
     "Digest drops items",
@@ -31,4 +39,11 @@ it("keeps Reproducibly prose and stops at Expected and Repro headings", () => {
     "Digest drops the last item.\n\n## Repro.\nSteps follow.",
   );
   expect(reproHeadingLine).not.toContain("Steps follow");
+
+  const reproduceHeadingLine = beforeLine(
+    7,
+    "Digest drops items",
+    "Digest drops the last item.\n\n## Reproducing the bug\nSteps follow.",
+  );
+  expect(reproduceHeadingLine).not.toContain("Steps follow");
 });
