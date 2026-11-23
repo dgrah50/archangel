@@ -1,5 +1,7 @@
 # Working on Archangel
 
+Run `bun run check` before you push: it is exactly what CI runs. Project invariants and the merge procedure (`bun scripts/merge-pr.ts <n>`) are in `CONTRIBUTING.md`.
+
 ## Tests: few, and each one earns its place
 
 Write a test only when it locks down behavior that something relies on, and that a competent maintainer could plausibly break without noticing. If the code is simple enough to maintain without a test holding it down, don't write the test. Trust future maintainers.
@@ -21,6 +23,8 @@ No UI tests in this repo: no rendering, component-output, contrast or accessibil
 When you touch an area, delete tests there that break these rules. Cutting a useless test is a good change.
 
 ## UI changes: before and after screenshots in the PR
+
+Follow `ui/DESIGN.md` for how pages should look.
 
 A PR that changes how the dashboard looks (anything under `ui/`) shows before and after screenshots of every page it touches in its description, and is not merged without them. Shoot both from the same seeded data at the same viewport: before from the base commit, after from the PR head. Lay them out as a table, one row per page.
 

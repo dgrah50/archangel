@@ -10,6 +10,14 @@ export interface ChainEntry {
   provider: Provider;
   model?: string;
 }
+export interface AccountEntry {
+  id: string;
+  provider: Provider;
+  home?: string;
+  maxAttemptsPerDay?: number;
+}
+/** With no `accounts` list there is one implicit account per provider, named after it. */
+const DEFAULT_ACCOUNTS: AccountEntry[] = PROVIDERS.map((provider) => ({ id: provider, provider }));
 export const WRITER_CHAINS = ["implement", "revise", "rebase"] as const;
 export interface HostForm {
   ownerUserId: number | null;
@@ -23,6 +31,7 @@ export interface HostForm {
   maxRebasesPerThread: number;
   chains: Record<(typeof WRITER_CHAINS)[number], ChainEntry[]>;
   reviewerChain: ChainEntry[];
+  accounts: AccountEntry[];
 }
 
 type Path = Array<string | number>;
@@ -73,6 +82,31 @@ export function moveChainEntry(text: string, chain: Path, i: number, by: -1 | 1)
   });
 }
 
+/** Writes the implicit accounts out as a list, so one of them can be edited. */
+const withAccounts = (d: Document) => {
+  if (!isSeq(d.getIn(["accounts"]))) d.setIn(["accounts"], DEFAULT_ACCOUNTS.map((x) => ({ ...x })));
+};
+export function addAccount(text: string, account: AccountEntry): string {
+  return edit(text, (d) => {
+    withAccounts(d);
+    d.addIn(["accounts"], account);
+  });
+}
+export function removeAccount(text: string, i: number): string {
+  return edit(text, (d) => {
+    withAccounts(d);
+    d.deleteIn(["accounts", i]);
+  });
+}
+/** Sets or (with undefined) removes one optional field of an account. */
+export function setAccountField(text: string, i: number, key: "home" | "maxAttemptsPerDay", value: string | number | undefined): string {
+  return edit(text, (d) => {
+    withAccounts(d);
+    if (value === undefined) d.deleteIn(["accounts", i, key]);
+    else d.setIn(["accounts", i, key], value);
+  });
+}
+
 /** The form's view of the text, with the schema's defaults for absent keys; null when the text is not a parsable mapping. */
 export function readForm(text: string): HostForm | null {
   let j: Record<string, unknown>;
@@ -96,6 +130,7 @@ export function readForm(text: string): HostForm | null {
     maxRebasesPerThread: num("maxRebasesPerThread", 1),
     chains: { implement: chain(c.implement, DEFAULT_CHAIN), revise: chain(c.revise, DEFAULT_CHAIN), rebase: chain(c.rebase, DEFAULT_CHAIN) },
     reviewerChain: chain(j.reviewerChain, DEFAULT_REVIEWERS),
+    accounts: Array.isArray(j.accounts) ? (j.accounts as AccountEntry[]).map((x) => ({ id: String(x.id), provider: x.provider, ...(x.home ? { home: String(x.home) } : {}), ...(typeof x.maxAttemptsPerDay === "number" ? { maxAttemptsPerDay: x.maxAttemptsPerDay } : {}) })) : DEFAULT_ACCOUNTS,
   };
 }
 
@@ -138,6 +173,8 @@ const CHAINS: Array<[string, string, (f: HostForm) => ChainEntry[]]> = [
 ];
 export const chainText = (c: ChainEntry[]) => c.map((e) => (e.model ? `${e.provider} ${e.model}` : e.provider)).join(", then ");
 
+const accountsText = (list: AccountEntry[]) => list.map((x) => `${x.id} (${x.provider}${x.home ? `, ${x.home}` : ""}${x.maxAttemptsPerDay ? `, ${x.maxAttemptsPerDay} a day` : ""})`).join(", ");
+
 /** What the unsaved text changes against the saved text, in the form's own terms. */
 export function hostChanges(baseText: string, text: string): HostChange[] {
   const a = readForm(baseText);
@@ -155,5 +192,6 @@ export function hostChanges(baseText: string, text: string): HostChange[] {
   for (const [k, label, get] of CHAINS) {
     if (chainText(get(a)) !== chainText(get(b))) out.push({ key: k, label, from: chainText(get(a)), to: chainText(get(b)), direction: null });
   }
+  if (accountsText(a.accounts) !== accountsText(b.accounts)) out.push({ key: "accounts", label: "Accounts", from: accountsText(a.accounts), to: accountsText(b.accounts), direction: null });
   return out;
 }

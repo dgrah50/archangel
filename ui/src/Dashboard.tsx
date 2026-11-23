@@ -2,6 +2,8 @@ import { Box, Flex, Link, Text } from "@chakra-ui/react";
 import type { ReactNode } from "react";
 import type { HostStatus } from "../../src/core/host-facts.js";
 import type { UiItem, UiState } from "../../src/core/ui-state.js";
+import type { AccountRow } from "../../src/core/ui-accounts.js";
+import { back, useAccounts } from "./AccountsPanel";
 import { age, recommendationShort } from "./common";
 import { Badge } from "./arc/badge/badge";
 import { BarChart } from "./arc/bar-chart/bar-chart";
@@ -53,6 +55,7 @@ export function Dashboard({ state: s, host }: { state: UiState; host: HostStatus
         <LinePanel state={s} />
         <SpendPanel state={s} />
       </Flex>
+      <AccountsCard now={now} />
       <StopsNext state={s} host={host} />
       <Flex direction="column" gap="1" pt="7" flexShrink={0}>
         <Group label="Needs you" n={waiting} tone="owner">
@@ -188,6 +191,77 @@ function Chip({ href, solid, children }: { href: string; solid?: boolean; childr
     <Link href={href} target="_blank" rel="noreferrer noopener" display="flex" alignItems="center" h="24px" px="2.5" rounded="full" flexShrink={0} textStyle="meta" fontSize="12px" textDecoration="none" _hover={{ textDecoration: "none", borderColor: "fg.subtle" }} {...(solid ? { bg: "fg", color: "bg", fontWeight: "500" } : { borderWidth: "1px", borderColor: "border", color: "fg.muted" })}>
       {children}
     </Link>
+  );
+}
+
+/** A thin bar: how much of an allowance is used. Amber from 90%. */
+function Bar({ fraction }: { fraction: number }) {
+  const f = Math.min(1, Math.max(0, fraction));
+  return (
+    <Box h="6px" rounded="full" bg="bg.muted" overflow="hidden" flex="1">
+      <Box h="full" rounded="full" bg={f >= 0.9 ? "owner" : "fg"} w={`${Math.round(f * 100)}%`} />
+    </Box>
+  );
+}
+
+const ROLE_WORD: Record<string, string> = { implement: "build", revise: "revise", rebase: "rebase", review: "review" };
+
+/** One row per account on this machine: whether it can take work, and how much of today's allowance it has used. Absent when the dashboard cannot read accounts (remote mode). */
+function AccountsCard({ now }: { now: number }) {
+  const { data } = useAccounts();
+  if (!data || data.state !== "ok") return null;
+  return (
+    <Box mt="4" flexShrink={0}>
+      <Panel>
+        <Flex align="baseline" justify="space-between" pb="2">
+          <Text textStyle="body13" color="fg.muted">
+            Accounts
+          </Text>
+          <Link href="#/settings" textStyle="meta" color="fg.muted">
+            Configure
+          </Link>
+        </Flex>
+        <Flex direction="column" css={{ "& > * + *": { borderTopWidth: "1px", borderTopColor: "var(--chakra-colors-border)" } }}>
+          {data.accounts.map((a) => (
+            <AccountLine key={a.id} a={a} now={now} />
+          ))}
+        </Flex>
+      </Panel>
+    </Box>
+  );
+}
+
+function AccountLine({ a, now }: { a: AccountRow; now: number }) {
+  const cooling = a.cooldownUntil !== null && a.cooldownUntil > now;
+  const idle = a.roles.length === 0;
+  const capped = a.maxAttemptsPerDay !== null;
+  const today = `${a.attemptsToday} ${a.attemptsToday === 1 ? "attempt" : "attempts"} today`;
+  return (
+    <Flex align="center" columnGap="4" rowGap="1" minH="44px" py="2" wrap={{ base: "wrap", lg: "nowrap" }}>
+      <Flex direction="column" w={{ lg: "250px" }} flexShrink={0} minW="0">
+        <Text textStyle="command" fontSize="13px" color="fg" truncate>
+          {a.id}
+        </Text>
+        <Text textStyle="meta" color="fg.subtle" truncate>
+          {a.provider}
+          {idle ? "" : ` · ${a.roles.map((r) => ROLE_WORD[r] ?? r).join(", ")}`}
+        </Text>
+      </Flex>
+      <Box w={{ lg: "220px" }} flexShrink={0}>
+        <Badge tone={cooling ? "warning" : idle ? "neutral" : "success"} dot pill>
+          {cooling ? `Hit its limit, back in ${back(a.cooldownUntil! - now)}` : idle ? "Not in any chain" : "Ready"}
+        </Badge>
+      </Box>
+      <Flex align="center" gap="3" flex="1" minW="180px">
+        {capped ? <Bar fraction={a.attemptsToday / a.maxAttemptsPerDay!} /> : a.usage ? <Bar fraction={a.usage.usedPercent / 100} /> : <Box flex="1" />}
+        <Text textStyle="body13" color="fg" whiteSpace="nowrap">
+          {capped ? `${a.attemptsToday} of ${a.maxAttemptsPerDay} attempts today` : a.usage ? `${Math.round(a.usage.usedPercent)}% of its limit used` : today}
+        </Text>
+      </Flex>
+      <Text textStyle="meta" color="fg.subtle" w={{ lg: "230px" }} textAlign={{ lg: "end" }} flexShrink={0}>
+        {a.usage && !capped ? `${today} · read ${gap(now - a.usage.observedAt)} ago` : a.lastUsedAt ? `last used ${gap(now - a.lastUsedAt)} ago` : "not used yet"}
+      </Text>
+    </Flex>
   );
 }
 
