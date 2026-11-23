@@ -159,13 +159,18 @@ async function ownerBuild(runner: OnboardRunner, input: OwnerBuildDeps, task: Ow
       const headSha = await broker.stageCloneHead(ws.path, `refs/archangel/${task.branch}`, task.prTitle);
       if (headSha === mainSha) throw new Error("The implementer changed nothing; nothing was pushed.");
 
-      // The Gate's protected-path check would (rightly) refuse this PR; what runs here is the repo's own testCmd, with no credentials.
+      // The Gate passes an owner's branch through unchecked, so what proves this build is the repo's own testCmd, run here with no credentials.
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-selfbuild-home-"));
       let tests;
       try {
         tests = await compute.exec(ws, { cmd: "sh", args: ["-c", gate.testCmd], env: { PATH: process.env.PATH, HOME: home, CI: "1" }, timeoutMs: input.cfg.implementTimeoutMs });
       } finally {
-        fs.rmSync(home, { recursive: true, force: true });
+        // A test run can leave background writers (Go's build cache) in its HOME: retry, and never lose a finished build to a leftover temp dir.
+        try {
+          fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+        } catch (err) {
+          input.log(`Left ${home} behind (${err instanceof Error ? err.message : String(err)}); remove it by hand.`);
+        }
       }
       const testsPassed = tests.code === 0;
       const stat = await broker.diffStat(mainSha, headSha);
@@ -193,6 +198,6 @@ async function ownerBuild(runner: OnboardRunner, input: OwnerBuildDeps, task: Ow
       handle.destroy();
     }
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
