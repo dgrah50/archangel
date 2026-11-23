@@ -117,8 +117,8 @@ export const ESCALATION_POLICY: Record<EscalationCode, EscalationPolicy> = {
   },
   max_attempts: {
     decisionClass: "spending",
-    short: "recommends retry for a fresh budget, or close",
-    recommendation: "The Attempt cap is used up. Retry to grant a fresh budget, or close the issue if it is not worth more runs.",
+    short: "recommends retry for one more Attempt, or close",
+    recommendation: "The Thread has used its Attempts. A retry grants one more Attempt (and one more revision); comment what it should do differently first, or close the issue if it is not worth more runs.",
   },
 };
 
@@ -130,20 +130,32 @@ export const ATTEMPT_FAILURE_ADVICE: Partial<Record<AttemptErrorCategory, string
   cli_missing: "The provider CLI is not installed or not on PATH: install it or run `archangel doctor`, then retry.",
   model_unavailable: "The login cannot run the model named in the reason: change or remove that entry's `model` under `chains` in archangel.yaml (no `model` uses the CLI's default), restart the daemon, then retry.",
   context_overflow: "The prompt exceeded the model's context: narrow the issue, then retry.",
+  quota: "Every account in the chain is at its usage limit: wait for the limit to reset, or add another login under `accounts` in archangel.yaml, then retry.",
+  setup_failed: "The repo's `.agents/setup` script failed (see the reason): fix it on the default branch (`archangel doctor --verify-setup` runs it), then retry.",
 };
 
 /** One-tap answers the owner can post as a comment on the Thread's issue or PR. */
 export const OWNER_COMMANDS_LINE =
   "Reply `/archangel retry` with a hint, `/archangel close`, or `/archangel handoff`.";
 
-/** Decision class of a failed Attempt by its recorded cause; causes not listed stay `attempt_failed`'s own class. */
+/**
+ * Decision class of a failed Attempt by its recorded cause; causes not listed stay `attempt_failed`'s own class. The listed causes
+ * are infrastructure: the implementer never got to work on the issue.
+ */
 const ATTEMPT_FAILURE_CLASS: Partial<Record<AttemptErrorCategory, DecisionClass>> = {
   auth: "credentials",
   cli_missing: "credentials",
   model_unavailable: "credentials",
   permission_denied: "credentials",
   provider_network: "live_infrastructure",
+  setup_failed: "live_infrastructure",
+  quota: "spending",
 };
+
+/** True when the Attempt failed before the implementer could work (login, CLI, model, network, quota, repo setup): it does not count against the Thread's Attempt budget. */
+export function isInfrastructureFailure(cause: AttemptErrorCategory | undefined): boolean {
+  return cause !== undefined && cause in ATTEMPT_FAILURE_CLASS;
+}
 
 export function describeEscalation(code: EscalationCode, workClass: WorkClass = "bugfix", cause?: AttemptErrorCategory): EscalationPolicy {
   const base = ESCALATION_POLICY[code];
