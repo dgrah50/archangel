@@ -50,11 +50,15 @@ const item = (st: PipelineStage | undefined, label: string) => st?.items.find((i
 function sentence(id: string, r: PipelineRepo, settings: SettingsState | null, draft: Workflow | undefined): ReactNode {
   const stage = r.stages.find((s) => s.id === id);
   const host = settings?.host.state === "ok" ? settings.host.config : null;
+  const signalRules = stage?.items.filter((i) => i.label === "signal rule") ?? [];
+  const signalCounts = stage?.metrics.find((m) => m.startsWith("signals (7d): "));
   switch (id) {
     case "intake":
       return (
         <>
           Only issues you wrote and labelled <Mono>ready-for-agent</Mono> are picked up.
+          {signalRules.length > 0 ? ` Signal rules you wrote: ${signalRules.map((i) => i.value).join("; ")}.` : ""}
+          {signalCounts ? ` Signals seen: ${signalCounts.slice("signals (7d): ".length)}.` : ""}
         </>
       );
     case "build": {

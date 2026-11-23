@@ -271,6 +271,31 @@ function select(cases: EvalCase[], max: number): EvalCase[] {
   return picked;
 }
 
+export interface DevFailures {
+  scored: number;
+  /** Known-bad cases the baseline approved, keyed by seeded mutator name (or `owner_dispute`). Closed keys only. */
+  falseApprovals: Record<string, number>;
+  /** Known-good cases the baseline vetoed. */
+  falseVetoes: number;
+}
+
+/** How the CURRENT reviewer wording fails on the dev set (cached verdicts are reused). Counts only: no case text leaves this function. */
+export async function devFailures(opts: Pick<EvalOptions, "ledger" | "sources" | "suiteFor" | "baseline" | "maxCases" | "now">): Promise<DevFailures> {
+  const { cases } = await collectEvalCases(opts.ledger, opts.sources, opts.now ?? Date.now());
+  const chosen = select(cases.filter((c) => c.split === "dev"), opts.maxCases ?? EVAL_THRESHOLDS.defaultMaxCases);
+  const v = await verdictsFor(opts.ledger, chosen, opts.suiteFor(opts.baseline), opts.baseline, null);
+  const out: DevFailures = { scored: v.byCase.size, falseApprovals: {}, falseVetoes: 0 };
+  for (const c of chosen) {
+    const verdict = v.byCase.get(c.id);
+    if (c.label === "bad" && verdict === "approve") {
+      const key = c.mutator && (EVAL_MUTATORS as readonly string[]).includes(c.mutator) ? c.mutator : "owner_dispute";
+      out.falseApprovals[key] = (out.falseApprovals[key] ?? 0) + 1;
+    }
+    if (c.label === "good" && verdict === "veto") out.falseVetoes++;
+  }
+  return out;
+}
+
 export function milestoneProgress(replayable: number): { current: number; next: number | null } {
   return { current: replayable, next: EVAL_THRESHOLDS.milestones.find((m) => replayable < m) ?? null };
 }

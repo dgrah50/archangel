@@ -44,9 +44,9 @@ async function run(revisionSummary: string) {
         async run(input) {
           calls++;
           if (calls === 1) {
-            fs.writeFileSync(path.join(input.cloneDir, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
-            git(input.cloneDir, ["add", "-A"]);
-            git(input.cloneDir, ["commit", "-qm", "fix"]);
+            fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), "package demo\n\nfunc V() int { return 2 }\n");
+            git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+            git((await input.workspaces.local.workspace()).path, ["commit", "-qm", "fix"]);
             return { summary: "ok", costUsd: 0, transcriptPath: null, aborted: false };
           }
           return { summary: revisionSummary, costUsd: 0, transcriptPath: null, aborted: false }; // no new commit

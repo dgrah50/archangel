@@ -13,12 +13,13 @@ import { listReports } from "./eval-reports.js";
 import { buildAccountsState } from "./ui-accounts.js";
 import { buildSettingsState } from "./ui-settings.js";
 import { buildPitchesState } from "./ui-pitches.js";
+import { assetPath, type ImageMime } from "./pitch-ingest.js";
 import { buildThreadDetail } from "./ui-thread.js";
 import { makeHostConfigHandler, readHostConfig } from "./ui-host-config.js";
 import { makeOnboardHandler } from "./ui-onboard.js";
 import { listAllSkills } from "./skills.js";
 import { makeGhReads, type GhRead } from "./ui-gh.js";
-import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits } from "./ui-state.js";
+import { isSchemaBehind, buildUiState, buildWorkflowsState, readLimits, readSignalRules } from "./ui-state.js";
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -83,10 +84,11 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
  * `application/json`, and it can only open an unmerged PR (or preview one). It never writes archangel.yaml.
  */
 export async function startUiServer(
-  ledger: Ledger,
-  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void },
+  ledgerOrGetter: Ledger | (() => Ledger),
+  opts: { host: string; port: number; allowRemote?: boolean; uiDir?: string; proposeRunner?: OnboardRunner; configPath?: string; dataDir?: string; doctor?: DoctorRunner; hostConfig?: { configPath: string; audit: (topic: string, payload: Record<string, unknown>, now: number) => void }; onboardAudit?: (topic: string, payload: Record<string, unknown>, now: number) => void; ledgerMissing?: () => boolean },
 ): Promise<http.Server> {
   assertBindable(opts.host, opts.allowRemote ?? false);
+  const currentLedger = typeof ledgerOrGetter === "function" ? ledgerOrGetter : () => ledgerOrGetter;
   const uiDir = path.resolve(opts.uiDir ?? UI_DIST_DIR);
   if (!fs.existsSync(path.join(uiDir, "index.html"))) {
     throw new Error(`UI bundle not found at ${uiDir}. Run \`bun run build\` (or \`bun run build:ui\`) first.`);
@@ -111,6 +113,7 @@ export async function startUiServer(
     return [...LOOPBACK, opts.host].some((h) => origin === `http://${h.includes(":") && !h.startsWith("[") ? `[${h}]` : h}:${port}`);
   };
   const server = http.createServer(async (req, res) => {
+    const ledger = currentLedger();
     // Loopback-only mode also checks Host to block DNS-rebinding reads from a web page.
     const hostName = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
     if (!opts.allowRemote && !LOOPBACK.has(hostName)) {
@@ -153,13 +156,13 @@ export async function startUiServer(
     try {
       const pathname = decodeURIComponent((req.url ?? "/").split("?")[0]!);
       if (pathname === "/api/state") {
-        const body = JSON.stringify(buildUiState(ledger, Date.now(), readLimits(opts.configPath)));
+        const body = JSON.stringify({ ...buildUiState(ledger, Date.now(), readLimits(opts.configPath)), ...(opts.ledgerMissing?.() ? { ledgerMissing: true } : {}) });
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;
       }
       if (pathname === "/api/workflows") {
-        const body = JSON.stringify(buildWorkflowsState(ledger));
+        const body = JSON.stringify(buildWorkflowsState(ledger, Date.now(), readSignalRules(opts.configPath)));
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(body);
         return;
@@ -206,6 +209,23 @@ export async function startUiServer(
         if (opts.allowRemote) return sendJson(res, 403, { error: "pitches are disabled in remote mode" });
         if (!tokenOk(req.headers[TOKEN_HEADER])) return sendJson(res, 401, { error: "missing or invalid token" });
         return sendJson(res, 200, buildPitchesState(ledger));
+      }
+      if (pathname.startsWith("/api/pitch-asset/")) {
+        // Read by content hash only: the hash must be a stored attachment, and no part of the request names a path.
+        const sha = pathname.slice("/api/pitch-asset/".length);
+        if (!/^[0-9a-f]{64}$/.test(sha)) return sendJson(res, 400, { error: "asset id must be 64 hex characters" });
+        const mime = ledger.pitchAssetMime(sha);
+        const file = mime && opts.dataDir ? assetPath(opts.dataDir, sha, mime as ImageMime) : null;
+        if (!file || !fs.existsSync(file)) return sendJson(res, 404, { error: "no such asset" });
+        res.writeHead(200, {
+          "Content-Type": mime!,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'none'",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        res.end(fs.readFileSync(file));
+        return;
       }
       if (pathname === "/api/evals") return sendJson(res, 200, listReports(opts.dataDir ?? null));
       if (pathname === "/api/settings") return sendJson(res, 200, buildSettingsState(ledger, opts.configPath));

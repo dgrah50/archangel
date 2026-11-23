@@ -53,7 +53,8 @@ export function bannersFor(state: Feed<UiState>, now: number): Array<{ tone: "re
     out.push({ tone: "orange", text: `Data is stale: last updated ${ago(now - state.at)} ago.` });
   }
   const beat = state.data.daemonHeartbeatAt;
-  if (beat === null) out.push({ tone: "red", text: "Daemon offline: no daemon lock is held. Nothing is being processed. Run `archangel start`." });
+  if (state.data.ledgerMissing) out.push({ tone: "orange", text: "There is no Ledger yet. Threads, spend and history will appear after the first `archangel start`. Run `archangel init` to create it." });
+  else if (beat === null) out.push({ tone: "red", text: "Daemon offline: no daemon lock is held. Nothing is being processed. Run `archangel start`." });
   else if (state.data.generatedAt - beat > DAEMON_OFFLINE_MS) out.push({ tone: "red", text: `Daemon offline? Last heartbeat ${ago(state.data.generatedAt - beat)} ago. Nothing is being processed.` });
   return out;
 }

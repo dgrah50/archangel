@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { execInGroup } from "../compute/local.js";
+import { CODEX_PLACEHOLDER_ENV } from "../compute/codex-broker-adapter.js";
+import type { ComputeProvider, ExecSpec, Workspace } from "../compute/provider.js";
 import fs from "node:fs";
 import os from "node:os";
 import { tryParseJson } from "../core/json.js";
@@ -7,7 +7,7 @@ import path from "node:path";
 import { DEFAULT_ACCOUNTS, accountEnv, accountsFor, providerToVendor, type Account, type Chains, type CliProvider, type ProviderEntry, type WriterRole } from "../config.js";
 import { ACCOUNT_COOLDOWN_MS, MAX_ACCOUNT_SWITCHES, NO_ACCOUNT_STATE, selectAccount, type AccountLedger } from "../core/accounts.js";
 import { NOOP_LOGGER, type Logger } from "../core/logger.js";
-import type { ReviewerVendor } from "../ledger/schema.js";
+import { AttemptError, type AttemptErrorCategory, type ReviewerVendor } from "../ledger/schema.js";
 import type { ImplementInput, ImplementResult, Implementer } from "./implementer.js";
 
 // Real quota signals only: stderr can carry arbitrary tool or test output ("foo_test.go:429:", "memory exhausted"),
@@ -36,6 +36,73 @@ export function isRateLimitOrQuotaError(text: string): boolean {
   return RATE_LIMIT_RE.test(text);
 }
 
+/** Why a CLI run failed, from stderr and the CLI's own final result envelope only. `quota` is handled by account failover. */
+export type CliFailureReason = "quota" | "provider_network" | "auth" | "context_overflow" | "permission_denied" | "unknown";
+
+// Numeric statuses need a keyword and non-alphanumeric boundaries so "foo_test.go:429", "15290ms" and "c429f4b" never match.
+const CONTEXT_RE = /prompt is too long|context[ _-]?(?:length|window)[^\n]{0,40}(?:exceed|too long|limit)|exceeds? (?:the )?(?:maximum )?context|maximum context length/i;
+const AUTH_RE =
+  /not logged in|please (?:run )?\/?login|invalid (?:api key|token|credentials)|(?:expired|revoked) (?:token|credentials|session|login)|authentication[ _]?(?:failed|error|required)|(?:http|status(?: code)?|error|code)[ :=]*40[13](?![A-Za-z0-9])/i;
+const NETWORK_RE =
+  /econnreset|etimedout|econnrefused|enotfound|socket hang up|connection (?:reset|closed|was closed|lost|error)|network (?:error|is unreachable)|stream (?:closed|disconnected|error)|(?:http|status(?: code)?|error|code)[ :=]*5\d\d(?![A-Za-z0-9])|internal server error|bad gateway|service unavailable|gateway time-?out/i;
+const DENIED_RE = /auto-denied|permission[^\n]{0,40}headless mode cannot prompt/i;
+
+function finalResult(stdout: string): Record<string, unknown> | null {
+  const line = stdout.trim().split("\n").at(-1)?.trim();
+  if (!line?.startsWith("{")) return null;
+  const parsed = tryParseJson(line);
+  return parsed.ok && typeof parsed.value === "object" && parsed.value !== null ? (parsed.value as Record<string, unknown>) : null;
+}
+
+/** Classifies a non-zero exit. Test output on stdout is never inspected: only stderr and the final error envelope. */
+export function classifyCliFailure(run: { stdout: string; stderr: string }): CliFailureReason {
+  const signal = `${run.stderr}\n${extractErrorEnvelope(run.stdout)}`;
+  if (isRateLimitOrQuotaError(signal)) return "quota";
+  if (finalResult(run.stdout)?.terminal_reason === "prompt_too_long" || CONTEXT_RE.test(signal)) return "context_overflow";
+  if (AUTH_RE.test(signal)) return "auth";
+  if (DENIED_RE.test(run.stderr)) return "permission_denied";
+  if (NETWORK_RE.test(signal)) return "provider_network";
+  return "unknown";
+}
+
+/**
+ * A run that exited 0 but did not work: Claude ended its turn for a reason other than `completed`, or a tool was denied in headless
+ * mode. Only when the workspace is untouched, so real work is never turned into a failure.
+ */
+function exitZeroFailure(run: { stdout: string; stderr: string }, mutated: boolean): CliFailureReason | null {
+  const result = finalResult(run.stdout);
+  if (result?.terminal_reason === "prompt_too_long") return "context_overflow";
+  if (mutated) return null;
+  const denials = result?.permission_denials;
+  if ((Array.isArray(denials) && denials.length > 0) || DENIED_RE.test(run.stderr)) return "permission_denied";
+  if (typeof result?.terminal_reason === "string" && result.terminal_reason !== "completed") return "unknown";
+  return null;
+}
+
+const FAILURE_CATEGORY: Record<CliFailureReason, AttemptErrorCategory> = {
+  quota: "quota",
+  provider_network: "provider_network",
+  auth: "auth",
+  context_overflow: "context_overflow",
+  permission_denied: "permission_denied",
+  unknown: "implementer_failed",
+};
+
+/** One automatic retry of the same account after a network drop, per Attempt. */
+export const NETWORK_RETRY_WAIT_MS = 5_000;
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
 export interface CliExecResult {
   code: number | null;
   stdout: string;
@@ -51,41 +118,68 @@ export type CliInvoker = (input: {
   model?: string;
   /** The login this run uses (its home is passed to the CLI); absent means the CLI's default home. */
   account?: Account;
-  cloneDir: string;
+  compute: ComputeProvider;
+  workspace: Workspace;
   prompt: string;
   abortController: AbortController;
   timeoutMs: number;
   goCacheDir: string;
   outputFile: string;
+  /** Remote codex on a broker-held ChatGPT login: the synthetic login the box gets is for this account. Absent means codex uses the API-key placeholder. */
+  brokerAccountId?: string;
 }) => Promise<CliExecResult>;
 
 export interface SubscriptionImplementerOptions {
   /** Provider chain per writing role; an Attempt uses the chain of its role. */
   chains: Pick<Chains, WriterRole>;
   accounts?: Account[];
+  /** Providers whose entries run on the remote box (they have a remote credential configured); every other entry runs locally. Placement is per entry, never a failover. */
+  remoteProviders?: ReadonlySet<CliProvider>;
+  /** Set when remote codex runs on a broker-held ChatGPT login. Called before the box is prepared with the longest the Attempt may run; it throws to refuse the Attempt, else returns the (non-secret) account id. */
+  codexBrokerPreflight?: (attemptMs: number) => { accountId: string };
   transcriptsDir: string;
   invoker?: CliInvoker;
   /** Per-account cooldowns, usage counters and readings; without it nothing cools down and selection is config order. */
   accountState?: AccountLedger;
   cooldownDurationMs?: number;
+  networkRetryWaitMs?: number;
   logger?: Logger;
 }
 
-async function defaultCliInvoker(input: {
-  provider: CliProvider;
-  model?: string;
-  account?: Account;
-  cloneDir: string;
-  prompt: string;
-  abortController: AbortController;
-  timeoutMs: number;
-  goCacheDir: string;
-  outputFile: string;
-}): Promise<CliExecResult> {
+const REMOTE_PATH = "/usr/local/bin:/usr/bin:/bin";
+
+/**
+ * The login a box's codex gets for a brokered ChatGPT account: the access token is only the placeholder (the egress policy swaps in
+ * the real one on chatgpt.com), the id_token is unsigned (its signature is never checked) with synthetic claims, the refresh token is a dummy and `last_refresh` is
+ * now, so codex neither refreshes nor can (auth.openai.com is unreachable). The JSON holds no single quote, so single quotes are safe.
+ */
+function syntheticCodexLogin(accountId: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(accountId)) throw new Error("the broker's ChatGPT account id has an unexpected shape");
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const idToken = `${b64({ alg: "none", typ: "JWT" })}.${b64({ email: "broker@archangel.invalid", exp: Math.floor(Date.now() / 1000) + 365 * 86_400, "https://api.openai.com/auth": { chatgpt_plan_type: "plus", chatgpt_user_id: "user-broker", chatgpt_account_id: accountId } })}.c2ln`;
+  const json = `{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"${idToken}","access_token":"'"$${CODEX_PLACEHOLDER_ENV}"'","refresh_token":"not-a-refresh-token","account_id":"${accountId}"},"last_refresh":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}`;
+  return `mkdir -p "$HOME/.codex" && printf '%s' '${json}' > "$HOME/.codex/auth.json"`;
+}
+
+/** agy only runs on an API key when its settings say so. The key itself is the placeholder GEMINI_API_KEY the egress policy provides. */
+const AGY_REMOTE_SETTINGS = '{"modelProvider":"gemini"}';
+
+function remoteEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: REMOTE_PATH,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    DISABLE_TELEMETRY: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+}
+
+function localEnv(input: { account?: Account; goCacheDir: string }): NodeJS.ProcessEnv {
   const realHome = os.homedir();
   const defaultGoModCache = process.env.GOMODCACHE ?? path.join(realHome, "go", "pkg", "mod");
   // Preserve native CLI login home so subscription OAuth works, while scrubbing GitHub/API tokens & isolating GOCACHE.
-  const env: NodeJS.ProcessEnv = {
+  return {
     PATH: process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin",
     HOME: realHome,
     USER: process.env.USER,
@@ -100,6 +194,24 @@ async function defaultCliInvoker(input: {
     // The one passthrough for a second login: this account's config dir (nothing else from the host env).
     ...accountEnv(input.account),
   };
+}
+
+async function defaultCliInvoker(input: {
+  provider: CliProvider;
+  model?: string;
+  account?: Account;
+  compute: ComputeProvider;
+  workspace: Workspace;
+  prompt: string;
+  abortController: AbortController;
+  timeoutMs: number;
+  goCacheDir: string;
+  outputFile: string;
+  brokerAccountId?: string;
+}): Promise<CliExecResult> {
+  // A remote box gets no host env at all: its only login is the placeholder CLAUDE_CODE_OAUTH_TOKEN the egress policy provides.
+  const env: NodeJS.ProcessEnv = input.compute.remote ? remoteEnv() : localEnv(input);
+  const cloneDir = input.workspace.path;
 
   let bin: string;
   let args: string[];
@@ -116,9 +228,10 @@ async function defaultCliInvoker(input: {
       "--ephemeral",
       "--json",
       "-C",
-      input.cloneDir,
-      "-o",
-      input.outputFile,
+      cloneDir,
+      // The last-message file is a path on this machine; a box has no way to hand it back.
+      ...(input.compute.remote ? [] : ["-o", input.outputFile]),
+      ...(input.brokerAccountId ? ["-c", 'cli_auth_credentials_store="file"'] : []),
       ...(input.model ? ["-m", input.model] : []),
       "-",
     ];
@@ -152,8 +265,18 @@ async function defaultCliInvoker(input: {
     stdinPrompt = input.prompt;
   }
 
+  if (input.compute.remote) {
+    // Inside the box the provider logs in with the placeholder key the egress policy minted, never a host login: codex reads it as
+    // CODEX_API_KEY, agy needs its settings file. Both wrappers `exec` the CLI so stdin and exit codes pass through.
+    if (input.provider === "codex") {
+      const login = input.brokerAccountId ? syntheticCodexLogin(input.brokerAccountId) : 'export CODEX_API_KEY="$OPENAI_API_KEY"';
+      [bin, args] = ["bash", ["-c", `${login} && exec "$@"`, "bash", bin, ...args]];
+    }
+    if (input.provider === "agy") [bin, args] = ["bash", ["-c", `mkdir -p "$HOME/.gemini/antigravity-cli" && printf %s '${AGY_REMOTE_SETTINGS}' > "$HOME/.gemini/antigravity-cli/settings.json" && exec "$@"`, "bash", bin, ...args]];
+  }
+
   const { abortController, provider, timeoutMs } = input;
-  const res = await execInGroup(input.cloneDir, {
+  const res = await input.compute.exec(input.workspace, {
     cmd: bin,
     args,
     env,
@@ -164,6 +287,17 @@ async function defaultCliInvoker(input: {
     onTimeout: () => abortController.abort(new Error(`${provider} attempt timed out after ${timeoutMs}ms`)),
   });
   return { code: res.code, stdout: res.stdout, stderr: res.stderr, aborted: res.aborted, durationMs: res.durationMs, peakRssKb: res.peakRssKb };
+}
+
+/** Per-file cap on a run's kept CLI output, so a runaway CLI cannot fill the disk. */
+const MAX_RUN_OUTPUT_BYTES = 10 * 1024 * 1024;
+
+/** Writes a run's full CLI output beside the Attempt transcript; over the cap it is cut with a marker. */
+function writeRunOutput(file: string, text: string): string {
+  const bytes = Buffer.from(text);
+  const kept = bytes.length > MAX_RUN_OUTPUT_BYTES ? `${bytes.subarray(0, MAX_RUN_OUTPUT_BYTES).toString()}\n[truncated: ${bytes.length - MAX_RUN_OUTPUT_BYTES} more bytes]\n` : text;
+  fs.writeFileSync(file, kept);
+  return file;
 }
 
 function extractErrorEnvelope(stdout: string): string {
@@ -192,32 +326,43 @@ function extractErrorEnvelope(stdout: string): string {
   return "";
 }
 
-function mayHaveMutated(cloneDir: string, headBefore: string | null): boolean {
+/** Runs git in the Attempt's workspace through its provider; stdout, or a throw on a non-zero exit. */
+async function gitIn(input: { compute: ComputeProvider; workspace: Workspace }, args: string[]): Promise<string> {
+  const res = await input.compute.exec(input.workspace, {
+    cmd: "git",
+    args,
+    env: { PATH: input.compute.remote ? REMOTE_PATH : (process.env.PATH ?? "/usr/bin:/bin:/opt/homebrew/bin"), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    timeoutMs: 60_000,
+  });
+  if (res.code !== 0) throw new Error(`git ${args[0]} exited ${res.code}: ${res.stderr.trim().slice(-200)}`);
+  return res.stdout.trim();
+}
+
+type WorkspaceInput = { compute: ComputeProvider; workspace: Workspace };
+
+async function mayHaveMutated(input: WorkspaceInput, headBefore: string | null): Promise<boolean> {
   try {
-    if (execFileSync("git", ["status", "--porcelain"], { cwd: cloneDir, encoding: "utf8" }).trim().length > 0) return true;
-    return headBefore === null || execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim() !== headBefore;
+    if ((await gitIn(input, ["status", "--porcelain"])).length > 0) return true;
+    return headBefore === null || (await gitIn(input, ["rev-parse", "HEAD"])) !== headBefore;
   } catch (_err) {
     // Fail closed: an uninspectable workspace may have been mutated, so the vendor must stay disqualified from reviewing.
     return true;
   }
 }
 
-function headSha(cloneDir: string): string | null {
+async function headSha(input: WorkspaceInput): Promise<string | null> {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: cloneDir, encoding: "utf8" }).trim();
+    return await gitIn(input, ["rev-parse", "HEAD"]);
   } catch (_err) {
     return null;
   }
 }
 
-function captureWorkspaceContinuityContext(cloneDir: string): string {
+async function captureWorkspaceContinuityContext(input: WorkspaceInput): Promise<string> {
   try {
-    const status = execFileSync("git", ["status", "--short"], { cwd: cloneDir, encoding: "utf8" }).trim();
-    const diffStat = execFileSync("git", ["diff", "--stat"], { cwd: cloneDir, encoding: "utf8" }).trim();
-    const recentCommits = execFileSync("git", ["log", "-n", "3", "--oneline"], {
-      cwd: cloneDir,
-      encoding: "utf8",
-    }).trim();
+    const status = await gitIn(input, ["status", "--short"]);
+    const diffStat = await gitIn(input, ["diff", "--stat"]);
+    const recentCommits = await gitIn(input, ["log", "-n", "3", "--oneline"]);
     return [
       "--- CONTINUITY HANDOFF CONTEXT (previous provider hit rate/quota limit) ---",
       `Recent commits:\n${recentCommits || "(none)"}`,
@@ -258,10 +403,13 @@ function extractSummary(provider: CliProvider, stdout: string, outputFile: strin
 export class SubscriptionImplementer implements Implementer {
   private readonly chains: Pick<Chains, WriterRole>;
   private readonly accounts: Account[];
+  private readonly remoteProviders: ReadonlySet<CliProvider>;
+  private readonly codexBrokerPreflight: SubscriptionImplementerOptions["codexBrokerPreflight"];
   private readonly transcriptsDir: string;
   private readonly invoker: CliInvoker;
   private readonly state: AccountLedger;
   private readonly cooldownDurationMs: number;
+  private readonly networkRetryWaitMs: number;
   private readonly logger: Logger;
 
   constructor(opts: SubscriptionImplementerOptions) {
@@ -270,11 +418,22 @@ export class SubscriptionImplementer implements Implementer {
     }
     this.chains = opts.chains;
     this.accounts = opts.accounts ?? DEFAULT_ACCOUNTS;
+    this.remoteProviders = opts.remoteProviders ?? new Set();
+    this.codexBrokerPreflight = opts.codexBrokerPreflight;
     this.transcriptsDir = opts.transcriptsDir;
     this.invoker = opts.invoker ?? defaultCliInvoker;
     this.state = opts.accountState ?? NO_ACCOUNT_STATE;
     this.cooldownDurationMs = opts.cooldownDurationMs ?? ACCOUNT_COOLDOWN_MS;
+    this.networkRetryWaitMs = opts.networkRetryWaitMs ?? NETWORK_RETRY_WAIT_MS;
     this.logger = opts.logger ?? NOOP_LOGGER;
+  }
+
+  private async brokerAccount(attemptMs: number): Promise<string> {
+    try {
+      return this.codexBrokerPreflight!(attemptMs).accountId;
+    } catch (err) {
+      throw new AttemptError("auth", err instanceof Error ? err.message : String(err));
+    }
   }
 
   async run(input: ImplementInput): Promise<ImplementResult> {
@@ -283,6 +442,7 @@ export class SubscriptionImplementer implements Implementer {
       this.transcriptsDir,
       `issue-${input.issueNumber}-${Date.now()}.jsonl`,
     );
+    const runOutputBase = transcriptPath.replace(/\.jsonl$/, "");
     const attemptTemp = fs.mkdtempSync(path.join(os.tmpdir(), `archangel-sub-impl-${input.issueNumber}-`));
     const goCacheDir = path.join(attemptTemp, "gocache");
     fs.mkdirSync(goCacheDir, { recursive: true });
@@ -310,6 +470,7 @@ export class SubscriptionImplementer implements Implementer {
     // MAX_ACCOUNT_SWITCHES switches happen in one Attempt.
     const tried = new Set<string>();
     let switches = 0;
+    let networkRetried = false;
     let runIndex = 0;
     let durationMs = 0;
     let peakRssKb: number | undefined;
@@ -323,7 +484,6 @@ export class SubscriptionImplementer implements Implementer {
           tried.add(account.id);
           const i = runIndex++;
           const outputFile = path.join(attemptTemp, `last-${i}-${entry.provider}.txt`);
-          const prompt = i === 0 ? input.prompt : `${captureWorkspaceContinuityContext(input.cloneDir)}\n\n${input.prompt}`;
           const label = `${entry.provider}${entry.model ? ` (${entry.model})` : ""} [${account.id}]`;
 
           this.logger.info("implementer/provider_start", `Running ${label}${i > 0 ? " [Continuity failover]" : ""}`, { issue: input.issueNumber });
@@ -332,22 +492,36 @@ export class SubscriptionImplementer implements Implementer {
             `${JSON.stringify({ event: "provider_start", index: i, provider: entry.provider, model: entry.model ?? null, account: account.id, ts: Date.now() })}\n`,
           );
 
-          const headBefore = headSha(input.cloneDir);
+          // Placement is by configured credential, never failover: a provider with a remote credential (injected on the wire) runs on the remote box; the rest keep their local logins.
+          const ranOn: "local" | "remote" = this.remoteProviders.has(entry.provider) && input.workspaces.remote ? "remote" : "local";
+          const handle = input.workspaces[ranOn]!;
+          // A brokered login is checked before any box exists: a failed or soon-to-expire token refuses the Attempt, never falls back.
+          const brokerAccountId = ranOn === "remote" && entry.provider === "codex" && this.codexBrokerPreflight ? await this.brokerAccount(input.timeoutMs) : undefined;
+          const placed = { compute: handle.compute, workspace: await handle.workspace() };
+          const prompt = i === 0 ? input.prompt : `${await captureWorkspaceContinuityContext(placed)}\n\n${input.prompt}`;
+          const headBefore = await headSha(placed);
           const res = await this.invoker({
             provider: entry.provider,
             model: entry.model,
             account,
-            cloneDir: input.cloneDir,
+            ...placed,
             prompt,
             abortController: input.abortController,
             timeoutMs: input.timeoutMs,
             goCacheDir,
             outputFile,
+            brokerAccountId,
+          }).catch((err: unknown) => {
+            if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw new AttemptError("cli_missing", `${label}: \`${entry.provider}\` is not installed or not on PATH`);
+            throw err;
           });
 
           durationMs += res.durationMs ?? 0;
           if (res.peakRssKb != null) peakRssKb = Math.max(peakRssKb ?? 0, res.peakRssKb);
           const extractedSummary = extractSummary(entry.provider, res.stdout, outputFile);
+          const runOutputFile = `${runOutputBase}.${i}-${entry.provider}`;
+          const stdoutPath = writeRunOutput(`${runOutputFile}.stdout`, res.stdout);
+          const stderrPath = writeRunOutput(`${runOutputFile}.stderr`, res.stderr);
           fs.appendFileSync(
             transcriptPath,
             `${JSON.stringify({
@@ -358,15 +532,20 @@ export class SubscriptionImplementer implements Implementer {
               aborted: res.aborted,
               summary: extractedSummary.slice(0, 1000),
               stderr: res.stderr.slice(0, 4000),
+              stdoutPath,
+              stderrPath,
               ts: Date.now(),
             })}\n`,
           );
 
           if (res.aborted) {
-            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ...measured() };
+            return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ranOn, ...measured() };
           }
 
-          if (res.code === 0) {
+          const mutated = await mayHaveMutated(placed, headBefore);
+          const reason = res.code === 0 ? exitZeroFailure(res, mutated) : classifyCliFailure(res);
+
+          if (reason === null) {
             const vendor = providerToVendor(entry.provider);
             if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
             return {
@@ -375,6 +554,7 @@ export class SubscriptionImplementer implements Implementer {
               transcriptPath,
               aborted: false,
               providersUsed,
+              ranOn,
               runBy: { provider: entry.provider, model: entry.model ?? null, accountId: account.id },
               ...measured(),
             };
@@ -382,23 +562,38 @@ export class SubscriptionImplementer implements Implementer {
 
           // Only inspect stderr + final error envelope, never match test output on stdout (Opus B2).
           const errorSignal = `${res.stderr}\n${extractErrorEnvelope(res.stdout)}`.trim();
-          const isQuota = isRateLimitOrQuotaError(errorSignal);
-          errors.push(`${label} (exit ${res.code}): ${(errorSignal || res.stdout).slice(0, 300)}`);
+          errors.push(`${label} (exit ${res.code}, ${reason}): ${(errorSignal || res.stdout).slice(0, 300)}`);
 
           // If this provider actually mutated the workspace before failing over, record it so it cannot review its own partial code (Opus B1).
           // Uncommitted edits OR new commits both count: implementers are asked to commit their work.
-          if (mayHaveMutated(input.cloneDir, headBefore)) {
+          if (mutated) {
             const vendor = providerToVendor(entry.provider);
             if (!providersUsed.includes(vendor)) providersUsed.push(vendor);
           }
 
-          if (!isQuota) throw new Error(errors.join(" | "));
+          // A network drop gets one retry of the same account per Attempt; anything else that is not quota fails now.
+          if (reason === "provider_network" && !networkRetried) {
+            networkRetried = true;
+            fs.appendFileSync(
+              transcriptPath,
+              `${JSON.stringify({ event: "network_retry", account: account.id, waitMs: this.networkRetryWaitMs, ts: Date.now() })}\n`,
+            );
+            await abortableSleep(this.networkRetryWaitMs, input.abortController.signal);
+            if (input.abortController.signal.aborted) return { summary: "Aborted", costUsd: 0, transcriptPath, aborted: true, providersUsed, ranOn, ...measured() };
+            tried.delete(account.id);
+            continue;
+          }
+          if (reason === "auth" && brokerAccountId) {
+            // A 401 on a brokered login is never retried by moving tokens around: the broker's token expired or was revoked.
+            throw new AttemptError("auth", `remote codex login rejected (the broker's token expired or was revoked; not retried): ${errors.join(" | ")}`);
+          }
+          if (reason !== "quota") throw new AttemptError(FAILURE_CATEGORY[reason], errors.join(" | "));
 
           // Continuity failover: cool this account down, then move on (same vendor's next account, else the next entry).
           this.state.recordCooldown(account.id, this.cooldownDurationMs, errorSignal.slice(0, 200));
           switches++;
           if (switches > MAX_ACCOUNT_SWITCHES) {
-            throw new Error(`account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
+            throw new AttemptError("quota", `account switch limit (${MAX_ACCOUNT_SWITCHES}) reached after rate/quota limits: ${errors.join(" | ")}`);
           }
           this.logger.warn(
             "implementer/continuity_failover",
@@ -412,9 +607,33 @@ export class SubscriptionImplementer implements Implementer {
         }
       }
 
-      throw new Error(`All fallback subscription providers exhausted: ${errors.join(" | ")}`);
+      throw new AttemptError("quota", `All fallback subscription providers exhausted: ${errors.join(" | ")}`);
     } finally {
       fs.rmSync(attemptTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }
+}
+
+/** Attempt transcripts and provider logs are kept this long; the Ledger keeps the paths, readers only print them. */
+export const TRANSCRIPT_RETENTION_MS = 30 * 86_400_000;
+const TRANSCRIPT_FILE_RE = /^issue-.+\.(jsonl|stdout|stderr)$/;
+
+/** Delete old transcript files directly inside `dir` (no recursion, no symlinks, nothing else). Returns the count removed. */
+export function pruneTranscripts(dir: string, beforeMs: number): number {
+  let removed = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  for (const e of entries) {
+    if (!e.isFile() || !TRANSCRIPT_FILE_RE.test(e.name)) continue;
+    const file = path.join(dir, e.name);
+    if (fs.lstatSync(file).mtimeMs >= beforeMs) continue;
+    fs.rmSync(file);
+    removed++;
+  }
+  return removed;
 }

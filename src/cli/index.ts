@@ -8,11 +8,13 @@ import readline from "node:readline/promises";
 import { Command } from "commander";
 import { loadDotEnv } from "../env.js";
 import { resolveDataDir, resolveHostSettings } from "./data-dir.js";
+import { INIT_NEXT_STEPS, runInit } from "./init.js";
 import { requireTransition } from "./transition.js";
-import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
+import { loadProjectConfigs, primaryWriterVendors, resolveConfigPath, resolvePaths, resolveUserPath, WRITER_ROLES, type ArchangelConfig, type WriterRole } from "../config.js";
 import { ClaudeSdkImplementer } from "../agents/implementer.js";
 import { MastraReviewerSuite, type ReviewerSuite } from "../agents/reviewers.js";
-import { SubscriptionImplementer } from "../agents/subscription-implementer.js";
+import { pruneTranscripts, SubscriptionImplementer, TRANSCRIPT_RETENTION_MS } from "../agents/subscription-implementer.js";
+import type { ReviewPromptBuilders } from "../agents/reviewers.js";
 import { SubscriptionReviewerSuite } from "../agents/subscription-reviewers.js";
 import { GitBroker } from "../broker/git-broker.js";
 import { runDoctor } from "../core/doctor.js";
@@ -20,11 +22,13 @@ import { ArchangelLogger } from "../core/logger.js";
 import { sendDigestIfDue } from "../core/digest.js";
 import { gateBump } from "../core/gate-pin.js";
 import { proposeWorkflow } from "../core/workflow-propose.js";
-import { renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
-import { prepareCandidates } from "../core/eval-candidate.js";
+import { devFailures, renderCounts, renderEval, runEval, collectEvalCases, milestoneProgress, EVAL_THRESHOLDS } from "../core/eval.js";
+import { loadReviewPrompts, prepareCandidates } from "../core/eval-candidate.js";
 import { BENCH, parseChain, renderBench, runBenchTiers } from "../core/bench-tiers.js";
 import { ARCHANGEL_ROOT } from "../core/onboard.js";
 import { saveReport } from "../core/eval-reports.js";
+import { proposePrompt } from "../core/prompt-proposer.js";
+import { buildClusterBlockFrom } from "../core/failure-clusters.js";
 import { renderReplay, runReplay, type ReplayReport } from "../core/replay.js";
 import { execRunner, onboard } from "../core/onboard.js";
 import { bump, bumpRunner } from "../core/bump.js";
@@ -36,7 +40,17 @@ import { groupThreads } from "../core/ui-state.js";
 import { Reconciler, sha256 } from "../core/reconciler.js";
 import { runScoutsForProject, defaultScoutCliInvoker } from "../core/scout.js";
 import { ARCHANGEL_REPO, ghPrStatus, openDraftPr } from "../core/correction-draft.js";
+import { LocalProvider } from "../compute/local.js";
+import { cachedWebPreview, startPocPreview } from "../core/pitch-preview.js";
+import { createSailProvider, remoteAttemptProvider, remoteProviders } from "../compute/sail-sdk.js";
+import { Secret } from "@sailresearch/sdk";
+import { CODEX_BROKER_ID, codexBrokerAdapter } from "../compute/codex-broker-adapter.js";
+import { TokenBroker, brokerPreflight } from "../compute/token-broker.js";
+import type { SailProvider } from "../compute/sail.js";
+import { SandboxExecProvider, stopAllPreviews, sweepOrphanPreviews } from "../compute/sandbox-exec.js";
+import { execFileGroup } from "../core/spawn-group.js";
 import { promotePitch } from "../core/pitch-promote.js";
+import { selfBuild } from "../core/self-build.js";
 import { loadWorkflow, requireOkWorkflow } from "../core/workflow-load.js";
 import { launchStudio } from "../core/studio.js";
 import { extractPrFromPhase, stepPhase } from "../core/thread-machine.js";
@@ -48,6 +62,7 @@ import { runGate } from "../gate/gate.js";
 import { GitHubAppClient } from "../github/client.js";
 import { handoffThreadToPaseo, PaseoCliRunner, resumeThreadFromPaseo } from "../handoff/paseo.js";
 import { Ledger } from "../ledger/store.js";
+import { emit, setTelemetrySink, TELEMETRY_PRUNE_BATCH, TELEMETRY_RETENTION_MS } from "../core/telemetry.js";
 
 // Auto-load local `.env` before reading config (never overrides existing shell env).
 loadDotEnv();
@@ -99,6 +114,16 @@ program
   .version("0.1.0");
 
 program
+  .command("init")
+  .description("Create archangel.yaml, .env and an empty Ledger in the current directory (never overwrites; safe to rerun)")
+  .action(() => {
+    const lines = runInit(process.cwd());
+    console.log(lines.join("\n"));
+    console.log(lines.every((l) => !l.startsWith("created")) ? "\nNothing to do: already initialised." : "");
+    console.log(["Next steps:", ...INIT_NEXT_STEPS.map((c, i) => `  ${i + 1}. ${c}`)].join("\n"));
+  });
+
+program
   .command("start")
   .description("Start the level-triggered Archangel reconciler daemon")
   .option("-c, --config <path>", "Path to archangel.yaml")
@@ -138,6 +163,8 @@ program
     }
 
     recordDaemonFacts(rootLedger, { configPath: opts.config });
+    setTelemetrySink(rootLedger);
+    emit("daemon_start", 1, {});
 
     // Lost lock (laptop slept past staleLeaseMs and another daemon took over): stop now, loudly, rather than tick as a second daemon.
     const lockHeartbeat = setInterval(() => {
@@ -167,6 +194,13 @@ program
     /** Each watched repo's App client and Broker, so the correction loop can open a draft PR as the App on Archangel's own repo. */
     const appClients = new Map<string, { github: GitHubAppClient; broker: GitBroker; defaultBranch: string }>();
     const digestSources: Array<{ repoSlug: string; github: GitHubAppClient; agentProposedLabel: string }> = [];
+    const sailProviders: SailProvider[] = [];
+    // One broker per dedicated login: it alone refreshes that login and puts only the access token in a Sail secret.
+    const brokerHomes = new Set(projects.flatMap((cfg) => (cfg.authMode === "subscription" && cfg.compute.provider === "sail" && cfg.compute.sail?.codexBrokerHome ? [resolveUserPath(cfg.compute.sail.codexBrokerHome)] : [])));
+    const brokers = [...brokerHomes].map((home) => new TokenBroker(codexBrokerAdapter(home), sharedPaths.dataDir, (name, value) => Secret.set(name, value), (m) => console.error(`[archangel] ${m}`)));
+    await Promise.all(brokers.map((b) => b.start()));
+    const transcriptDirs = projects.map((cfg) => resolvePaths(cfg).transcriptsDir);
+    let lastTranscriptPrune = 0;
     const reconcilers = projects.map((cfg) => {
       const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
       const paths = resolvePaths(cfg);
@@ -181,16 +215,26 @@ program
         bareRepoPath: paths.brokerBareRepoPath,
         clonesDir: paths.clonesDir,
         defaultBranch: cfg.defaultBranch,
+        repo: repoSlug,
         enableLocalGate: true,
         // H1: run diff/path/immutability/pre-commit locally; let ephemeral CI VM execute untrusted agent test binaries.
         localGateSkipTests: true,
       });
+      const scoutCompute: SailProvider | undefined =
+        cfg.compute.provider === "sail" && cfg.compute.sail
+          ? createSailProvider({ sail: cfg.compute.sail, broker, dataDir: paths.dataDir, repoSlug })
+          : undefined;
+      if (scoutCompute) sailProviders.push(scoutCompute);
       const pemPath = process.env.ARCHANGEL_GITHUB_PRIVATE_KEY_PATH?.trim();
       const implementer =
         cfg.authMode === "subscription"
           ? new SubscriptionImplementer({
               chains: cfg.chains,
               accounts: cfg.accounts,
+              remoteProviders: remoteProviders(cfg.compute),
+              codexBrokerPreflight: cfg.compute.sail?.codexBrokerHome
+                ? (attemptMs) => ({ accountId: brokerPreflight(sharedPaths.dataDir, CODEX_BROKER_ID, attemptMs).accountId! })
+                : undefined,
               transcriptsDir: paths.transcriptsDir,
               accountState,
               logger,
@@ -211,6 +255,9 @@ program
         notifier,
         logger,
         workerId: daemonOwnerId,
+        scoutCompute,
+        remoteAttemptCompute: remoteAttemptProvider(cfg, scoutCompute),
+        previewCompute: new SandboxExecProvider(new LocalProvider(broker), { reservedPorts: [4477] }),
         // Correction-loop drafts need the subscription CLIs (Scout drafter and eval reviewers); with api auth they are off.
         correctionDrafts:
           cfg.authMode === "subscription"
@@ -264,13 +311,46 @@ program
     };
 
     const runTickBody = async () => {
+      try {
+        const swept = await sweepOrphanPreviews();
+        if (swept.length > 0) console.log(`[archangel] Killed orphan preview(s): ${swept.join(", ")}`);
+      } catch (err) {
+        console.error("[archangel] Preview sweep error:", err);
+      }
+      for (const sail of sailProviders) {
+        try {
+          const swept = await sail.sweepOrphans();
+          if (swept.length > 0) console.log(`[archangel] Terminated orphan Sail box(es): ${swept.join(", ")}`);
+        } catch (err) {
+          console.error("[archangel] Sail sweep error:", err);
+        }
+      }
       for (const { repoSlug, rec } of reconcilers) {
         if (stopping) break;
         try {
-          await rec.tick(Date.now(), { waitForAttempts: Boolean(opts.once) });
+          const t0 = Date.now();
+          await rec.tick(t0, { waitForAttempts: Boolean(opts.once) });
+          // With --once the tick also waits for Attempts, which is not tick time.
+          if (!opts.once) emit("tick_ms", Date.now() - t0, {}, repoSlug);
         } catch (err) {
           console.error(`[archangel] [${repoSlug}] Tick error:`, err);
         }
+      }
+      if (Date.now() - lastTranscriptPrune >= 3_600_000) {
+        lastTranscriptPrune = Date.now();
+        for (const dir of transcriptDirs) {
+          try {
+            const n = pruneTranscripts(dir, Date.now() - TRANSCRIPT_RETENTION_MS);
+            if (n > 0) console.log(`[archangel] Pruned ${n} old transcript file(s) in ${dir}`);
+          } catch (err) {
+            console.error("[archangel] Transcript prune error:", err);
+          }
+        }
+      }
+      try {
+        rootLedger.pruneTelemetry(Date.now() - TELEMETRY_RETENTION_MS, TELEMETRY_PRUNE_BATCH);
+      } catch (err) {
+        console.error("[archangel] Telemetry prune error:", err);
       }
       try {
         await sendDigestIfDue(rootLedger, notifier, {
@@ -296,11 +376,14 @@ program
         stopping = true;
         if (nextTimer) clearTimeout(nextTimer);
         clearInterval(lockHeartbeat);
+        stopAllPreviews();
+        for (const b of brokers) b.stop();
         for (const { rec } of reconcilers) {
           rec.abortAllActive("control");
           await rec.waitForActiveTasks();
         }
         await inFlightTick;
+        setTelemetrySink(null);
         rootLedger.releaseDaemonLock(daemonOwnerId);
         rootLedger.close();
       })();
@@ -342,14 +425,33 @@ pitchCmd
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--slice <n>", "Promote only slice N, or several as a comma list such as 1,3 (default: every slice)")
   .option("--chain", "Make the created slices linear: each waits for the one before it to merge", false)
+  .option("--build", "Instead of opening a daemon issue, build ONE slice here (needs --slice) with the implementer, show the diff, and open an owner-authored PR on selfbuild/* that you merge yourself", false)
   .option("--yes", "Skip the confirmation prompt", false)
-  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; yes?: boolean }) => {
+  .action(async (repo: string, issueArg: string, opts: { config?: string; slice?: string; chain?: boolean; build?: boolean; yes?: boolean }) => {
     const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
     const paths = resolvePaths(cfg);
     const ledger = new Ledger(paths.ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
     try {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       try {
+        if (opts.build) {
+          if (!opts.slice) throw new Error("--build needs --slice <n>");
+          if (opts.chain) throw new Error("--build cannot be combined with --chain");
+          if (cfg.authMode !== "subscription") throw new Error("--build runs the subscription implementer; set authMode: subscription");
+          const url = await selfBuild(execRunner, ledger, {
+            repo,
+            issue: Number(issueArg),
+            slice: opts.slice,
+            yes: Boolean(opts.yes),
+            labels: cfg.labels,
+            cfg,
+            implementer: new SubscriptionImplementer({ chains: cfg.chains, accounts: cfg.accounts, transcriptsDir: paths.transcriptsDir }),
+            confirm: async (q) => /^y(es)?$/i.test((await rl.question(q)).trim()),
+            log: (s) => console.log(s),
+          });
+          console.log(`Opened ${url}. Merging it is up to you; Archangel never merges it.`);
+          return;
+        }
         const created = await promotePitch(execRunner, ledger, {
           repo,
           issue: Number(issueArg),
@@ -367,6 +469,56 @@ pitchCmd
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
+pitchCmd
+  .command("poc <repo> <issue>")
+  .description("Ask the daemon to build a throwaway proof of concept of a pitch (kept as a local ref, never pushed; at most 2 per pitch and 2 a day)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action((repo: string, issueArg: string, opts: { config?: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+    const ledger = new Ledger(resolvePaths(cfg).ledgerDbPath, { repo: `${cfg.githubOwner}/${cfg.githubRepo}`, timeZone: cfg.dailyTimezone });
+    try {
+      const res = ledger.reservePocBuild(Number(issueArg));
+      if (!res.ok) {
+        console.error(`No build started: ${res.reason}.`);
+        process.exit(1);
+      }
+      console.log(`Build queued for pitch #${issueArg}. The daemon starts it on its next pass (it uses your subscription once).`);
+    } finally {
+      ledger.close();
+    }
+  });
+
+pitchCmd
+  .command("preview <repo> <issue>")
+  .description("Run a built PoC in a macOS sandbox on a loopback URL and screenshot it (installed at build time; 60 min TTL, 15 min idle; Ctrl-C stops it)")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .option("--ui-port <n>", "The dashboard port, which a preview never uses", "4477")
+  .action(async (repo: string, issueArg: string, opts: { config?: string; uiPort: string }) => {
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), repo);
+    const paths = resolvePaths(cfg);
+    const repoSlug = `${cfg.githubOwner}/${cfg.githubRepo}`;
+    const ledger = new Ledger(paths.ledgerDbPath, { repo: repoSlug, timeZone: cfg.dailyTimezone });
+    try {
+      const preview = cachedWebPreview(ledger, repoSlug);
+      if (!preview) throw new Error(`${repoSlug} has no web preview block in .agents/archangel.json (or the daemon has not read it yet)`);
+      const broker = new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch });
+      const local = new LocalProvider(broker);
+      const running = await startPocPreview(
+        { ledger, broker, local, sandbox: new SandboxExecProvider(local, { reservedPorts: [Number(opts.uiPort)] }), preview, dataDir: paths.dataDir, installTimeoutMs: cfg.setupTimeoutMs, github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }) },
+        Number(issueArg),
+      );
+      process.once("SIGINT", running.close);
+      process.once("SIGTERM", running.close);
+      console.log(`Preview of pitch #${issueArg}: ${running.url}  (sandboxed, loopback only; expires ${new Date(running.expiresAt).toLocaleTimeString()}; Ctrl-C to stop)`);
+      await running.closed;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
     } finally {
       ledger.close();
     }
@@ -420,9 +572,10 @@ program
   .option("-c, --config <path>", "Path to archangel.yaml")
   .option("--offline", "Skip GitHub API and Paseo daemon network checks")
   .option("--smoke", "Also verify each configured subscription CLI is installed and logged in (no model calls)")
+  .option("--verify-setup", "Also dry-run each repo's .agents/setup from main in a throwaway clone (sandboxed on macOS)")
   .option("--json", "Output JSON")
-  .action(async (opts: { config?: string; offline?: boolean; smoke?: boolean; json?: boolean }) => {
-    const report = await runDoctor({ configPath: opts.config, offline: opts.offline, smoke: opts.smoke });
+  .action(async (opts: { config?: string; offline?: boolean; smoke?: boolean; verifySetup?: boolean; json?: boolean }) => {
+    const report = await runDoctor({ configPath: opts.config, offline: opts.offline, smoke: opts.smoke, verifySetup: opts.verifySetup });
     if (opts.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
@@ -487,11 +640,11 @@ program
         autoMergesToday,
         circuitBreakers: breakers,
         shadowModeStats: shadow,
-        needsYou: threads.flatMap((t) =>
-          t.phase.kind === "needs_you"
-            ? [{ ...t, decisionClass: describeEscalation(t.phase.code).decisionClass, recommendation: describeEscalation(t.phase.code).recommendation }]
-            : [],
-        ),
+        needsYou: threads.flatMap((t) => {
+          if (t.phase.kind !== "needs_you") return [];
+          const p = describeEscalation(t.phase.code, undefined, t.phase.cause);
+          return [{ ...t, decisionClass: p.decisionClass, recommendation: p.recommendation }];
+        }),
         threads,
         stages: grouped.stages,
       };
@@ -811,6 +964,61 @@ evalCmd
   });
 
 evalCmd
+  .command("propose")
+  .description("Draft one prompt or rubric change from dev-set failure counts, score it on the held-out set and, only if it beats the baseline, open an agent-draft PR as the App (never merged by the daemon). At most one per week; safe to run from a weekly schedule")
+  .option("-c, --config <path>", "Path to archangel.yaml")
+  .action(async (opts: { config?: string }) => {
+    const host = resolveHostSettings(opts);
+    if (host.authMode !== "subscription") throw new Error("eval propose uses the subscription CLIs; set authMode: subscription");
+    const cfg = pickProjectConfig(loadProjectConfigs({ configPath: opts.config }), ARCHANGEL_REPO);
+    const dataDir = host.dataDir;
+    const root = resolvePaths({ dataDir });
+    if (!fs.existsSync(root.ledgerDbPath)) return void console.log(`No Ledger found yet at ${root.ledgerDbPath}. Run \`archangel start\` first.`);
+    const paths = resolvePaths(cfg);
+    const ledger = new Ledger(root.ledgerDbPath, { repo: ARCHANGEL_REPO, timeZone: cfg.dailyTimezone });
+    const now = Date.now();
+    const suiteFor = (prompts: ReviewPromptBuilders) => new SubscriptionReviewerSuite({ chain: host.reviewerChain, defaultExcludeVendors: primaryWriterVendors(host.chains), prompts });
+    try {
+      const outcome = await proposePrompt({
+        ledger,
+        chain: host.chains.scout,
+        invoker: defaultScoutCliInvoker,
+        cwd: ARCHANGEL_ROOT,
+        clusterBlock: buildClusterBlockFrom(ledger, { repo: null, now, excludeScouts: [] }),
+        failures: async () => {
+          return devFailures({ ledger, sources: evalSources(ledger, dataDir), suiteFor, baseline: await loadReviewPrompts(ARCHANGEL_ROOT) });
+        },
+        evaluate: async (patchFile) => {
+          const { baseline, candidate } = await prepareCandidates(ARCHANGEL_ROOT, patchFile);
+          try {
+            const report = await runEval({ ledger, sources: evalSources(ledger, dataDir), suiteFor, baseline: baseline.prompts, candidate, heldout: true });
+            saveReport(dataDir, "eval", report);
+            return report;
+          } finally {
+            candidate.cleanup();
+          }
+        },
+        openPr: (draft, body, ctx) =>
+          openDraftPr(
+            {
+              github: new GitHubAppClient({ owner: cfg.githubOwner, repo: cfg.githubRepo, appId: cfg.githubAppId, installationId: cfg.githubInstallationId, privateKeyPem: cfg.githubPrivateKeyPem }),
+              broker: new GitBroker({ bareRepoPath: paths.brokerBareRepoPath, clonesDir: paths.clonesDir, defaultBranch: cfg.defaultBranch, repo: ARCHANGEL_REPO }),
+              defaultBranch: cfg.defaultBranch,
+            },
+            draft,
+            body,
+            ctx,
+          ),
+      }, now);
+      const detail = outcome.kind === "skipped" ? outcome.why : outcome.kind === "pr_opened" ? outcome.url : outcome.kind === "not_better" ? outcome.report.reasons.join("; ") || outcome.report.result : outcome.reason;
+      ledger.appendAudit(`prompt_proposer/${outcome.kind}`, null, "archangel", { detail: detail.slice(0, 500) }, now);
+      console.log(outcome.kind === "pr_opened" ? `Opened ${outcome.url}` : `No PR (${outcome.kind}): ${detail}`);
+    } finally {
+      ledger.close();
+    }
+  });
+
+evalCmd
   .command("bench-tiers")
   .description("Benchmark a candidate provider chain against the current one on captured implementation cases, scored mechanically by the Gate. Makes real subscription CLI calls; never edits archangel.yaml")
   .requiredOption("--role <role>", "implement | revise | rebase")
@@ -889,6 +1097,35 @@ program
   });
 
 program
+  .command("preview <ref>")
+  .description("RUNNER ONLY: serve a local git ref in a macOS sandbox on a loopback URL (no PoC build, no Ledger row; Ctrl-C, the 60 min TTL or 15 min idle stops it)")
+  .requiredOption("--start <command>", "The command that starts the app; it gets PORT and HOST=127.0.0.1")
+  .option("--repo <dir>", "The repository holding <ref>", process.cwd())
+  .option("--ready-path <path>", "Polled for up to 30 s before the URL is printed", "/")
+  .option("--ui-port <n>", "The dashboard port, which a preview never uses", "4477")
+  .action(async (ref: string, opts: { start: string; repo: string; readyPath: string; uiPort: string }) => {
+    const [cmd, ...args] = opts.start.trim().split(/\s+/);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archangel-preview-ws-"));
+    const provider = new SandboxExecProvider({ prepare: async () => ({ id: dir, path: dir }), collect: async () => ({ kind: "clone", path: dir }), destroy: () => undefined }, { reservedPorts: [Number(opts.uiPort)] });
+    try {
+      await execFileGroup("git", ["init", "--quiet", dir]);
+      await execFileGroup("git", ["fetch", "--quiet", path.resolve(opts.repo), ref], { cwd: dir });
+      await execFileGroup("git", ["checkout", "--quiet", "FETCH_HEAD"], { cwd: dir });
+      // Installs never run here: Seatbelt cannot allow registry hosts for one step, so dependencies must come from the ref.
+      const preview = await provider.expose({ id: dir, path: dir }, { port: 0, ttlMs: 60 * 60_000, cmd: cmd!, args, readyPath: opts.readyPath });
+      process.once("SIGINT", preview.close);
+      process.once("SIGTERM", preview.close);
+      console.log(`Preview of ${ref}: ${preview.url}  (sandboxed, loopback only; Ctrl-C to stop)`);
+      await preview.closed;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+program
   .command("ui")
   .description("Serve a local dashboard from the Ledger; its only write is a guarded POST that opens an unmerged workflow PR with your gh (disabled with --allow-remote)")
   .option("-c, --config <path>", "Path to archangel.yaml")
@@ -899,12 +1136,26 @@ program
   .action(async (opts: { config?: string; dataDir?: string; port: string; host: string; allowRemote?: boolean }) => {
     assertBindable(opts.host, Boolean(opts.allowRemote));
     const paths = resolvePaths({ dataDir: resolveDataDir(opts) });
-    if (!fs.existsSync(paths.ledgerDbPath)) {
-      console.log(`No Ledger found yet at ${paths.ledgerDbPath}. Run \`archangel start\` first.`);
-      return;
-    }
-    const ledger = new Ledger(paths.ledgerDbPath, { readonly: true });
-    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "host_config", payload, now, null); } finally { w.close(); } } }, onboardAudit: (topic, payload, now) => { const w = new Ledger(paths.ledgerDbPath); try { w.appendAudit(topic, null, "ui_onboard", payload, now, null); } finally { w.close(); } }, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
+    // The Ledger belongs to the daemon: the UI never creates or writes it. Before the first `archangel start` it serves an
+    // empty in-memory stand-in, and switches to the real file (read-only) as soon as the daemon has created it.
+    let real: Ledger | null = null;
+    let standIn: Ledger | null = null;
+    const ledger = (): Ledger => {
+      if (real) return real;
+      if (fs.existsSync(paths.ledgerDbPath)) {
+        real = new Ledger(paths.ledgerDbPath, { readonly: true });
+        standIn?.close();
+        return real;
+      }
+      return (standIn ??= new Ledger(":memory:"));
+    };
+    const appender = (source: string) => (topic: string, payload: Record<string, unknown>, now: number) => {
+      // Audit-before-write: with no Ledger there is nowhere to record it, and the UI must not create one, so refuse.
+      if (!fs.existsSync(paths.ledgerDbPath)) throw new Error("The daemon has not run yet, so there is no Ledger to record this in. Run `archangel init`, then retry.");
+      const w = new Ledger(paths.ledgerDbPath);
+      try { w.appendAudit(topic, null, source, payload, now, null); } finally { w.close(); }
+    };
+    await startUiServer(ledger, { host: opts.host, port: Number(opts.port), allowRemote: opts.allowRemote, proposeRunner: execRunner, configPath: opts.config, dataDir: paths.dataDir, hostConfig: { configPath: resolveConfigPath(opts.config), audit: appender("host_config") }, onboardAudit: appender("ui_onboard"), ledgerMissing: () => real === null, doctor: ({ scope, smoke }) => runDoctor({ configPath: opts.config, offline: scope === "machine", smoke }) });
     console.log(`Archangel UI: http://${opts.host.includes(":") ? `[${opts.host}]` : opts.host}:${opts.port}`);
   });
 

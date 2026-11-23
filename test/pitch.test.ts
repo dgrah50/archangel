@@ -25,7 +25,7 @@ const NOW = 200 * DAY;
 const SPEC = { name: "pitch", kind: "pitch", schedule: "weekly", maxProposals: 1 };
 const PROMPT = "Find one thing worth changing.";
 
-const evidence = (over: Record<string, unknown> = {}) => ({ file: "app.ts", symbol: null, metric: null, note: "app.ts has grown 3x in 90 days", ...over });
+const evidence = (over: Record<string, unknown> = {}) => ({ file: "app.ts", symbol: null, metric: null, research: null, watched: null, note: "app.ts has grown 3x in 90 days", ...over });
 const pitch = (over: Record<string, unknown> = {}) => ({
   type: "removal",
   title: "Remove the unused legacy parser",
@@ -36,6 +36,7 @@ const pitch = (over: Record<string, unknown> = {}) => ({
   optionsConsidered: ["Do nothing: it is harmless but costs reading time", "Delete it"],
   slices: [{ title: "Delete legacy parser", acceptance: "No imports remain; tests pass." }],
   measurement: "",
+  figures: [], changeDiagram: null, estimates: [],
   recommendation: "do",
   size: "S",
   ...over,
@@ -133,6 +134,50 @@ describe("pitch Scout runs", () => {
     }
   });
 
+  it("queues an automatic PoC build for a pitch that is not size L, never for size L", async () => {
+    const f = await fixture();
+    try {
+      await f.run(out(pitch({ size: "M" })));
+      await f.run(out(pitch({ size: "L", title: "Split the monolith into packages" })), { now: NOW + 8 * DAY });
+      expect(f.created).toHaveLength(2);
+      expect(f.ledger.getPoc(300)).toMatchObject({ autoQueued: true, builds: 0 });
+      expect(f.ledger.getPoc(301)).toBeNull();
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it("accepts a change diagram and estimates only within bounds, and files them as a plain-text tree and a labelled estimate", async () => {
+    const f = await fixture();
+    try {
+      const node = (id: string, label = "Parser", change = "modify") => ({ id, label, change });
+      const diagram = { nodes: [node("cli", "CLI", "same"), node("parser"), node("cache", "Cache", "add")], edges: [{ from: "cli", to: "parser" }, { from: "parser", to: "cache" }] };
+      const estimate = { metric: "parse time", before: 120, after: 80, unit: "ms", basis: "estimated", method: "Counted the re-parses per run in app.ts", source: null };
+      const bad = [
+        { changeDiagram: { ...diagram, nodes: Array.from({ length: 13 }, (_, i) => node(`n${i}`)) } },
+        { changeDiagram: { ...diagram, edges: [{ from: "cli", to: "ghost" }] } },
+        { changeDiagram: { nodes: [node("cli", "x".repeat(61))], edges: [] } },
+        { changeDiagram: { nodes: [node("cli", "<svg onload=x>")], edges: [] } },
+        { estimates: [{ ...estimate, basis: "measured" }] }, // measured, no cited file
+        { estimates: [{ ...estimate, method: "" }] },
+        { estimates: Array.from({ length: 5 }, () => estimate) },
+        { type: "performance", measurement: "Benchmark it", estimates: [] },
+      ];
+      for (const over of bad) expect(PitchOutputSchema.safeParse(out(pitch(over))).success, JSON.stringify(over).slice(0, 80)).toBe(false);
+
+      // A secret in a label is dropped before filing.
+      const leaked = await f.run(out(pitch({ changeDiagram: { nodes: [node("cli", "key sk-ant-secret1234567890123456789012345")], edges: [] } })));
+      expect(leaked.res[0]).toMatchObject({ filedIssues: [], blockedSecrets: 1 });
+
+      const ok = await f.run(out(pitch({ changeDiagram: diagram, estimates: [estimate] })), { now: NOW + 8 * DAY });
+      expect(ok.res[0]!.filedIssues).toEqual([300]);
+      expect(f.created[0]!.body).toContain("[ ] CLI\n  [~] Parser\n    [+] Cache");
+      expect(f.created[0]!.body).toContain("**Estimate, not measured.** parse time: 120 -> 80 ms");
+    } finally {
+      f.cleanup();
+    }
+  });
+
   it("drops a pitch citing a missing file, a traversal or an absolute path, and audits why", async () => {
     const f = await fixture();
     try {
@@ -142,6 +187,20 @@ describe("pitch Scout runs", () => {
       }
       expect(f.created).toEqual([]);
       expect(f.ledger.listAudit({ topicPrefix: "pitch/dropped" })).toHaveLength(3);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it("drops a pitch whose figure is a missing file, a traversal, an absolute path or not a png/jpg/webp", async () => {
+    const f = await fixture();
+    try {
+      for (const [k, path] of ["ghost.png", "../../etc/passwd.png", "/etc/shot.png", "app.ts"].entries()) {
+        const { res } = await f.run(out(pitch({ figures: [{ path, caption: "A shot" }] })), { now: NOW + 8 * DAY * k });
+        expect(res[0]!.filedIssues).toEqual([]);
+      }
+      expect(f.created).toEqual([]);
+      expect(f.ledger.listAudit({ topicPrefix: "pitch/dropped" })).toHaveLength(4);
     } finally {
       f.cleanup();
     }
@@ -376,7 +435,7 @@ describe("archangel pitch promote", () => {
       ],
     })],
   }).pitches[0]!;
-  const BODY = renderPitchBody(PROMOTE_PITCH);
+  const BODY = renderPitchBody(PROMOTE_PITCH, { repo: "acme/app", mainSha: "m" });
 
   function setup(over: { liveBody?: string; state?: string } = {}) {
     const ledger = new Ledger(":memory:", { repo: "acme/app" });

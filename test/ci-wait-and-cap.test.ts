@@ -76,9 +76,9 @@ describe("autonomy cap", () => {
     const implementer: Implementer = {
       async run(input) {
         calls++;
-        fs.writeFileSync(path.join(input.cloneDir, "app.go"), `package demo\n\nfunc Val() int { return ${40 + calls} }\n`);
-        git(input.cloneDir, ["add", "-A"]);
-        git(input.cloneDir, ["commit", "-m", "fix"]);
+        fs.writeFileSync(path.join((await input.workspaces.local.workspace()).path, "app.go"), `package demo\n\nfunc Val() int { return ${40 + calls} }\n`);
+        git((await input.workspaces.local.workspace()).path, ["add", "-A"]);
+        git((await input.workspaces.local.workspace()).path, ["commit", "-m", "fix"]);
         return { summary: "ok", costUsd: 0.1, transcriptPath: null, aborted: false };
       },
     };

@@ -64,8 +64,8 @@ function fakeImplementers(counts: { runs: Record<string, number>; prompts?: stri
         counts.runs[who] = (counts.runs[who] ?? 0) + 1;
         counts.prompts?.push(input.prompt);
         if (who === "claude") throw new Error("provider down");
-        write(input.cloneDir, "calc.mjs", `export function add(a, b) {\n  return a + b;\n}\n`);
-        if (who === "agy") write(input.cloneDir, `tests/new${input.issueNumber}.test.mjs`, 'import assert from "node:assert/strict";\nassert.equal(1, 1);\n');
+        write((await input.workspaces.local.workspace()).path, "calc.mjs", `export function add(a, b) {\n  return a + b;\n}\n`);
+        if (who === "agy") write((await input.workspaces.local.workspace()).path, `tests/new${input.issueNumber}.test.mjs`, 'import assert from "node:assert/strict";\nassert.equal(1, 1);\n');
         return { summary: "", costUsd: 0, transcriptPath: null, aborted: false, providersUsed: ["openai"] };
       },
     };

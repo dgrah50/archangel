@@ -1,11 +1,12 @@
 import { describeEscalation, formatDecisionClass } from "./escalations.js";
+import type { AttemptErrorCategory } from "../ledger/schema.js";
 import type { EscalationCode } from "./thread-machine.js";
 
 export interface DigestInput {
   now: number;
   /** All configured projects, not one repo. */
   /** null = could not be read ("unavailable"), distinct from an empty list. */
-  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; since: number }> | null;
+  needsYou: Array<{ repo: string; issueNumber: number; title: string; code: EscalationCode; cause?: AttemptErrorCategory; since: number }> | null;
   /** Each figure is null when it could not be computed ("unavailable"), distinct from a real 0. */
   yesterday: { autonomousMerges: number | null; ownerMerges: number | null; reverts: number | null; spendUsd: number | null };
   /** Scout proposals still awaiting the owner (no Thread yet); null = could not be read. */
@@ -16,6 +17,8 @@ export interface DigestInput {
   faults: Array<{ repo: string; category: string; recent24h: number; lastError: string }> | null;
   /** Merged correction-loop drafts whose targeted category did not drop within 30 days of the merge: candidates to revert; null = could not be read. */
   draftReverts: Array<{ repo: string; category: string; url: string; before: number; after: number }> | null;
+  /** Policy versions flagged by the regression watch in the last 24h (rework rose, or a revert); null = could not be read. */
+  regressions: Array<{ repo: string; workflowSha: string; promptSha: string; threads: number; reworkRate: number; prevReworkRate: number; reverts: number; workflowCommit: string | null; promptCommit: string | null }> | null;
 }
 
 const UNAVAILABLE = "unavailable";
@@ -40,6 +43,7 @@ export function buildDigest(input: DigestInput): string | null {
     input.proposals?.length === 0 &&
     input.faults?.length === 0 &&
     input.draftReverts?.length === 0 &&
+    input.regressions?.length === 0 &&
     y.autonomousMerges === 0 && y.ownerMerges === 0 && y.reverts === 0 &&
     y.spendUsd === 0
   ) {
@@ -52,7 +56,7 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.needsYou.length > 0) {
     lines.push("", `Needs You (${input.needsYou.length}):`);
     for (const item of input.needsYou) {
-      const p = describeEscalation(item.code);
+      const p = describeEscalation(item.code, undefined, item.cause);
       lines.push(`${item.repo}#${item.issueNumber} ${item.title}`);
       lines.push(`  ${formatDecisionClass(p.decisionClass)}, waiting ${age(input.now - item.since)}`);
       lines.push(`  Recommended: ${p.recommendation}`);
@@ -88,6 +92,18 @@ export function buildDigest(input: DigestInput): string | null {
   } else if (input.draftReverts.length > 0) {
     lines.push("", `Merged correction drafts that did not help (${input.draftReverts.length}); consider reverting:`);
     for (const d of input.draftReverts) lines.push(`  ${d.repo} ${d.category}: ${d.before} corrections before, ${d.after} in the 30 days after the merge. ${d.url}`);
+  }
+  if (input.regressions === null) {
+    lines.push("", `Policy regressions: ${UNAVAILABLE}`);
+  } else if (input.regressions.length > 0) {
+    lines.push("", `Policy versions that got worse (${input.regressions.length}):`);
+    const pct = (r: number) => `${Math.round(r * 100)}%`;
+    for (const r of input.regressions) {
+      const why = [r.reverts > 0 ? `${r.reverts} reverted` : null, r.reworkRate > r.prevReworkRate ? `rework ${pct(r.prevReworkRate)} -> ${pct(r.reworkRate)} over ${r.threads} threads` : null].filter(Boolean).join(", ");
+      lines.push(`  ${r.repo} workflow ${r.workflowSha.slice(0, 8)} prompt ${r.promptSha.slice(0, 8)}: ${why}`);
+      const hints = [r.workflowCommit ? `workflow change ${r.workflowCommit}` : null, r.promptCommit ? `prompt change ${r.promptCommit}` : null].filter(Boolean);
+      lines.push(`    Revert hint: ${hints.length > 0 ? `git revert ${hints.join(" or ")}` : "introducing commit not found"}`);
+    }
   }
   return lines.join("\n");
 }
