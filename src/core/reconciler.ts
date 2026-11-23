@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { CORRECTION_WINDOW_DAYS, correctionCategories, repeatedCategories } from "./corrections.js";
 import { AGENT_DRAFT_PREFIX, draftCorrection, measureDrafts, unlandedText, type DraftContext, type DraftDeps, type PrStatus } from "./correction-draft.js";
 import { COMMAND_LINE_RE, collectOwnerReply } from "./owner-reply.js";
-import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned } from "./escalations.js";
+import { MAIN_ESCALATION_POLICY, describeEscalation, formatDecisionClass, testFilesMentioned, isInfrastructureFailure } from "./escalations.js";
 import { REPO_POLICY_PATH, resolvePaths, resolveRequiredReviewers, type ArchangelConfig, type GatePolicy } from "../config.js";
 import type { Implementer, ImplementResult } from "../agents/implementer.js";
 import {
@@ -1691,7 +1691,7 @@ export class Reconciler {
         {
           t: "escalate",
           code: "max_attempts",
-          reason: `Reached max implement attempts (${thread.implementCount}/${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants}).`,
+          reason: `Used all ${this.cfg.maxImplementAttemptsPerThread + thread.retryGrants} Attempts this Thread may run (${this.cfg.maxImplementAttemptsPerThread} to start with, plus one per owner retry).`,
         },
         { auditTopic: "thread/needs_you", now },
       );
@@ -2250,6 +2250,8 @@ export class Reconciler {
       });
       if (err instanceof AttemptError && err.runBy) this.ledger.recordAttemptProvenance(attemptId, { provider: err.runBy.provider, model: err.runBy.model, accountId: err.runBy.accountId ?? null });
       const cause = err instanceof AttemptError ? err.category : undefined;
+      // The Thread still parks in Needs you (nothing retries by itself), but a run that never reached the issue is not one of its Attempts.
+      if (isInfrastructureFailure(cause)) this.ledger.refundAttemptCounts(workingThread.issueNumber, kind);
       const latest = this.ledger.getThread(workingThread.issueNumber);
       if (latest && latest.version === workingThread.version) {
         this.applyMachineEvent(
