@@ -12,7 +12,8 @@ dailyTimezone: America/New_York
 #   host: 127.0.0.1
 #   port: 4477
 
-# Per-thread limits (defaults shown; any project may override the first four)
+# Per-thread limits (defaults shown; any project may override the first four). Each applies between owner answers: an owner
+# retry grants a fresh budget of each.
 maxAutonomousStepsWithoutOwner: 25  # Attempt starts + auto-merges before the owner must be heard from
 maxImplementAttemptsPerThread: 3    # implement Attempts before escalating to needs-you
 maxRevisionsPerThread: 1            # review-driven revision Attempts per thread
